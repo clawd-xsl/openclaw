@@ -1,3 +1,4 @@
+import { clearSessionFinalizing } from "../../agents/pi-embedded-runner/runs.js";
 import { loadSessionStore } from "../../config/sessions.js";
 import { isAudioFileName } from "../../media/mime.js";
 import { normalizeVerboseLevel, type VerboseLevel } from "../thinking.js";
@@ -54,8 +55,12 @@ export const finalizeWithFollowup = <T>(
   value: T,
   queueKey: string,
   runFollowupTurn: Parameters<typeof scheduleFollowupDrain>[1],
+  sessionId?: string,
 ): T => {
   scheduleFollowupDrain(queueKey, runFollowupTurn);
+  if (sessionId) {
+    clearSessionFinalizing(sessionId);
+  }
   return value;
 };
 

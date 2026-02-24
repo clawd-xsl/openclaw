@@ -12,6 +12,23 @@ type EmbeddedPiQueueHandle = {
 };
 
 const ACTIVE_EMBEDDED_RUNS = new Map<string, EmbeddedPiQueueHandle>();
+
+/**
+ * Sessions currently in the "finalizing" window between clearActiveEmbeddedRun
+ * and scheduleFollowupDrain.  Treated as active to prevent new runs from
+ * starting during this gap (race-condition fix).
+ */
+const FINALIZING_SESSIONS = new Set<string>();
+
+export function markSessionFinalizing(sessionId: string): void {
+  FINALIZING_SESSIONS.add(sessionId);
+  diag.debug(`session finalizing: sessionId=${sessionId}`);
+}
+
+export function clearSessionFinalizing(sessionId: string): void {
+  FINALIZING_SESSIONS.delete(sessionId);
+  diag.debug(`session finalizing cleared: sessionId=${sessionId}`);
+}
 type EmbeddedRunWaiter = {
   resolve: (ended: boolean) => void;
   timer: NodeJS.Timeout;
@@ -50,10 +67,14 @@ export function abortEmbeddedPiRun(sessionId: string): boolean {
 
 export function isEmbeddedPiRunActive(sessionId: string): boolean {
   const active = ACTIVE_EMBEDDED_RUNS.has(sessionId);
-  if (active) {
-    diag.debug(`run active check: sessionId=${sessionId} active=true`);
+  const finalizing = FINALIZING_SESSIONS.has(sessionId);
+  if (active || finalizing) {
+    diag.debug(
+      `run active check: sessionId=${sessionId} active=${active} finalizing=${finalizing}`,
+    );
+    return true;
   }
-  return active;
+  return false;
 }
 
 export function isEmbeddedPiRunStreaming(sessionId: string): boolean {

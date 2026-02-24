@@ -3,6 +3,7 @@ import { lookupContextTokens } from "../../agents/context.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../../agents/defaults.js";
 import { resolveModelAuthMode } from "../../agents/model-auth.js";
 import { isCliProvider } from "../../agents/model-selection.js";
+import { clearSessionFinalizing } from "../../agents/pi-embedded-runner/runs.js";
 import { queueEmbeddedPiMessage } from "../../agents/pi-embedded.js";
 import { hasNonzeroUsage } from "../../agents/usage.js";
 import {
@@ -397,7 +398,12 @@ export async function runReplyAgent(params: {
     });
 
     if (runOutcome.kind === "final") {
-      return finalizeWithFollowup(runOutcome.payload, queueKey, runFollowupTurn);
+      return finalizeWithFollowup(
+        runOutcome.payload,
+        queueKey,
+        runFollowupTurn,
+        followupRun.run.sessionId,
+      );
     }
 
     const {
@@ -510,7 +516,7 @@ export async function runReplyAgent(params: {
     // Otherwise, a late typing trigger (e.g. from a tool callback) can outlive the run and
     // keep the typing indicator stuck.
     if (payloadArray.length === 0) {
-      return finalizeWithFollowup(undefined, queueKey, runFollowupTurn);
+      return finalizeWithFollowup(undefined, queueKey, runFollowupTurn, followupRun.run.sessionId);
     }
 
     const payloadResult = buildReplyPayloads({
@@ -538,7 +544,7 @@ export async function runReplyAgent(params: {
     didLogHeartbeatStrip = payloadResult.didLogHeartbeatStrip;
 
     if (replyPayloads.length === 0) {
-      return finalizeWithFollowup(undefined, queueKey, runFollowupTurn);
+      return finalizeWithFollowup(undefined, queueKey, runFollowupTurn, followupRun.run.sessionId);
     }
 
     const successfulCronAdds = runResult.successfulCronAdds ?? 0;
@@ -744,6 +750,7 @@ export async function runReplyAgent(params: {
       finalPayloads.length === 1 ? finalPayloads[0] : finalPayloads,
       queueKey,
       runFollowupTurn,
+      followupRun.run.sessionId,
     );
   } finally {
     blockReplyPipeline?.stop();
@@ -755,5 +762,7 @@ export async function runReplyAgent(params: {
     // Calling this twice is harmless — cleanup() is guarded by the
     // `active` flag.  Same pattern as the followup runner fix (#26881).
     typing.markDispatchIdle();
+    // Safety net: ensure finalizing flag is always cleared even on unexpected errors.
+    clearSessionFinalizing(followupRun.run.sessionId);
   }
 }
