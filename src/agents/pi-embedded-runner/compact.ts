@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import os from "node:os";
+import path from "node:path";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import {
   createAgentSession,
@@ -679,6 +680,35 @@ export async function compactEmbeddedPiSessionDirect(
           // If estimation fails, leave tokensAfter undefined
           tokensAfter = undefined;
         }
+
+        // Inject compaction-recovery.md into the summary message (best-effort).
+        // This prepends recovery instructions to the compaction summary so the
+        // agent sees them on every subsequent turn, not just the first one.
+        try {
+          const recoveryPath = path.join(effectiveWorkspace, "COMPACTION.md");
+          const recoveryRaw = await fs.readFile(recoveryPath, "utf-8").catch(() => "");
+          const recoveryContent = recoveryRaw.trim();
+          if (recoveryContent && session.messages.length > 0) {
+            const first = session.messages[0];
+            if (first.role === "compactionSummary" && typeof first.summary === "string") {
+              const newSummary =
+                "This conversation has been compacted. Read the following compaction recovery instructions to recover context:\n\n" +
+                `Previous session ID: ${params.sessionId}\n\n` +
+                recoveryContent.slice(0, 8000) +
+                "\n\n---\n\nThe conversation history before this point was compacted into the following summary:\n\n" +
+                first.summary;
+              const msgs = [...session.messages];
+              msgs[0] = { ...first, summary: newSummary };
+              session.agent.replaceMessages(msgs);
+              log.info(
+                `[compaction-recovery] Injected recovery instructions (${recoveryContent.length} chars) into summary message`,
+              );
+            }
+          }
+        } catch {
+          // Best-effort: ignore failures reading recovery file
+        }
+
         // Run after_compaction hooks (fire-and-forget).
         // Also includes sessionFile for plugins that only need to act after
         // compaction completes (e.g. analytics, cleanup).
