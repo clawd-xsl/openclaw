@@ -221,10 +221,14 @@ export async function createSessionVisibilityGuard(params: {
       };
     }
 
+    // Main session (non-subagent) gets agent-wide access under "tree" visibility
+    const isMainRequester = !isSubagentSessionKey(params.requesterSessionKey);
+
     if (
       params.visibility === "tree" &&
       targetSessionKey !== params.requesterSessionKey &&
-      !spawnedKeys?.has(targetSessionKey)
+      !spawnedKeys?.has(targetSessionKey) &&
+      !isMainRequester
     ) {
       return {
         allowed: false,
