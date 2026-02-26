@@ -561,18 +561,22 @@ async function sweepSubagentRuns() {
     clearPendingLifecycleError(runId);
     subagentRuns.delete(runId);
     mutated = true;
-    try {
-      await callGateway({
-        method: "sessions.delete",
-        params: {
-          key: entry.childSessionKey,
-          deleteTranscript: true,
-          emitLifecycleHooks: false,
-        },
-        timeoutMs: 10_000,
-      });
-    } catch {
-      // ignore
+    // Only delete the session if cleanup policy is "delete".
+    // "keep" entries should only be removed from the registry, not have their sessions destroyed.
+    if (entry.cleanup !== "keep") {
+      try {
+        await callGateway({
+          method: "sessions.delete",
+          params: {
+            key: entry.childSessionKey,
+            deleteTranscript: true,
+            emitLifecycleHooks: false,
+          },
+          timeoutMs: 10_000,
+        });
+      } catch {
+        // ignore
+      }
     }
   }
   if (mutated) {
@@ -1074,6 +1078,80 @@ export function isSubagentSessionRunActive(childSessionKey: string): boolean {
     }
   }
   return false;
+}
+
+/**
+ * Reactivate a completed run-mode subagent when a new message is sent to its
+ * session (e.g. via `sessions_send`).  The old run record is replaced with a
+ * fresh one keyed by `newRunId` so the lifecycle (announce, sweeper, hooks)
+ * tracks the new work correctly.
+ *
+ * Returns `{ reactivated: false }` when there is nothing to reactivate — e.g.
+ * the session has no completed run record, the run was killed, or the record
+ * was already swept.
+ */
+export function reactivateSubagentRun(params: { childSessionKey: string; newRunId: string }): {
+  reactivated: boolean;
+  entry?: SubagentRunRecord;
+} {
+  const runIds = findRunIdsByChildSessionKey(params.childSessionKey);
+  let latestEntry: SubagentRunRecord | undefined;
+  let latestRunId: string | undefined;
+  for (const runId of runIds) {
+    const entry = subagentRuns.get(runId);
+    if (!entry || typeof entry.endedAt !== "number") {
+      continue;
+    }
+    if (!latestEntry || (entry.endedAt ?? 0) > (latestEntry.endedAt ?? 0)) {
+      latestEntry = entry;
+      latestRunId = runId;
+    }
+  }
+  if (!latestEntry || !latestRunId) {
+    return { reactivated: false };
+  }
+  // Don't reactivate killed runs.
+  if (latestEntry.endedReason === SUBAGENT_ENDED_REASON_KILLED) {
+    return { reactivated: false };
+  }
+
+  const now = Date.now();
+  const cfg = loadConfig();
+  const archiveAfterMs = resolveArchiveAfterMs(cfg);
+  const waitTimeoutMs = resolveSubagentWaitTimeoutMs(cfg, latestEntry.runTimeoutSeconds);
+
+  // Remove the old run record.
+  if (latestRunId !== params.newRunId) {
+    subagentRuns.delete(latestRunId);
+    resumedRuns.delete(latestRunId);
+  }
+
+  const reactivated: SubagentRunRecord = {
+    ...latestEntry,
+    runId: params.newRunId,
+    startedAt: now,
+    endedAt: undefined,
+    endedReason: undefined,
+    endedHookEmittedAt: undefined,
+    outcome: undefined,
+    cleanupCompletedAt: undefined,
+    cleanupHandled: false,
+    suppressAnnounceReason: undefined,
+    announceRetryCount: undefined,
+    lastAnnounceRetryAt: undefined,
+    // Extend the archive deadline so the sweeper doesn't delete mid-run.
+    archiveAtMs: archiveAfterMs ? now + archiveAfterMs : undefined,
+  };
+
+  subagentRuns.set(params.newRunId, reactivated);
+  ensureListener();
+  persistSubagentRuns();
+  if (reactivated.archiveAtMs) {
+    startSweeper();
+  }
+  resumedRuns.delete(params.newRunId);
+  void waitForSubagentCompletion(params.newRunId, waitTimeoutMs);
+  return { reactivated: true, entry: reactivated };
 }
 
 export function markSubagentRunTerminated(params: {
