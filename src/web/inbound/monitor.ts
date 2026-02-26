@@ -232,9 +232,14 @@ export async function monitorWebInbox(options: {
         logVerbose(`Self-chat mode: skipping read receipt for ${id}`);
       }
 
-      // If this is history/offline catch-up, mark read above but skip auto-reply.
+      // If this is history/offline catch-up, mark read above but skip auto-reply
+      // UNLESS the message arrived after we connected (live message delivered as
+      // "append" instead of "notify" by Baileys during reconnect).
       if (upsert.type === "append") {
-        continue;
+        if (!messageTimestampMs || messageTimestampMs < connectedAtMs) {
+          continue;
+        }
+        // Recent message delivered as append — fall through and process it.
       }
 
       const location = extractLocationData(msg.message ?? undefined);
