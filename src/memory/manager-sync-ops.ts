@@ -254,7 +254,9 @@ export abstract class MemoryManagerSyncOps {
     const dir = path.dirname(dbPath);
     ensureDir(dir);
     const { DatabaseSync } = requireNodeSqlite();
-    return new DatabaseSync(dbPath, { allowExtension: this.settings.store.vector.enabled });
+    const db = new DatabaseSync(dbPath, { allowExtension: this.settings.store.vector.enabled });
+    db.exec("PRAGMA journal_mode=WAL");
+    return db;
   }
 
   private seedEmbeddingCache(sourceDb: DatabaseSync): void {
