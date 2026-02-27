@@ -77,6 +77,7 @@ export function createBlockReplyPipeline(params: {
   timeoutMs: number;
   coalescing?: BlockStreamingCoalescing;
   buffer?: BlockReplyBuffer;
+  runAbortSignal?: AbortSignal;
 }): BlockReplyPipeline {
   const { onBlockReply, timeoutMs, coalescing, buffer } = params;
   const sentKeys = new Set<string>();
@@ -87,6 +88,15 @@ export function createBlockReplyPipeline(params: {
   const bufferedPayloads: ReplyPayload[] = [];
   let sendChain: Promise<void> = Promise.resolve();
   let aborted = false;
+  if (params.runAbortSignal) {
+    params.runAbortSignal.addEventListener(
+      "abort",
+      () => {
+        aborted = true;
+      },
+      { once: true },
+    );
+  }
   let didStream = false;
   let didLogTimeout = false;
 

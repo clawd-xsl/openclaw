@@ -13,22 +13,6 @@ type EmbeddedPiQueueHandle = {
 
 const ACTIVE_EMBEDDED_RUNS = new Map<string, EmbeddedPiQueueHandle>();
 
-/**
- * Sessions currently in the "finalizing" window between clearActiveEmbeddedRun
- * and scheduleFollowupDrain.  Treated as active to prevent new runs from
- * starting during this gap (race-condition fix).
- */
-const FINALIZING_SESSIONS = new Set<string>();
-
-export function markSessionFinalizing(sessionId: string): void {
-  FINALIZING_SESSIONS.add(sessionId);
-  diag.debug(`session finalizing: sessionId=${sessionId}`);
-}
-
-export function clearSessionFinalizing(sessionId: string): void {
-  FINALIZING_SESSIONS.delete(sessionId);
-  diag.debug(`session finalizing cleared: sessionId=${sessionId}`);
-}
 type EmbeddedRunWaiter = {
   resolve: (ended: boolean) => void;
   timer: NodeJS.Timeout;
@@ -67,14 +51,10 @@ export function abortEmbeddedPiRun(sessionId: string): boolean {
 
 export function isEmbeddedPiRunActive(sessionId: string): boolean {
   const active = ACTIVE_EMBEDDED_RUNS.has(sessionId);
-  const finalizing = FINALIZING_SESSIONS.has(sessionId);
-  if (active || finalizing) {
-    diag.debug(
-      `run active check: sessionId=${sessionId} active=${active} finalizing=${finalizing}`,
-    );
-    return true;
+  if (active) {
+    diag.debug(`run active check: sessionId=${sessionId} active=true`);
   }
-  return false;
+  return active;
 }
 
 export function isEmbeddedPiRunStreaming(sessionId: string): boolean {
@@ -141,7 +121,12 @@ export function setActiveEmbeddedRun(
   handle: EmbeddedPiQueueHandle,
   sessionKey?: string,
 ) {
-  const wasActive = ACTIVE_EMBEDDED_RUNS.has(sessionId);
+  const oldHandle = ACTIVE_EMBEDDED_RUNS.get(sessionId);
+  const wasActive = oldHandle !== undefined;
+  if (oldHandle && oldHandle !== handle) {
+    diag.debug(`aborting replaced run: sessionId=${sessionId}`);
+    oldHandle.abort();
+  }
   ACTIVE_EMBEDDED_RUNS.set(sessionId, handle);
   logSessionStateChange({
     sessionId,
@@ -167,7 +152,10 @@ export function clearActiveEmbeddedRun(
     }
     notifyEmbeddedRunEnded(sessionId);
   } else {
-    diag.debug(`run clear skipped: sessionId=${sessionId} reason=handle_mismatch`);
+    diag.debug(
+      `run clear skipped (notifying waiters): sessionId=${sessionId} reason=handle_mismatch`,
+    );
+    notifyEmbeddedRunEnded(sessionId);
   }
 }
 
