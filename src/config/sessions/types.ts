@@ -75,6 +75,8 @@ export type SessionEntry = {
   lastHeartbeatSentAt?: number;
   sessionId: string;
   updatedAt: number;
+  /** Session ID of the predecessor session (set on reset). */
+  previousSessionId?: string;
   sessionFile?: string;
   /** Parent session key that spawned this session (used for sandbox session-tool scoping). */
   spawnedBy?: string;

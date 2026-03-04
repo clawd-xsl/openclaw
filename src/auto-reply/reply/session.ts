@@ -274,7 +274,10 @@ export async function initSessionState(params: {
 
   sessionKey = resolveSessionKey(sessionScope, sessionCtxForState, mainKey);
   const entry = sessionStore[sessionKey];
-  const previousSessionEntry = resetTriggered && entry ? { ...entry } : undefined;
+  // Capture previous session entry for ALL types of resets (manual, daily, idle)
+  // so the new session can reference its predecessor via previousSessionId.
+  // Only meaningful when isNewSession=true (checked downstream).
+  const previousSessionEntry = entry ? { ...entry } : undefined;
   const now = Date.now();
   const isThread = resolveThreadFlag({
     sessionKey,
@@ -461,6 +464,7 @@ export async function initSessionState(params: {
   sessionEntry = resolvedSessionFile.sessionEntry;
   if (isNewSession) {
     sessionEntry.compactionCount = 0;
+    sessionEntry.previousSessionId = previousSessionEntry?.sessionId;
     sessionEntry.memoryFlushCompactionCount = undefined;
     sessionEntry.memoryFlushAt = undefined;
     // Clear stale token metrics from previous session so /status doesn't
@@ -516,6 +520,7 @@ export async function initSessionState(params: {
     ),
     SessionId: sessionId,
     IsNewSession: isNewSession ? "true" : "false",
+    PreviousSessionId: previousSessionEntry?.sessionId,
   };
 
   // Run session plugin hooks (fire-and-forget)

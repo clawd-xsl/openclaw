@@ -162,6 +162,7 @@ export type TemplateContext = MsgContext & {
   BodyStripped?: string;
   SessionId?: string;
   IsNewSession?: string;
+  PreviousSessionId?: string;
 };
 
 function formatTemplateValue(value: unknown): string {
