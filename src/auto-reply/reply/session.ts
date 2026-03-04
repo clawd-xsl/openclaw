@@ -274,10 +274,10 @@ export async function initSessionState(params: {
 
   sessionKey = resolveSessionKey(sessionScope, sessionCtxForState, mainKey);
   const entry = sessionStore[sessionKey];
-  // Capture previous session entry for ALL types of resets (manual, daily, idle)
-  // so the new session can reference its predecessor via previousSessionId.
-  // Only meaningful when isNewSession=true (checked downstream).
+  // Capture previous session entry for all resets (manual, daily, idle) so the new
+  // session can reference its predecessor via previousSessionId.
   const previousSessionEntry = entry ? { ...entry } : undefined;
+
   const now = Date.now();
   const isThread = resolveThreadFlag({
     sessionKey,
@@ -495,7 +495,9 @@ export async function initSessionState(params: {
   );
 
   // Archive old transcript so it doesn't accumulate on disk (#14869).
-  if (previousSessionEntry?.sessionId) {
+  // Only archive when actually starting a new session — otherwise we'd rename
+  // the active session file on every message (bug 2026-03-04).
+  if (isNewSession && previousSessionEntry?.sessionId) {
     archiveSessionTranscripts({
       sessionId: previousSessionEntry.sessionId,
       storePath,
