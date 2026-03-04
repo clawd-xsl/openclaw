@@ -681,29 +681,37 @@ export async function compactEmbeddedPiSessionDirect(
           tokensAfter = undefined;
         }
 
-        // Inject compaction-recovery.md into the summary message (best-effort).
-        // This prepends recovery instructions to the compaction summary so the
-        // agent sees them on every subsequent turn, not just the first one.
+        // Inject COMPACTION.md as a persisted message after compaction (best-effort).
+        // This appends a custom message to the JSONL so the agent sees recovery
+        // instructions on every session load, not just the compaction turn.
+        // The message is placed after the compaction entry (and thus after
+        // retained messages), serving as a boundary marker between retained
+        // context and new conversation.
         try {
           const recoveryPath = path.join(effectiveWorkspace, "COMPACTION.md");
           const recoveryRaw = await fs.readFile(recoveryPath, "utf-8").catch(() => "");
           const recoveryContent = recoveryRaw.trim();
-          if (recoveryContent && session.messages.length > 0) {
-            const first = session.messages[0];
-            if (first.role === "compactionSummary" && typeof first.summary === "string") {
-              const newSummary =
-                "This conversation has been compacted. Read the following compaction recovery instructions to recover context:\n\n" +
-                `Previous session ID: ${params.sessionId}\n\n` +
-                recoveryContent.slice(0, 8000) +
-                "\n\n---\n\nThe conversation history before this point was compacted into the following summary:\n\n" +
-                first.summary;
-              const msgs = [...session.messages];
-              msgs[0] = { ...first, summary: newSummary };
-              session.agent.replaceMessages(msgs);
-              log.info(
-                `[compaction-recovery] Injected recovery instructions (${recoveryContent.length} chars) into summary message`,
-              );
-            }
+          if (recoveryContent) {
+            const boundaryContent =
+              `Your conversation has just been compacted. Current session ID: ${params.sessionId}\n\n` +
+              `Above this message you will see:\n` +
+              `1. Compaction summary — a compressed summary of the prior conversation\n` +
+              `2. Retained messages — the most recent messages preserved during compaction\n\n` +
+              `Below this message is the new conversation.\n\n` +
+              `Read the following compaction recovery instructions carefully to restore your state:\n\n` +
+              `---\n\n` +
+              recoveryContent.slice(0, 8000);
+            sessionManager.appendMessage({
+              role: "custom",
+              customType: "compaction-recovery",
+              content: boundaryContent,
+              display: false,
+              details: undefined,
+              timestamp: Date.now(),
+            });
+            log.info(
+              `[compaction-recovery] Appended recovery message to JSONL (${recoveryContent.length} chars)`,
+            );
           }
         } catch {
           // Best-effort: ignore failures reading recovery file
