@@ -79,6 +79,8 @@ export type FollowupRun = {
     ownerNumbers?: string[];
     extraSystemPrompt?: string;
     enforceFinalTag?: boolean;
+    previousSessionId?: string;
+    sessionCreatedAt?: number;
   };
 };
 

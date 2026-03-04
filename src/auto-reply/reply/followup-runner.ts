@@ -178,6 +178,8 @@ export function createFollowupRunner(params: {
               extraSystemPrompt: queued.run.extraSystemPrompt,
               ownerNumbers: queued.run.ownerNumbers,
               enforceFinalTag: queued.run.enforceFinalTag,
+              previousSessionId: queued.run.previousSessionId,
+              sessionCreatedAt: queued.run.sessionCreatedAt,
               provider,
               model,
               ...authProfile,

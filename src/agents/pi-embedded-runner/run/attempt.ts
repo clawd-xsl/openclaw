@@ -507,6 +507,8 @@ export async function runEmbeddedAttempt(
       userTimeFormat,
       contextFiles,
       memoryCitationsMode: params.config?.memory?.citations,
+      previousSessionId: params.previousSessionId,
+      sessionCreatedAt: params.sessionCreatedAt,
     });
     const systemPromptReport = buildSystemPromptReport({
       source: "run",
