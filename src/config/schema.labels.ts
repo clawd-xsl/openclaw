@@ -280,6 +280,7 @@ export const FIELD_LABELS: Record<string, string> = {
   "agents.defaults.bootstrapMaxChars": "Bootstrap Max Chars",
   "agents.defaults.bootstrapTotalMaxChars": "Bootstrap Total Max Chars",
   "agents.defaults.envelopeTimezone": "Envelope Timezone",
+  "agents.defaults.conversationTimestamp": "Conversation Timestamp",
   "agents.defaults.envelopeTimestamp": "Envelope Timestamp",
   "agents.defaults.envelopeElapsed": "Envelope Elapsed",
   "agents.defaults.memorySearch": "Memory Search",

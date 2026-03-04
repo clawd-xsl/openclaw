@@ -697,6 +697,8 @@ export const FIELD_HELP: Record<string, string> = {
     "Max total characters across all injected workspace bootstrap files (default: 150000).",
   "agents.defaults.repoRoot":
     "Optional repository root shown in the system prompt runtime line (overrides auto-detect).",
+  "agents.defaults.conversationTimestamp":
+    'Include per-message timestamps in conversation info blocks ("on" or "off"). When "off", timestamps are still in session logs but not in model context.',
   "agents.defaults.envelopeTimezone":
     'Timezone for message envelopes ("utc", "local", "user", or an IANA timezone string).',
   "agents.defaults.envelopeTimestamp":

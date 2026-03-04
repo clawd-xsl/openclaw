@@ -143,6 +143,11 @@ export type AgentDefaultsConfig = {
    */
   envelopeTimezone?: string;
   /**
+   * Include per-message timestamps in conversation info blocks ("on" | "off", default: "on").
+   * When "off", timestamps are still recorded in session logs but not injected into model context.
+   */
+  conversationTimestamp?: "on" | "off";
+  /**
    * Include absolute timestamps in message envelopes ("on" | "off", default: "on").
    */
   envelopeTimestamp?: "on" | "off";

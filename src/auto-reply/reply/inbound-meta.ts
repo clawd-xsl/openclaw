@@ -80,14 +80,18 @@ export function buildInboundMetaSystemPrompt(ctx: TemplateContext): string {
   ].join("\n");
 }
 
-export function buildInboundUserContextPrefix(ctx: TemplateContext): string {
+export function buildInboundUserContextPrefix(
+  ctx: TemplateContext,
+  options?: { includeTimestamp?: boolean },
+): string {
   const blocks: string[] = [];
   const chatType = normalizeChatType(ctx.ChatType);
   const isDirect = !chatType || chatType === "direct";
 
   const messageId = safeTrim(ctx.MessageSid);
   const messageIdFull = safeTrim(ctx.MessageSidFull);
-  const timestampStr = formatConversationTimestamp(ctx.Timestamp);
+  const timestampStr =
+    options?.includeTimestamp === false ? undefined : formatConversationTimestamp(ctx.Timestamp);
 
   const conversationInfo = {
     message_id: isDirect ? undefined : messageId,

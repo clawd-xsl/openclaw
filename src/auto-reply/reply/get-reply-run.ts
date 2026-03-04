@@ -298,6 +298,7 @@ export async function runPreparedReply(
             : {}),
         }
       : { ...sessionCtx, ThreadStarterBody: undefined },
+    { includeTimestamp: agentCfg?.conversationTimestamp !== "off" },
   );
   const baseBodyForPrompt = isBareSessionReset
     ? baseBodyFinal
