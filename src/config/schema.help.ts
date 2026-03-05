@@ -1003,6 +1003,8 @@ export const FIELD_HELP: Record<string, string> = {
     'Controls typing behavior timing: "never", "instant", "thinking", or "message" based emission points. Keep conservative modes in high-volume channels to avoid unnecessary typing noise.',
   "session.parentForkMaxTokens":
     "Maximum parent-session token count allowed for thread/session inheritance forking. If the parent exceeds this, OpenClaw starts a fresh thread session instead of forking; set 0 to disable this protection.",
+  "session.summaryModel":
+    "Model to use for generating session summaries (e.g. anthropic/claude-sonnet-4-6). Defaults to anthropic/claude-sonnet-4-6.",
   "session.mainKey":
     'Overrides the canonical main session key used for continuity when dmScope or routing logic points to "main". Use a stable value only if you intentionally need custom session anchoring.',
   "session.sendPolicy":

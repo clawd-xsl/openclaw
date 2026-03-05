@@ -107,4 +107,5 @@ export type RunEmbeddedPiAgentParams = {
   previousSessionId?: string;
   /** Session creation timestamp (epoch ms) for system prompt. */
   sessionCreatedAt?: number;
+  recentSessionHistory?: string;
 };

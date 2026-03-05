@@ -509,6 +509,7 @@ export async function runEmbeddedAttempt(
       memoryCitationsMode: params.config?.memory?.citations,
       previousSessionId: params.previousSessionId,
       sessionCreatedAt: params.sessionCreatedAt,
+      recentSessionHistory: params.recentSessionHistory,
     });
     const systemPromptReport = buildSystemPromptReport({
       source: "run",

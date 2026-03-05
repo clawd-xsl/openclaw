@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { ensureSessionSummariesSchema } from "../sessions/session-summary-schema.js";
 
 export function ensureMemoryIndexSchema(params: {
   db: DatabaseSync;
@@ -79,6 +80,12 @@ export function ensureMemoryIndexSchema(params: {
   params.db.exec(`CREATE INDEX IF NOT EXISTS idx_chunks_path ON chunks(path);`);
   params.db.exec(`CREATE INDEX IF NOT EXISTS idx_chunks_source ON chunks(source);`);
 
+  // Session summaries table (colocated with memory index)
+  try {
+    ensureSessionSummariesSchema(params.db);
+  } catch {
+    /* best-effort */
+  }
   return { ftsAvailable, ...(ftsError ? { ftsError } : {}) };
 }
 

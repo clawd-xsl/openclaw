@@ -32,6 +32,7 @@ import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { normalizeMainKey } from "../../routing/session-key.js";
 import { parseAgentSessionKey } from "../../sessions/session-key-utils.js";
+import { generateSessionSummary } from "../../sessions/session-summary.js";
 import { normalizeSessionDeliveryFields } from "../../utils/delivery-context.js";
 import {
   INTERNAL_MESSAGE_CHANNEL,
@@ -499,13 +500,38 @@ export async function initSessionState(params: {
   // Only archive when actually starting a new session — otherwise we'd rename
   // the active session file on every message (bug 2026-03-04).
   if (isNewSession && previousSessionEntry?.sessionId) {
-    archiveSessionTranscripts({
+    // Archive first, then use archived path for summary generation
+    const archivedPaths = archiveSessionTranscripts({
       sessionId: previousSessionEntry.sessionId,
       storePath,
       sessionFile: previousSessionEntry.sessionFile,
       agentId,
       reason: "reset",
     });
+
+    // Fire-and-forget: generate session summary asynchronously from archived file
+    const summaryFilePath = archivedPaths[0] ?? previousSessionEntry.sessionFile;
+    if (summaryFilePath) {
+      void generateSessionSummary({
+        sessionFilePath: summaryFilePath,
+        sessionId: previousSessionEntry.sessionId,
+        previousSessionId: previousSessionEntry.previousSessionId,
+        sessionKey,
+        agentId,
+        config: cfg,
+        createdAt: previousSessionEntry.createdAt ?? Date.now(),
+        endedAt: Date.now(),
+        model:
+          previousSessionEntry.modelOverride ??
+          (typeof cfg?.agents?.defaults?.model === "string"
+            ? cfg.agents.defaults.model
+            : (cfg?.agents?.defaults?.model as unknown as { primary?: string })?.primary),
+      }).catch((err) => {
+        log.error(
+          `session summary generation failed for ${previousSessionEntry.sessionId}: ${err instanceof Error ? err.stack : err}`,
+        );
+      });
+    }
   }
 
   const sessionCtx: TemplateContext = {

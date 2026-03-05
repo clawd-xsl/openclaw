@@ -474,6 +474,7 @@ export const FIELD_LABELS: Record<string, string> = {
   "session.typingMode": "Session Typing Mode",
   "session.parentForkMaxTokens": "Session Parent Fork Max Tokens",
   "session.mainKey": "Session Main Key",
+  "session.summaryModel": "Session Summary Model",
   "session.sendPolicy": "Session Send Policy",
   "session.sendPolicy.default": "Session Send Policy Default Action",
   "session.sendPolicy.rules": "Session Send Policy Rules",

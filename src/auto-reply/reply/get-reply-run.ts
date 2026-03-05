@@ -19,6 +19,10 @@ import {
 import { logVerbose } from "../../globals.js";
 import { clearCommandLane, getQueueSize } from "../../process/command-queue.js";
 import { normalizeMainKey } from "../../routing/session-key.js";
+import {
+  loadRecentSummaries,
+  buildSessionHistorySection,
+} from "../../sessions/session-summary-loader.js";
 import { isReasoningTagProvider } from "../../utils/provider-utils.js";
 import { hasControlCommand } from "../command-detection.js";
 import { buildInboundMediaNote } from "../media-note.js";
@@ -469,6 +473,21 @@ export async function runPreparedReply(
     isNewSession,
   });
   const authProfileIdSource = sessionEntry?.authProfileOverrideSource;
+  // Load recent session summaries for system prompt injection
+  let recentSessionHistory: string | undefined;
+  try {
+    const summaries = loadRecentSummaries({
+      sessionKey,
+      agentId,
+      days: 7,
+    });
+    if (summaries.length > 0) {
+      recentSessionHistory = buildSessionHistorySection(summaries);
+    }
+  } catch {
+    // best-effort
+  }
+
   const followupRun = {
     prompt: queuedBody,
     messageId: sessionCtx.MessageSidFull ?? sessionCtx.MessageSid,
@@ -523,6 +542,7 @@ export async function runPreparedReply(
       ...(isReasoningTagProvider(provider) ? { enforceFinalTag: true } : {}),
       previousSessionId: sessionEntry?.previousSessionId,
       sessionCreatedAt: sessionEntry?.createdAt,
+      recentSessionHistory: recentSessionHistory ?? undefined,
     },
   };
 

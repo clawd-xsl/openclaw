@@ -34,8 +34,14 @@ export type AgentConfig = {
   tools?: AgentToolsConfig;
 };
 
+export type AgentSessionConfig = {
+  /** Model used for session summary generation (provider/model). */
+  summaryModel?: string;
+};
+
 export type AgentsConfig = {
   defaults?: AgentDefaultsConfig;
+  session?: AgentSessionConfig;
   list?: AgentConfig[];
 };
 
