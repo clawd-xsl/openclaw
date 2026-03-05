@@ -80,6 +80,7 @@ export type FollowupRun = {
     extraSystemPrompt?: string;
     enforceFinalTag?: boolean;
     previousSessionId?: string;
+    recentSessionHistory?: string;
     sessionCreatedAt?: number;
   };
 };
