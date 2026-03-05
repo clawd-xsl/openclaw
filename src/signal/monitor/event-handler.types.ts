@@ -35,6 +35,11 @@ export type SignalDataMessage = {
   } | null;
   quote?: { text?: string | null } | null;
   reaction?: SignalReactionMessage | null;
+  sticker?: {
+    packId?: string | null;
+    stickerId?: number | null;
+    packKey?: string | null;
+  } | null;
 };
 
 export type SignalReactionMessage = {

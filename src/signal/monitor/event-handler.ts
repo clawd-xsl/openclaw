@@ -649,6 +649,13 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
       placeholder = "<media:attachment>";
     }
 
+    // Sticker takes priority over attachment placeholder
+    if (dataMessage.sticker) {
+      const packId = dataMessage.sticker.packId ?? "unknown";
+      const sid = dataMessage.sticker.stickerId ?? 0;
+      placeholder = `[sticker: ${packId}:${String(sid).padStart(2, "0")}]`;
+    }
+
     const bodyText = messageText || placeholder || dataMessage.quote?.text?.trim() || "";
     if (!bodyText) {
       return;

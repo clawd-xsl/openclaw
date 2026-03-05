@@ -2,6 +2,7 @@ import { createActionGate, jsonResult, readStringParam } from "../../../agents/t
 import { listEnabledSignalAccounts, resolveSignalAccount } from "../../../signal/accounts.js";
 import { resolveSignalReactionLevel } from "../../../signal/reaction-level.js";
 import { sendReactionSignal, removeReactionSignal } from "../../../signal/send-reactions.js";
+import { sendStickerSignal } from "../../../signal/send.js";
 import type { ChannelMessageActionAdapter, ChannelMessageActionName } from "../types.js";
 
 const providerId = "signal";
@@ -85,6 +86,7 @@ export const signalMessageActions: ChannelMessageActionAdapter = {
     if (reactionsEnabled) {
       actions.add("react");
     }
+    actions.add("sticker");
 
     return Array.from(actions);
   },
@@ -171,6 +173,34 @@ export const signalMessageActions: ChannelMessageActionAdapter = {
         targetAuthor,
         targetAuthorUuid,
       });
+    }
+
+    if (action === "sticker") {
+      const recipientRaw =
+        readStringParam(params, "recipient") ??
+        readStringParam(params, "to", {
+          required: true,
+          label: "recipient",
+        });
+      const target = resolveSignalReactionTarget(recipientRaw);
+      if (!target.recipient && !target.groupId) {
+        throw new Error("recipient or group required");
+      }
+
+      const stickerIds = params.stickerId;
+      if (!Array.isArray(stickerIds) || stickerIds.length === 0) {
+        throw new Error("stickerId required (e.g. ['packId:stickerId'])");
+      }
+
+      const stickerSpec = String(stickerIds[0]);
+      const toTarget = target.groupId
+        ? `signal:group:${target.groupId}`
+        : `signal:${target.recipient}`;
+
+      const result = await sendStickerSignal(toTarget, stickerSpec, {
+        accountId: accountId ?? undefined,
+      });
+      return jsonResult({ ok: true, messageId: result.messageId });
     }
 
     throw new Error(`Action ${action} not supported for ${providerId}.`);

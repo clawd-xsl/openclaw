@@ -217,6 +217,47 @@ export async function sendTypingSignal(
   return true;
 }
 
+export async function sendStickerSignal(
+  to: string,
+  stickerSpec: string,
+  opts: SignalRpcOpts = {},
+): Promise<SignalSendResult> {
+  const cfg = loadConfig();
+  const accountInfo = resolveSignalAccount({
+    cfg,
+    accountId: opts.accountId,
+  });
+  const { baseUrl, account } = resolveSignalRpcContext(opts, accountInfo);
+  const target = parseTarget(to);
+
+  const params: Record<string, unknown> = {
+    sticker: stickerSpec,
+  };
+  if (account) {
+    params.account = account;
+  }
+
+  const targetParams = buildTargetParams(target, {
+    recipient: true,
+    group: true,
+    username: true,
+  });
+  if (!targetParams) {
+    throw new Error("Signal recipient is required");
+  }
+  Object.assign(params, targetParams);
+
+  const result = await signalRpcRequest<{ timestamp?: number }>("send", params, {
+    baseUrl,
+    timeoutMs: opts.timeoutMs,
+  });
+  const timestamp = result?.timestamp;
+  return {
+    messageId: timestamp ? String(timestamp) : "unknown",
+    timestamp,
+  };
+}
+
 export async function sendReadReceiptSignal(
   to: string,
   targetTimestamp: number,
