@@ -183,7 +183,9 @@ import {
   type SessionsResolveParams,
   SessionsResolveParamsSchema,
   type SessionsUsageParams,
+  type SessionsSummariesParams,
   SessionsUsageParamsSchema,
+  SessionsSummariesParamsSchema,
   type ShutdownEvent,
   ShutdownEventSchema,
   type SkillsBinsParams,
@@ -303,6 +305,9 @@ export const validateSessionsCompactParams = ajv.compile<SessionsCompactParams>(
 );
 export const validateSessionsUsageParams =
   ajv.compile<SessionsUsageParams>(SessionsUsageParamsSchema);
+export const validateSessionsSummariesParams = ajv.compile<SessionsSummariesParams>(
+  SessionsSummariesParamsSchema,
+);
 export const validateConfigGetParams = ajv.compile<ConfigGetParams>(ConfigGetParamsSchema);
 export const validateConfigSetParams = ajv.compile<ConfigSetParams>(ConfigSetParamsSchema);
 export const validateConfigApplyParams = ajv.compile<ConfigApplyParams>(ConfigApplyParamsSchema);
@@ -452,6 +457,7 @@ export {
   SessionsDeleteParamsSchema,
   SessionsCompactParamsSchema,
   SessionsUsageParamsSchema,
+  SessionsSummariesParamsSchema,
   ConfigGetParamsSchema,
   ConfigSetParamsSchema,
   ConfigApplyParamsSchema,
@@ -601,6 +607,7 @@ export type {
   SessionsDeleteParams,
   SessionsCompactParams,
   SessionsUsageParams,
+  SessionsSummariesParams,
   CronJob,
   CronListParams,
   CronStatusParams,

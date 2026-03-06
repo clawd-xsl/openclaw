@@ -246,6 +246,16 @@ export class OpenClawApp extends LitElement {
   @state() sessionsIncludeGlobal = true;
   @state() sessionsIncludeUnknown = false;
 
+  @state() summariesLoading = false;
+  @state() summariesResult: import("./controllers/summaries.js").SummaryEntry[] | null = null;
+  @state() summariesError: string | null = null;
+  @state() summariesFilterKey = "*";
+  @state() summariesFilterQuery = "";
+  @state() summariesFilterFrom = "30d";
+  @state() summariesFilterTo = "now";
+  @state() summariesPage = 0;
+  @state() summariesPageSize = 20;
+
   @state() usageLoading = false;
   @state() usageResult: import("./types.js").SessionsUsageResult | null = null;
   @state() usageCostSummary: import("./types.js").CostUsageSummary | null = null;

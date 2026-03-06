@@ -108,6 +108,16 @@ export const SessionsCompactParamsSchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const SessionsSummariesParamsSchema = Type.Object(
+  {
+    from: Type.Optional(Type.String()),
+    to: Type.Optional(Type.String()),
+    sessionKey: Type.Optional(Type.String()),
+    limit: Type.Optional(Type.Integer({ minimum: 1 })),
+    query: Type.Optional(Type.String()),
+  },
+  { additionalProperties: false },
+);
 export const SessionsUsageParamsSchema = Type.Object(
   {
     /** Specific session key to analyze; if omitted returns all sessions. */
