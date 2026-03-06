@@ -9,7 +9,11 @@ import { resolveSessionTranscriptsDirForAgent } from "../config/sessions/paths.j
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { requireNodeSqlite } from "../memory/sqlite.js";
 import { ensureSessionSummariesSchema } from "../sessions/session-summary-schema.js";
-import { extractFullTranscript, generateSessionSummary } from "../sessions/session-summary.js";
+import {
+  extractFullTranscript,
+  extractSessionTimestamps,
+  generateSessionSummary,
+} from "../sessions/session-summary.js";
 
 const log = createSubsystemLogger("summary-cli");
 
@@ -210,14 +214,15 @@ export function registerSummaryCli(program: Command): void {
             console.log(
               `${progress} Processing ${entry.sessionId} (${transcript.messageCount} msgs, ${transcript.totalChars} chars)...`,
             );
+            const timestamps = extractSessionTimestamps(entry.filePath);
             await generateSessionSummary({
               sessionFilePath: entry.filePath,
               sessionId: entry.sessionId,
               sessionKey,
               agentId,
               config,
-              createdAt: transcript.sessionMeta?.createdAt ?? 0,
-              endedAt: Date.now(),
+              createdAt: timestamps.createdAt,
+              endedAt: timestamps.endedAt,
             });
             successCount++;
             console.log(`${progress} ✓ ${entry.sessionId} → summary saved`);

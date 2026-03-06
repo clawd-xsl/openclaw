@@ -13,6 +13,61 @@ import { ensureSessionSummariesSchema } from "./session-summary-schema.js";
 
 const log = createSubsystemLogger("session-summary");
 
+/**
+ * Extract actual start/end timestamps from a JSONL session file.
+ * Returns unix ms timestamps derived from first and last entry timestamps.
+ */
+export function extractSessionTimestamps(sessionFilePath: string): {
+  createdAt: number;
+  endedAt: number;
+} {
+  if (!fs.existsSync(sessionFilePath)) {
+    return { createdAt: 0, endedAt: Date.now() };
+  }
+  const raw = fs.readFileSync(sessionFilePath, "utf-8");
+  const lines = raw.split("\n").filter(Boolean);
+
+  let firstTimestamp: number | null = null;
+  let lastTimestamp: number | null = null;
+
+  for (const line of lines) {
+    let entry: Record<string, unknown>;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+
+    const ts = entry.timestamp;
+    if (!ts) {
+      continue;
+    }
+
+    let ms: number;
+    if (typeof ts === "number") {
+      ms = ts;
+    } else if (typeof ts === "string") {
+      ms = new Date(ts).getTime();
+    } else {
+      continue;
+    }
+
+    if (isNaN(ms) || ms <= 0) {
+      continue;
+    }
+
+    if (firstTimestamp === null) {
+      firstTimestamp = ms;
+    }
+    lastTimestamp = ms;
+  }
+
+  return {
+    createdAt: firstTimestamp ?? 0,
+    endedAt: lastTimestamp ?? Date.now(),
+  };
+}
+
 const SUMMARY_SYSTEM_PROMPT = `You are summarizing a conversation session between a user and their AI assistant.
 
 Write a summary that would help the assistant quickly catch up if they lost all memory of this session. Cover:
