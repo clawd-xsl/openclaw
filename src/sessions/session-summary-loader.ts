@@ -17,8 +17,9 @@ export function loadRecentSummaries(params: {
   sessionKey: string;
   agentId: string;
   days?: number;
+  maxChars?: number;
 }): SessionSummaryRecord[] {
-  const days = params.days ?? 7;
+  const days = params.days ?? 5;
   const dbPath = resolveMemoryDbPath(params.agentId);
   if (!fs.existsSync(dbPath)) {
     return [];
@@ -40,19 +41,20 @@ export function loadRecentSummaries(params: {
       cutoff,
     ) as unknown as SessionSummaryRecord[];
 
-    // Cap total injected summary size to avoid bloating the system prompt.
-    const MAX_SUMMARY_CHARS = 8000;
-    const capped: SessionSummaryRecord[] = [];
-    let totalChars = 0;
-    for (const row of rows) {
-      const len = row.summary.length;
-      if (totalChars + len > MAX_SUMMARY_CHARS && capped.length > 0) {
-        break;
+    if (params.maxChars != null) {
+      const capped: SessionSummaryRecord[] = [];
+      let totalChars = 0;
+      for (const row of rows) {
+        const len = row.summary.length;
+        if (totalChars + len > params.maxChars && capped.length > 0) {
+          break;
+        }
+        capped.push(row);
+        totalChars += len;
       }
-      capped.push(row);
-      totalChars += len;
+      return capped;
     }
-    return capped;
+    return rows;
   } catch {
     return [];
   } finally {

@@ -479,7 +479,10 @@ export async function runPreparedReply(
     const summaries = loadRecentSummaries({
       sessionKey,
       agentId,
-      days: 7,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      days: (cfg as any)?.agents?.session?.summaryDays ?? 5,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      maxChars: (cfg as any)?.agents?.session?.summaryMaxChars,
     });
     if (summaries.length > 0) {
       recentSessionHistory = buildSessionHistorySection(summaries);

@@ -37,6 +37,10 @@ export type AgentConfig = {
 export type AgentSessionConfig = {
   /** Model used for session summary generation (provider/model). */
   summaryModel?: string;
+  /** Number of days of session summaries to inject into system prompt (default: 5). */
+  summaryDays?: number;
+  /** Max chars of session summaries to inject. If set, truncates after this limit. */
+  summaryMaxChars?: number;
 };
 
 export type AgentsConfig = {
