@@ -69,6 +69,7 @@ export function querySummaries(params: {
   from: number;
   to: number;
   limit?: number;
+  query?: string;
 }): SessionSummaryRecord[] {
   const dbPath = resolveMemoryDbPath(params.agentId);
   if (!fs.existsSync(dbPath)) {
@@ -79,34 +80,48 @@ export function querySummaries(params: {
   const db = new DatabaseSync(dbPath, { readOnly: true });
   try {
     const limit = params.limit ?? 20;
+
+    // Build keyword conditions for query parameter
+    const keywords = params.query
+      ? params.query
+          .trim()
+          .split(/\s+/)
+          .filter((k) => k.length > 0)
+      : [];
+
+    // Build WHERE clause parts and bindings
+    const conditions: string[] = [];
+    const bindings: (string | number)[] = [];
+
     if (params.sessionKey) {
       const useLike = params.sessionKey.includes("%");
-      const stmt = db.prepare(`
-        SELECT * FROM session_summaries
-        WHERE session_key ${useLike ? "LIKE" : "="} ? AND ended_at >= ? AND ended_at <= ?
-        ORDER BY ended_at DESC
-        LIMIT ?
-      `);
-      return stmt.all(
-        params.sessionKey,
-        params.from,
-        params.to,
-        limit,
-      ) as unknown as SessionSummaryRecord[];
+      conditions.push(`session_key ${useLike ? "LIKE" : "="} ?`);
+      bindings.push(params.sessionKey);
     } else {
-      const stmt = db.prepare(`
-        SELECT * FROM session_summaries
-        WHERE agent_id = ? AND ended_at >= ? AND ended_at <= ?
-        ORDER BY ended_at DESC
-        LIMIT ?
-      `);
-      return stmt.all(
-        params.agentId,
-        params.from,
-        params.to,
-        limit,
-      ) as unknown as SessionSummaryRecord[];
+      conditions.push("agent_id = ?");
+      bindings.push(params.agentId);
     }
+
+    conditions.push("ended_at >= ?");
+    bindings.push(params.from);
+    conditions.push("ended_at <= ?");
+    bindings.push(params.to);
+
+    for (const keyword of keywords) {
+      conditions.push("summary LIKE ? COLLATE NOCASE");
+      bindings.push(`%${keyword}%`);
+    }
+
+    const sql = `
+      SELECT * FROM session_summaries
+      WHERE ${conditions.join(" AND ")}
+      ORDER BY ended_at DESC
+      LIMIT ?
+    `;
+    bindings.push(limit);
+
+    const stmt = db.prepare(sql);
+    return stmt.all(...bindings) as unknown as SessionSummaryRecord[];
   } catch {
     return [];
   } finally {

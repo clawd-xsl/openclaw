@@ -27,6 +27,12 @@ const SessionSummariesSchema = Type.Object({
       description: "Max results. Default 20.",
     }),
   ),
+  query: Type.Optional(
+    Type.String({
+      description:
+        "Keyword search on summary text. Space-separated keywords use AND logic (all must match). Case-insensitive.",
+    }),
+  ),
 });
 
 function parseTimeParam(value: string | undefined, defaultValue: string): number {
@@ -71,11 +77,12 @@ export function createSessionSummariesTool(opts?: {
       " Each result includes session metadata (session_id, session_key, message_count, " +
       "start/end timestamps) alongside the summary text. " +
       "sessionKey defaults to matching any session containing 'main' (LIKE %main%). " +
-      "Use sessionKey='*' for all sessions across all keys.",
+      "Use sessionKey='*' for all sessions across all keys. " +
+      "Use query for keyword search on summary text (space-separated, AND logic, case-insensitive).",
     parameters: SessionSummariesSchema,
     execute: async (
       _toolCallId: string,
-      args: { from?: string; to?: string; sessionKey?: string; limit?: number },
+      args: { from?: string; to?: string; sessionKey?: string; limit?: number; query?: string },
     ) => {
       const from = parseTimeParam(args.from, "7d");
       const to = parseTimeParam(args.to, "now");
@@ -88,6 +95,7 @@ export function createSessionSummariesTool(opts?: {
         from,
         to,
         limit,
+        query: args.query,
       });
 
       if (results.length === 0) {
