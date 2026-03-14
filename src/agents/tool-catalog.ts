@@ -170,6 +170,14 @@ const CORE_TOOL_DEFINITIONS: CoreToolDefinition[] = [
     includeInOpenClawGroup: true,
   },
   {
+    id: "session_summaries",
+    label: "session_summaries",
+    description: "Query past session summaries",
+    sectionId: "sessions",
+    profiles: [],
+    includeInOpenClawGroup: true,
+  },
+  {
     id: "browser",
     label: "browser",
     description: "Control web browser",

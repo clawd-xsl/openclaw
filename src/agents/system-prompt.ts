@@ -235,6 +235,7 @@ export function buildAgentSystemPrompt(params: {
   memoryCitationsMode?: MemoryCitationsMode;
   previousSessionId?: string;
   sessionCreatedAt?: number;
+  recentSessionHistory?: string;
 }) {
   const acpEnabled = params.acpEnabled !== false;
   const sandboxedRuntime = params.sandboxInfo?.enabled === true;
@@ -268,6 +269,7 @@ export function buildAgentSystemPrompt(params: {
       ? 'Spawn an isolated sub-agent or ACP coding session (runtime="acp" requires `agentId` unless `acp.defaultAgent` is configured; ACP harness ids follow acp.allowedAgents, not agents_list)'
       : "Spawn an isolated sub-agent session",
     subagents: "List, steer, or kill sub-agent runs for this requester session",
+    session_summaries: "Query past session summaries by time range",
     session_status:
       "Show a /status-equivalent status card (usage + time + Reasoning/Verbose/Elevated); use for model-use questions (📊 session_status); optional per-session model override",
     image: "Analyze an image with the configured image model",
@@ -297,6 +299,7 @@ export function buildAgentSystemPrompt(params: {
     "sessions_send",
     "subagents",
     "session_status",
+    "session_summaries",
     "image",
   ];
 
@@ -613,6 +616,11 @@ export function buildAgentSystemPrompt(params: {
   }
   if (reasoningHint) {
     lines.push("## Reasoning Format", reasoningHint, "");
+  }
+
+  // Inject recent session history summaries
+  if (params.recentSessionHistory) {
+    lines.push(params.recentSessionHistory, "");
   }
 
   const contextFiles = params.contextFiles ?? [];

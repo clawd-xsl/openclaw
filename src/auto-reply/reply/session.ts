@@ -35,6 +35,7 @@ import { deliverSessionMaintenanceWarning } from "../../infra/session-maintenanc
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { normalizeMainKey } from "../../routing/session-key.js";
+import { generateSessionSummary } from "../../sessions/session-summary.js";
 import { normalizeSessionDeliveryFields } from "../../utils/delivery-context.js";
 import { resolveCommandAuthorization } from "../command-auth.js";
 import type { MsgContext, TemplateContext } from "../templating.js";
@@ -547,13 +548,38 @@ export async function initSessionState(params: {
   // Archive old transcript so it doesn't accumulate on disk (#14869).
   // Only archive when actually starting a new session.
   if (isNewSession && previousSessionEntry?.sessionId) {
-    archiveSessionTranscripts({
+    // Archive first, then use archived path for summary generation
+    const archivedPaths = archiveSessionTranscripts({
       sessionId: previousSessionEntry.sessionId,
       storePath,
       sessionFile: previousSessionEntry.sessionFile,
       agentId,
       reason: "reset",
     });
+
+    // Fire-and-forget: generate session summary asynchronously from archived file
+    const summaryFilePath = archivedPaths[0] ?? previousSessionEntry.sessionFile;
+    if (summaryFilePath) {
+      void generateSessionSummary({
+        sessionFilePath: summaryFilePath,
+        sessionId: previousSessionEntry.sessionId,
+        previousSessionId: previousSessionEntry.previousSessionId,
+        sessionKey,
+        agentId,
+        config: cfg,
+        createdAt: previousSessionEntry.createdAt ?? Date.now(),
+        endedAt: Date.now(),
+        model:
+          previousSessionEntry.modelOverride ??
+          (typeof cfg?.agents?.defaults?.model === "string"
+            ? cfg.agents.defaults.model
+            : (cfg?.agents?.defaults?.model as unknown as { primary?: string })?.primary),
+      }).catch((err: unknown) => {
+        log.error(
+          `session summary generation failed for ${previousSessionEntry.sessionId}: ${err instanceof Error ? err.stack : err}`,
+        );
+      });
+    }
   }
 
   const sessionCtx: TemplateContext = {

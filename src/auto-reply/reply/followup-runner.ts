@@ -200,6 +200,7 @@ export function createFollowupRunner(params: {
               enforceFinalTag: queued.run.enforceFinalTag,
               previousSessionId: queued.run.previousSessionId,
               sessionCreatedAt: queued.run.sessionCreatedAt,
+              recentSessionHistory: queued.run.recentSessionHistory,
               provider,
               model,
               ...authProfile,

@@ -540,6 +540,7 @@ export const FIELD_LABELS: Record<string, string> = {
   "session.typingIntervalSeconds": "Session Typing Interval (seconds)",
   "session.typingMode": "Session Typing Mode",
   "session.parentForkMaxTokens": "Session Parent Fork Max Tokens",
+  "session.summaryModel": "Session Summary Model",
   "session.mainKey": "Session Main Key",
   "session.sendPolicy": "Session Send Policy",
   "session.sendPolicy.default": "Session Send Policy Default Action",

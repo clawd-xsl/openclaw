@@ -299,6 +299,15 @@ const entries: SubCliEntry[] = [
     },
   },
   {
+    name: "summary",
+    description: "Manage session summaries",
+    hasSubcommands: true,
+    register: async (program) => {
+      const mod = await import("../summary-cli.js");
+      mod.registerSummaryCli(program);
+    },
+  },
+  {
     name: "completion",
     description: "Generate shell completion script",
     hasSubcommands: false,

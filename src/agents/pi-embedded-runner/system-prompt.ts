@@ -55,6 +55,7 @@ export function buildEmbeddedSystemPrompt(params: {
   memoryCitationsMode?: MemoryCitationsMode;
   previousSessionId?: string;
   sessionCreatedAt?: number;
+  recentSessionHistory?: string;
 }): string {
   return buildAgentSystemPrompt({
     workspaceDir: params.workspaceDir,
@@ -87,6 +88,7 @@ export function buildEmbeddedSystemPrompt(params: {
     memoryCitationsMode: params.memoryCitationsMode,
     previousSessionId: params.previousSessionId,
     sessionCreatedAt: params.sessionCreatedAt,
+    recentSessionHistory: params.recentSessionHistory,
   });
 }
 

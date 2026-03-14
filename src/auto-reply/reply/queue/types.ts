@@ -83,6 +83,7 @@ export type FollowupRun = {
     enforceFinalTag?: boolean;
     previousSessionId?: string;
     sessionCreatedAt?: number;
+    recentSessionHistory?: string;
   };
 };
 
