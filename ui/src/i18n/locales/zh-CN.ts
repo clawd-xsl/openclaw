@@ -378,4 +378,7 @@ export const zh_CN: TranslationMap = {
       nameRequiredShort: "名称为必填。",
     },
   },
+  summaries: "会话摘要",
+  summariesEmpty: "没有找到摘要",
+  summariesSearch: "搜索摘要...",
 };

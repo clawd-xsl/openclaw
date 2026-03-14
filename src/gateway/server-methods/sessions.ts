@@ -9,10 +9,12 @@ import {
 } from "../../config/sessions.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
 import { GATEWAY_CLIENT_IDS } from "../protocol/client-info.js";
+import { querySummaries } from "../../sessions/session-summary-loader.js";
 import {
   ErrorCodes,
   errorShape,
   validateSessionsCompactParams,
+  validateSessionsSummariesParams,
   validateSessionsDeleteParams,
   validateSessionsListParams,
   validateSessionsPatchParams,
@@ -443,5 +445,65 @@ export const sessionsHandlers: GatewayRequestHandlers = {
       },
       undefined,
     );
+  },
+
+  "sessions.summaries": ({ params, respond }) => {
+    if (
+      !assertValidParams(params, validateSessionsSummariesParams, "sessions.summaries", respond)
+    ) {
+      return;
+    }
+    const p = params;
+    const cfg = loadConfig();
+    const agentId = resolveDefaultAgentId(cfg);
+
+    const fromStr = (typeof p.from === "string" ? p.from : "7d").trim();
+    const toStr = (typeof p.to === "string" ? p.to : "now").trim();
+
+    function parseTime(value: string, fallbackMs: number): number {
+      if (value === "now") {
+        return Date.now();
+      }
+      const relMatch = value.match(/^(\d+)d$/);
+      if (relMatch) {
+        return Date.now() - parseInt(relMatch[1], 10) * 86400000;
+      }
+      const ts = new Date(value).getTime();
+      return Number.isNaN(ts) ? fallbackMs : ts;
+    }
+
+    const from = parseTime(fromStr, Date.now() - 7 * 86400000);
+    const to = parseTime(toStr, Date.now());
+    const sessionKey =
+      p.sessionKey === "*"
+        ? undefined
+        : typeof p.sessionKey === "string"
+          ? p.sessionKey
+          : undefined;
+    const limit = typeof p.limit === "number" ? p.limit : 50;
+    const query = typeof p.query === "string" ? p.query : undefined;
+
+    const rows = querySummaries({ agentId, sessionKey, from, to, limit, query });
+
+    const formatted = rows.map((r) => {
+      let summary: unknown;
+      try {
+        summary = JSON.parse(r.summary);
+      } catch {
+        summary = r.summary;
+      }
+      return {
+        sessionId: r.session_id,
+        sessionKey: r.session_key,
+        createdAt: r.created_at,
+        endedAt: r.ended_at,
+        messageCount: r.message_count,
+        model: r.model,
+        summaryModel: r.summary_model,
+        summary,
+      };
+    });
+
+    respond(true, { summaries: formatted }, undefined);
   },
 };

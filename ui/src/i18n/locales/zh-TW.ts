@@ -173,4 +173,7 @@ export const zh_TW: TranslationMap = {
     de: "Deutsch (德語)",
     es: "Español (西班牙語)",
   },
+  summaries: "對話摘要",
+  summariesEmpty: "沒有找到摘要",
+  summariesSearch: "搜尋摘要...",
 };

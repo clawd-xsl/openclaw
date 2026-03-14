@@ -176,4 +176,7 @@ export const pt_BR: TranslationMap = {
     de: "Deutsch (Alemão)",
     es: "Español (Espanhol)",
   },
+  summaries: "Resumos de Sessão",
+  summariesEmpty: "Nenhum resumo encontrado",
+  summariesSearch: "Pesquisar resumos...",
 };

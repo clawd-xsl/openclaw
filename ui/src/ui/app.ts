@@ -282,6 +282,15 @@ export class OpenClawApp extends LitElement {
   @state() sessionsFilterLimit = "120";
   @state() sessionsIncludeGlobal = true;
   @state() sessionsIncludeUnknown = false;
+
+  @state() summariesLoading = false;
+  @state() summariesResult: import("./controllers/summaries.js").SummaryEntry[] | null = null;
+  @state() summariesError: string | null = null;
+  @state() summariesFilterKey = "*";
+  @state() summariesFilterQuery = "";
+  @state() summariesFilterFrom = "30d";
+  @state() summariesFilterTo = "now";
+  @state() summariesPage = 1;
   @state() sessionsHideCron = true;
   @state() sessionsSearchQuery = "";
   @state() sessionsSortColumn: "key" | "kind" | "updated" | "tokens" = "updated";

@@ -76,6 +76,7 @@ import {
   updateSkillEnabled,
 } from "./controllers/skills.ts";
 import "./components/dashboard-header.ts";
+import { loadSummaries } from "./controllers/summaries.ts";
 import { buildExternalLinkRel, EXTERNAL_LINK_TARGET } from "./external-link.ts";
 import { icons } from "./icons.ts";
 import { normalizeBasePath, TAB_GROUPS, subtitleForTab, titleForTab } from "./navigation.ts";
@@ -758,6 +759,31 @@ export function renderApp(state: AppViewState) {
                   onDelete: (key) => deleteSessionAndRefresh(state, key),
                 }),
               )
+            : nothing
+        }
+
+        ${
+          state.tab === "summaries"
+            ? renderSummaries({
+                state: state as unknown as import("./controllers/summaries.ts").SummariesState,
+                loading: state.summariesLoading,
+                result: state.summariesResult,
+                error: state.summariesError,
+                filterKey: state.summariesFilterKey,
+                filterQuery: state.summariesFilterQuery,
+                filterFrom: state.summariesFilterFrom,
+                filterTo: state.summariesFilterTo,
+                onFiltersChange: (next) => {
+                  state.summariesFilterKey = next.filterKey;
+                  state.summariesFilterQuery = next.filterQuery;
+                  state.summariesFilterFrom = next.filterFrom;
+                  state.summariesFilterTo = next.filterTo;
+                },
+                onRefresh: () => loadSummaries(state),
+                onPageChange: (page) => {
+                  state.summariesPage = page;
+                },
+              })
             : nothing
         }
 
