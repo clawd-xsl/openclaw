@@ -445,7 +445,10 @@ export async function runPreparedReply(
   });
   const sessionLaneKey = resolveEmbeddedSessionLane(sessionKey ?? sessionIdFinal);
   const laneSize = getQueueSize(sessionLaneKey);
-  if (resolvedQueue.mode === "interrupt" && laneSize > 0) {
+  if (
+    resolvedQueue.mode === "interrupt" &&
+    (laneSize > 0 || isEmbeddedPiRunActive(sessionIdFinal))
+  ) {
     const cleared = clearCommandLane(sessionLaneKey);
     const aborted = abortEmbeddedPiRun(sessionIdFinal);
     logVerbose(`Interrupting ${sessionLaneKey} (cleared ${cleared}, aborted=${aborted})`);
