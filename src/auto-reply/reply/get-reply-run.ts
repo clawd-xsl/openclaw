@@ -7,6 +7,7 @@ import {
   isEmbeddedPiRunActive,
   isEmbeddedPiRunStreaming,
   resolveEmbeddedSessionLane,
+  waitForEmbeddedPiRunEnd,
 } from "../../agents/pi-embedded.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import {
@@ -42,7 +43,7 @@ import { buildGroupChatContext, buildGroupIntro } from "./groups.js";
 import { buildInboundMetaSystemPrompt, buildInboundUserContextPrefix } from "./inbound-meta.js";
 import type { createModelSelectionState } from "./model-selection.js";
 import { resolveOriginMessageProvider } from "./origin-routing.js";
-import { resolveQueueSettings } from "./queue.js";
+import { clearFollowupQueue, resolveQueueSettings } from "./queue.js";
 import { routeReply } from "./route-reply.js";
 import { buildBareSessionResetPrompt } from "./session-reset-prompt.js";
 import { drainFormattedSystemEvents, ensureSkillSnapshot } from "./session-updates.js";
@@ -451,7 +452,15 @@ export async function runPreparedReply(
   ) {
     const cleared = clearCommandLane(sessionLaneKey);
     const aborted = abortEmbeddedPiRun(sessionIdFinal);
-    logVerbose(`Interrupting ${sessionLaneKey} (cleared ${cleared}, aborted=${aborted})`);
+    const qKey = sessionKey ?? sessionIdFinal;
+    const followupCleared = clearFollowupQueue(qKey);
+    logVerbose(
+      `Interrupting ${sessionLaneKey} (cleared ${cleared}, aborted=${aborted}, followups=${followupCleared})`,
+    );
+    // Wait for the aborted run to fully complete before starting the new one.
+    if (aborted) {
+      await waitForEmbeddedPiRunEnd(sessionIdFinal, 10_000);
+    }
   }
   const queueKey = sessionKey ?? sessionIdFinal;
   const isActive = isEmbeddedPiRunActive(sessionIdFinal);
