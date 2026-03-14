@@ -233,6 +233,8 @@ export function buildAgentSystemPrompt(params: {
     channel: string;
   };
   memoryCitationsMode?: MemoryCitationsMode;
+  previousSessionId?: string;
+  sessionCreatedAt?: number;
 }) {
   const acpEnabled = params.acpEnabled !== false;
   const sandboxedRuntime = params.sandboxInfo?.enabled === true;
@@ -684,6 +686,18 @@ export function buildAgentSystemPrompt(params: {
     buildRuntimeLine(runtimeInfo, runtimeChannel, runtimeCapabilities, params.defaultThinkLevel),
     `Reasoning: ${reasoningLevel} (hidden unless on/stream). Toggle /reasoning; /status shows Reasoning when enabled.`,
   );
+
+  // Session continuity info (only present for main sessions after reset)
+  if (params.previousSessionId) {
+    const createdAtStr = params.sessionCreatedAt
+      ? new Date(params.sessionCreatedAt).toISOString()
+      : undefined;
+    const parts = [
+      `Previous session: ${params.previousSessionId}`,
+      createdAtStr ? `Session started: ${createdAtStr}` : "",
+    ].filter(Boolean);
+    lines.push(parts.join(" | "));
+  }
 
   return lines.filter(Boolean).join("\n");
 }

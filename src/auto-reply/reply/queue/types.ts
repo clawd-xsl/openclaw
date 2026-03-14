@@ -81,6 +81,8 @@ export type FollowupRun = {
     inputProvenance?: InputProvenance;
     extraSystemPrompt?: string;
     enforceFinalTag?: boolean;
+    previousSessionId?: string;
+    sessionCreatedAt?: number;
   };
 };
 

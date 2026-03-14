@@ -511,6 +511,7 @@ export async function initSessionState(params: {
   if (isNewSession) {
     sessionEntry.compactionCount = 0;
     sessionEntry.previousSessionId = previousSessionEntry?.sessionId;
+    sessionEntry.createdAt = Date.now();
     sessionEntry.memoryFlushCompactionCount = undefined;
     sessionEntry.memoryFlushAt = undefined;
     // Clear stale token metrics from previous session so /status doesn't

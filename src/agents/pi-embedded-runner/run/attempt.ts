@@ -1671,6 +1671,8 @@ export async function runEmbeddedAttempt(
       contextFiles,
       bootstrapTruncationWarningLines: bootstrapPromptWarning.lines,
       memoryCitationsMode: params.config?.memory?.citations,
+      previousSessionId: params.previousSessionId,
+      sessionCreatedAt: params.sessionCreatedAt,
     });
     const systemPromptReport = buildSystemPromptReport({
       source: "run",

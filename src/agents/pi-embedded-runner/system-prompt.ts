@@ -53,6 +53,8 @@ export function buildEmbeddedSystemPrompt(params: {
   contextFiles?: EmbeddedContextFile[];
   bootstrapTruncationWarningLines?: string[];
   memoryCitationsMode?: MemoryCitationsMode;
+  previousSessionId?: string;
+  sessionCreatedAt?: number;
 }): string {
   return buildAgentSystemPrompt({
     workspaceDir: params.workspaceDir,
@@ -83,6 +85,8 @@ export function buildEmbeddedSystemPrompt(params: {
     contextFiles: params.contextFiles,
     bootstrapTruncationWarningLines: params.bootstrapTruncationWarningLines,
     memoryCitationsMode: params.memoryCitationsMode,
+    previousSessionId: params.previousSessionId,
+    sessionCreatedAt: params.sessionCreatedAt,
   });
 }
 
