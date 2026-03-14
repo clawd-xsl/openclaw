@@ -544,7 +544,8 @@ export async function initSessionState(params: {
   );
 
   // Archive old transcript so it doesn't accumulate on disk (#14869).
-  if (previousSessionEntry?.sessionId) {
+  // Only archive when actually starting a new session.
+  if (isNewSession && previousSessionEntry?.sessionId) {
     archiveSessionTranscripts({
       sessionId: previousSessionEntry.sessionId,
       storePath,
