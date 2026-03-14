@@ -9,6 +9,7 @@ import {
   INTERNAL_MESSAGE_CHANNEL,
 } from "../../utils/message-channel.js";
 import { AGENT_LANE_NESTED } from "../lanes.js";
+import { reactivateSubagentRun } from "../subagent-registry.js";
 import type { AnyAgentTool } from "./common.js";
 import { jsonResult, readStringParam } from "./common.js";
 import {
@@ -286,6 +287,9 @@ export function createSessionsSendTool(opts?: {
           return start.result;
         }
         runId = start.runId;
+        // Best-effort: reactivate a completed run-mode subagent so lifecycle
+        // tracking (announce, sweeper deadline) covers the new run.
+        reactivateSubagentRun({ childSessionKey: resolvedKey, newRunId: runId });
         startA2AFlow(undefined, runId);
         return jsonResult({
           runId,
@@ -304,6 +308,10 @@ export function createSessionsSendTool(opts?: {
         return start.result;
       }
       runId = start.runId;
+
+      // Best-effort: reactivate a completed run-mode subagent so lifecycle
+      // tracking (announce, sweeper deadline) covers the new run.
+      reactivateSubagentRun({ childSessionKey: resolvedKey, newRunId: runId });
 
       let waitStatus: string | undefined;
       let waitError: string | undefined;
