@@ -510,6 +510,7 @@ export async function initSessionState(params: {
   sessionEntry = resolvedSessionFile.sessionEntry;
   if (isNewSession) {
     sessionEntry.compactionCount = 0;
+    sessionEntry.previousSessionId = previousSessionEntry?.sessionId;
     sessionEntry.memoryFlushCompactionCount = undefined;
     sessionEntry.memoryFlushAt = undefined;
     // Clear stale token metrics from previous session so /status doesn't
@@ -568,6 +569,7 @@ export async function initSessionState(params: {
     ),
     SessionId: sessionId,
     IsNewSession: isNewSession ? "true" : "false",
+    PreviousSessionId: previousSessionEntry?.sessionId,
   };
 
   // Run session plugin hooks (fire-and-forget)
