@@ -766,6 +766,7 @@ export abstract class MemoryManagerSyncOps {
       if (activePaths.has(stale.path)) {
         continue;
       }
+      await new Promise((resolve) => setImmediate(resolve));
       this.db.prepare(`DELETE FROM files WHERE path = ? AND source = ?`).run(stale.path, "memory");
       try {
         this.db
@@ -885,6 +886,7 @@ export abstract class MemoryManagerSyncOps {
       if (activePaths.has(stale.path)) {
         continue;
       }
+      await new Promise((resolve) => setImmediate(resolve));
       this.db
         .prepare(`DELETE FROM files WHERE path = ? AND source = ?`)
         .run(stale.path, "sessions");
