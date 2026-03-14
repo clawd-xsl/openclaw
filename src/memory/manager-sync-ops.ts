@@ -272,6 +272,7 @@ export abstract class MemoryManagerSyncOps {
     // Set it on every open so concurrent processes retry instead of
     // failing immediately with SQLITE_BUSY.
     db.exec("PRAGMA busy_timeout = 5000");
+    db.exec("PRAGMA journal_mode=WAL");
     return db;
   }
 
