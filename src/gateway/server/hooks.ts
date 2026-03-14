@@ -57,6 +57,7 @@ export function createGatewayHooksRequestHandler(params: {
       createdAtMs: now,
       updatedAtMs: now,
       schedule: { kind: "at", at: new Date(now).toISOString() },
+      deleteAfterRun: true,
       sessionTarget: "isolated",
       wakeMode: value.wakeMode,
       payload: {
