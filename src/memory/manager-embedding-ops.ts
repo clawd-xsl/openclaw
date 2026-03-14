@@ -865,61 +865,68 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
     const sample = embeddings.find((embedding) => embedding.length > 0);
     const vectorReady = sample ? await this.ensureVectorReady(sample.length) : false;
     const now = Date.now();
-    this.clearIndexedFileData(entry.path, options.source);
-    for (let i = 0; i < chunks.length; i++) {
-      const chunk = chunks[i];
-      const embedding = embeddings[i] ?? [];
-      const id = hashText(
-        `${options.source}:${entry.path}:${chunk.startLine}:${chunk.endLine}:${chunk.hash}:${this.provider.model}`,
-      );
-      this.db
-        .prepare(
-          `INSERT INTO chunks (id, path, source, start_line, end_line, hash, model, text, embedding, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(id) DO UPDATE SET
-             hash=excluded.hash,
-             model=excluded.model,
-             text=excluded.text,
-             embedding=excluded.embedding,
-             updated_at=excluded.updated_at`,
-        )
-        .run(
-          id,
-          entry.path,
-          options.source,
-          chunk.startLine,
-          chunk.endLine,
-          chunk.hash,
-          this.provider.model,
-          chunk.text,
-          JSON.stringify(embedding),
-          now,
+    this.db.exec("BEGIN");
+    try {
+      this.clearIndexedFileData(entry.path, options.source);
+      for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i];
+        const embedding = embeddings[i] ?? [];
+        const id = hashText(
+          `${options.source}:${entry.path}:${chunk.startLine}:${chunk.endLine}:${chunk.hash}:${this.provider.model}`,
         );
-      if (vectorReady && embedding.length > 0) {
-        try {
-          this.db.prepare(`DELETE FROM ${VECTOR_TABLE} WHERE id = ?`).run(id);
-        } catch {}
-        this.db
-          .prepare(`INSERT INTO ${VECTOR_TABLE} (id, embedding) VALUES (?, ?)`)
-          .run(id, vectorToBlob(embedding));
-      }
-      if (this.fts.enabled && this.fts.available) {
         this.db
           .prepare(
-            `INSERT INTO ${FTS_TABLE} (text, id, path, source, model, start_line, end_line)\n` +
-              ` VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO chunks (id, path, source, start_line, end_line, hash, model, text, embedding, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+               hash=excluded.hash,
+               model=excluded.model,
+               text=excluded.text,
+               embedding=excluded.embedding,
+               updated_at=excluded.updated_at`,
           )
           .run(
-            chunk.text,
             id,
             entry.path,
             options.source,
-            this.provider.model,
             chunk.startLine,
             chunk.endLine,
+            chunk.hash,
+            this.provider.model,
+            chunk.text,
+            JSON.stringify(embedding),
+            now,
           );
+        if (vectorReady && embedding.length > 0) {
+          try {
+            this.db.prepare(`DELETE FROM ${VECTOR_TABLE} WHERE id = ?`).run(id);
+          } catch {}
+          this.db
+            .prepare(`INSERT INTO ${VECTOR_TABLE} (id, embedding) VALUES (?, ?)`)
+            .run(id, vectorToBlob(embedding));
+        }
+        if (this.fts.enabled && this.fts.available) {
+          this.db
+            .prepare(
+              `INSERT INTO ${FTS_TABLE} (text, id, path, source, model, start_line, end_line)\n` +
+                ` VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            )
+            .run(
+              chunk.text,
+              id,
+              entry.path,
+              options.source,
+              this.provider.model,
+              chunk.startLine,
+              chunk.endLine,
+            );
+        }
       }
+      this.upsertFileRecord(entry, options.source);
+      this.db.exec("COMMIT");
+    } catch (e) {
+      this.db.exec("ROLLBACK");
+      throw e;
     }
-    this.upsertFileRecord(entry, options.source);
   }
 }
