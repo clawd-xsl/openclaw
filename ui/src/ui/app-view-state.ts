@@ -184,6 +184,15 @@ export type AppViewState = {
   sessionsFilterLimit: string;
   sessionsIncludeGlobal: boolean;
   sessionsIncludeUnknown: boolean;
+  summariesLoading: boolean;
+  summariesResult: import("./controllers/summaries.ts").SummaryEntry[] | null;
+  summariesError: string | null;
+  summariesFilterKey: string;
+  summariesFilterQuery: string;
+  summariesFilterFrom: string;
+  summariesFilterTo: string;
+  summariesPage: number;
+  summariesPageSize: number;
   sessionsHideCron: boolean;
   sessionsSearchQuery: string;
   sessionsSortColumn: "key" | "kind" | "updated" | "tokens";

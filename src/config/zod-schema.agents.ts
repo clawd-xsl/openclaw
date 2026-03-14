@@ -9,6 +9,10 @@ export const AgentsSchema = z
     session: z
       .object({
         summaryModel: z.string().optional(),
+        /** Number of days of session summaries to inject into system prompt (default: 7). */
+        summaryDays: z.number().int().positive().optional(),
+        /** Max chars of session summaries to inject. If set, truncates after this limit. */
+        summaryMaxChars: z.number().int().positive().optional(),
       })
       .strict()
       .optional(),

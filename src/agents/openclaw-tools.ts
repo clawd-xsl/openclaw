@@ -215,6 +215,10 @@ export function createOpenClawTools(
     ...(webFetchTool ? [webFetchTool] : []),
     ...(imageTool ? [imageTool] : []),
     ...(pdfTool ? [pdfTool] : []),
+    createSessionSummariesTool({
+      agentSessionKey: options?.agentSessionKey,
+      config: options?.config,
+    }),
   ];
 
   const pluginTools = resolvePluginTools({

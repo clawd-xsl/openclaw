@@ -75,6 +75,19 @@ describe("config schema regressions", () => {
     expect(res.ok).toBe(true);
   });
 
+  it("accepts agents.session summary injection cutoff settings", () => {
+    const res = validateConfigObject({
+      agents: {
+        session: {
+          summaryDays: 7,
+          summaryMaxChars: 80_000,
+        },
+      },
+    });
+
+    expect(res.ok).toBe(true);
+  });
+
   it("rejects unsafe iMessage remoteHost", () => {
     const res = validateConfigObject({
       channels: {

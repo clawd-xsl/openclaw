@@ -290,7 +290,8 @@ export class OpenClawApp extends LitElement {
   @state() summariesFilterQuery = "";
   @state() summariesFilterFrom = "30d";
   @state() summariesFilterTo = "now";
-  @state() summariesPage = 1;
+  @state() summariesPage = 0;
+  @state() summariesPageSize = 10;
   @state() sessionsHideCron = true;
   @state() sessionsSearchQuery = "";
   @state() sessionsSortColumn: "key" | "kind" | "updated" | "tokens" = "updated";

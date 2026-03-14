@@ -486,13 +486,15 @@ export async function runPreparedReply(
     isNewSession,
   });
   const authProfileIdSource = sessionEntry?.authProfileOverrideSource;
+  const sessionSummaryCfg = cfg.agents?.session;
   // Load recent session summaries for system prompt injection
   let recentSessionHistory: string | undefined;
   try {
     const summaries = loadRecentSummaries({
       sessionKey,
       agentId,
-      days: 7,
+      days: sessionSummaryCfg?.summaryDays ?? 7,
+      maxChars: sessionSummaryCfg?.summaryMaxChars,
     });
     if (summaries.length > 0) {
       recentSessionHistory = buildSessionHistorySection(summaries);
@@ -565,6 +567,7 @@ export async function runPreparedReply(
       ...(isReasoningTagProvider(provider) ? { enforceFinalTag: true } : {}),
       previousSessionId: sessionEntry?.previousSessionId,
       sessionCreatedAt: sessionEntry?.createdAt,
+      recentSessionHistory,
     },
   };
 

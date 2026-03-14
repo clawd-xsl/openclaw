@@ -64,6 +64,21 @@ describe("control UI routing", () => {
     expect(window.location.pathname).toBe("/channels");
   });
 
+  it("renders the summaries page content when clicking the summaries nav item", async () => {
+    const app = mountApp("/chat");
+    await app.updateComplete;
+
+    const link = app.querySelector<HTMLAnchorElement>('a.nav-item[href="/summaries"]');
+    expect(link).not.toBeNull();
+    link?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 }));
+
+    await app.updateComplete;
+    expect(app.tab).toBe("summaries");
+    expect(window.location.pathname).toBe("/summaries");
+    expect(app.querySelector(".page-title")?.textContent).toContain("Session Summaries");
+    expect(app.querySelector(".card-title")?.textContent).toContain("Session Summaries");
+  });
+
   it("renders the refreshed top navigation shell", async () => {
     const app = mountApp("/chat");
     await app.updateComplete;
