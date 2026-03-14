@@ -38,6 +38,23 @@ const ACTIVE_EMBEDDED_RUNS = embeddedRunState.activeRuns;
 const ACTIVE_EMBEDDED_RUN_SNAPSHOTS = embeddedRunState.snapshots;
 const EMBEDDED_RUN_WAITERS = embeddedRunState.waiters;
 
+/**
+ * Sessions currently in the "finalizing" window between clearActiveEmbeddedRun
+ * and scheduleFollowupDrain.  Treated as active to prevent new runs from
+ * starting during this gap (race-condition fix).
+ */
+const FINALIZING_SESSIONS = new Set<string>();
+
+export function markSessionFinalizing(sessionId: string): void {
+  FINALIZING_SESSIONS.add(sessionId);
+  diag.debug(`session finalizing: sessionId=${sessionId}`);
+}
+
+export function clearSessionFinalizing(sessionId: string): void {
+  FINALIZING_SESSIONS.delete(sessionId);
+  diag.debug(`session finalizing cleared: sessionId=${sessionId}`);
+}
+
 export function queueEmbeddedPiMessage(sessionId: string, text: string): boolean {
   const handle = ACTIVE_EMBEDDED_RUNS.get(sessionId);
   if (!handle) {
@@ -125,10 +142,14 @@ export function abortEmbeddedPiRun(
 
 export function isEmbeddedPiRunActive(sessionId: string): boolean {
   const active = ACTIVE_EMBEDDED_RUNS.has(sessionId);
-  if (active) {
-    diag.debug(`run active check: sessionId=${sessionId} active=true`);
+  const finalizing = FINALIZING_SESSIONS.has(sessionId);
+  if (active || finalizing) {
+    diag.debug(
+      `run active check: sessionId=${sessionId} active=${active} finalizing=${finalizing}`,
+    );
+    return true;
   }
-  return active;
+  return false;
 }
 
 export function isEmbeddedPiRunStreaming(sessionId: string): boolean {
