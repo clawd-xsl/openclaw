@@ -3,6 +3,7 @@ import { lookupContextTokens } from "../../agents/context.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../../agents/defaults.js";
 import { resolveModelAuthMode } from "../../agents/model-auth.js";
 import { isCliProvider } from "../../agents/model-selection.js";
+import { clearSessionFinalizing } from "../../agents/pi-embedded-runner/runs.js";
 import { queueEmbeddedPiMessage } from "../../agents/pi-embedded.js";
 import { hasNonzeroUsage } from "../../agents/usage.js";
 import {
@@ -51,12 +52,7 @@ import { createFollowupRunner } from "./followup-runner.js";
 import { resolveOriginMessageProvider, resolveOriginMessageTo } from "./origin-routing.js";
 import { readPostCompactionContext } from "./post-compaction-context.js";
 import { resolveActiveRunQueueAction } from "./queue-policy.js";
-import {
-  clearFollowupQueue,
-  enqueueFollowupRun,
-  type FollowupRun,
-  type QueueSettings,
-} from "./queue.js";
+import { enqueueFollowupRun, type FollowupRun, type QueueSettings } from "./queue.js";
 import { createReplyMediaPathNormalizer } from "./reply-media-paths.js";
 import { createReplyToModeFilterForChannel, resolveReplyToMode } from "./reply-threading.js";
 import { incrementRunCompactionCount, persistRunSessionUsage } from "./session-run-accounting.js";
@@ -376,7 +372,12 @@ export async function runReplyAgent(params: {
     });
 
     if (runOutcome.kind === "final") {
-      return finalizeWithFollowup(runOutcome.payload, queueKey, runFollowupTurn);
+      return finalizeWithFollowup(
+        runOutcome.payload,
+        queueKey,
+        runFollowupTurn,
+        followupRun.run.sessionId,
+      );
     }
 
     const {
@@ -427,8 +428,7 @@ export async function runReplyAgent(params: {
     if (runResult.meta?.aborted) {
       blockAbortController.abort();
       typing.markRunComplete();
-      clearFollowupQueue(queueKey);
-      return finalizeWithFollowup(undefined, queueKey, runFollowupTurn);
+      return finalizeWithFollowup(undefined, queueKey, runFollowupTurn, followupRun.run.sessionId);
     }
 
     const usage = runResult.meta?.agentMeta?.usage;
@@ -498,7 +498,7 @@ export async function runReplyAgent(params: {
     // Otherwise, a late typing trigger (e.g. from a tool callback) can outlive the run and
     // keep the typing indicator stuck.
     if (payloadArray.length === 0) {
-      return finalizeWithFollowup(undefined, queueKey, runFollowupTurn);
+      return finalizeWithFollowup(undefined, queueKey, runFollowupTurn, followupRun.run.sessionId);
     }
 
     const payloadResult = await buildReplyPayloads({
@@ -527,7 +527,7 @@ export async function runReplyAgent(params: {
     didLogHeartbeatStrip = payloadResult.didLogHeartbeatStrip;
 
     if (replyPayloads.length === 0) {
-      return finalizeWithFollowup(undefined, queueKey, runFollowupTurn);
+      return finalizeWithFollowup(undefined, queueKey, runFollowupTurn, followupRun.run.sessionId);
     }
 
     const successfulCronAdds = runResult.successfulCronAdds ?? 0;
@@ -720,11 +720,12 @@ export async function runReplyAgent(params: {
       finalPayloads.length === 1 ? finalPayloads[0] : finalPayloads,
       queueKey,
       runFollowupTurn,
+      followupRun.run.sessionId,
     );
   } catch (error) {
     // Keep the followup queue moving even when an unexpected exception escapes
     // the run path; the caller still receives the original error.
-    finalizeWithFollowup(undefined, queueKey, runFollowupTurn);
+    finalizeWithFollowup(undefined, queueKey, runFollowupTurn, followupRun.run.sessionId);
     throw error;
   } finally {
     blockReplyPipeline?.stop();
@@ -736,5 +737,7 @@ export async function runReplyAgent(params: {
     // Calling this twice is harmless — cleanup() is guarded by the
     // `active` flag.  Same pattern as the followup runner fix (#26881).
     typing.markDispatchIdle();
+    // Safety net: ensure finalizing flag is always cleared even on unexpected errors.
+    clearSessionFinalizing(followupRun.run.sessionId);
   }
 }
