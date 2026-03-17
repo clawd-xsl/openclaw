@@ -293,6 +293,31 @@ export async function dispatchCronDelivery(
   // remains the only source of delivered state.
   let delivered = skipMessagingToolDelivery;
   let deliveryAttempted = skipMessagingToolDelivery;
+
+  // Track whether the session has already been cleaned up so the fallthrough
+  // cleanup at the end of the function does not duplicate the call.
+  let sessionCleaned = false;
+
+  const cleanupDirectCronSessionIfNeeded = async (): Promise<void> => {
+    if (sessionCleaned || !params.job.deleteAfterRun) {
+      return;
+    }
+    sessionCleaned = true;
+    try {
+      await callGateway({
+        method: "sessions.delete",
+        params: {
+          key: params.agentSessionKey,
+          deleteTranscript: true,
+          emitLifecycleHooks: false,
+        },
+        timeoutMs: 10_000,
+      });
+    } catch {
+      // Best-effort; direct delivery result should still be returned.
+    }
+  };
+
   const failDeliveryTarget = (error: string) =>
     params.withRunSession({
       status: "error",
@@ -393,25 +418,6 @@ export async function dispatchCronDelivery(
   const finalizeTextDelivery = async (
     delivery: SuccessfulDeliveryTarget,
   ): Promise<RunCronAgentTurnResult | null> => {
-    const cleanupDirectCronSessionIfNeeded = async (): Promise<void> => {
-      if (!params.job.deleteAfterRun) {
-        return;
-      }
-      try {
-        await callGateway({
-          method: "sessions.delete",
-          params: {
-            key: params.agentSessionKey,
-            deleteTranscript: true,
-            emitLifecycleHooks: false,
-          },
-          timeoutMs: 10_000,
-        });
-      } catch {
-        // Best-effort; direct delivery result should still be returned.
-      }
-    };
-
     if (!synthesizedText) {
       return null;
     }
@@ -579,6 +585,13 @@ export async function dispatchCronDelivery(
       }
     }
   }
+
+  // Fallthrough: ensure deleteAfterRun sessions are cleaned up regardless of
+  // which delivery path was taken. When the agent sent its own reply via the
+  // messaging tool (skipMessagingToolDelivery === true), the delivery block
+  // above is skipped entirely and cleanupDirectCronSessionIfNeeded was never
+  // called. The idempotency flag `sessionCleaned` prevents double cleanup.
+  await cleanupDirectCronSessionIfNeeded();
 
   return {
     delivered,
