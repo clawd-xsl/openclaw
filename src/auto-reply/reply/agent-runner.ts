@@ -118,6 +118,7 @@ export async function runReplyAgent(params: {
     shouldInjectGroupIntro,
     typingMode,
   } = params;
+  const originalSessionId = followupRun.run.sessionId;
 
   let activeSessionEntry = sessionEntry;
   const activeSessionStore = sessionStore;
@@ -737,7 +738,11 @@ export async function runReplyAgent(params: {
     // Calling this twice is harmless — cleanup() is guarded by the
     // `active` flag.  Same pattern as the followup runner fix (#26881).
     typing.markDispatchIdle();
-    // Safety net: ensure finalizing flag is always cleared even on unexpected errors.
+    // Safety net: ensure finalizing flags are always cleared even on unexpected errors.
+    // followupRun.run.sessionId may be mutated by resetSession(); clear both ids.
     clearSessionFinalizing(followupRun.run.sessionId);
+    if (originalSessionId !== followupRun.run.sessionId) {
+      clearSessionFinalizing(originalSessionId);
+    }
   }
 }

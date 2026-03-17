@@ -33,10 +33,12 @@ const embeddedRunState = resolveGlobalSingleton(EMBEDDED_RUN_STATE_KEY, () => ({
   activeRuns: new Map<string, EmbeddedPiQueueHandle>(),
   snapshots: new Map<string, ActiveEmbeddedRunSnapshot>(),
   waiters: new Map<string, Set<EmbeddedRunWaiter>>(),
+  finalizingSessions: new Map<string, true>(),
 }));
 const ACTIVE_EMBEDDED_RUNS = embeddedRunState.activeRuns;
 const ACTIVE_EMBEDDED_RUN_SNAPSHOTS = embeddedRunState.snapshots;
 const EMBEDDED_RUN_WAITERS = embeddedRunState.waiters;
+const FINALIZING_SESSIONS = embeddedRunState.finalizingSessions;
 
 export function queueEmbeddedPiMessage(sessionId: string, text: string): boolean {
   const handle = ACTIVE_EMBEDDED_RUNS.get(sessionId);
@@ -55,6 +57,16 @@ export function queueEmbeddedPiMessage(sessionId: string, text: string): boolean
   logMessageQueued({ sessionId, source: "pi-embedded-runner" });
   void handle.queueMessage(text);
   return true;
+}
+
+export function markSessionFinalizing(sessionId: string): void {
+  FINALIZING_SESSIONS.set(sessionId, true);
+  diag.debug(`session finalizing: sessionId=${sessionId}`);
+}
+
+export function clearSessionFinalizing(sessionId: string): void {
+  FINALIZING_SESSIONS.delete(sessionId);
+  diag.debug(`session finalizing cleared: sessionId=${sessionId}`);
 }
 
 /**
@@ -125,10 +137,14 @@ export function abortEmbeddedPiRun(
 
 export function isEmbeddedPiRunActive(sessionId: string): boolean {
   const active = ACTIVE_EMBEDDED_RUNS.has(sessionId);
-  if (active) {
-    diag.debug(`run active check: sessionId=${sessionId} active=true`);
+  const finalizing = FINALIZING_SESSIONS.has(sessionId);
+  if (active || finalizing) {
+    diag.debug(
+      `run active check: sessionId=${sessionId} active=${active} finalizing=${finalizing}`,
+    );
+    return true;
   }
-  return active;
+  return false;
 }
 
 export function isEmbeddedPiRunStreaming(sessionId: string): boolean {
@@ -291,6 +307,7 @@ export const __testing = {
     EMBEDDED_RUN_WAITERS.clear();
     ACTIVE_EMBEDDED_RUNS.clear();
     ACTIVE_EMBEDDED_RUN_SNAPSHOTS.clear();
+    FINALIZING_SESSIONS.clear();
   },
 };
 

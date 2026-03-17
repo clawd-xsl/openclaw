@@ -1,3 +1,5 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import type { AgentEvent } from "@mariozechner/pi-agent-core";
 import { emitAgentEvent } from "../infra/agent-events.js";
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
@@ -51,6 +53,45 @@ export function handleAutoCompactionEnd(
   const hasResult = evt.result != null;
   const wasAborted = Boolean(evt.aborted);
   if (hasResult && !wasAborted) {
+    // Best-effort: inject COMPACTION.md into the live compaction summary so
+    // the immediate retry prompt includes recovery instructions (d69-style).
+    void (async () => {
+      try {
+        const recoveryPath = path.join(process.cwd(), "COMPACTION.md");
+        const recoveryRaw = await fs.readFile(recoveryPath, "utf-8").catch(() => "");
+        const recoveryContent = recoveryRaw.trim();
+        if (!recoveryContent) {
+          return;
+        }
+
+        const messages = ctx.params.session.messages;
+        if (!Array.isArray(messages) || messages.length === 0) {
+          return;
+        }
+
+        const first = messages[0] as { role?: string; summary?: string };
+        if (first.role !== "compactionSummary" || typeof first.summary !== "string") {
+          return;
+        }
+
+        const newSummary =
+          "This conversation has been compacted. Read the following compaction recovery instructions to recover context:\n\n" +
+          `Current session ID: ${ctx.params.sessionId ?? "unknown"}\n\n` +
+          recoveryContent.slice(0, 8000) +
+          "\n\n---\n\nThe conversation history before this point was compacted into the following summary:\n\n" +
+          first.summary;
+
+        const updated = [...messages];
+        updated[0] = { ...first, summary: newSummary } as (typeof updated)[number];
+        ctx.params.session.agent.replaceMessages(updated);
+        ctx.log.debug(
+          `[compaction-recovery] Injected COMPACTION.md into auto-compaction summary: runId=${ctx.params.runId}`,
+        );
+      } catch (err) {
+        ctx.log.debug(`[compaction-recovery] auto-compaction injection skipped: ${String(err)}`);
+      }
+    })();
+
     ctx.incrementCompactionCount?.();
   }
   if (willRetry) {

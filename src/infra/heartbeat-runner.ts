@@ -7,6 +7,7 @@ import {
 } from "../agents/agent-scope.js";
 import { appendCronStyleCurrentTimeLine } from "../agents/current-time.js";
 import { resolveEffectiveMessagesConfig } from "../agents/identity.js";
+import { acquireSessionWriteLock } from "../agents/session-write-lock.js";
 import { DEFAULT_HEARTBEAT_FILENAME } from "../agents/workspace.js";
 import { resolveHeartbeatReplyPayload } from "../auto-reply/heartbeat-reply-payload.js";
 import {
@@ -389,14 +390,24 @@ async function pruneHeartbeatTranscript(params: {
   if (!transcriptPath || typeof preHeartbeatSize !== "number" || preHeartbeatSize < 0) {
     return;
   }
+
+  let lockRelease: (() => Promise<void>) | undefined;
   try {
+    const lock = await acquireSessionWriteLock({
+      sessionFile: transcriptPath,
+      timeoutMs: 5_000,
+    });
+    lockRelease = lock.release;
+
     const stat = await fs.stat(transcriptPath);
     // Only truncate if the file has grown during the heartbeat run
     if (stat.size > preHeartbeatSize) {
       await fs.truncate(transcriptPath, preHeartbeatSize);
     }
   } catch {
-    // File may not exist or may have been removed - ignore errors
+    // File may not exist, may have been removed, or lock may time out - ignore errors
+  } finally {
+    await lockRelease?.();
   }
 }
 
