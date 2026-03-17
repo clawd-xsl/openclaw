@@ -14,6 +14,7 @@ import {
   isTransientHttpError,
   sanitizeUserFacingText,
 } from "../../agents/pi-embedded-helpers.js";
+import { clearSessionFinalizing } from "../../agents/pi-embedded-runner/runs.js";
 import { runEmbeddedPiAgent } from "../../agents/pi-embedded.js";
 import {
   resolveGroupSessionKey,
@@ -471,6 +472,10 @@ export async function runAgentTurnWithFallback(params: {
         },
       });
       runResult = fallbackResult.result;
+      // Clear the finalizing flag set by attempt.ts — without this, isActive()
+      // stays true forever for runs that don't go through followup-runner,
+      // causing all subsequent deliveries to queue and never flush.
+      clearSessionFinalizing(params.followupRun.run.sessionId);
       fallbackProvider = fallbackResult.provider;
       fallbackModel = fallbackResult.model;
       fallbackAttempts = Array.isArray(fallbackResult.attempts)
