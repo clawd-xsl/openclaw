@@ -36,6 +36,7 @@ import {
   resolveDefaultModelForAgent,
   resolveThinkingDefault,
 } from "../agents/model-selection.js";
+import { clearSessionFinalizing } from "../agents/pi-embedded-runner/runs.js";
 import { prepareSessionManagerForRun } from "../agents/pi-embedded-runner/session-manager-init.js";
 import { runEmbeddedPiAgent } from "../agents/pi-embedded.js";
 import { buildWorkspaceSkillSnapshot } from "../agents/skills.js";
@@ -1215,6 +1216,12 @@ async function agentCommandInternal(
     });
   } finally {
     clearAgentRunContext(runId);
+    // Fix: clear FINALIZING_SESSIONS for the gateway "agent" method path.
+    // Without this, subagent announce runs leave the flag stuck forever,
+    // causing isEmbeddedPiRunActive() to block all subsequent messages.
+    if (sessionId) {
+      clearSessionFinalizing(sessionId);
+    }
   }
 }
 
