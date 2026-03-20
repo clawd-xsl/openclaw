@@ -186,10 +186,10 @@ export async function sendMessageSignal(
   if (opts.replyToId) {
     const quoteTs = Number(opts.replyToId);
     if (Number.isFinite(quoteTs) && quoteTs > 0) {
-      params.quoteTimestamp = quoteTs;
+      params["quote-timestamp"] = quoteTs;
       // DM: use the recipient as quoteAuthor (the message being quoted is from the conversation partner)
       if (target.type === "recipient") {
-        params.quoteAuthor = target.recipient;
+        params["quote-author"] = target.recipient;
       }
     }
   }

@@ -79,6 +79,18 @@ function formatAttachmentSummaryPlaceholder(contentTypes: Array<string | undefin
   return `[${parts.join(" + ")} attached]`;
 }
 
+function formatSignalQuotedBody(params: {
+  messageText: string;
+  quoteText: string;
+  fallbackText?: string;
+}): string {
+  if (params.messageText && params.quoteText) {
+    // Keep the quoted snippet when the user sends new reply text so the agent sees the context.
+    return `[Replying to: "${params.quoteText}"]\n\n${params.messageText}`;
+  }
+  return params.messageText || params.fallbackText || params.quoteText || "";
+}
+
 function resolveSignalInboundRoute(params: {
   cfg: SignalEventHandlerDeps["cfg"];
   accountId: SignalEventHandlerDeps["accountId"];
@@ -684,7 +696,11 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
         const pendingKind = kindFromMime(firstContentType ?? undefined);
         return pendingKind ? `<media:${pendingKind}>` : "<media:attachment>";
       })();
-      const pendingBodyText = messageText || pendingPlaceholder || quoteText;
+      const pendingBodyText = formatSignalQuotedBody({
+        messageText,
+        quoteText,
+        fallbackText: pendingPlaceholder,
+      });
       const historyKey = groupId ?? "unknown";
       recordPendingHistoryEntryIfEnabled({
         historyMap: deps.groupHistories,
@@ -755,7 +771,11 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
       placeholder = `[sticker: ${packId}:${String(sid).padStart(2, "0")}]`;
     }
 
-    const bodyText = messageText || placeholder || dataMessage.quote?.text?.trim() || "";
+    const bodyText = formatSignalQuotedBody({
+      messageText,
+      quoteText: dataMessage.quote?.text?.trim() || "",
+      fallbackText: placeholder,
+    });
     if (!bodyText) {
       return;
     }

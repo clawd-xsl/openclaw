@@ -203,6 +203,13 @@ describe("signal mention gating", () => {
     await expectSkippedGroupHistory({ message: "", quoteText: "quoted context" }, "quoted context");
   });
 
+  it("records quoted context for skipped group replies with new text", async () => {
+    await expectSkippedGroupHistory(
+      { message: "follow-up", quoteText: "quoted context" },
+      '[Replying to: "quoted context"]\n\nfollow-up',
+    );
+  });
+
   it("bypasses mention gating for authorized control commands", async () => {
     capturedCtx = undefined;
     const handler = createMentionHandler({ requireMention: true });

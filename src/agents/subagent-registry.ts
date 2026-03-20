@@ -1120,7 +1120,11 @@ export function replaceSubagentRunAfterSteer(params: {
   const archiveAfterMs = resolveArchiveAfterMs(cfg);
   const spawnMode = source.spawnMode === "session" ? "session" : "run";
   const archiveAtMs =
-    spawnMode === "session" ? undefined : archiveAfterMs ? now + archiveAfterMs : undefined;
+    spawnMode === "session" || source.cleanup === "keep"
+      ? undefined
+      : archiveAfterMs
+        ? now + archiveAfterMs
+        : undefined;
   const runTimeoutSeconds = params.runTimeoutSeconds ?? source.runTimeoutSeconds ?? 0;
   const waitTimeoutMs = resolveSubagentWaitTimeoutMs(cfg, runTimeoutSeconds);
   const preserveFrozenResultFallback = params.preserveFrozenResultFallback === true;
@@ -1184,7 +1188,11 @@ export function registerSubagentRun(params: {
   const archiveAfterMs = resolveArchiveAfterMs(cfg);
   const spawnMode = params.spawnMode === "session" ? "session" : "run";
   const archiveAtMs =
-    spawnMode === "session" ? undefined : archiveAfterMs ? now + archiveAfterMs : undefined;
+    spawnMode === "session" || params.cleanup === "keep"
+      ? undefined
+      : archiveAfterMs
+        ? now + archiveAfterMs
+        : undefined;
   const runTimeoutSeconds = params.runTimeoutSeconds ?? 0;
   const waitTimeoutMs = resolveSubagentWaitTimeoutMs(cfg, runTimeoutSeconds);
   const requesterOrigin = normalizeDeliveryContext(params.requesterOrigin);
@@ -1425,7 +1433,12 @@ export function reactivateSubagentRun(params: { childSessionKey: string; newRunI
     suppressAnnounceReason: undefined,
     announceRetryCount: undefined,
     lastAnnounceRetryAt: undefined,
-    archiveAtMs: archiveAfterMs ? now + archiveAfterMs : undefined,
+    archiveAtMs:
+      latestEntry.cleanup === "keep"
+        ? undefined
+        : archiveAfterMs
+          ? now + archiveAfterMs
+          : undefined,
   };
 
   subagentRuns.set(params.newRunId, reactivated);

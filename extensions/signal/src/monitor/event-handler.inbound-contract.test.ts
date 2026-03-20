@@ -113,6 +113,31 @@ describe("signal createSignalEventHandler inbound contract", () => {
     expect(context.OriginatingTo).toBe("+15550002222");
   });
 
+  it("prepends quoted context when a reply includes new text", async () => {
+    const handler = createSignalEventHandler(
+      createBaseSignalEventHandlerDeps({
+        // oxlint-disable-next-line typescript/no-explicit-any
+        cfg: { messages: { inbound: { debounceMs: 0 } } } as any,
+        historyLimit: 0,
+      }),
+    );
+
+    await handler(
+      createSignalReceiveEvent({
+        dataMessage: {
+          message: "follow-up",
+          quote: { text: "quoted context" },
+          attachments: [],
+        },
+      }),
+    );
+
+    expect(capture.ctx).toBeTruthy();
+    expect(capture.ctx?.BodyForAgent).toBe('[Replying to: "quoted context"]\n\nfollow-up');
+    expect(capture.ctx?.RawBody).toBe('[Replying to: "quoted context"]\n\nfollow-up');
+    expect(String(capture.ctx?.Body ?? "")).toContain('[Replying to: "quoted context"]');
+  });
+
   it("sends typing + read receipt for allowed DMs", async () => {
     const handler = createSignalEventHandler(
       createBaseSignalEventHandlerDeps({

@@ -301,30 +301,34 @@ async function deliverReplies(params: {
   for (const payload of replies) {
     const mediaList = payload.mediaUrls ?? (payload.mediaUrl ? [payload.mediaUrl] : []);
     const text = payload.text ?? "";
+    const replyToId = payload.replyToId ?? undefined;
     if (!text && mediaList.length === 0) {
       continue;
     }
     if (mediaList.length === 0) {
-      for (const chunk of chunkTextWithMode(text, textLimit, chunkMode)) {
-        await sendMessageSignal(target, chunk, {
+      const chunks = chunkTextWithMode(text, textLimit, chunkMode);
+      for (let index = 0; index < chunks.length; index += 1) {
+        await sendMessageSignal(target, chunks[index], {
           baseUrl,
           account,
           maxBytes,
           accountId,
+          replyToId: index === 0 ? replyToId : undefined,
         });
       }
     } else {
       let first = true;
       for (const url of mediaList) {
         const caption = first ? text : "";
-        first = false;
         await sendMessageSignal(target, caption, {
           baseUrl,
           account,
           mediaUrl: url,
           maxBytes,
           accountId,
+          replyToId: first ? replyToId : undefined,
         });
+        first = false;
       }
     }
     runtime.log?.(`delivered reply to ${target}`);

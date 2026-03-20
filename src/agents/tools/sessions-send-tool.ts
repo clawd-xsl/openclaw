@@ -9,7 +9,7 @@ import {
   INTERNAL_MESSAGE_CHANNEL,
 } from "../../utils/message-channel.js";
 import { AGENT_LANE_NESTED } from "../lanes.js";
-import { reactivateSubagentRun } from "../subagent-registry.js";
+import { reactivateSubagentRun, registerSubagentRun } from "../subagent-registry.js";
 import type { AnyAgentTool } from "./common.js";
 import { jsonResult, readStringParam } from "./common.js";
 import {
@@ -289,8 +289,29 @@ export function createSessionsSendTool(opts?: {
         runId = start.runId;
         // Best-effort: reactivate a completed run-mode subagent so lifecycle
         // tracking (announce, sweeper deadline) covers the new run.
-        reactivateSubagentRun({ childSessionKey: resolvedKey, newRunId: runId });
-        startA2AFlow(undefined, runId);
+        const reactivation = reactivateSubagentRun({
+          childSessionKey: resolvedKey,
+          newRunId: runId,
+        });
+        if (!reactivation.reactivated && requesterSessionKey) {
+          // Old run record was swept or never existed — register a fresh record
+          // so announce/lifecycle tracking works for the revived session.
+          registerSubagentRun({
+            runId,
+            childSessionKey: resolvedKey,
+            requesterSessionKey,
+            requesterOrigin: requesterChannel ? { channel: requesterChannel } : undefined,
+            requesterDisplayKey: displayKey,
+            task: `[revived via sessions_send] ${message.slice(0, 200)}`,
+            cleanup: "keep",
+            expectsCompletionMessage: true,
+            spawnMode: "run",
+          });
+        }
+        // Skip A2A flow when subagent registry handles announce to avoid double announce.
+        if (!reactivation.reactivated && !requesterSessionKey) {
+          startA2AFlow(undefined, runId);
+        }
         return jsonResult({
           runId,
           status: "accepted",
@@ -311,7 +332,24 @@ export function createSessionsSendTool(opts?: {
 
       // Best-effort: reactivate a completed run-mode subagent so lifecycle
       // tracking (announce, sweeper deadline) covers the new run.
-      reactivateSubagentRun({ childSessionKey: resolvedKey, newRunId: runId });
+      const reactivation = reactivateSubagentRun({ childSessionKey: resolvedKey, newRunId: runId });
+      let didFallbackRegister = false;
+      if (!reactivation.reactivated && requesterSessionKey) {
+        // Old run record was swept or never existed — register a fresh record
+        // so announce/lifecycle tracking works for the revived session.
+        registerSubagentRun({
+          runId,
+          childSessionKey: resolvedKey,
+          requesterSessionKey,
+          requesterOrigin: requesterChannel ? { channel: requesterChannel } : undefined,
+          requesterDisplayKey: displayKey,
+          task: `[revived via sessions_send] ${message.slice(0, 200)}`,
+          cleanup: "keep",
+          expectsCompletionMessage: true,
+          spawnMode: "run",
+        });
+        didFallbackRegister = true;
+      }
 
       let waitStatus: string | undefined;
       let waitError: string | undefined;
@@ -341,6 +379,7 @@ export function createSessionsSendTool(opts?: {
         return jsonResult({
           runId,
           status: "timeout",
+          accepted: true,
           error: waitError,
           sessionKey: displayKey,
         });
@@ -361,7 +400,10 @@ export function createSessionsSendTool(opts?: {
       const filtered = stripToolMessages(Array.isArray(history?.messages) ? history.messages : []);
       const last = filtered.length > 0 ? filtered[filtered.length - 1] : undefined;
       const reply = last ? extractAssistantText(last) : undefined;
-      startA2AFlow(reply ?? undefined);
+      // Skip A2A flow when subagent registry handles announce to avoid double announce.
+      if (!reactivation.reactivated && !didFallbackRegister) {
+        startA2AFlow(reply ?? undefined);
+      }
 
       return jsonResult({
         runId,
