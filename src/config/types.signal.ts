@@ -59,4 +59,6 @@ export type SignalConfig = {
   accounts?: Record<string, SignalAccountConfig>;
   /** Optional default account id when multiple accounts are configured. */
   defaultAccount?: string;
+  /** Reply-to mode for quote replies: "off" (default), "first", or "all". */
+  replyToMode?: "off" | "first" | "all";
 } & SignalAccountConfig;

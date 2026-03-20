@@ -1044,6 +1044,7 @@ export const SignalAccountSchema = SignalAccountSchemaBase;
 export const SignalConfigSchema = SignalAccountSchemaBase.extend({
   accounts: z.record(z.string(), SignalAccountSchema.optional()).optional(),
   defaultAccount: z.string().optional(),
+  replyToMode: ReplyToModeSchema.optional(),
 }).superRefine((value, ctx) => {
   requireOpenAllowFrom({
     policy: value.dmPolicy,

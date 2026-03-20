@@ -515,6 +515,7 @@ const DOCKS: Record<ChatChannelId, ChannelDock> = {
         resolveOptionalConfigString(resolveSignalAccount({ cfg, accountId }).config.defaultTo),
     },
     threading: {
+      resolveReplyToMode: ({ cfg }) => cfg.channels?.signal?.replyToMode ?? "off",
       buildToolContext: ({ context, hasRepliedRef }) =>
         buildSignalThreadToolContext({ context, hasRepliedRef }),
     },
