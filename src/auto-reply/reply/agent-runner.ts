@@ -416,20 +416,24 @@ export async function runReplyAgent(params: {
 
     const payloadArray = runResult.payloads ?? [];
 
+    // When the user sends a new message mid-run, the old run is aborted.
+    // Check abort BEFORE flushing so stale buffered content is never sent.
+    if (runResult.meta?.aborted) {
+      blockAbortController.abort();
+      blockReplyPipeline?.stop(); // Stop without flushing — discard stale content
+      if (pendingToolTasks.size > 0) {
+        await Promise.allSettled(pendingToolTasks);
+      }
+      typing.markRunComplete();
+      return finalizeWithFollowup(undefined, queueKey, runFollowupTurn, followupRun.run.sessionId);
+    }
+
     if (blockReplyPipeline) {
       await blockReplyPipeline.flush({ force: true });
       blockReplyPipeline.stop();
     }
     if (pendingToolTasks.size > 0) {
       await Promise.allSettled(pendingToolTasks);
-    }
-
-    // When the user sends a new message mid-run, the old run is aborted.
-    // Skip all delivery to prevent partial/stale payloads from reaching the user.
-    if (runResult.meta?.aborted) {
-      blockAbortController.abort();
-      typing.markRunComplete();
-      return finalizeWithFollowup(undefined, queueKey, runFollowupTurn, followupRun.run.sessionId);
     }
 
     const usage = runResult.meta?.agentMeta?.usage;

@@ -109,6 +109,7 @@ import { log } from "../logger.js";
 import { buildModelAliasLines } from "../model.js";
 import {
   clearActiveEmbeddedRun,
+  clearSessionFinalizing,
   markSessionFinalizing,
   type EmbeddedPiQueueHandle,
   setActiveEmbeddedRun,
@@ -2733,6 +2734,7 @@ export async function runEmbeddedAttempt(
         }
         markSessionFinalizing(params.sessionId);
         clearActiveEmbeddedRun(params.sessionId, queueHandle, params.sessionKey);
+        clearSessionFinalizing(params.sessionId);
         params.abortSignal?.removeEventListener?.("abort", onAbort);
       }
 

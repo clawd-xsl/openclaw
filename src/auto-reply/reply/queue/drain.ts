@@ -72,13 +72,15 @@ export function scheduleFollowupDrain(
   key: string,
   runFollowup: (run: FollowupRun) => Promise<void>,
 ): void {
+  // Always update the cached callback so subsequent drains use the latest
+  // dispatcher's closure. Without this, an old (stale) callback can persist
+  // after an interrupt, causing followup responses to be sent to a dead
+  // dispatcher (e.g. orphaned deliveredReplies array in webchat).
+  FOLLOWUP_RUN_CALLBACKS.set(key, runFollowup);
   const queue = beginQueueDrain(FOLLOWUP_QUEUES, key);
   if (!queue) {
     return;
   }
-  // Cache callback only when a drain actually starts. Avoid keeping stale
-  // callbacks around from finalize calls where no queue work is pending.
-  FOLLOWUP_RUN_CALLBACKS.set(key, runFollowup);
   void (async () => {
     try {
       const collectState = { forceIndividualCollect: false };
