@@ -36,6 +36,7 @@ import { resolveSessionAgentId, resolveSessionAgentIds } from "../agent-scope.js
 import type { ExecElevatedDefaults } from "../bash-tools.js";
 import { makeBootstrapWarn, resolveBootstrapContextForRun } from "../bootstrap-files.js";
 import { listChannelSupportedActions, resolveChannelMessageToolHints } from "../channel-tools.js";
+import { createCompactionRecoveryMessage } from "../compaction-recovery.js";
 import { resolveContextWindowInfo } from "../context-window-guard.js";
 import { ensureCustomApiRegistered } from "../custom-api-registry.js";
 import { formatUserTime, resolveUserTimeFormat, resolveUserTimezone } from "../date-time.js";
@@ -953,23 +954,12 @@ export async function compactEmbeddedPiSessionDirect(
           const recoveryRaw = await fs.readFile(recoveryPath, "utf-8").catch(() => "");
           const recoveryContent = recoveryRaw.trim();
           if (recoveryContent) {
-            const boundaryContent =
-              `Your conversation has just been compacted. Current session ID: ${params.sessionId}\n\n` +
-              `Above this message you will see:\n` +
-              `1. Compaction summary — a compressed summary of the prior conversation\n` +
-              `2. Retained messages — the most recent messages preserved during compaction\n\n` +
-              `Below this message is the new conversation.\n\n` +
-              `Read the following compaction recovery instructions carefully to restore your state:\n\n` +
-              `---\n\n` +
-              recoveryContent.slice(0, 8000);
-            sessionManager.appendMessage({
-              role: "custom",
-              customType: "compaction-recovery",
-              content: boundaryContent,
-              display: false,
-              details: undefined,
-              timestamp: Date.now(),
-            });
+            sessionManager.appendMessage(
+              createCompactionRecoveryMessage({
+                sessionId: params.sessionId,
+                recoveryContent,
+              }),
+            );
             log.info(
               `[compaction-recovery] Appended recovery message to JSONL (${recoveryContent.length} chars)`,
             );

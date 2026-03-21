@@ -1,4 +1,4 @@
-import type { AgentSession } from "@mariozechner/pi-coding-agent";
+import type { AgentSession, SessionManager } from "@mariozechner/pi-coding-agent";
 import type { ReasoningLevel, VerboseLevel } from "../auto-reply/thinking.js";
 import type { ReplyPayload } from "../auto-reply/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -10,6 +10,8 @@ export type ToolResultFormat = "markdown" | "plain";
 
 export type SubscribeEmbeddedPiSessionParams = {
   session: AgentSession;
+  sessionManager: SessionManager;
+  workspaceDir: string;
   runId: string;
   hookRunner?: HookRunner;
   verboseLevel?: VerboseLevel;

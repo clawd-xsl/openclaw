@@ -2193,6 +2193,8 @@ export async function runEmbeddedAttempt(
 
       const subscription = subscribeEmbeddedPiSession({
         session: activeSession,
+        sessionManager,
+        workspaceDir: effectiveWorkspace,
         runId: params.runId,
         hookRunner: getGlobalHookRunner() ?? undefined,
         verboseLevel: params.verboseLevel,
