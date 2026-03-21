@@ -4,6 +4,7 @@
  */
 
 import { isRecord } from "../../utils.js";
+import { runWithAbortTimeout } from "../../utils/abort-timeout.js";
 import { normalizeSecretInput } from "../../utils/normalize-secret-input.js";
 
 type PdfInput = {
@@ -40,6 +41,8 @@ export async function anthropicAnalyzePdf(params: {
   pdfs: PdfInput[];
   maxTokens?: number;
   baseUrl?: string;
+  timeoutMs?: number;
+  signal?: AbortSignal;
 }): Promise<string> {
   const apiKey = normalizeSecretInput(params.apiKey);
   if (!apiKey) {
@@ -60,19 +63,26 @@ export async function anthropicAnalyzePdf(params: {
   content.push({ type: "text", text: params.prompt });
 
   const baseUrl = (params.baseUrl ?? "https://api.anthropic.com").replace(/\/+$/, "");
-  const res = await fetch(`${baseUrl}/v1/messages`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-      "anthropic-beta": "pdfs-2024-09-25",
-    },
-    body: JSON.stringify({
-      model: params.modelId,
-      max_tokens: params.maxTokens ?? 4096,
-      messages: [{ role: "user", content }],
-    }),
+  const res = await runWithAbortTimeout({
+    signal: params.signal,
+    timeoutMs: params.timeoutMs,
+    timeoutMessage: `Anthropic PDF request timed out after ${Math.ceil((params.timeoutMs ?? 0) / 1000)}s`,
+    run: async (signal) =>
+      await fetch(`${baseUrl}/v1/messages`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+          "anthropic-beta": "pdfs-2024-09-25",
+        },
+        signal,
+        body: JSON.stringify({
+          model: params.modelId,
+          max_tokens: params.maxTokens ?? 4096,
+          messages: [{ role: "user", content }],
+        }),
+      }),
   });
 
   if (!res.ok) {
@@ -120,6 +130,8 @@ export async function geminiAnalyzePdf(params: {
   prompt: string;
   pdfs: PdfInput[];
   baseUrl?: string;
+  timeoutMs?: number;
+  signal?: AbortSignal;
 }): Promise<string> {
   const apiKey = normalizeSecretInput(params.apiKey);
   if (!apiKey) {
@@ -142,12 +154,19 @@ export async function geminiAnalyzePdf(params: {
     .replace(/\/v1beta$/, "");
   const url = `${baseUrl}/v1beta/models/${encodeURIComponent(params.modelId)}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ role: "user", parts }],
-    }),
+  const res = await runWithAbortTimeout({
+    signal: params.signal,
+    timeoutMs: params.timeoutMs,
+    timeoutMessage: `Gemini PDF request timed out after ${Math.ceil((params.timeoutMs ?? 0) / 1000)}s`,
+    run: async (signal) =>
+      await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal,
+        body: JSON.stringify({
+          contents: [{ role: "user", parts }],
+        }),
+      }),
   });
 
   if (!res.ok) {

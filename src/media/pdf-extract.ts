@@ -1,3 +1,5 @@
+import { throwIfAborted } from "../utils/abort-timeout.js";
+
 type CanvasModule = typeof import("@napi-rs/canvas");
 type PdfJsModule = typeof import("pdfjs-dist/legacy/build/pdf.mjs");
 
@@ -45,9 +47,12 @@ export async function extractPdfContent(params: {
   maxPixels: number;
   minTextChars: number;
   pageNumbers?: number[];
+  signal?: AbortSignal;
   onImageExtractionError?: (error: unknown) => void;
 }): Promise<PdfExtractedContent> {
-  const { buffer, maxPages, maxPixels, minTextChars, pageNumbers, onImageExtractionError } = params;
+  const { buffer, maxPages, maxPixels, minTextChars, pageNumbers, signal, onImageExtractionError } =
+    params;
+  throwIfAborted(signal);
   const { getDocument } = await loadPdfJsModule();
   const pdf = await getDocument({ data: new Uint8Array(buffer), disableWorker: true }).promise;
 
@@ -57,7 +62,9 @@ export async function extractPdfContent(params: {
 
   const textParts: string[] = [];
   for (const pageNum of effectivePages) {
+    throwIfAborted(signal);
     const page = await pdf.getPage(pageNum);
+    throwIfAborted(signal);
     const textContent = await page.getTextContent();
     const pageText = textContent.items
       .map((item) => ("str" in item ? String(item.str) : ""))
@@ -86,12 +93,14 @@ export async function extractPdfContent(params: {
   const pixelBudget = Math.max(1, maxPixels);
 
   for (const pageNum of effectivePages) {
+    throwIfAborted(signal);
     const page = await pdf.getPage(pageNum);
     const viewport = page.getViewport({ scale: 1 });
     const pagePixels = viewport.width * viewport.height;
     const scale = Math.min(1, Math.sqrt(pixelBudget / Math.max(1, pagePixels)));
     const scaled = page.getViewport({ scale: Math.max(0.1, scale) });
     const canvas = createCanvas(Math.ceil(scaled.width), Math.ceil(scaled.height));
+    throwIfAborted(signal);
     await page.render({
       canvas: canvas as unknown as HTMLCanvasElement,
       viewport: scaled,

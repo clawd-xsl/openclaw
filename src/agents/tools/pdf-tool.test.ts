@@ -68,6 +68,8 @@ function makeAnthropicAnalyzeParams(
     pdfs: Array<{ base64: string; filename: string }>;
     maxTokens: number;
     baseUrl: string;
+    timeoutMs: number;
+    signal: AbortSignal;
   }> = {},
 ) {
   return {
@@ -86,6 +88,8 @@ function makeGeminiAnalyzeParams(
     prompt: string;
     pdfs: Array<{ base64: string; filename: string }>;
     baseUrl: string;
+    timeoutMs: number;
+    signal: AbortSignal;
   }> = {},
 ) {
   return {
@@ -458,6 +462,47 @@ describe("createPdfTool", () => {
     });
   });
 
+  it("passes abort controls to remote loads and native PDF analysis", async () => {
+    await withTempAgentDir(async (agentDir) => {
+      const { loadSpy } = await stubPdfToolInfra(agentDir, {
+        provider: "anthropic",
+        input: ["text", "document"],
+      });
+
+      const nativeProviders = await import("./pdf-native-providers.js");
+      const nativeSpy = vi
+        .spyOn(nativeProviders, "anthropicAnalyzePdf")
+        .mockResolvedValue("native summary");
+
+      const cfg = withPdfModel(ANTHROPIC_PDF_MODEL);
+      const tool = requirePdfTool(createPdfTool({ config: cfg, agentDir }));
+      const controller = new AbortController();
+
+      await tool.execute(
+        "t1",
+        {
+          prompt: "summarize",
+          pdf: "https://example.com/doc.pdf",
+        },
+        controller.signal,
+      );
+
+      expect(loadSpy).toHaveBeenCalledWith(
+        "https://example.com/doc.pdf",
+        expect.objectContaining({
+          signal: controller.signal,
+          remoteTimeoutMs: 30_000,
+        }),
+      );
+      expect(nativeSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          signal: controller.signal,
+          timeoutMs: 120_000,
+        }),
+      );
+    });
+  });
+
   it("rejects pages parameter for native PDF providers", async () => {
     await withTempAgentDir(async (agentDir) => {
       await stubPdfToolInfra(agentDir, { provider: "anthropic", input: ["text", "document"] });
@@ -505,6 +550,59 @@ describe("createPdfTool", () => {
         content: [{ type: "text", text: "fallback summary" }],
         details: { native: false, model: OPENAI_PDF_MODEL },
       });
+    });
+  });
+
+  it("propagates aborts into extraction fallback completion calls", async () => {
+    await withTempAgentDir(async (agentDir) => {
+      await stubPdfToolInfra(agentDir, { provider: "openai", input: ["text"] });
+
+      const extractModule = await import("../../media/pdf-extract.js");
+      vi.spyOn(extractModule, "extractPdfContent").mockResolvedValue({
+        text: "Extracted content",
+        images: [],
+      });
+
+      const piAi = await import("@mariozechner/pi-ai");
+      vi.mocked(piAi.complete).mockImplementation(
+        async (_model, _context, options) =>
+          await new Promise((_resolve, reject) => {
+            const signal = options?.signal;
+            if (!signal) {
+              reject(new Error("missing signal"));
+              return;
+            }
+            const failTimer = setTimeout(() => reject(new Error("abort did not propagate")), 25);
+            signal.addEventListener(
+              "abort",
+              () => {
+                clearTimeout(failTimer);
+                const err = new Error("aborted");
+                err.name = "AbortError";
+                reject(err);
+              },
+              { once: true },
+            );
+          }),
+      );
+
+      const cfg = withPdfModel(OPENAI_PDF_MODEL);
+      const tool = requirePdfTool(createPdfTool({ config: cfg, agentDir }));
+      const controller = new AbortController();
+
+      const promise = tool.execute(
+        "t1",
+        {
+          prompt: "summarize",
+          pdf: "/tmp/doc.pdf",
+        },
+        controller.signal,
+      );
+      await vi.waitFor(() => expect(vi.mocked(piAi.complete)).toHaveBeenCalledTimes(1));
+      controller.abort();
+
+      await expect(promise).rejects.toMatchObject({ name: "AbortError" });
+      expect(vi.mocked(piAi.complete).mock.calls[0]?.[2]?.signal).toBeInstanceOf(AbortSignal);
     });
   });
 
@@ -595,6 +693,39 @@ describe("native PDF provider API calls", () => {
     await expect(anthropicAnalyzePdf(makeAnthropicAnalyzeParams())).rejects.toThrow(
       "Anthropic PDF returned no text",
     );
+  });
+
+  it("anthropicAnalyzePdf aborts hung requests when timeout expires", async () => {
+    const { anthropicAnalyzePdf } = await import("./pdf-native-providers.js");
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const signal = init?.signal;
+      return await new Promise<Response>((_resolve, reject) => {
+        if (!signal) {
+          reject(new Error("missing signal"));
+          return;
+        }
+        signal.addEventListener(
+          "abort",
+          () => {
+            const err = new Error("aborted");
+            err.name = "AbortError";
+            reject(err);
+          },
+          { once: true },
+        );
+      });
+    });
+    global.fetch = Object.assign(fetchMock, { preconnect: vi.fn() }) as typeof global.fetch;
+
+    await expect(
+      anthropicAnalyzePdf(
+        makeAnthropicAnalyzeParams({
+          timeoutMs: 5,
+        }),
+      ),
+    ).rejects.toMatchObject({ name: "TimeoutError" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
   });
 
   it("geminiAnalyzePdf sends correct request shape", async () => {

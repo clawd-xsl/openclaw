@@ -4,6 +4,7 @@ import { loadWebMediaRaw } from "../../../extensions/whatsapp/src/media.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { extractPdfContent, type PdfExtractedContent } from "../../media/pdf-extract.js";
 import { resolveUserPath } from "../../utils.js";
+import { runWithAbortTimeout, throwIfAborted } from "../../utils/abort-timeout.js";
 import {
   coerceImageModelConfig,
   type ImageModelConfig,
@@ -48,6 +49,8 @@ const ANTHROPIC_PDF_FALLBACK = "anthropic/claude-opus-4-5";
 
 const PDF_MIN_TEXT_CHARS = 200;
 const PDF_MAX_PIXELS = 4_000_000;
+const PDF_REMOTE_FETCH_TIMEOUT_MS = 30_000;
+const PDF_MODEL_TIMEOUT_MS = 120_000;
 
 // ---------------------------------------------------------------------------
 // Model resolution (mirrors image tool pattern)
@@ -174,6 +177,7 @@ async function runPdfPrompt(params: {
   pdfBuffers: Array<{ base64: string; filename: string }>;
   pageNumbers?: number[];
   getExtractions: () => Promise<PdfExtractedContent[]>;
+  signal?: AbortSignal;
 }): Promise<{
   text: string;
   provider: string;
@@ -182,6 +186,7 @@ async function runPdfPrompt(params: {
   attempts: Array<{ provider: string; model: string; error: string }>;
 }> {
   const effectiveCfg = applyImageModelConfigDefaults(params.cfg, params.pdfModelConfig);
+  throwIfAborted(params.signal);
 
   await ensureOpenClawModelsJson(effectiveCfg, params.agentDir);
   const authStorage = discoverAuthStorage(params.agentDir);
@@ -199,6 +204,7 @@ async function runPdfPrompt(params: {
     cfg: effectiveCfg,
     modelOverride: params.modelOverride,
     run: async (provider, modelId) => {
+      throwIfAborted(params.signal);
       const model = resolveModelFromRegistry({ modelRegistry, provider, modelId });
       const apiKey = await resolveModelRuntimeApiKey({
         model,
@@ -227,6 +233,8 @@ async function runPdfPrompt(params: {
             pdfs,
             maxTokens: resolvePdfToolMaxTokens(model.maxTokens),
             baseUrl: model.baseUrl,
+            timeoutMs: PDF_MODEL_TIMEOUT_MS,
+            signal: params.signal,
           });
           return { text, provider, model: modelId, native: true };
         }
@@ -238,6 +246,8 @@ async function runPdfPrompt(params: {
             prompt: params.prompt,
             pdfs,
             baseUrl: model.baseUrl,
+            timeoutMs: PDF_MODEL_TIMEOUT_MS,
+            signal: params.signal,
           });
           return { text, provider, model: modelId, native: true };
         }
@@ -257,18 +267,32 @@ async function runPdfPrompt(params: {
           images: [],
         }));
         const context = buildPdfExtractionContext(params.prompt, textOnlyExtractions);
-        const message = await complete(model, context, {
-          apiKey,
-          maxTokens: resolvePdfToolMaxTokens(model.maxTokens),
+        const message = await runWithAbortTimeout({
+          signal: params.signal,
+          timeoutMs: PDF_MODEL_TIMEOUT_MS,
+          timeoutMessage: `PDF analysis timed out after ${Math.ceil(PDF_MODEL_TIMEOUT_MS / 1000)}s`,
+          run: async (signal) =>
+            await complete(model, context, {
+              apiKey,
+              maxTokens: resolvePdfToolMaxTokens(model.maxTokens),
+              signal,
+            }),
         });
         const text = coercePdfAssistantText({ message, provider, model: modelId });
         return { text, provider, model: modelId, native: false };
       }
 
       const context = buildPdfExtractionContext(params.prompt, extractions);
-      const message = await complete(model, context, {
-        apiKey,
-        maxTokens: resolvePdfToolMaxTokens(model.maxTokens),
+      const message = await runWithAbortTimeout({
+        signal: params.signal,
+        timeoutMs: PDF_MODEL_TIMEOUT_MS,
+        timeoutMessage: `PDF analysis timed out after ${Math.ceil(PDF_MODEL_TIMEOUT_MS / 1000)}s`,
+        run: async (signal) =>
+          await complete(model, context, {
+            apiKey,
+            maxTokens: resolvePdfToolMaxTokens(model.maxTokens),
+            signal,
+          }),
       });
       const text = coercePdfAssistantText({ message, provider, model: modelId });
       return { text, provider, model: modelId, native: false };
@@ -354,8 +378,9 @@ export function createPdfTool(options?: {
       model: Type.Optional(Type.String()),
       maxBytesMb: Type.Optional(Type.Number()),
     }),
-    execute: async (_toolCallId, args) => {
+    execute: async (_toolCallId, args, signal) => {
       const record = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
+      throwIfAborted(signal);
 
       // MARK: - Normalize pdf + pdfs input
       const pdfCandidates: string[] = [];
@@ -427,6 +452,7 @@ export function createPdfTool(options?: {
       }> = [];
 
       for (const pdfRaw of pdfInputs) {
+        throwIfAborted(signal);
         const trimmed = pdfRaw.trim();
         const isHttpUrl = /^https?:\/\//i.test(trimmed);
         const isFileUrl = /^file:/i.test(trimmed);
@@ -475,11 +501,15 @@ export function createPdfTool(options?: {
         const media = sandboxConfig
           ? await loadWebMediaRaw(resolvedPathInfo.resolved, {
               maxBytes,
+              signal,
+              remoteTimeoutMs: PDF_REMOTE_FETCH_TIMEOUT_MS,
               sandboxValidated: true,
               readFile: createSandboxBridgeReadFile({ sandbox: sandboxConfig }),
             })
           : await loadWebMediaRaw(resolvedPathInfo.resolved, {
               maxBytes,
+              signal,
+              remoteTimeoutMs: PDF_REMOTE_FETCH_TIMEOUT_MS,
               localRoots,
             });
 
@@ -514,12 +544,14 @@ export function createPdfTool(options?: {
       const getExtractions = async (): Promise<PdfExtractedContent[]> => {
         const extractedAll: PdfExtractedContent[] = [];
         for (const pdf of loadedPdfs) {
+          throwIfAborted(signal);
           const extracted = await extractPdfContent({
             buffer: pdf.buffer,
             maxPages: configuredMaxPages,
             maxPixels: PDF_MAX_PIXELS,
             minTextChars: PDF_MIN_TEXT_CHARS,
             pageNumbers,
+            signal,
           });
           extractedAll.push(extracted);
         }
@@ -535,6 +567,7 @@ export function createPdfTool(options?: {
         pdfBuffers: loadedPdfs.map((p) => ({ base64: p.base64, filename: p.filename })),
         pageNumbers,
         getExtractions,
+        signal,
       });
 
       const pdfDetails =

@@ -95,6 +95,62 @@ describe("fetchRemoteMedia", () => {
     });
   }, 5_000);
 
+  it("passes caller abort signals through guarded fetch", async () => {
+    const controller = new AbortController();
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(init?.signal).toBe(controller.signal);
+      return new Response(makeStream([new Uint8Array([1, 2, 3])]), {
+        status: 200,
+        headers: { "content-type": "application/pdf" },
+      });
+    });
+
+    const result = await fetchRemoteMedia({
+      url: "https://example.com/file.pdf",
+      fetchImpl,
+      lookupFn: makeLookupFn(),
+      maxBytes: 1024,
+      signal: controller.signal,
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(result.buffer).toEqual(Buffer.from([1, 2, 3]));
+  });
+
+  it("aborts fetches when timeoutMs expires", async () => {
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const signal = init?.signal;
+      return await new Promise<Response>((_resolve, reject) => {
+        if (!signal) {
+          reject(new Error("missing signal"));
+          return;
+        }
+        signal.addEventListener(
+          "abort",
+          () => {
+            const err = new Error("timed out");
+            err.name = "AbortError";
+            reject(err);
+          },
+          { once: true },
+        );
+      });
+    });
+
+    await expect(
+      fetchRemoteMedia({
+        url: "https://example.com/file.pdf",
+        fetchImpl,
+        lookupFn: makeLookupFn(),
+        maxBytes: 1024,
+        timeoutMs: 5,
+      }),
+    ).rejects.toMatchObject({
+      code: "fetch_failed",
+      name: "MediaFetchError",
+    });
+  });
+
   it("redacts Telegram bot tokens from fetch failure messages", async () => {
     const fetchImpl = vi.fn(async () => {
       throw new Error(`dial failed for ${telegramFileUrl}`);
