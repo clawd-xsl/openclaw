@@ -62,6 +62,14 @@ function expectedGatewayUrl(basePath: string): string {
   return `${proto}://${location.host}${basePath}`;
 }
 
+function tokenStorageKey(gatewayUrl: string): string {
+  return `openclaw.control.token.v1:${gatewayUrl}`;
+}
+
+function readStoredToken(gatewayUrl: string): string | null {
+  return localStorage.getItem(tokenStorageKey(gatewayUrl));
+}
+
 describe("loadSettings default gateway URL derivation", () => {
   beforeEach(() => {
     vi.resetModules();
@@ -102,13 +110,12 @@ describe("loadSettings default gateway URL derivation", () => {
     expect(loadSettings().gatewayUrl).toBe(expectedGatewayUrl("/apps/openclaw"));
   });
 
-  it("ignores and scrubs legacy persisted tokens", async () => {
+  it("migrates legacy persisted tokens into scoped localStorage", async () => {
     setTestLocation({
       protocol: "https:",
       host: "gateway.example:8443",
       pathname: "/",
     });
-    sessionStorage.setItem("openclaw.control.token.v1", "legacy-session-token");
     localStorage.setItem(
       "openclaw.control.settings.v1",
       JSON.stringify({
@@ -121,7 +128,7 @@ describe("loadSettings default gateway URL derivation", () => {
     const { loadSettings } = await import("./storage.ts");
     expect(loadSettings()).toMatchObject({
       gatewayUrl: "wss://gateway.example:8443/openclaw",
-      token: "",
+      token: "persisted-token",
       sessionKey: "agent",
     });
     expect(JSON.parse(localStorage.getItem("openclaw.control.settings.v1") ?? "{}")).toEqual({
@@ -137,39 +144,34 @@ describe("loadSettings default gateway URL derivation", () => {
       navWidth: 220,
       navGroupsCollapsed: {},
     });
+    expect(readStoredToken("wss://gateway.example:8443/openclaw")).toBe("persisted-token");
     expect(sessionStorage.length).toBe(0);
   });
 
-  it("loads the current-tab token from sessionStorage", async () => {
+  it("migrates session tokens into persistent localStorage", async () => {
     setTestLocation({
       protocol: "https:",
       host: "gateway.example:8443",
       pathname: "/",
     });
+    sessionStorage.setItem(tokenStorageKey("wss://gateway.example:8443/openclaw"), "session-token");
+    localStorage.setItem(
+      "openclaw.control.settings.v1",
+      JSON.stringify({
+        gatewayUrl: "wss://gateway.example:8443/openclaw",
+      }),
+    );
 
-    const { loadSettings, saveSettings } = await import("./storage.ts");
-    saveSettings({
-      gatewayUrl: "wss://gateway.example:8443/openclaw",
-      token: "session-token",
-      sessionKey: "main",
-      lastActiveSessionKey: "main",
-      theme: "claw",
-      themeMode: "system",
-      chatFocusMode: false,
-      chatShowThinking: true,
-      splitRatio: 0.6,
-      navCollapsed: false,
-      navWidth: 220,
-      navGroupsCollapsed: {},
-    });
-
+    const { loadSettings } = await import("./storage.ts");
     expect(loadSettings()).toMatchObject({
       gatewayUrl: "wss://gateway.example:8443/openclaw",
       token: "session-token",
     });
+    expect(readStoredToken("wss://gateway.example:8443/openclaw")).toBe("session-token");
+    expect(sessionStorage.length).toBe(0);
   });
 
-  it("does not reuse a session token for a different gatewayUrl", async () => {
+  it("does not reuse a remembered token for a different gatewayUrl", async () => {
     setTestLocation({
       protocol: "https:",
       host: "gateway.example:8443",
@@ -215,7 +217,7 @@ describe("loadSettings default gateway URL derivation", () => {
     });
   });
 
-  it("does not persist gateway tokens when saving settings", async () => {
+  it("persists gateway tokens separately from settings metadata", async () => {
     setTestLocation({
       protocol: "https:",
       host: "gateway.example:8443",
@@ -255,10 +257,11 @@ describe("loadSettings default gateway URL derivation", () => {
       navWidth: 220,
       navGroupsCollapsed: {},
     });
-    expect(sessionStorage.length).toBe(1);
+    expect(readStoredToken("wss://gateway.example:8443/openclaw")).toBe("memory-only-token");
+    expect(sessionStorage.length).toBe(0);
   });
 
-  it("clears the current-tab token when saving an empty token", async () => {
+  it("clears the remembered token when saving an empty token", async () => {
     setTestLocation({
       protocol: "https:",
       host: "gateway.example:8443",
@@ -297,6 +300,7 @@ describe("loadSettings default gateway URL derivation", () => {
 
     expect(loadSettings().token).toBe("");
     expect(sessionStorage.length).toBe(0);
+    expect(readStoredToken("wss://gateway.example:8443/openclaw")).toBeNull();
   });
 
   it("persists themeMode and navWidth alongside the selected theme", async () => {

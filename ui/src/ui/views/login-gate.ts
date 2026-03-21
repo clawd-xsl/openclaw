@@ -4,6 +4,7 @@ import { renderThemeToggle } from "../app-render.helpers.ts";
 import type { AppViewState } from "../app-view-state.ts";
 import { icons } from "../icons.ts";
 import { normalizeBasePath } from "../navigation.ts";
+import { loadSavedTokenForGatewayUrl } from "../storage.ts";
 import { agentLogoUrl } from "./agents-utils.ts";
 
 export function renderLoginGate(state: AppViewState) {
@@ -26,7 +27,14 @@ export function renderLoginGate(state: AppViewState) {
               .value=${state.settings.gatewayUrl}
               @input=${(e: Event) => {
                 const v = (e.target as HTMLInputElement).value;
-                state.applySettings({ ...state.settings, gatewayUrl: v });
+                state.applySettings({
+                  ...state.settings,
+                  gatewayUrl: v,
+                  token:
+                    v.trim() === state.settings.gatewayUrl.trim()
+                      ? state.settings.token
+                      : loadSavedTokenForGatewayUrl(v),
+                });
               }}
               placeholder="ws://127.0.0.1:18789"
             />

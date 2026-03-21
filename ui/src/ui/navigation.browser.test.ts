@@ -14,6 +14,10 @@ function nextFrame() {
   });
 }
 
+function storeRememberedToken(gatewayUrl: string, token: string) {
+  localStorage.setItem(`openclaw.control.token.v1:${gatewayUrl}`, token);
+}
+
 describe("control UI routing", () => {
   it("hydrates the tab from the location", async () => {
     const app = mountApp("/sessions");
@@ -420,6 +424,26 @@ describe("control UI routing", () => {
     expect(window.location.hash).toBe("");
   });
 
+  it("restores a remembered token when confirming a tokenless gateway URL change", async () => {
+    storeRememberedToken("wss://other-gateway.example/openclaw", "remembered-token");
+
+    const app = mountApp("/ui/overview?gatewayUrl=wss://other-gateway.example/openclaw");
+    await app.updateComplete;
+
+    expect(app.settings.gatewayUrl).not.toBe("wss://other-gateway.example/openclaw");
+    expect(app.settings.token).toBe("");
+
+    const confirmButton = Array.from(app.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent?.trim() === "Confirm",
+    );
+    expect(confirmButton).not.toBeUndefined();
+    confirmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    await app.updateComplete;
+
+    expect(app.settings.gatewayUrl).toBe("wss://other-gateway.example/openclaw");
+    expect(app.settings.token).toBe("remembered-token");
+  });
+
   it("restores the token after a same-tab refresh", async () => {
     const first = mountApp("/ui/overview#token=abc123");
     await first.updateComplete;
@@ -432,5 +456,22 @@ describe("control UI routing", () => {
     expect(JSON.parse(localStorage.getItem("openclaw.control.settings.v1") ?? "{}").token).toBe(
       undefined,
     );
+  });
+
+  it("loads a remembered token when the gateway URL changes to a known gateway", async () => {
+    const app = mountApp("/ui/overview#token=abc123");
+    await app.updateComplete;
+    storeRememberedToken("wss://other-gateway.example/openclaw", "other-token");
+
+    const gatewayUrlInput = app.querySelector<HTMLInputElement>(
+      'input[placeholder="ws://100.x.y.z:18789"]',
+    );
+    expect(gatewayUrlInput).not.toBeNull();
+    gatewayUrlInput!.value = "wss://other-gateway.example/openclaw";
+    gatewayUrlInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    await app.updateComplete;
+
+    expect(app.settings.gatewayUrl).toBe("wss://other-gateway.example/openclaw");
+    expect(app.settings.token).toBe("other-token");
   });
 });

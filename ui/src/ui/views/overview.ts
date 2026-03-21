@@ -5,7 +5,7 @@ import { buildExternalLinkRel, EXTERNAL_LINK_TARGET } from "../external-link.ts"
 import { formatRelativeTimestamp, formatDurationHuman } from "../format.ts";
 import type { GatewayHelloOk } from "../gateway.ts";
 import { icons } from "../icons.ts";
-import type { UiSettings } from "../storage.ts";
+import { loadSavedTokenForGatewayUrl, type UiSettings } from "../storage.ts";
 import type {
   AttentionItem,
   CronJob,
@@ -207,7 +207,10 @@ export function renderOverview(props: OverviewProps) {
                 props.onSettingsChange({
                   ...props.settings,
                   gatewayUrl: v,
-                  token: v.trim() === props.settings.gatewayUrl.trim() ? props.settings.token : "",
+                  token:
+                    v.trim() === props.settings.gatewayUrl.trim()
+                      ? props.settings.token
+                      : loadSavedTokenForGatewayUrl(v),
                 });
               }}
               placeholder="ws://100.x.y.z:18789"
