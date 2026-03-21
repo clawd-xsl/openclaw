@@ -517,6 +517,49 @@ describe("agentCommand", () => {
     });
   });
 
+  it("includes timedOut in lifecycle end events for embedded runs", async () => {
+    await withTempHome(async (home) => {
+      const store = path.join(home, "sessions.json");
+      mockConfig(home, store);
+
+      const lifecycleEnds: Array<{
+        aborted?: boolean;
+        timedOut?: boolean;
+        stopReason?: string;
+      }> = [];
+      const stop = onAgentEvent((evt) => {
+        if (evt.stream !== "lifecycle" || evt.data?.phase !== "end") {
+          return;
+        }
+        lifecycleEnds.push({
+          aborted: evt.data?.aborted === true,
+          timedOut: evt.data?.timedOut === true,
+          stopReason: typeof evt.data?.stopReason === "string" ? evt.data.stopReason : undefined,
+        });
+      });
+
+      vi.mocked(runEmbeddedPiAgent).mockResolvedValueOnce({
+        payloads: [{ text: "timeout" }],
+        meta: {
+          durationMs: 5,
+          agentMeta: { sessionId: "s", provider: "p", model: "m" },
+          aborted: true,
+          timedOut: true,
+          stopReason: "aborted",
+        },
+      } as never);
+
+      await agentCommand({ message: "hi", to: "+1555" }, runtime);
+      stop();
+
+      expect(lifecycleEnds.at(-1)).toEqual({
+        aborted: true,
+        timedOut: true,
+        stopReason: "aborted",
+      });
+    });
+  });
+
   it("uses provider/model from agents.defaults.model.primary", async () => {
     await withTempHome(async (home) => {
       const store = path.join(home, "sessions.json");

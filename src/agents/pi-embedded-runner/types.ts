@@ -34,6 +34,7 @@ export type EmbeddedPiRunMeta = {
   durationMs: number;
   agentMeta?: EmbeddedPiAgentMeta;
   aborted?: boolean;
+  timedOut?: boolean;
   systemPromptReport?: SessionSystemPromptReport;
   error?: {
     kind:

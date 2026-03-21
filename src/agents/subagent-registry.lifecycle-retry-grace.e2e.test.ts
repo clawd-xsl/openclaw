@@ -9,6 +9,7 @@ type LifecycleData = {
   startedAt?: number;
   endedAt?: number;
   aborted?: boolean;
+  timedOut?: boolean;
   error?: string;
 };
 type LifecycleEvent = {
@@ -19,14 +20,15 @@ type LifecycleEvent = {
 };
 
 let lifecycleHandler: ((evt: LifecycleEvent) => void) | undefined;
-const callGatewayMock = vi.fn(async (request: unknown) => {
+const defaultCallGatewayImpl = async (request: unknown) => {
   const method = (request as { method?: string }).method;
   if (method === "agent.wait") {
     // Keep wait unresolved from the RPC path so lifecycle fallback logic is exercised.
     return { status: "pending" };
   }
   return {};
-});
+};
+const callGatewayMock = vi.fn(defaultCallGatewayImpl);
 const onAgentEventMock = vi.fn((handler: typeof lifecycleHandler) => {
   lifecycleHandler = handler;
   return noop;
@@ -80,6 +82,7 @@ describe("subagent registry lifecycle error grace", () => {
 
   beforeEach(() => {
     vi.useFakeTimers();
+    callGatewayMock.mockReset().mockImplementation(defaultCallGatewayImpl);
     announceSpy.mockReset().mockResolvedValue(true);
     captureCompletionReplySpy.mockReset().mockResolvedValue(undefined);
   });
@@ -183,6 +186,21 @@ describe("subagent registry lifecycle error grace", () => {
     expect(readFirstAnnounceOutcome()?.status).toBe("ok");
   });
 
+  it("announces timeout only when lifecycle end sets timedOut=true", async () => {
+    registerCompletionRun("run-terminal-timeout", "terminal-timeout", "terminal timeout test");
+
+    emitLifecycleEvent("run-terminal-timeout", {
+      phase: "end",
+      endedAt: 1_500,
+      aborted: true,
+      timedOut: true,
+    });
+    await flushAsync();
+
+    expect(announceSpy).toHaveBeenCalledTimes(1);
+    expect(readFirstAnnounceOutcome()?.status).toBe("timeout");
+  });
+
   it("announces error when lifecycle error remains terminal after grace window", async () => {
     registerCompletionRun("run-terminal-error", "terminal-error", "terminal error test");
 
@@ -200,6 +218,31 @@ describe("subagent registry lifecycle error grace", () => {
     expect(announceSpy).toHaveBeenCalledTimes(1);
     expect(readFirstAnnounceOutcome()?.status).toBe("error");
     expect(readFirstAnnounceOutcome()?.error).toBe("fatal failure");
+  });
+
+  it("keeps the run active when agent.wait expires without a terminal snapshot", async () => {
+    callGatewayMock.mockImplementationOnce(async (request: unknown) => {
+      const method = (request as { method?: string }).method;
+      if (method === "agent.wait") {
+        return { status: "timeout", startedAt: 2_000 };
+      }
+      return {};
+    });
+
+    registerCompletionRun("run-wait-expired", "wait-expired", "wait expiry test");
+    await flushAsync();
+
+    expect(announceSpy).not.toHaveBeenCalled();
+    const run = mod
+      .listSubagentRunsForRequester(MAIN_REQUESTER_SESSION_KEY)
+      .find((candidate) => candidate.runId === "run-wait-expired");
+    expect(run).toMatchObject({
+      runId: "run-wait-expired",
+      startedAt: 2_000,
+    });
+    expect(run?.endedAt).toBeUndefined();
+    expect(run?.outcome).toBeUndefined();
+    expect(run?.cleanupCompletedAt).toBeUndefined();
   });
 
   it("freezes completion result at run termination across deferred announce retries", async () => {

@@ -807,7 +807,7 @@ function ensureListener() {
         return;
       }
       clearPendingLifecycleError(evt.runId);
-      const outcome: SubagentRunOutcome = evt.data?.aborted
+      const outcome: SubagentRunOutcome = evt.data?.timedOut
         ? { status: "timeout" }
         : { status: "ok" };
       await completeSubagentRun({
@@ -1258,6 +1258,18 @@ async function waitForSubagentCompletion(runId: string, waitTimeoutMs: number) {
       entry.startedAt = wait.startedAt;
       mutated = true;
     }
+    // A waiter-side timeout without terminal metadata only means we stopped
+    // waiting, not that the child run truly timed out.
+    if (wait.status === "timeout" && typeof wait.endedAt !== "number") {
+      if (mutated) {
+        persistSubagentRuns();
+      }
+      const durationMs = entry.startedAt ? Date.now() - entry.startedAt : undefined;
+      defaultRuntime.log(
+        `[warn] Subagent wait expired without terminal snapshot: run=${runId} child=${entry.childSessionKey} runTimeoutSeconds=${entry.runTimeoutSeconds} waitTimeoutMs=${waitTimeoutMs} durationMs=${durationMs} wait=${JSON.stringify(wait)}`,
+      );
+      return;
+    }
     if (typeof wait.endedAt === "number") {
       entry.endedAt = wait.endedAt;
       mutated = true;
@@ -1273,6 +1285,12 @@ async function waitForSubagentCompletion(runId: string, waitTimeoutMs: number) {
         : wait.status === "timeout"
           ? { status: "timeout" }
           : { status: "ok" };
+    if (outcome.status === "timeout") {
+      const durationMs = entry.startedAt ? Date.now() - entry.startedAt : undefined;
+      defaultRuntime.log(
+        `[warn] Subagent wait returned timeout: run=${runId} child=${entry.childSessionKey} runTimeoutSeconds=${entry.runTimeoutSeconds} waitTimeoutMs=${waitTimeoutMs} durationMs=${durationMs} wait=${JSON.stringify(wait)}`,
+      );
+    }
     if (!runOutcomesEqual(entry.outcome, outcome)) {
       entry.outcome = outcome;
       mutated = true;

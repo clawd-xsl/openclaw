@@ -88,7 +88,7 @@ function createSnapshotFromLifecycleEvent(params: {
   const error = typeof data?.error === "string" ? data.error : undefined;
   return {
     runId,
-    status: phase === "error" ? "error" : data?.aborted ? "timeout" : "ok",
+    status: phase === "error" ? "error" : data?.timedOut ? "timeout" : "ok",
     startedAt,
     endedAt,
     error,
