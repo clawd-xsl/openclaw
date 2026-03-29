@@ -10,7 +10,7 @@ import type { MsgContext } from "../../auto-reply/templating.js";
 import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../../auto-reply/tokens.js";
 import type { ReplyPayload } from "../../auto-reply/types.js";
 import { createReplyPrefixOptions } from "../../channels/reply-prefix.js";
-import { resolveSessionFilePath } from "../../config/sessions.js";
+import { resolveSessionFilePath, updateSessionStoreEntry } from "../../config/sessions.js";
 import { jsonUtf8Bytes } from "../../infra/json-utf8-bytes.js";
 import { normalizeInputProvenance, type InputProvenance } from "../../sessions/input-provenance.js";
 import { resolveSendPolicy } from "../../sessions/send-policy.js";
@@ -1186,7 +1186,7 @@ export const chatHandlers: GatewayRequestHandlers = {
       }
     }
     const rawSessionKey = p.sessionKey;
-    const { cfg, entry, canonicalKey: sessionKey } = loadSessionEntry(rawSessionKey);
+    const { cfg, storePath, entry, canonicalKey: sessionKey } = loadSessionEntry(rawSessionKey);
     const timeoutMs = resolveAgentTimeoutMs({
       cfg,
       overrideMs: p.timeoutMs,
@@ -1335,6 +1335,25 @@ export const chatHandlers: GatewayRequestHandlers = {
           deliveredReplies.push({ payload, kind: info.kind });
         },
       });
+
+      // Touch the session's updatedAt so the downstream freshness check
+      // (initSessionState → evaluateSessionFreshness) sees activity and reuses
+      // the existing sessionId instead of generating a new one.  Without this,
+      // sessions idle longer than the configured idleMinutes (default 60 min)
+      // would get a fresh sessionId and lose their conversation history.
+      // This mirrors what the gateway `agent` handler does before dispatch.
+      if (storePath && entry?.sessionId) {
+        try {
+          await updateSessionStoreEntry({
+            storePath,
+            sessionKey,
+            update: () => ({ updatedAt: Date.now() }),
+          });
+        } catch {
+          // Best-effort: if the touch fails the worst case is a session reset
+          // for idle sessions, which is the pre-fix behavior.
+        }
+      }
 
       let agentRunStarted = false;
       void dispatchInboundMessage({
