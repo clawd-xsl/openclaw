@@ -37,6 +37,7 @@ type DebounceBuffer<T> = {
   items: T[];
   timeout: ReturnType<typeof setTimeout> | null;
   debounceMs: number;
+  flushing: boolean;
 };
 
 export type InboundDebounceCreateParams<T> = {
@@ -61,18 +62,49 @@ export function createInboundDebouncer<T>(params: InboundDebounceCreateParams<T>
   };
 
   const flushBuffer = async (key: string, buffer: DebounceBuffer<T>) => {
-    buffers.delete(key);
     if (buffer.timeout) {
       clearTimeout(buffer.timeout);
       buffer.timeout = null;
     }
     if (buffer.items.length === 0) {
+      buffers.delete(key);
       return;
     }
-    try {
-      await params.onFlush(buffer.items);
-    } catch (err) {
-      params.onError?.(err, buffer.items);
+
+    buffer.flushing = true;
+    const maxRetries = 3;
+    const baseDelayMs = 1000;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      // Snapshot the current items for this flush attempt.
+      const itemsToFlush = buffer.items.slice();
+      try {
+        await params.onFlush(itemsToFlush);
+        // Success: remove only the flushed items (new ones may have been appended during the await).
+        buffer.flushing = false;
+        buffer.items.splice(0, itemsToFlush.length);
+        if (buffer.items.length === 0) {
+          buffers.delete(key);
+        } else {
+          // New items arrived during flush — schedule another flush for them.
+          scheduleFlush(key, buffer);
+        }
+        return;
+      } catch (err) {
+        if (attempt < maxRetries) {
+          // Exponential backoff: 1s, 2s, 4s
+          const delay = baseDelayMs * Math.pow(2, attempt);
+          await new Promise<void>((resolve) => setTimeout(resolve, delay));
+          // After waiting, the buffer may have new items appended — loop will
+          // re-snapshot buffer.items so the retry includes them.
+          continue;
+        }
+        // All retries exhausted — unrecoverable.
+        buffer.flushing = false;
+        params.onError?.(err, buffer.items);
+        buffer.items.length = 0;
+        buffers.delete(key);
+      }
     }
   };
 
@@ -115,11 +147,15 @@ export function createInboundDebouncer<T>(params: InboundDebounceCreateParams<T>
     if (existing) {
       existing.items.push(item);
       existing.debounceMs = debounceMs;
-      scheduleFlush(key, existing);
+      // If the buffer is currently being flushed (with retries), just append;
+      // the retry loop will pick up new items on the next attempt.
+      if (!existing.flushing) {
+        scheduleFlush(key, existing);
+      }
       return;
     }
 
-    const buffer: DebounceBuffer<T> = { items: [item], timeout: null, debounceMs };
+    const buffer: DebounceBuffer<T> = { items: [item], timeout: null, debounceMs, flushing: false };
     buffers.set(key, buffer);
     scheduleFlush(key, buffer);
   };
