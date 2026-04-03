@@ -234,8 +234,8 @@ describe("markAuthProfileFailure", () => {
       expect(stats?.errorCount).toBe(1);
       expect(stats?.failureCounts?.rate_limit).toBe(1);
       const cooldownMs = (stats?.cooldownUntil ?? 0) - now;
-      // calculateAuthProfileCooldownMs(1) = 60_000 (1 minute)
-      expect(cooldownMs).toBeLessThan(120_000);
+      // calculateAuthProfileCooldownMs(1) = 5_000 (5 seconds)
+      expect(cooldownMs).toBeLessThan(10_000);
       expect(cooldownMs).toBeGreaterThan(0);
     } finally {
       fs.rmSync(agentDir, { recursive: true, force: true });
@@ -268,10 +268,10 @@ describe("markAuthProfileFailure", () => {
 
 describe("calculateAuthProfileCooldownMs", () => {
   it("applies exponential backoff with a 1h cap", () => {
-    expect(calculateAuthProfileCooldownMs(1)).toBe(60_000);
-    expect(calculateAuthProfileCooldownMs(2)).toBe(5 * 60_000);
-    expect(calculateAuthProfileCooldownMs(3)).toBe(25 * 60_000);
-    expect(calculateAuthProfileCooldownMs(4)).toBe(60 * 60_000);
-    expect(calculateAuthProfileCooldownMs(5)).toBe(60 * 60_000);
+    expect(calculateAuthProfileCooldownMs(1)).toBe(5_000);
+    expect(calculateAuthProfileCooldownMs(2)).toBe(15_000);
+    expect(calculateAuthProfileCooldownMs(3)).toBe(45_000);
+    expect(calculateAuthProfileCooldownMs(4)).toBe(135_000);
+    expect(calculateAuthProfileCooldownMs(5)).toBe(180_000); // 3 min cap
   });
 });

@@ -276,8 +276,8 @@ export async function markAuthProfileUsed(params: {
 export function calculateAuthProfileCooldownMs(errorCount: number): number {
   const normalized = Math.max(1, errorCount);
   return Math.min(
-    60 * 60 * 1000, // 1 hour max
-    60 * 1000 * 5 ** Math.min(normalized - 1, 3),
+    3 * 60 * 1000, // 3 minutes max
+    5 * 1000 * 3 ** Math.min(normalized - 1, 4),
   );
 }
 
