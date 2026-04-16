@@ -14,6 +14,10 @@ function nextFrame() {
   });
 }
 
+function storeRememberedToken(gatewayUrl: string, token: string) {
+  sessionStorage.setItem(`openclaw.control.token.v1:${gatewayUrl}`, token);
+}
+
 function findConfirmButton(app: ReturnType<typeof mountApp>) {
   return Array.from(app.querySelectorAll<HTMLButtonElement>("button")).find(
     (button) => button.textContent?.trim() === "Confirm",
@@ -533,6 +537,24 @@ describe("control UI routing", () => {
     expect(app.settings.token).toBe("");
   });
 
+  it("restores a same-tab remembered token when the gateway URL changes to a known gateway", async () => {
+    storeRememberedToken("wss://other-gateway.example/openclaw", "remembered-token");
+
+    const app = mountApp("/ui/overview#token=abc123");
+    await app.updateComplete;
+
+    const gatewayUrlInput = app.querySelector<HTMLInputElement>(
+      'input[placeholder="ws://100.x.y.z:18789"]',
+    );
+    expect(gatewayUrlInput).not.toBeNull();
+    gatewayUrlInput!.value = "wss://other-gateway.example/openclaw";
+    gatewayUrlInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    await app.updateComplete;
+
+    expect(app.settings.gatewayUrl).toBe("wss://other-gateway.example/openclaw");
+    expect(app.settings.token).toBe("remembered-token");
+  });
+
   it("keeps a hash token pending until the gateway URL change is confirmed", async () => {
     const app = mountApp(
       "/ui/overview?gatewayUrl=wss://other-gateway.example/openclaw#token=abc123",
@@ -559,6 +581,21 @@ describe("control UI routing", () => {
     await confirmPendingGatewayChange(app);
 
     expectConfirmedGatewayChange(app);
+  });
+
+  it("restores a same-tab remembered token when confirming a tokenless gateway URL change", async () => {
+    storeRememberedToken("wss://other-gateway.example/openclaw", "remembered-token");
+
+    const app = mountApp("/ui/overview?gatewayUrl=wss://other-gateway.example/openclaw");
+    await app.updateComplete;
+
+    expect(app.settings.gatewayUrl).not.toBe("wss://other-gateway.example/openclaw");
+    expect(app.settings.token).toBe("");
+
+    await confirmPendingGatewayChange(app);
+
+    expect(app.settings.gatewayUrl).toBe("wss://other-gateway.example/openclaw");
+    expect(app.settings.token).toBe("remembered-token");
   });
 
   it("restores the token after a same-tab refresh", async () => {

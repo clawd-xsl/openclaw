@@ -114,6 +114,7 @@ import {
   updateSkillEdit,
   updateSkillEnabled,
 } from "./controllers/skills.ts";
+import { loadSummaries } from "./controllers/summaries.ts";
 import { buildExternalLinkRel, EXTERNAL_LINK_TARGET } from "./external-link.ts";
 import "./components/dashboard-header.ts";
 import { icons } from "./icons.ts";
@@ -167,6 +168,7 @@ const lazyInstances = createLazy(() => import("./views/instances.ts"));
 const lazyLogs = createLazy(() => import("./views/logs.ts"));
 const lazyNodes = createLazy(() => import("./views/nodes.ts"));
 const lazySessions = createLazy(() => import("./views/sessions.ts"));
+const lazySummaries = createLazy(() => import("./views/summaries.ts"));
 const lazySkills = createLazy(() => import("./views/skills.ts"));
 
 function formatDreamNextCycle(nextRunAtMs: number | undefined): string | null {
@@ -1288,6 +1290,32 @@ export function renderApp(state: AppViewState) {
                 },
                 onRestoreCheckpoint: (sessionKey, checkpointId) =>
                   restoreSessionFromCheckpoint(state, sessionKey, checkpointId),
+              }),
+            )
+          : nothing}
+        ${state.tab === "summaries"
+          ? lazyRender(lazySummaries, (m) =>
+              m.renderSummaries({
+                loading: state.summariesLoading,
+                result: state.summariesResult,
+                error: state.summariesError,
+                filterKey: state.summariesFilterKey,
+                filterQuery: state.summariesFilterQuery,
+                filterFrom: state.summariesFilterFrom,
+                filterTo: state.summariesFilterTo,
+                page: state.summariesPage,
+                pageSize: state.summariesPageSize,
+                onFiltersChange: (next) => {
+                  state.summariesFilterKey = next.filterKey;
+                  state.summariesFilterQuery = next.filterQuery;
+                  state.summariesFilterFrom = next.filterFrom;
+                  state.summariesFilterTo = next.filterTo;
+                  state.summariesPage = 0;
+                },
+                onRefresh: () => loadSummaries(state),
+                onPageChange: (page) => {
+                  state.summariesPage = page;
+                },
               }),
             )
           : nothing}

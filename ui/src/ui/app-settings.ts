@@ -38,6 +38,7 @@ import { loadNodes, type NodesState } from "./controllers/nodes.ts";
 import { loadPresence, type PresenceState } from "./controllers/presence.ts";
 import { loadSessions, type SessionsState } from "./controllers/sessions.ts";
 import { loadSkills, type SkillsState } from "./controllers/skills.ts";
+import { loadSummaries, type SummariesState } from "./controllers/summaries.ts";
 import { loadUsage, type UsageState } from "./controllers/usage.ts";
 import {
   inferBasePathFromPathname,
@@ -103,6 +104,7 @@ type SettingsAppHost = SettingsHost &
   NodesState &
   PresenceState &
   SessionsState &
+  SummariesState &
   SkillsState &
   UsageState & {
     overviewLogCursor: number | null;
@@ -318,6 +320,9 @@ export async function refreshActiveTab(host: SettingsHost) {
       return;
     case "sessions":
       await loadSessions(app);
+      return;
+    case "summaries":
+      await loadSummaries(app);
       return;
     case "cron":
       await loadCron(host);

@@ -77,7 +77,7 @@ import type {
 import type { GatewayBrowserClient, GatewayHelloOk } from "./gateway.ts";
 import type { Tab } from "./navigation.ts";
 import type { SidebarContent } from "./sidebar-content.ts";
-import { loadSettings, type UiSettings } from "./storage.ts";
+import { loadSavedTokenForGatewayUrl, loadSettings, type UiSettings } from "./storage.ts";
 import { VALID_THEME_NAMES, type ResolvedTheme, type ThemeMode, type ThemeName } from "./theme.ts";
 import type {
   AgentsListResult,
@@ -338,6 +338,15 @@ export class OpenClawApp extends LitElement {
   @state() sessionsCheckpointLoadingKey: string | null = null;
   @state() sessionsCheckpointBusyKey: string | null = null;
   @state() sessionsCheckpointErrorByKey: Record<string, string> = {};
+  @state() summariesLoading = false;
+  @state() summariesResult: import("./controllers/summaries.js").SummaryEntry[] | null = null;
+  @state() summariesError: string | null = null;
+  @state() summariesFilterKey = "*";
+  @state() summariesFilterQuery = "";
+  @state() summariesFilterFrom = "30d";
+  @state() summariesFilterTo = "now";
+  @state() summariesPage = 0;
+  @state() summariesPageSize = 10;
 
   @state() usageLoading = false;
   @state() usageResult: import("./types.js").SessionsUsageResult | null = null;
@@ -757,7 +766,8 @@ export class OpenClawApp extends LitElement {
     if (!nextGatewayUrl) {
       return;
     }
-    const nextToken = this.pendingGatewayToken?.trim() || "";
+    const nextToken =
+      this.pendingGatewayToken?.trim() || loadSavedTokenForGatewayUrl(nextGatewayUrl);
     this.pendingGatewayUrl = null;
     this.pendingGatewayToken = null;
     applySettingsInternal(this as unknown as Parameters<typeof applySettingsInternal>[0], {

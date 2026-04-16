@@ -10,6 +10,7 @@ import type {
   ClawHubSkillDetail,
   SkillMessage,
 } from "./controllers/skills.ts";
+import type { SummaryEntry } from "./controllers/summaries.ts";
 import type { EmbedSandboxMode } from "./embed-sandbox.ts";
 import type { GatewayBrowserClient, GatewayHelloOk } from "./gateway.ts";
 import type { Tab } from "./navigation.ts";
@@ -235,6 +236,15 @@ export type AppViewState = {
   sessionsCheckpointLoadingKey: string | null;
   sessionsCheckpointBusyKey: string | null;
   sessionsCheckpointErrorByKey: Record<string, string>;
+  summariesLoading: boolean;
+  summariesResult: SummaryEntry[] | null;
+  summariesError: string | null;
+  summariesFilterKey: string;
+  summariesFilterQuery: string;
+  summariesFilterFrom: string;
+  summariesFilterTo: string;
+  summariesPage: number;
+  summariesPageSize: number;
   usageLoading: boolean;
   usageResult: SessionsUsageResult | null;
   usageCostSummary: CostUsageSummary | null;

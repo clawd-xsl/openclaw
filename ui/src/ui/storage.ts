@@ -157,6 +157,10 @@ function loadSessionToken(gatewayUrl: string): string {
   }
 }
 
+export function loadSavedTokenForGatewayUrl(gatewayUrl: string): string {
+  return loadSessionToken(gatewayUrl);
+}
+
 function persistSessionToken(gatewayUrl: string, token: string) {
   try {
     const storage = getSessionStorage();
