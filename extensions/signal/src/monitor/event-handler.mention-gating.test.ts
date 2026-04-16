@@ -36,6 +36,10 @@ const [
 type GroupEventOpts = {
   message?: string;
   attachments?: unknown[];
+  sticker?: {
+    packId?: string;
+    stickerId?: number;
+  };
   quoteText?: string;
   mentions?: Array<{
     uuid?: string;
@@ -50,6 +54,7 @@ function makeGroupEvent(opts: GroupEventOpts) {
     dataMessage: {
       message: opts.message ?? "",
       attachments: opts.attachments ?? [],
+      sticker: opts.sticker ?? undefined,
       quote: opts.quoteText ? { text: opts.quoteText } : undefined,
       mentions: opts.mentions ?? undefined,
       groupInfo: { groupId: "g1", groupName: "Test Group" },
@@ -151,6 +156,17 @@ describe("signal mention gating", () => {
     );
   });
 
+  it("records sticker placeholder in pending history for skipped sticker-only group messages", async () => {
+    await expectSkippedGroupHistory(
+      {
+        message: "",
+        attachments: [{ id: "a1" }],
+        sticker: { packId: "pack-id", stickerId: 5 },
+      },
+      "<media:sticker>",
+    );
+  });
+
   it("normalizes mixed-case parameterized attachment MIME in skipped pending history", async () => {
     const groupHistories = new Map();
     const handler = createSignalEventHandler(
@@ -204,6 +220,16 @@ describe("signal mention gating", () => {
 
   it("records quote text in pending history for skipped quote-only group messages", async () => {
     await expectSkippedGroupHistory({ message: "", quoteText: "quoted context" }, "quoted context");
+  });
+
+  it("keeps visible quote context in skipped pending history when reply text is present", async () => {
+    await expectSkippedGroupHistory(
+      {
+        message: "follow-up",
+        quoteText: "quoted context",
+      },
+      '[Replying to: "quoted context"]\n\nfollow-up',
+    );
   });
 
   it("bypasses mention gating for authorized control commands", async () => {

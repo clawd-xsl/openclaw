@@ -59,6 +59,7 @@ import { sendMessageSignal, sendReadReceiptSignal, sendTypingSignal } from "../s
 import { handleSignalDirectMessageAccess, resolveSignalAccessState } from "./access-policy.js";
 import type {
   SignalEnvelope,
+  SignalDataMessage,
   SignalEventHandlerDeps,
   SignalReactionMessage,
   SignalReceivePayload,
@@ -83,6 +84,22 @@ function formatAttachmentSummaryPlaceholder(contentTypes: Array<string | undefin
     formatAttachmentKindCount(kind, count),
   );
   return `[${parts.join(" + ")} attached]`;
+}
+
+function formatStickerPlaceholder(sticker: SignalDataMessage["sticker"]): string {
+  return sticker ? "<media:sticker>" : "";
+}
+
+function formatSignalQuotedBody(params: {
+  messageText: string;
+  quoteText: string;
+  fallbackText?: string;
+}): string {
+  if (params.messageText && params.quoteText) {
+    // Preserve the quoted snippet when the reply adds new text so the agent sees both.
+    return `[Replying to: "${params.quoteText}"]\n\n${params.messageText}`;
+  }
+  return params.messageText || params.fallbackText || params.quoteText || "";
 }
 
 function resolveSignalInboundRoute(params: {
@@ -694,6 +711,10 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
         target: senderDisplay,
       });
       const pendingPlaceholder = (() => {
+        const stickerPlaceholder = formatStickerPlaceholder(dataMessage.sticker);
+        if (stickerPlaceholder) {
+          return stickerPlaceholder;
+        }
         if (!dataMessage.attachments?.length) {
           return "";
         }
@@ -712,7 +733,11 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
         const pendingKind = kindFromMime(firstContentType ?? undefined);
         return pendingKind ? `<media:${pendingKind}>` : "<media:attachment>";
       })();
-      const pendingBodyText = messageText || pendingPlaceholder || visibleQuoteText;
+      const pendingBodyText = formatSignalQuotedBody({
+        messageText,
+        quoteText: visibleQuoteText,
+        fallbackText: pendingPlaceholder,
+      });
       const historyKey = groupId ?? "unknown";
       recordPendingHistoryEntryIfEnabled({
         historyMap: deps.groupHistories,
@@ -806,7 +831,10 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
       }
     }
 
-    if (mediaPaths.length > 1) {
+    const stickerPlaceholder = formatStickerPlaceholder(dataMessage.sticker);
+    if (stickerPlaceholder) {
+      placeholder = stickerPlaceholder;
+    } else if (mediaPaths.length > 1) {
       placeholder = formatAttachmentSummaryPlaceholder(mediaTypes);
     } else {
       const kind = kindFromMime(mediaType ?? undefined);
@@ -817,7 +845,11 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
       }
     }
 
-    const bodyText = messageText || placeholder || visibleQuoteText || "";
+    const bodyText = formatSignalQuotedBody({
+      messageText,
+      quoteText: visibleQuoteText,
+      fallbackText: placeholder,
+    });
     if (!bodyText) {
       return;
     }

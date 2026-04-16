@@ -46,7 +46,7 @@ export { installSignalCli } from "./install-signal-cli.js";
 export { probeSignal } from "./probe.js";
 export { resolveSignalReactionLevel } from "./reaction-level.js";
 export { removeReactionSignal, sendReactionSignal } from "./send-reactions.js";
-export { sendMessageSignal } from "./send.js";
+export { sendMessageSignal, sendStickerSignal } from "./send.js";
 export { signalMessageActions } from "./message-actions.js";
 export type { ResolvedSignalAccount } from "./accounts.js";
 export type { SignalAccountConfig } from "./account-types.js";

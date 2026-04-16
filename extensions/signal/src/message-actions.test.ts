@@ -2,12 +2,16 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const sendReactionsModule = await import("./send-reactions.js");
+const sendModule = await import("./send.js");
 const sendReactionSignalMock = vi
   .spyOn(sendReactionsModule, "sendReactionSignal")
   .mockResolvedValue({ ok: true });
 const removeReactionSignalMock = vi
   .spyOn(sendReactionsModule, "removeReactionSignal")
   .mockResolvedValue({ ok: true });
+const sendStickerSignalMock = vi
+  .spyOn(sendModule, "sendStickerSignal")
+  .mockResolvedValue({ messageId: "456", timestamp: 456 });
 const { signalMessageActions } = await import("./message-actions.js");
 
 function createSignalAccountOverrideCfg(): OpenClawConfig {
@@ -28,6 +32,7 @@ describe("signalMessageActions", () => {
   beforeEach(() => {
     sendReactionSignalMock.mockClear();
     removeReactionSignalMock.mockClear();
+    sendStickerSignalMock.mockClear();
   });
 
   it("lists actions based on configured accounts and reaction gates", () => {
@@ -41,12 +46,12 @@ describe("signalMessageActions", () => {
           channels: { signal: { account: "+15550001111", actions: { reactions: false } } },
         } as OpenClawConfig,
       })?.actions,
-    ).toEqual(["send"]);
+    ).toEqual(["send", "sticker"]);
 
     expect(
       signalMessageActions.describeMessageTool?.({ cfg: createSignalAccountOverrideCfg() })
         ?.actions,
-    ).toEqual(["send", "react"]);
+    ).toEqual(["send", "react", "sticker"]);
   });
 
   it("honors account-scoped reaction gates during discovery", () => {
@@ -54,15 +59,16 @@ describe("signalMessageActions", () => {
 
     expect(
       signalMessageActions.describeMessageTool?.({ cfg, accountId: "default" })?.actions,
-    ).toEqual(["send"]);
+    ).toEqual(["send", "sticker"]);
     expect(signalMessageActions.describeMessageTool?.({ cfg, accountId: "work" })?.actions).toEqual(
-      ["send", "react"],
+      ["send", "react", "sticker"],
     );
   });
 
   it("skips send for plugin dispatch", () => {
     expect(signalMessageActions.supportsAction?.({ action: "send" })).toBe(false);
     expect(signalMessageActions.supportsAction?.({ action: "react" })).toBe(true);
+    expect(signalMessageActions.supportsAction?.({ action: "sticker" })).toBe(true);
   });
 
   it("blocks reactions when the action gate is disabled", async () => {
@@ -179,5 +185,29 @@ describe("signalMessageActions", () => {
         cfg,
       }),
     ).rejects.toThrow(/targetAuthor/);
+  });
+
+  it("dispatches sticker actions through sendStickerSignal", async () => {
+    const cfg = {
+      channels: { signal: { account: "+15550001111" } },
+    } as OpenClawConfig;
+
+    await expect(
+      signalMessageActions.handleAction?.({
+        channel: "signal",
+        action: "sticker",
+        params: {
+          to: "signal:group:group-id",
+          stickerId: ["pack-id:5"],
+        },
+        cfg,
+        accountId: "work",
+      }),
+    ).resolves.toBeTruthy();
+
+    expect(sendStickerSignalMock).toHaveBeenCalledWith("signal:group:group-id", "pack-id:5", {
+      cfg,
+      accountId: "work",
+    });
   });
 });

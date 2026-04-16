@@ -24,6 +24,7 @@ export type SignalSendOpts = {
   timeoutMs?: number;
   textMode?: "markdown" | "plain";
   textStyles?: SignalTextStyleRange[];
+  replyToId?: string;
 };
 
 export type SignalSendResult = {
@@ -211,6 +212,14 @@ export async function sendMessageSignal(
   }
   Object.assign(params, targetParams);
 
+  const quoteTs = Number(opts.replyToId);
+  if (Number.isFinite(quoteTs) && quoteTs > 0) {
+    params["quote-timestamp"] = quoteTs;
+    if (target.type === "recipient") {
+      params["quote-author"] = target.recipient;
+    }
+  }
+
   const result = await signalRpcRequest<{ timestamp?: number }>("send", params, {
     baseUrl,
     timeoutMs: opts.timeoutMs,
@@ -247,6 +256,45 @@ export async function sendTypingSignal(
     timeoutMs: opts.timeoutMs,
   });
   return true;
+}
+
+export async function sendStickerSignal(
+  to: string,
+  stickerSpec: string,
+  opts: Pick<SignalSendOpts, "cfg" | "baseUrl" | "account" | "accountId" | "timeoutMs"> = {},
+): Promise<SignalSendResult> {
+  const sticker = stickerSpec.trim();
+  if (!sticker) {
+    throw new Error("Signal sticker id is required");
+  }
+  const accountInfo = await resolveSignalRpcAccountInfo(opts);
+  const { baseUrl, account } = resolveSignalRpcContext(opts, accountInfo);
+  const target = parseTarget(to);
+  const params: Record<string, unknown> = {
+    sticker,
+  };
+  if (account) {
+    params.account = account;
+  }
+  const targetParams = buildTargetParams(target, {
+    recipient: true,
+    group: true,
+    username: true,
+  });
+  if (!targetParams) {
+    throw new Error("Signal recipient is required");
+  }
+  Object.assign(params, targetParams);
+
+  const result = await signalRpcRequest<{ timestamp?: number }>("send", params, {
+    baseUrl,
+    timeoutMs: opts.timeoutMs,
+  });
+  const timestamp = result?.timestamp;
+  return {
+    messageId: timestamp ? String(timestamp) : "unknown",
+    timestamp,
+  };
 }
 
 export async function sendReadReceiptSignal(

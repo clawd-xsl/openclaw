@@ -9871,6 +9871,26 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
           exclusiveMinimum: 0,
           maximum: 9007199254740991,
         },
+        replyToMode: {
+          anyOf: [
+            {
+              type: "string",
+              const: "off",
+            },
+            {
+              type: "string",
+              const: "first",
+            },
+            {
+              type: "string",
+              const: "all",
+            },
+            {
+              type: "string",
+              const: "batched",
+            },
+          ],
+        },
         reactionNotifications: {
           type: "string",
           enum: ["off", "own", "all", "allowlist"],
@@ -10189,6 +10209,26 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
                 type: "integer",
                 exclusiveMinimum: 0,
                 maximum: 9007199254740991,
+              },
+              replyToMode: {
+                anyOf: [
+                  {
+                    type: "string",
+                    const: "off",
+                  },
+                  {
+                    type: "string",
+                    const: "first",
+                  },
+                  {
+                    type: "string",
+                    const: "all",
+                  },
+                  {
+                    type: "string",
+                    const: "batched",
+                  },
+                ],
               },
               reactionNotifications: {
                 type: "string",

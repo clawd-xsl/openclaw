@@ -82,6 +82,30 @@ describe("createWebSendApi", () => {
     );
   });
 
+  it("routes small captionless WebP payloads as stickers", async () => {
+    const payload = Buffer.alloc(128);
+    await api.sendMessage("+1555", ".", payload, "image/webp");
+    expect(sendMessage).toHaveBeenCalledWith(
+      "1555@s.whatsapp.net",
+      expect.objectContaining({
+        sticker: payload,
+      }),
+    );
+  });
+
+  it("keeps oversized WebP payloads on the normal image path", async () => {
+    const payload = Buffer.alloc(500 * 1024 + 1);
+    await api.sendMessage("+1555", "", payload, "image/webp");
+    expect(sendMessage).toHaveBeenCalledWith(
+      "1555@s.whatsapp.net",
+      expect.objectContaining({
+        image: payload,
+        caption: undefined,
+        mimetype: "image/webp",
+      }),
+    );
+  });
+
   it("supports audio as push-to-talk voice note", async () => {
     const payload = Buffer.from("aud");
     await api.sendMessage("+1555", "", payload, "audio/ogg", { accountId: "alt" });

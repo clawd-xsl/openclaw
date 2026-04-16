@@ -123,21 +123,33 @@ vi.mock("openclaw/plugin-sdk/reply-runtime", async () => {
       ctx: unknown;
       cfg: unknown;
       dispatcher: {
-        sendFinalReply: (payload: { text: string }) => boolean;
+        sendFinalReply: (payload: Record<string, unknown>) => boolean;
         markComplete?: () => void;
         waitForIdle?: () => Promise<void>;
       };
     }) => {
       const resolved = (await replyMock(params.ctx, {}, params.cfg)) as
-        | { text?: string }
+        | Record<string, unknown>
         | undefined;
       const text = typeof resolved?.text === "string" ? resolved.text.trim() : "";
-      if (text) {
-        params.dispatcher.sendFinalReply({ text });
+      const mediaUrl =
+        typeof resolved?.mediaUrl === "string" && resolved.mediaUrl.trim()
+          ? resolved.mediaUrl
+          : undefined;
+      const mediaUrls = Array.isArray(resolved?.mediaUrls)
+        ? resolved.mediaUrls.filter((value): value is string => typeof value === "string")
+        : undefined;
+      if (text || mediaUrl || (mediaUrls?.length ?? 0) > 0) {
+        params.dispatcher.sendFinalReply({
+          ...resolved,
+          ...(typeof resolved?.text === "string" ? { text: resolved.text } : {}),
+          ...(mediaUrl ? { mediaUrl } : {}),
+          ...(mediaUrls?.length ? { mediaUrls } : {}),
+        });
       }
       params.dispatcher.markComplete?.();
       await params.dispatcher.waitForIdle?.();
-      return { queuedFinal: Boolean(text) };
+      return { queuedFinal: Boolean(text || mediaUrl || (mediaUrls?.length ?? 0) > 0) };
     },
   };
 });

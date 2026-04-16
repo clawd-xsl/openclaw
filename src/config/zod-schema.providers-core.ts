@@ -1075,6 +1075,7 @@ export const SignalAccountSchemaBase = z
     blockStreaming: z.boolean().optional(),
     blockStreamingCoalesce: BlockStreamingCoalesceSchema.optional(),
     mediaMaxMb: z.number().int().positive().optional(),
+    replyToMode: ReplyToModeSchema.optional(),
     reactionNotifications: z.enum(["off", "own", "all", "allowlist"]).optional(),
     reactionAllowlist: z.array(z.union([z.string(), z.number()])).optional(),
     actions: z

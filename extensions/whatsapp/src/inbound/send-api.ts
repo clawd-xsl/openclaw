@@ -11,6 +11,11 @@ function recordWhatsAppOutbound(accountId: string) {
   });
 }
 
+function hasEffectivelyEmptyWhatsAppCaption(text: string): boolean {
+  const trimmed = text.trim();
+  return trimmed === "" || trimmed === ".";
+}
+
 function resolveOutboundMessageId(result: unknown): string {
   return typeof result === "object" && result && "key" in result
     ? ((result as { key?: { id?: string } }).key?.id ?? "unknown")
@@ -38,7 +43,13 @@ export function createWebSendApi(params: {
         mediaType ??= "application/octet-stream";
       }
       if (mediaBuffer && mediaType) {
-        if (mediaType.startsWith("image/")) {
+        if (
+          mediaType === "image/webp" &&
+          mediaBuffer.length <= 500 * 1024 &&
+          hasEffectivelyEmptyWhatsAppCaption(text)
+        ) {
+          payload = { sticker: mediaBuffer };
+        } else if (mediaType.startsWith("image/")) {
           payload = {
             image: mediaBuffer,
             caption: text || undefined,

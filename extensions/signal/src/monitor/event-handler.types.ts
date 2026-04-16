@@ -32,6 +32,11 @@ export type SignalDataMessage = {
   timestamp?: number;
   message?: string | null;
   attachments?: Array<SignalAttachment>;
+  sticker?: {
+    packId?: string | null;
+    stickerId?: number | null;
+    packKey?: string | null;
+  } | null;
   mentions?: Array<SignalMention> | null;
   groupInfo?: {
     groupId?: string | null;

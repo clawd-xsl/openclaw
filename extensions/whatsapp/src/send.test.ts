@@ -9,6 +9,7 @@ import type { ActiveWebListener } from "./inbound/types.js";
 
 const hoisted = vi.hoisted(() => ({
   loadOutboundMediaFromUrl: vi.fn(),
+  loadWebMediaRaw: vi.fn(),
   controllerListeners: new Map<string, ActiveWebListener>(),
 }));
 const loadWebMediaMock = vi.fn();
@@ -45,6 +46,14 @@ vi.mock("./outbound-media.runtime.js", async () => {
   };
 });
 
+vi.mock("./media.js", async () => {
+  const actual = await vi.importActual<typeof import("./media.js")>("./media.js");
+  return {
+    ...actual,
+    loadWebMediaRaw: hoisted.loadWebMediaRaw,
+  };
+});
+
 describe("web outbound", () => {
   const sendComposingTo = vi.fn(async () => {});
   const sendMessage = vi.fn(async () => ({ messageId: "msg123" }));
@@ -58,6 +67,7 @@ describe("web outbound", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    hoisted.loadWebMediaRaw.mockReset();
     hoisted.loadOutboundMediaFromUrl.mockReset().mockImplementation(
       async (
         mediaUrl: string,
@@ -236,6 +246,49 @@ describe("web outbound", () => {
       mediaUrl: "/tmp/pic.jpg",
     });
     expect(sendMessage).toHaveBeenLastCalledWith("+1555", "pic", buf, "image/jpeg");
+  });
+
+  it("keeps small captionless WebP raw so the active listener can route it as a sticker", async () => {
+    const rawSticker = Buffer.alloc(128);
+    hoisted.loadWebMediaRaw.mockResolvedValueOnce({
+      buffer: rawSticker,
+      contentType: "image/webp",
+      kind: "image",
+    });
+
+    await sendMessageWhatsApp("+1555", ".", {
+      verbose: false,
+      mediaUrl: "/tmp/sticker.webp",
+    });
+
+    expect(hoisted.loadWebMediaRaw).toHaveBeenCalledWith("/tmp/sticker.webp", {
+      maxBytes: 50 * 1024 * 1024,
+    });
+    expect(hoisted.loadOutboundMediaFromUrl).not.toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenLastCalledWith("+1555", "", rawSticker, "image/webp");
+  });
+
+  it("falls back to standard media loading for oversized captionless WebP", async () => {
+    hoisted.loadWebMediaRaw.mockResolvedValueOnce({
+      buffer: Buffer.alloc(500 * 1024 + 1),
+      contentType: "image/webp",
+      kind: "image",
+    });
+    const optimized = Buffer.from("optimized-jpeg");
+    loadWebMediaMock.mockResolvedValueOnce({
+      buffer: optimized,
+      contentType: "image/jpeg",
+      kind: "image",
+    });
+
+    await sendMessageWhatsApp("+1555", " ", {
+      verbose: false,
+      mediaUrl: "/tmp/sticker.webp",
+    });
+
+    expect(hoisted.loadWebMediaRaw).toHaveBeenCalledTimes(1);
+    expect(hoisted.loadOutboundMediaFromUrl).toHaveBeenCalledTimes(1);
+    expect(sendMessage).toHaveBeenLastCalledWith("+1555", "", optimized, "image/jpeg");
   });
 
   it("falls back to the first mediaUrls entry when mediaUrl is omitted", async () => {

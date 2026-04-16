@@ -14,10 +14,12 @@ import {
 } from "./accounts.js";
 import { getRegisteredWhatsAppConnectionController } from "./connection-controller-registry.js";
 import type { ActiveWebListener, ActiveWebSendOptions } from "./inbound/types.js";
+import { loadWebMediaRaw } from "./media.js";
 import { loadOutboundMediaFromUrl } from "./outbound-media.runtime.js";
 import { markdownToWhatsApp, toWhatsappJid } from "./text-runtime.js";
 
 const outboundLog = createSubsystemLogger("gateway/channels/whatsapp").child("outbound");
+const WHATSAPP_STICKER_MAX_BYTES = 500 * 1024;
 
 function resolveOutboundWhatsAppAccountId(params: {
   cfg: OpenClawConfig;
@@ -44,6 +46,52 @@ function requireOutboundActiveWebListener(params: { cfg: OpenClawConfig; account
     );
   }
   return { accountId: resolvedAccountId, listener };
+}
+
+function hasEffectivelyEmptyWhatsAppCaption(text: string): boolean {
+  const trimmed = text.trim();
+  return trimmed === "" || trimmed === ".";
+}
+
+async function loadRawWhatsAppStickerCandidate(params: {
+  mediaUrl: string;
+  maxBytes: number;
+  mediaAccess?: {
+    localRoots?: readonly string[];
+    readFile?: (filePath: string) => Promise<Buffer>;
+  };
+  mediaLocalRoots?: readonly string[];
+  mediaReadFile?: (filePath: string) => Promise<Buffer>;
+}): Promise<Awaited<ReturnType<typeof loadWebMediaRaw>> | null> {
+  try {
+    const readFile = params.mediaAccess?.readFile ?? params.mediaReadFile;
+    const localRoots =
+      params.mediaAccess?.localRoots?.length && params.mediaAccess.localRoots.length > 0
+        ? params.mediaAccess.localRoots
+        : params.mediaLocalRoots && params.mediaLocalRoots.length > 0
+          ? params.mediaLocalRoots
+          : undefined;
+    const media = await loadWebMediaRaw(
+      params.mediaUrl,
+      readFile
+        ? {
+            maxBytes: params.maxBytes,
+            localRoots: "any",
+            readFile,
+            hostReadCapability: true,
+          }
+        : {
+            maxBytes: params.maxBytes,
+            ...(localRoots ? { localRoots } : {}),
+          },
+    );
+    if (media.contentType !== "image/webp" || media.buffer.length > WHATSAPP_STICKER_MAX_BYTES) {
+      return null;
+    }
+    return media;
+  } catch {
+    return null;
+  }
 }
 
 export async function sendMessageWhatsApp(
@@ -105,16 +153,30 @@ export async function sendMessageWhatsApp(
     let mediaType: string | undefined;
     let documentFileName: string | undefined;
     if (primaryMediaUrl) {
-      const media = await loadOutboundMediaFromUrl(primaryMediaUrl, {
-        maxBytes: resolveWhatsAppMediaMaxBytes(account),
-        mediaAccess: options.mediaAccess,
-        mediaLocalRoots: options.mediaLocalRoots,
-        mediaReadFile: options.mediaReadFile,
-      });
+      const mediaMaxBytes = resolveWhatsAppMediaMaxBytes(account);
+      const stickerCandidate = hasEffectivelyEmptyWhatsAppCaption(text)
+        ? await loadRawWhatsAppStickerCandidate({
+            mediaUrl: primaryMediaUrl,
+            maxBytes: mediaMaxBytes,
+            mediaAccess: options.mediaAccess,
+            mediaLocalRoots: options.mediaLocalRoots,
+            mediaReadFile: options.mediaReadFile,
+          })
+        : null;
+      const media =
+        stickerCandidate ??
+        (await loadOutboundMediaFromUrl(primaryMediaUrl, {
+          maxBytes: mediaMaxBytes,
+          mediaAccess: options.mediaAccess,
+          mediaLocalRoots: options.mediaLocalRoots,
+          mediaReadFile: options.mediaReadFile,
+        }));
       const caption = text || undefined;
       mediaBuffer = media.buffer;
       mediaType = media.contentType ?? "application/octet-stream";
-      if (media.kind === "audio") {
+      if (stickerCandidate) {
+        text = "";
+      } else if (media.kind === "audio") {
         // WhatsApp expects explicit opus codec for PTT voice notes.
         mediaType =
           media.contentType === "audio/ogg"

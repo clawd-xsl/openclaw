@@ -1,3 +1,4 @@
+import type { ReplyToMode } from "./types.base.js";
 import type { CommonChannelMessagingConfig } from "./types.channel-messaging-common.js";
 import type { GroupToolPolicyBySenderConfig, GroupToolPolicyConfig } from "./types.tools.js";
 
@@ -37,6 +38,8 @@ export type SignalAccountConfig = CommonChannelMessagingConfig & {
   groups?: Record<string, SignalGroupConfig>;
   /** Outbound text chunk size (chars). Default: 4000. */
   textChunkLimit?: number;
+  /** Controls whether outbound replies quote the inbound Signal message. */
+  replyToMode?: ReplyToMode;
   /** Reaction notification mode (off|own|all|allowlist). Default: own. */
   reactionNotifications?: SignalReactionNotificationMode;
   /** Allowlist for reaction notifications when mode is allowlist. */

@@ -247,6 +247,43 @@ describe("signal createSignalEventHandler inbound context", () => {
     expect(capture.ctx?.ReplyToIsQuote).toBe(true);
   });
 
+  it("preserves visible quote context when a reply includes new text", async () => {
+    const handler = createSignalEventHandler(
+      createBaseSignalEventHandlerDeps({
+        cfg: {
+          messages: { inbound: { debounceMs: 0 } },
+          channels: {
+            signal: {
+              groupPolicy: "allowlist",
+              groupAllowFrom: ["+15550001111", "+15550002222"],
+              contextVisibility: "allowlist_quote",
+            },
+          },
+        },
+        groupPolicy: "allowlist",
+        groupAllowFrom: ["+15550001111", "+15550002222"],
+        historyLimit: 0,
+      }),
+    );
+
+    await handler(
+      createSignalReceiveEvent({
+        dataMessage: {
+          message: "follow-up",
+          quote: { text: "quoted context", author: "+15550002222" },
+          groupInfo: { groupId: "g1", groupName: "Test Group" },
+          attachments: [],
+        },
+      }),
+    );
+
+    expect(capture.ctx).toBeTruthy();
+    expect(capture.ctx?.BodyForAgent).toBe('[Replying to: "quoted context"]\n\nfollow-up');
+    expect(capture.ctx?.ReplyToBody).toBe("quoted context");
+    expect(capture.ctx?.ReplyToSender).toBe("+15550002222");
+    expect(capture.ctx?.ReplyToIsQuote).toBe(true);
+  });
+
   it("forwards all fetched attachments via MediaPaths/MediaTypes", async () => {
     const handler = createSignalEventHandler(
       createBaseSignalEventHandlerDeps({
@@ -278,6 +315,32 @@ describe("signal createSignalEventHandler inbound context", () => {
     expect(capture.ctx?.MediaPaths).toEqual(["/tmp/a1.dat", "/tmp/a2.dat"]);
     expect(capture.ctx?.MediaUrls).toEqual(["/tmp/a1.dat", "/tmp/a2.dat"]);
     expect(capture.ctx?.MediaTypes).toEqual(["image/jpeg", "application/octet-stream"]);
+  });
+
+  it("uses sticker placeholders for sticker-only inbound messages before generic attachments", async () => {
+    const handler = createSignalEventHandler(
+      createBaseSignalEventHandlerDeps({
+        cfg: {
+          messages: { inbound: { debounceMs: 0 } },
+          channels: { signal: { dmPolicy: "open", allowFrom: ["*"] } },
+        },
+        historyLimit: 0,
+        ignoreAttachments: true,
+      }),
+    );
+
+    await handler(
+      createSignalReceiveEvent({
+        dataMessage: {
+          message: "",
+          attachments: [{ id: "sticker-asset" }],
+          sticker: { packId: "pack-id", stickerId: 5 },
+        },
+      }),
+    );
+
+    expect(capture.ctx).toBeTruthy();
+    expect(capture.ctx?.BodyForAgent).toBe("<media:sticker>");
   });
 
   it("drops own UUID inbound messages when only accountUuid is configured", async () => {

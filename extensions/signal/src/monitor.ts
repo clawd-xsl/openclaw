@@ -303,6 +303,45 @@ async function fetchAttachment(params: {
   return { path: saved.path, contentType: saved.contentType };
 }
 
+function createSingleUseSignalReplySender(params: {
+  target: string;
+  baseUrl: string;
+  account?: string;
+  accountId?: string;
+  maxBytes: number;
+  replyToId?: string;
+  sendMessage?: typeof sendMessageSignal;
+}) {
+  const sendMessage = params.sendMessage ?? sendMessageSignal;
+  let nextReplyToId = params.replyToId ?? undefined;
+  const consumeReplyToId = () => {
+    const replyToId = nextReplyToId;
+    nextReplyToId = undefined;
+    return replyToId;
+  };
+  const baseOpts = {
+    baseUrl: params.baseUrl,
+    account: params.account,
+    maxBytes: params.maxBytes,
+    accountId: params.accountId,
+  };
+  return {
+    sendText: async (text: string) => {
+      await sendMessage(params.target, text, {
+        ...baseOpts,
+        replyToId: consumeReplyToId(),
+      });
+    },
+    sendMedia: async ({ mediaUrl, caption }: { mediaUrl: string; caption?: string }) => {
+      await sendMessage(params.target, caption ?? "", {
+        ...baseOpts,
+        mediaUrl,
+        replyToId: consumeReplyToId(),
+      });
+    },
+  };
+}
+
 async function deliverReplies(params: {
   replies: ReplyPayload[];
   target: string;
@@ -318,33 +357,30 @@ async function deliverReplies(params: {
     params;
   for (const payload of replies) {
     const reply = resolveSendableOutboundReplyParts(payload);
+    const sender = createSingleUseSignalReplySender({
+      target,
+      baseUrl,
+      account,
+      accountId,
+      maxBytes,
+      replyToId: payload.replyToId ?? undefined,
+    });
     const delivered = await deliverTextOrMediaReply({
       payload,
       text: reply.text,
       chunkText: (value) => chunkTextWithMode(value, textLimit, chunkMode),
-      sendText: async (chunk) => {
-        await sendMessageSignal(target, chunk, {
-          baseUrl,
-          account,
-          maxBytes,
-          accountId,
-        });
-      },
-      sendMedia: async ({ mediaUrl, caption }) => {
-        await sendMessageSignal(target, caption ?? "", {
-          baseUrl,
-          account,
-          mediaUrl,
-          maxBytes,
-          accountId,
-        });
-      },
+      sendText: sender.sendText,
+      sendMedia: sender.sendMedia,
     });
     if (delivered !== "empty") {
       runtime.log?.(`delivered reply to ${target}`);
     }
   }
 }
+
+export const __testing = {
+  createSingleUseSignalReplySender,
+};
 
 export async function monitorSignalProvider(opts: MonitorSignalOpts = {}): Promise<void> {
   const runtime = resolveRuntime(opts);
