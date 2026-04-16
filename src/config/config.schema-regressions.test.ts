@@ -180,6 +180,23 @@ describe("config schema regressions", () => {
     expect(res.ok).toBe(true);
   });
 
+  it("accepts cliBackends.invalidateOnSystemPromptChange", () => {
+    const res = validateConfigObject({
+      agents: {
+        defaults: {
+          cliBackends: {
+            "claude-cli": {
+              command: "claude",
+              invalidateOnSystemPromptChange: false,
+            },
+          },
+        },
+      },
+    });
+
+    expect(res.ok).toBe(true);
+  });
+
   it("rejects oversized agents.defaults.startupContext overrides", () => {
     const res = validateConfigObject({
       agents: {

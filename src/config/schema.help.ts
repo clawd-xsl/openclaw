@@ -202,6 +202,8 @@ export const FIELD_HELP: Record<string, string> = {
     "How many recent days of summaries to consider for prompt injection and default summary lookups. Defaults to 7.",
   "agents.session.summaryMaxChars":
     "Maximum total summary characters to inject into prompt context before older summaries are trimmed. Defaults to 8000.",
+  "agents.defaults.cliBackends.*.invalidateOnSystemPromptChange":
+    "Whether system prompt changes should invalidate CLI session reuse. Defaults to true; set false when daily/session rollover is enough to pick up prompt updates and you prefer to keep the current CLI thread alive.",
   "agents.defaults.skills":
     "Optional default skill allowlist inherited by agents that omit agents.list[].skills. Omit for unrestricted skills, set [] to give inheriting agents no skills, and remember explicit agents.list[].skills replaces this default instead of merging with it.",
   "agents.list":

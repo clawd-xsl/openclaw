@@ -153,7 +153,9 @@ export async function prepareCliRunContext(
         binding: params.cliSessionBinding,
         authProfileId: params.authProfileId,
         authEpoch,
-        extraSystemPromptHash,
+        ...(backendResolved.config.invalidateOnSystemPromptChange !== false
+          ? { extraSystemPromptHash }
+          : {}),
         mcpConfigHash: preparedBackend.mcpConfigHash,
       })
     : params.cliSessionId

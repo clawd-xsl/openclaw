@@ -5,6 +5,47 @@ import { normalizeProviderId } from "./model-selection.js";
 
 const CLAUDE_CLI_BACKEND_ID = "claude-cli";
 
+export type CliSessionInvalidationReason = "auth-profile" | "auth-epoch" | "system-prompt" | "mcp";
+
+export type CliSessionContinuityBreakReason = CliSessionInvalidationReason | "session_expired";
+
+export class CliSessionContinuityError extends Error {
+  readonly provider: string;
+  readonly reason: CliSessionContinuityBreakReason;
+  readonly previousCliSessionId?: string;
+
+  constructor(params: {
+    provider: string;
+    reason: CliSessionContinuityBreakReason;
+    previousCliSessionId?: string;
+  }) {
+    super(`CLI session continuity lost for ${params.provider}: ${params.reason}`);
+    this.name = "CliSessionContinuityError";
+    this.provider = params.provider;
+    this.reason = params.reason;
+    this.previousCliSessionId = normalizeOptionalString(params.previousCliSessionId);
+  }
+}
+
+export function isCliSessionContinuityError(err: unknown): err is CliSessionContinuityError {
+  if (err instanceof CliSessionContinuityError) {
+    return true;
+  }
+  if (!err || typeof err !== "object") {
+    return false;
+  }
+  const candidate = err as {
+    name?: unknown;
+    provider?: unknown;
+    reason?: unknown;
+  };
+  return (
+    candidate.name === "CliSessionContinuityError" &&
+    typeof candidate.provider === "string" &&
+    typeof candidate.reason === "string"
+  );
+}
+
 export function hashCliSessionText(value: string | undefined): string | undefined {
   const trimmed = normalizeOptionalString(value);
   if (!trimmed) {
@@ -122,7 +163,7 @@ export function resolveCliSessionReuse(params: {
   mcpConfigHash?: string;
 }): {
   sessionId?: string;
-  invalidatedReason?: "auth-profile" | "auth-epoch" | "system-prompt" | "mcp";
+  invalidatedReason?: CliSessionInvalidationReason;
 } {
   const binding = params.binding;
   const sessionId = normalizeOptionalString(binding?.sessionId);
@@ -142,7 +183,12 @@ export function resolveCliSessionReuse(params: {
     return { invalidatedReason: "auth-epoch" };
   }
   const storedExtraSystemPromptHash = normalizeOptionalString(binding?.extraSystemPromptHash);
-  if (storedExtraSystemPromptHash !== currentExtraSystemPromptHash) {
+  // Some callers persist prompt hashes only for observability. Treat an
+  // omitted current hash as "do not use prompt bytes for continuity checks".
+  if (
+    currentExtraSystemPromptHash !== undefined &&
+    storedExtraSystemPromptHash !== currentExtraSystemPromptHash
+  ) {
     return { invalidatedReason: "system-prompt" };
   }
   const storedMcpConfigHash = normalizeOptionalString(binding?.mcpConfigHash);

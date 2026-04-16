@@ -108,6 +108,12 @@ export type CliBackendConfig = {
   systemPromptMode?: "append" | "replace";
   /** When to send system prompt. */
   systemPromptWhen?: "first" | "always" | "never";
+  /**
+   * Whether a changed system prompt should invalidate CLI session reuse.
+   * Defaults to true. Set false when session/day rollover is sufficient to pick
+   * up prompt changes and you prefer to keep an existing CLI thread alive.
+   */
+  invalidateOnSystemPromptChange?: boolean;
   /** Flag used to pass image paths. */
   imageArg?: string;
   /** How to pass multiple images. */

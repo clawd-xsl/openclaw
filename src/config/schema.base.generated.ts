@@ -3556,6 +3556,12 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
                         },
                       ],
                     },
+                    invalidateOnSystemPromptChange: {
+                      type: "boolean",
+                      title: "CLI Invalidate On Prompt Change",
+                      description:
+                        "Whether system prompt changes should invalidate CLI session reuse. Defaults to true; set false when daily/session rollover is enough to pick up prompt updates and you prefer to keep the current CLI thread alive.",
+                    },
                     imageArg: {
                       type: "string",
                     },
@@ -5505,6 +5511,37 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
             title: "Agent Defaults",
             description:
               "Shared default settings inherited by agents unless overridden per entry in agents.list. Use defaults to enforce consistent baseline behavior and reduce duplicated per-agent configuration.",
+          },
+          session: {
+            type: "object",
+            properties: {
+              summaryModel: {
+                type: "string",
+                title: "Session Summary Model",
+                description:
+                  "Model used to generate session summaries (provider/model). Defaults to anthropic/claude-sonnet-4-6.",
+              },
+              summaryDays: {
+                type: "integer",
+                exclusiveMinimum: 0,
+                maximum: 9007199254740991,
+                title: "Session Summary Lookback Days",
+                description:
+                  "How many recent days of summaries to consider for prompt injection and default summary lookups. Defaults to 7.",
+              },
+              summaryMaxChars: {
+                type: "integer",
+                exclusiveMinimum: 0,
+                maximum: 9007199254740991,
+                title: "Session Summary Max Chars",
+                description:
+                  "Maximum total summary characters to inject into prompt context before older summaries are trimmed. Defaults to 8000.",
+              },
+            },
+            additionalProperties: false,
+            title: "Session Summaries",
+            description:
+              "Session-summary controls for generated history snippets that help agents recover recent context across resets and restarts.",
           },
           list: {
             type: "array",
@@ -23078,6 +23115,31 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
     "agents.defaults": {
       label: "Agent Defaults",
       help: "Shared default settings inherited by agents unless overridden per entry in agents.list. Use defaults to enforce consistent baseline behavior and reduce duplicated per-agent configuration.",
+      tags: ["advanced"],
+    },
+    "agents.session": {
+      label: "Session Summaries",
+      help: "Session-summary controls for generated history snippets that help agents recover recent context across resets and restarts.",
+      tags: ["storage"],
+    },
+    "agents.session.summaryModel": {
+      label: "Session Summary Model",
+      help: "Model used to generate session summaries (provider/model). Defaults to anthropic/claude-sonnet-4-6.",
+      tags: ["storage"],
+    },
+    "agents.session.summaryDays": {
+      label: "Session Summary Lookback Days",
+      help: "How many recent days of summaries to consider for prompt injection and default summary lookups. Defaults to 7.",
+      tags: ["storage"],
+    },
+    "agents.session.summaryMaxChars": {
+      label: "Session Summary Max Chars",
+      help: "Maximum total summary characters to inject into prompt context before older summaries are trimmed. Defaults to 8000.",
+      tags: ["performance", "storage"],
+    },
+    "agents.defaults.cliBackends.*.invalidateOnSystemPromptChange": {
+      label: "CLI Invalidate On Prompt Change",
+      help: "Whether system prompt changes should invalidate CLI session reuse. Defaults to true; set false when daily/session rollover is enough to pick up prompt updates and you prefer to keep the current CLI thread alive.",
       tags: ["advanced"],
     },
     "agents.defaults.embeddedHarness": {

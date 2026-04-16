@@ -551,6 +551,7 @@ export const CliBackendSchema = z
     systemPromptWhen: z
       .union([z.literal("first"), z.literal("always"), z.literal("never")])
       .optional(),
+    invalidateOnSystemPromptChange: z.boolean().optional(),
     imageArg: z.string().optional(),
     imageMode: z.union([z.literal("repeat"), z.literal("list")]).optional(),
     imagePathScope: z.union([z.literal("temp"), z.literal("workspace")]).optional(),

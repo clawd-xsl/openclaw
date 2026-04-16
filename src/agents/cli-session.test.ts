@@ -144,6 +144,25 @@ describe("cli-session helpers", () => {
     ).toEqual({ sessionId: "cli-session-1" });
   });
 
+  it("ignores stored prompt hashes when the caller opts out of prompt-based reuse checks", () => {
+    const binding = {
+      sessionId: "cli-session-1",
+      authProfileId: "anthropic:work",
+      authEpoch: "auth-epoch-a",
+      extraSystemPromptHash: "prompt-a",
+      mcpConfigHash: "mcp-a",
+    };
+
+    expect(
+      resolveCliSessionReuse({
+        binding,
+        authProfileId: "anthropic:work",
+        authEpoch: "auth-epoch-a",
+        mcpConfigHash: "mcp-a",
+      }),
+    ).toEqual({ sessionId: "cli-session-1" });
+  });
+
   it("clears provider-scoped and global CLI session state", () => {
     const entry: SessionEntry = {
       sessionId: "openclaw-session",

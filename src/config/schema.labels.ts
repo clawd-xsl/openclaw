@@ -71,6 +71,7 @@ export const FIELD_LABELS: Record<string, string> = {
   "agents.session.summaryModel": "Session Summary Model",
   "agents.session.summaryDays": "Session Summary Lookback Days",
   "agents.session.summaryMaxChars": "Session Summary Max Chars",
+  "agents.defaults.cliBackends.*.invalidateOnSystemPromptChange": "CLI Invalidate On Prompt Change",
   "agents.defaults.embeddedHarness": "Default Embedded Harness",
   "agents.defaults.embeddedHarness.runtime": "Default Embedded Harness Runtime",
   "agents.defaults.embeddedHarness.fallback": "Default Embedded Harness Fallback",
