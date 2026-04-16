@@ -492,7 +492,9 @@ describe("runReplyAgent block streaming", () => {
     const onBlockReply = vi.fn();
 
     runEmbeddedPiAgentMock.mockImplementationOnce(async (params) => {
-      const block = params.onBlockReply as ((payload: { text?: string }) => Promise<void>) | undefined;
+      const block = params.onBlockReply as
+        | ((payload: { text?: string }) => Promise<void>)
+        | undefined;
       await block?.({ text: "Buffered chunk" });
       params.replyOperation?.abortByUser();
       return {
