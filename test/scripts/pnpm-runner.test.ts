@@ -44,6 +44,23 @@ describe("resolvePnpmRunner", () => {
     });
   });
 
+  it("executes native pnpm binaries directly when npm_execpath points to one", () => {
+    expect(
+      resolvePnpmRunner({
+        npmExecPath:
+          "/data/local/share/pnpm/.tools/@pnpm+linux-x64/10.32.1_tmp_22738/node_modules/@pnpm/linux-x64/pnpm",
+        nodeExecPath: "/usr/local/bin/node",
+        pnpmArgs: ["exec", "vitest", "run"],
+        platform: "linux",
+      }),
+    ).toEqual({
+      command:
+        "/data/local/share/pnpm/.tools/@pnpm+linux-x64/10.32.1_tmp_22738/node_modules/@pnpm/linux-x64/pnpm",
+      args: ["exec", "vitest", "run"],
+      shell: false,
+    });
+  });
+
   it("falls back to bare pnpm on non-Windows when npm_execpath is missing", () => {
     expect(
       resolvePnpmRunner({
@@ -69,6 +86,27 @@ describe("resolvePnpmRunner", () => {
     ).toEqual({
       command: "C:\\Windows\\System32\\cmd.exe",
       args: ["/d", "/s", "/c", 'pnpm.cmd exec vitest run -t "path with spaces"'],
+      shell: false,
+      windowsVerbatimArguments: true,
+    });
+  });
+
+  it("wraps a pnpm.cmd npm_execpath via cmd.exe on Windows", () => {
+    expect(
+      resolvePnpmRunner({
+        comSpec: "C:\\Windows\\System32\\cmd.exe",
+        npmExecPath: "C:\\Users\\test\\AppData\\Local\\pnpm\\pnpm.cmd",
+        pnpmArgs: ["exec", "vitest", "run", "-t", "path with spaces"],
+        platform: "win32",
+      }),
+    ).toEqual({
+      command: "C:\\Windows\\System32\\cmd.exe",
+      args: [
+        "/d",
+        "/s",
+        "/c",
+        'C:\\Users\\test\\AppData\\Local\\pnpm\\pnpm.cmd exec vitest run -t "path with spaces"',
+      ],
       shell: false,
       windowsVerbatimArguments: true,
     });

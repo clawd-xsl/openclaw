@@ -25,6 +25,31 @@ describe("resolveBuildAllStep", () => {
     });
   });
 
+  it("executes native pnpm binaries directly for pnpm build steps", () => {
+    const step = BUILD_ALL_STEPS.find((entry) => entry.label === "canvas:a2ui:bundle");
+    expect(step).toBeTruthy();
+
+    const result = resolveBuildAllStep(step, {
+      platform: "linux",
+      nodeExecPath: "/usr/local/bin/node",
+      npmExecPath:
+        "/data/local/share/pnpm/.tools/@pnpm+linux-x64/10.32.1_tmp_22738/node_modules/@pnpm/linux-x64/pnpm",
+      env: {},
+    });
+
+    expect(result).toEqual({
+      command:
+        "/data/local/share/pnpm/.tools/@pnpm+linux-x64/10.32.1_tmp_22738/node_modules/@pnpm/linux-x64/pnpm",
+      args: ["canvas:a2ui:bundle"],
+      options: {
+        stdio: "inherit",
+        env: {},
+        shell: false,
+        windowsVerbatimArguments: undefined,
+      },
+    });
+  });
+
   it("keeps node steps on the current node binary", () => {
     const step = BUILD_ALL_STEPS.find((entry) => entry.label === "runtime-postbuild");
     expect(step).toBeTruthy();

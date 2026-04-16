@@ -1,9 +1,19 @@
 import { spawn } from "node:child_process";
-import path from "node:path";
 import { buildCmdExeCommandLine } from "./windows-cmd-helpers.mjs";
 
-function isPnpmExecPath(value) {
-  return /^pnpm(?:-cli)?(?:\.(?:c?js|cmd|exe))?$/.test(path.basename(value).toLowerCase());
+function resolvePnpmExecPathKind(value) {
+  const basename = value.replaceAll("\\", "/").split("/").at(-1)?.toLowerCase() ?? "";
+  if (!/^pnpm(?:-cli)?(?:\.(?:js|cjs|mjs|cmd|exe))?$/.test(basename)) {
+    return null;
+  }
+  const extension = basename.includes(".") ? `.${basename.split(".").at(-1)}` : "";
+  if (extension === ".js" || extension === ".cjs" || extension === ".mjs") {
+    return "node";
+  }
+  if (extension === ".cmd") {
+    return "cmd";
+  }
+  return "native";
 }
 
 export function resolvePnpmRunner(params = {}) {
@@ -13,12 +23,33 @@ export function resolvePnpmRunner(params = {}) {
   const nodeExecPath = params.nodeExecPath ?? process.execPath;
   const platform = params.platform ?? process.platform;
   const comSpec = params.comSpec ?? process.env.ComSpec ?? "cmd.exe";
+  const pnpmExecPathKind =
+    typeof npmExecPath === "string" && npmExecPath.length > 0
+      ? resolvePnpmExecPathKind(npmExecPath)
+      : null;
 
-  if (typeof npmExecPath === "string" && npmExecPath.length > 0 && isPnpmExecPath(npmExecPath)) {
+  if (pnpmExecPathKind === "node") {
     return {
       command: nodeExecPath,
       args: [...nodeArgs, npmExecPath, ...pnpmArgs],
       shell: false,
+    };
+  }
+
+  if (pnpmExecPathKind === "native") {
+    return {
+      command: npmExecPath,
+      args: pnpmArgs,
+      shell: false,
+    };
+  }
+
+  if (pnpmExecPathKind === "cmd" && platform === "win32") {
+    return {
+      command: comSpec,
+      args: ["/d", "/s", "/c", buildCmdExeCommandLine(npmExecPath, pnpmArgs)],
+      shell: false,
+      windowsVerbatimArguments: true,
     };
   }
 
