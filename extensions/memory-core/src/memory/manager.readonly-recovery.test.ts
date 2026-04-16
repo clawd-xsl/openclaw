@@ -183,6 +183,10 @@ describe("memory manager readonly recovery", () => {
       | undefined;
     const busyTimeout = row?.busy_timeout ?? row?.timeout;
     expect(busyTimeout).toBe(5000);
+    const journalMode = db.prepare("PRAGMA journal_mode").get() as
+      | { journal_mode?: string }
+      | undefined;
+    expect(journalMode?.journal_mode?.toLowerCase()).toBe("wal");
     db.close();
   });
 

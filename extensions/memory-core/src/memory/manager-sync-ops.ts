@@ -733,6 +733,7 @@ export abstract class MemoryManagerSyncOps {
       if (activePaths.has(stale.path)) {
         continue;
       }
+      await new Promise((resolve) => setImmediate(resolve));
       deleteFileByPathAndSource.run(stale.path, "memory");
       if (deleteVectorRowsByPathAndSource) {
         try {
@@ -868,6 +869,7 @@ export abstract class MemoryManagerSyncOps {
       if (activePaths.has(stale.path)) {
         continue;
       }
+      await new Promise((resolve) => setImmediate(resolve));
       deleteFileByPathAndSource.run(stale.path, "sessions");
       if (deleteVectorRowsByPathAndSource) {
         try {
