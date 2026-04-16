@@ -1,6 +1,6 @@
 import type { ImageContent } from "@mariozechner/pi-ai";
 import type { ReplyOperation } from "../../auto-reply/reply/reply-run-registry.js";
-import type { ThinkLevel } from "../../auto-reply/thinking.js";
+import type { ReasoningLevel, ThinkLevel } from "../../auto-reply/thinking.js";
 import type { CliSessionBinding } from "../../config/sessions.js";
 import type { SessionSystemPromptReport } from "../../config/sessions/types.js";
 import type { CliBackendConfig } from "../../config/types.js";
@@ -20,6 +20,7 @@ export type RunCliAgentParams = {
   provider: string;
   model?: string;
   thinkLevel?: ThinkLevel;
+  reasoningLevel?: ReasoningLevel;
   timeoutMs: number;
   runId: string;
   extraSystemPrompt?: string;
@@ -36,6 +37,9 @@ export type RunCliAgentParams = {
   messageProvider?: string;
   agentAccountId?: string;
   senderIsOwner?: boolean;
+  previousSessionId?: string;
+  recentSessionHistory?: string;
+  sessionCreatedAt?: number;
   abortSignal?: AbortSignal;
   replyOperation?: ReplyOperation;
 };

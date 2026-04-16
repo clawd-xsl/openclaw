@@ -855,6 +855,7 @@ export async function runAgentTurnWithFallback(params: {
                   provider,
                   model,
                   thinkLevel: params.followupRun.run.thinkLevel,
+                  reasoningLevel: params.followupRun.run.reasoningLevel,
                   timeoutMs: params.followupRun.run.timeoutMs,
                   runId,
                   extraSystemPrompt: params.followupRun.run.extraSystemPrompt,
@@ -873,6 +874,9 @@ export async function runAgentTurnWithFallback(params: {
                   messageProvider: params.followupRun.run.messageProvider,
                   agentAccountId: params.followupRun.run.agentAccountId,
                   senderIsOwner: params.followupRun.run.senderIsOwner,
+                  previousSessionId: params.followupRun.run.previousSessionId,
+                  recentSessionHistory: params.followupRun.run.recentSessionHistory,
+                  sessionCreatedAt: params.followupRun.run.sessionCreatedAt,
                   abortSignal: params.replyOperation?.abortSignal ?? params.opts?.abortSignal,
                   replyOperation: params.replyOperation,
                 });

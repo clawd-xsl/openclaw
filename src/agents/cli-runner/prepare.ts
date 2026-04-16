@@ -190,6 +190,7 @@ export async function prepareCliRunContext(
       workspaceDir,
       config: params.config,
       defaultThinkLevel: params.thinkLevel,
+      reasoningLevel: params.reasoningLevel,
       extraSystemPrompt,
       ownerNumbers: params.ownerNumbers,
       heartbeatPrompt,
@@ -199,6 +200,10 @@ export async function prepareCliRunContext(
       contextFiles,
       modelDisplay,
       agentId: sessionAgentId,
+      messageProvider: params.messageProvider,
+      previousSessionId: params.previousSessionId,
+      recentSessionHistory: params.recentSessionHistory,
+      sessionCreatedAt: params.sessionCreatedAt,
     });
   const transformedSystemPrompt =
     backendResolved.transformSystemPrompt?.({

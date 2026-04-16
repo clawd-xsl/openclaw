@@ -1,7 +1,11 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createAgentSession } from "@mariozechner/pi-coding-agent";
+import {
+  createAgentSession,
+  DefaultResourceLoader,
+  SessionManager,
+} from "@mariozechner/pi-coding-agent";
 import { resolveOpenClawAgentDir } from "../agents/agent-paths.js";
 import { resolveAgentConfig } from "../agents/agent-scope.js";
 import { getApiKeyForModel } from "../agents/model-auth.js";
@@ -11,6 +15,7 @@ import { resolveStateDir } from "../config/paths.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { requireNodeSqlite } from "../infra/node-sqlite.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { extractTextFromChatContent } from "../shared/chat-content.js";
 import { resolveUserPath } from "../utils.js";
 import { ensureSessionSummariesSchema } from "./session-summary-schema.js";
 
@@ -172,6 +177,28 @@ function formatMessagesForLlm(messages: TranscriptMessage[]): string {
   ].join("\n");
 }
 
+function extractAssistantTextFromMessage(message: unknown): string {
+  if (!message || typeof message !== "object") {
+    return "";
+  }
+  const role = "role" in message ? message.role : undefined;
+  if (role !== "assistant") {
+    return "";
+  }
+  const content = "content" in message ? message.content : undefined;
+  return extractTextFromChatContent(content, { joinWith: "\n" }) ?? "";
+}
+
+function findLastAssistantResponseText(messages: unknown[]): string {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const text = extractAssistantTextFromMessage(messages[index]);
+    if (text.trim()) {
+      return text;
+    }
+  }
+  return "";
+}
+
 async function callLlm(
   systemPrompt: string,
   userContent: string,
@@ -185,6 +212,13 @@ async function callLlm(
   const agentDir = resolveOpenClawAgentDir();
 
   await ensureOpenClawModelsJson(config, agentDir);
+  const resourceLoader = new DefaultResourceLoader({
+    cwd: process.cwd(),
+    agentDir,
+    systemPromptOverride: () => systemPrompt,
+    appendSystemPromptOverride: () => [],
+  });
+  await resourceLoader.reload();
 
   const { model, authStorage, modelRegistry, error } = resolveModel(
     provider,
@@ -215,12 +249,13 @@ async function callLlm(
     model,
     tools: [],
     customTools: [],
+    resourceLoader,
+    sessionManager: SessionManager.inMemory(),
   });
-  session.agent.setSystemPrompt(systemPrompt);
 
   try {
     await session.prompt(userContent);
-    const responseText = extractTextFromContent(session.messages.at(-1)?.content);
+    const responseText = findLastAssistantResponseText(session.messages);
     if (!responseText.trim()) {
       throw new Error("LLM returned empty response");
     }

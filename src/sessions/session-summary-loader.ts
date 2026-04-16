@@ -9,6 +9,69 @@ import {
   type SessionSummaryRecord,
 } from "./session-summary.js";
 
+function readSummaryRowNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "bigint") {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : null;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : null;
+  }
+  return null;
+}
+
+function readSummaryRowString(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function decodeSessionSummaryRows(rows: unknown[]): SessionSummaryRecord[] {
+  const decoded: SessionSummaryRecord[] = [];
+  for (const row of rows) {
+    if (!row || typeof row !== "object") {
+      continue;
+    }
+    const record = row as Record<string, unknown>;
+    const sessionId = readSummaryRowString(record.session_id);
+    const sessionKey = readSummaryRowString(record.session_key);
+    const agentId = readSummaryRowString(record.agent_id);
+    const summary = readSummaryRowString(record.summary);
+    const createdAt = readSummaryRowNumber(record.created_at);
+    const endedAt = readSummaryRowNumber(record.ended_at);
+    const messageCount = readSummaryRowNumber(record.message_count);
+    const generatedAt = readSummaryRowNumber(record.generated_at);
+    if (
+      !sessionId ||
+      !sessionKey ||
+      !agentId ||
+      summary == null ||
+      createdAt == null ||
+      endedAt == null ||
+      messageCount == null ||
+      generatedAt == null
+    ) {
+      continue;
+    }
+    decoded.push({
+      session_id: sessionId,
+      previous_session_id: readSummaryRowString(record.previous_session_id),
+      session_key: sessionKey,
+      agent_id: agentId,
+      created_at: createdAt,
+      ended_at: endedAt,
+      message_count: messageCount,
+      summary,
+      model: readSummaryRowString(record.model),
+      summary_model: readSummaryRowString(record.summary_model),
+      generated_at: generatedAt,
+    });
+  }
+  return decoded;
+}
+
 function resolvePositiveInteger(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
     return undefined;
@@ -50,14 +113,16 @@ export function loadRecentSummaries(params: {
 
   try {
     const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
-    const rows = db
-      .prepare(`
+    const rows = decodeSessionSummaryRows(
+      db
+        .prepare(`
         SELECT * FROM session_summaries
         WHERE agent_id = ? AND session_key = ? AND ended_at > ?
         ORDER BY ended_at DESC
         LIMIT 20
       `)
-      .all(params.agentId, params.sessionKey, cutoff) as SessionSummaryRecord[];
+        .all(params.agentId, params.sessionKey, cutoff),
+    );
 
     const capped: SessionSummaryRecord[] = [];
     let totalChars = 0;
@@ -118,14 +183,16 @@ export function querySummaries(params: {
     }
     bindings.push(limit);
 
-    return db
-      .prepare(`
+    return decodeSessionSummaryRows(
+      db
+        .prepare(`
         SELECT * FROM session_summaries
         WHERE ${conditions.join(" AND ")}
         ORDER BY ended_at DESC
         LIMIT ?
       `)
-      .all(...bindings) as SessionSummaryRecord[];
+        .all(...bindings),
+    );
   } catch {
     return [];
   } finally {

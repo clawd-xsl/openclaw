@@ -1583,6 +1583,7 @@ describe("runReplyAgent claude-cli routing", () => {
         provider: "claude-cli",
         model: "opus-4.5",
         thinkLevel: "low",
+        reasoningLevel: "stream",
         verboseLevel: "off",
         elevatedLevel: "off",
         bashElevated: {
@@ -1592,6 +1593,9 @@ describe("runReplyAgent claude-cli routing", () => {
         },
         timeoutMs: 1_000,
         blockReplyBreak: "message_end",
+        previousSessionId: "session-prev",
+        recentSessionHistory: "## Recent Session History\n- Prior rollout plan",
+        sessionCreatedAt: Date.UTC(2026, 2, 14, 18, 55, 20),
       },
     } as unknown as FollowupRun;
 
@@ -1631,6 +1635,14 @@ describe("runReplyAgent claude-cli routing", () => {
 
     expect(runEmbeddedPiAgentMock).not.toHaveBeenCalled();
     expect(runCliAgentMock).toHaveBeenCalledTimes(1);
+    expect(runCliAgentMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reasoningLevel: "stream",
+        previousSessionId: "session-prev",
+        recentSessionHistory: "## Recent Session History\n- Prior rollout plan",
+        sessionCreatedAt: Date.UTC(2026, 2, 14, 18, 55, 20),
+      }),
+    );
     expect(result).toMatchObject({ text: "ok" });
   });
 });

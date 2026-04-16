@@ -16,7 +16,7 @@ import {
 } from "./cli-runner.test-support.js";
 import { buildCliEnvAuthLog, executePreparedCliRun } from "./cli-runner/execute.js";
 import { buildSystemPrompt } from "./cli-runner/helpers.js";
-import { setCliRunnerPrepareTestDeps } from "./cli-runner/prepare.js";
+import { prepareCliRunContext, setCliRunnerPrepareTestDeps } from "./cli-runner/prepare.js";
 import type { PreparedCliRunContext } from "./cli-runner/types.js";
 
 beforeEach(() => {
@@ -182,6 +182,60 @@ describe("runCliAgent spawn path", () => {
     expect(systemPrompt).toContain("## Skills (mandatory)");
     expect(systemPrompt).toContain("<name>weather</name>");
     expect(systemPrompt).toContain("/tmp/skills/weather/SKILL.md");
+  });
+
+  it("carries recent session summaries and continuity metadata into prepared CLI system prompts", async () => {
+    setCliRunnerPrepareTestDeps({
+      makeBootstrapWarn: () => () => {},
+      resolveBootstrapContextForRun: async () => ({
+        bootstrapFiles: [],
+        contextFiles: [],
+      }),
+      resolveOpenClawDocsPath: async () => undefined,
+      getActiveMcpLoopbackRuntime: () => undefined,
+      ensureMcpLoopbackServer: async () => {},
+    });
+
+    const context = await prepareCliRunContext({
+      sessionId: "session-current",
+      sessionKey: "agent:main:test",
+      agentId: "main",
+      sessionFile: "/tmp/session.jsonl",
+      workspaceDir: "/tmp",
+      config: {
+        agents: {
+          defaults: {
+            cliBackends: {
+              "test-cli": {
+                command: "test-cli",
+                args: ["--print"],
+                input: "stdin",
+                output: "text",
+                systemPromptArg: "--system-prompt",
+                systemPromptWhen: "first",
+              },
+            },
+          },
+        },
+      },
+      prompt: "hello",
+      provider: "test-cli",
+      model: "demo",
+      reasoningLevel: "on",
+      timeoutMs: 1_000,
+      runId: "run-cli-continuity",
+      messageProvider: "webchat",
+      previousSessionId: "session-prev",
+      recentSessionHistory: "## Recent Session History\n- Prior rollout and bring-up notes",
+      sessionCreatedAt: Date.UTC(2026, 2, 14, 18, 55, 20),
+    });
+
+    expect(context.systemPrompt).toContain("## Recent Session History");
+    expect(context.systemPrompt).toContain("- Prior rollout and bring-up notes");
+    expect(context.systemPrompt).toContain("Previous session: session-prev");
+    expect(context.systemPrompt).toContain("Session started: 2026-03-14T18:55:20.000Z");
+    expect(context.systemPrompt).toContain("Reasoning: on");
+    expect(context.systemPrompt).toContain("channel=webchat");
   });
 
   it("pipes Claude prompts over stdin instead of argv", async () => {

@@ -141,14 +141,19 @@ export function buildRunClaudeCliAgentParams(params: RunClaudeCliAgentParams): R
     provider: params.provider ?? "claude-cli",
     model: params.model ?? "opus",
     thinkLevel: params.thinkLevel,
+    reasoningLevel: params.reasoningLevel,
     timeoutMs: params.timeoutMs,
     runId: params.runId,
     extraSystemPrompt: params.extraSystemPrompt,
     ownerNumbers: params.ownerNumbers,
+    previousSessionId: params.previousSessionId,
+    recentSessionHistory: params.recentSessionHistory,
+    sessionCreatedAt: params.sessionCreatedAt,
     // Legacy `claudeSessionId` callers predate the shared CLI session contract.
     // Ignore it here so the compatibility wrapper does not accidentally resume
     // an incompatible Claude session on the generic runner path.
     images: params.images,
+    messageProvider: params.messageProvider,
     senderIsOwner: params.senderIsOwner,
   };
 }
