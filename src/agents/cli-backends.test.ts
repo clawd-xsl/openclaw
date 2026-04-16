@@ -163,6 +163,7 @@ function normalizeTestClaudeBackendConfig(config: CliBackendConfig): CliBackendC
     ...config,
     args: normalizeTestClaudeArgs(config.args),
     resumeArgs: normalizeTestClaudeArgs(config.resumeArgs),
+    systemPromptWhen: config.systemPromptWhen === "never" ? "never" : "always",
   };
 }
 
@@ -719,7 +720,7 @@ describe("resolveCliBackendConfig claude-cli defaults", () => {
       "bypassPermissions",
     ]);
     expect(resolved?.config.systemPromptArg).toBe("--append-system-prompt");
-    expect(resolved?.config.systemPromptWhen).toBe("first");
+    expect(resolved?.config.systemPromptWhen).toBe("always");
     expect(resolved?.config.sessionArg).toBe("--session-id");
     expect(resolved?.config.sessionMode).toBe("always");
     expect(resolved?.config.input).toBe("stdin");

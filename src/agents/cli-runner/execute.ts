@@ -188,8 +188,9 @@ export async function executePreparedCliRun(
     isNewSession: isNew,
     systemPrompt: context.systemPrompt,
   });
+  const includeSystemPromptOnResume = context.backendResolved.id === "claude-cli";
   const systemPromptFile =
-    !useResume && systemPromptArg
+    (!useResume || includeSystemPromptOnResume) && systemPromptArg
       ? await writeCliSystemPromptFile({
           backend,
           systemPrompt: systemPromptArg,
@@ -240,6 +241,7 @@ export async function executePreparedCliRun(
     imagePaths,
     promptArg: argsPrompt,
     useResume,
+    includeSystemPromptOnResume,
   });
 
   const queueKey = resolveCliRunQueueKey({

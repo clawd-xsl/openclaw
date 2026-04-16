@@ -91,6 +91,14 @@ const CLAUDE_BYPASS_PERMISSIONS_MODE = "bypassPermissions";
 const CLAUDE_SETTING_SOURCES_ARG = "--setting-sources";
 const CLAUDE_SAFE_SETTING_SOURCES = "user";
 
+function normalizeClaudeSystemPromptWhen(
+  when: CliBackendConfig["systemPromptWhen"],
+): CliBackendConfig["systemPromptWhen"] {
+  // Claude Code does not persist custom system prompts across resumed sessions,
+  // so OpenClaw must keep re-supplying them unless the operator disables them.
+  return when === "never" ? "never" : "always";
+}
+
 export function isClaudeCliProvider(providerId: string): boolean {
   return normalizeOptionalLowercaseString(providerId) === CLAUDE_CLI_BACKEND_ID;
 }
@@ -170,5 +178,6 @@ export function normalizeClaudeBackendConfig(config: CliBackendConfig): CliBacke
     ...config,
     args: normalizeClaudePermissionArgs(normalizeClaudeSettingSourcesArgs(config.args)),
     resumeArgs: normalizeClaudePermissionArgs(normalizeClaudeSettingSourcesArgs(config.resumeArgs)),
+    systemPromptWhen: normalizeClaudeSystemPromptWhen(config.systemPromptWhen),
   };
 }

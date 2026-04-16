@@ -144,6 +144,28 @@ describe("buildCliArgs", () => {
     ).toEqual(["-p", "--append-system-prompt", "Stable prefix\nDynamic suffix"]);
   });
 
+  it("keeps CLI system prompt args on resumed Claude sessions when allowed", () => {
+    expect(
+      buildCliArgs({
+        backend: {
+          command: "claude",
+          systemPromptArg: "--append-system-prompt",
+        },
+        baseArgs: ["-p", "--resume", "claude-session-123"],
+        modelId: "claude-sonnet-4-6",
+        systemPrompt: "Resume-safe prompt",
+        useResume: true,
+        includeSystemPromptOnResume: true,
+      }),
+    ).toEqual([
+      "-p",
+      "--resume",
+      "claude-session-123",
+      "--append-system-prompt",
+      "Resume-safe prompt",
+    ]);
+  });
+
   it("passes Codex system prompts via a model instructions file config override", () => {
     expect(
       buildCliArgs({

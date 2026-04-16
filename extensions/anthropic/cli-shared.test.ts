@@ -83,6 +83,7 @@ describe("normalizeClaudeBackendConfig", () => {
       command: "claude",
       args: ["-p", "--output-format", "stream-json", "--verbose"],
       resumeArgs: ["-p", "--output-format", "stream-json", "--verbose", "--resume", "{sessionId}"],
+      systemPromptWhen: "first",
     });
 
     expect(normalized.args).toEqual([
@@ -107,6 +108,16 @@ describe("normalizeClaudeBackendConfig", () => {
       "--permission-mode",
       "bypassPermissions",
     ]);
+    expect(normalized.systemPromptWhen).toBe("always");
+  });
+
+  it("preserves an explicit never system prompt policy", () => {
+    const normalized = normalizeClaudeBackendConfig({
+      command: "claude",
+      systemPromptWhen: "never",
+    });
+
+    expect(normalized.systemPromptWhen).toBe("never");
   });
 
   it("is wired through the anthropic cli backend normalize hook", () => {
@@ -129,6 +140,7 @@ describe("normalizeClaudeBackendConfig", () => {
     expect(normalized?.resumeArgs).toContain("bypassPermissions");
     expect(normalized?.resumeArgs).toContain("--setting-sources");
     expect(normalized?.resumeArgs).toContain("user");
+    expect(normalized?.systemPromptWhen).toBe("always");
   });
 
   it("leaves claude cli subscription-managed, restricts setting sources, and clears inherited env overrides", () => {
@@ -139,6 +151,7 @@ describe("normalizeClaudeBackendConfig", () => {
     expect(backend.config.args).toContain("user");
     expect(backend.config.resumeArgs).toContain("--setting-sources");
     expect(backend.config.resumeArgs).toContain("user");
+    expect(backend.config.systemPromptWhen).toBe("always");
     expect(backend.config.clearEnv).toEqual([...CLAUDE_CLI_CLEAR_ENV]);
     expect(backend.config.clearEnv).toContain("ANTHROPIC_API_TOKEN");
     expect(backend.config.clearEnv).toContain("ANTHROPIC_BASE_URL");

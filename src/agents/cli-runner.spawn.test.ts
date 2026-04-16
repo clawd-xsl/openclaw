@@ -344,6 +344,31 @@ describe("runCliAgent spawn path", () => {
     expect(input.argv).not.toContain("hi");
   });
 
+  it("re-supplies Claude system prompts on resumed sessions", async () => {
+    mockSuccessfulCliRun();
+
+    await executePreparedCliRun(
+      buildPreparedCliRunContext({
+        provider: "claude-cli",
+        model: "sonnet",
+        runId: "run-claude-resume-system-prompt",
+        backend: {
+          resumeArgs: ["-p", "--output-format", "stream-json", "--resume", "{sessionId}"],
+          systemPromptWhen: "always",
+        },
+      }),
+      "claude-session-123",
+    );
+
+    const input = supervisorSpawnMock.mock.calls[0]?.[0] as {
+      argv?: string[];
+    };
+    expect(input.argv).toContain("--resume");
+    expect(input.argv).toContain("claude-session-123");
+    expect(input.argv).toContain("--append-system-prompt");
+    expect(input.argv).toContain("You are a helpful assistant.");
+  });
+
   it("passes OpenClaw skills to Claude as a session plugin", async () => {
     const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-cli-skills-"));
     const skillDir = path.join(workspaceDir, "skills", "weather");
