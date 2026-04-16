@@ -48,6 +48,7 @@ import {
   hasMeaningfulConversationContent,
   isRealConversationMessage,
 } from "../compaction-real-conversation.js";
+import { persistCompactionRecoveryMarker } from "../compaction-recovery.js";
 import { resolveContextWindowInfo } from "../context-window-guard.js";
 import { formatUserTime, resolveUserTimeFormat, resolveUserTimezone } from "../date-time.js";
 import { DEFAULT_CONTEXT_TOKENS, DEFAULT_MODEL, DEFAULT_PROVIDER } from "../defaults.js";
@@ -1026,6 +1027,21 @@ export async function compactEmbeddedPiSessionDirect(
                 errorMessage: formatErrorMessage(err),
               });
             }
+          }
+          try {
+            const persistedRecoveryMarker = await persistCompactionRecoveryMarker({
+              sessionManager,
+              workspaceDir: effectiveWorkspace,
+              sessionId: params.sessionId,
+            });
+            if (persistedRecoveryMarker) {
+              session.agent.state.messages = persistedRecoveryMarker.messages;
+              log.info(
+                `[compaction-recovery] Appended recovery message to transcript (${persistedRecoveryMarker.recoveryContentLength} chars)`,
+              );
+            }
+          } catch {
+            // Best-effort: ignore failures reading recovery file.
           }
           // Estimate tokens after compaction by summing token estimates for remaining messages
           const tokensAfter = estimateTokensAfterCompaction({

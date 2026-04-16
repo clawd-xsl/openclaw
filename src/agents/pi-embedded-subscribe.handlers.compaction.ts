@@ -1,6 +1,11 @@
-import type { AgentEvent } from "@mariozechner/pi-agent-core";
+import type { AgentEvent, AgentMessage } from "@mariozechner/pi-agent-core";
 import { emitAgentEvent } from "../infra/agent-events.js";
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
+import {
+  persistCompactionRecoveryMarkerSync,
+  stripTrailingRetryNoiseBeforeCompactionRecovery,
+  type CompactionRecoverySessionManager,
+} from "./compaction-recovery.js";
 import type { EmbeddedPiSubscribeContext } from "./pi-embedded-subscribe.handlers.types.js";
 import { makeZeroUsageSnapshot } from "./usage.js";
 
@@ -52,6 +57,7 @@ export function handleAutoCompactionEnd(
   const hasResult = evt.result != null;
   const wasAborted = Boolean(evt.aborted);
   if (hasResult && !wasAborted) {
+    persistCompactionRecoveryMarkerForSubscribePath(ctx, willRetry);
     ctx.incrementCompactionCount();
     const observedCompactionCount = ctx.getCompactionCount();
     void reconcileSessionStoreCompactionCountAfterSuccess({
@@ -114,6 +120,67 @@ export async function reconcileSessionStoreCompactionCountAfterSuccess(params: {
   const { reconcileSessionStoreCompactionCountAfterSuccess: reconcile } =
     await import("./pi-embedded-subscribe.handlers.compaction.runtime.js");
   return reconcile(params);
+}
+
+function persistCompactionRecoveryMarkerForSubscribePath(
+  ctx: EmbeddedPiSubscribeContext,
+  willRetry: boolean,
+): void {
+  const sessionManager = resolveCompactionRecoverySessionManager(ctx);
+  if (!sessionManager) {
+    return;
+  }
+  try {
+    const persistedMarker = persistCompactionRecoveryMarkerSync({
+      sessionManager,
+      workspaceDir: ctx.params.workspaceDir,
+      sessionId: ctx.params.sessionId,
+    });
+    if (!persistedMarker) {
+      return;
+    }
+    const nextMessages = willRetry
+      ? stripTrailingRetryNoiseBeforeCompactionRecovery(persistedMarker.messages)
+      : persistedMarker.messages;
+    applySessionMessages(ctx, nextMessages);
+    ctx.log.debug(
+      `[compaction-recovery] Persisted COMPACTION.md marker after auto-compaction: runId=${ctx.params.runId}`,
+    );
+  } catch (err) {
+    ctx.log.debug(`[compaction-recovery] auto-compaction injection skipped: ${String(err)}`);
+  }
+}
+
+function resolveCompactionRecoverySessionManager(
+  ctx: EmbeddedPiSubscribeContext,
+): CompactionRecoverySessionManager | undefined {
+  const candidate =
+    ctx.params.sessionManager ??
+    ((ctx.params.session as { sessionManager?: unknown }).sessionManager as unknown);
+  if (!candidate || typeof candidate !== "object") {
+    return undefined;
+  }
+  const sessionManager = candidate as Partial<CompactionRecoverySessionManager>;
+  return typeof sessionManager.appendMessage === "function" &&
+    typeof sessionManager.buildSessionContext === "function"
+    ? (sessionManager as CompactionRecoverySessionManager)
+    : undefined;
+}
+
+function applySessionMessages(ctx: EmbeddedPiSubscribeContext, messages: AgentMessage[]): void {
+  const agentState = (
+    ctx.params.session as {
+      agent?: {
+        state?: {
+          messages: AgentMessage[];
+        };
+      };
+    }
+  ).agent?.state;
+  if (!agentState) {
+    return;
+  }
+  agentState.messages = messages;
 }
 
 function clearStaleAssistantUsageOnSessionMessages(ctx: EmbeddedPiSubscribeContext): void {

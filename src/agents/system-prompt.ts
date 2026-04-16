@@ -426,6 +426,9 @@ export function buildAgentSystemPrompt(params: {
   includeMemorySection?: boolean;
   memoryCitationsMode?: MemoryCitationsMode;
   promptContribution?: ProviderSystemPromptContribution;
+  previousSessionId?: string;
+  recentSessionHistory?: string;
+  sessionCreatedAt?: number;
 }) {
   const acpEnabled = params.acpEnabled !== false;
   const sandboxedRuntime = params.sandboxInfo?.enabled === true;
@@ -461,6 +464,7 @@ export function buildAgentSystemPrompt(params: {
     subagents: "List, steer, or kill sub-agent runs for this requester session",
     session_status:
       "Show a /status-equivalent status card (usage + time + Reasoning/Verbose/Elevated); use for model-use questions (📊 session_status); optional per-session model override",
+    session_summaries: "Query past session summaries by time range",
     image: "Analyze an image with the configured image model",
     image_generate: "Generate images with the configured image-generation model",
   };
@@ -489,6 +493,7 @@ export function buildAgentSystemPrompt(params: {
     "sessions_send",
     "subagents",
     "session_status",
+    "session_summaries",
     "image",
     "image_generate",
   ];
@@ -914,6 +919,9 @@ export function buildAgentSystemPrompt(params: {
   if (providerDynamicSuffix) {
     lines.push(providerDynamicSuffix, "");
   }
+  if (params.recentSessionHistory) {
+    lines.push(params.recentSessionHistory, "");
+  }
 
   lines.push(...buildHeartbeatSection({ isMinimal, heartbeatPrompt }));
 
@@ -922,6 +930,16 @@ export function buildAgentSystemPrompt(params: {
     buildRuntimeLine(runtimeInfo, runtimeChannel, runtimeCapabilities, params.defaultThinkLevel),
     `Reasoning: ${reasoningLevel} (hidden unless on/stream). Toggle /reasoning; /status shows Reasoning when enabled.`,
   );
+  if (params.previousSessionId) {
+    const createdAtStr = params.sessionCreatedAt
+      ? new Date(params.sessionCreatedAt).toISOString()
+      : undefined;
+    const continuityParts = [
+      `Previous session: ${params.previousSessionId}`,
+      createdAtStr ? `Session started: ${createdAtStr}` : "",
+    ].filter(Boolean);
+    lines.push(continuityParts.join(" | "));
+  }
 
   return lines.filter(Boolean).join("\n");
 }

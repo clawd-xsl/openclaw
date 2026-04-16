@@ -216,6 +216,20 @@ describe("buildAgentSystemPrompt", () => {
     expect(prompt).toContain("<final>...</final>");
   });
 
+  it("includes recent session history and continuity metadata when provided", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      previousSessionId: "session-prev",
+      sessionCreatedAt: Date.UTC(2026, 2, 14, 18, 55, 20),
+      recentSessionHistory: "## Recent Session History\n- Yesterday: discussed rollout plan",
+    });
+
+    expect(prompt).toContain("## Recent Session History");
+    expect(prompt).toContain("- Yesterday: discussed rollout plan");
+    expect(prompt).toContain("Previous session: session-prev");
+    expect(prompt).toContain("Session started: 2026-03-14T18:55:20.000Z");
+  });
+
   it("includes a CLI quick reference section", () => {
     const prompt = buildAgentSystemPrompt({
       workspaceDir: "/tmp/openclaw",

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { resolveCoreToolProfilePolicy } from "./tool-catalog.js";
 
 describe("tool-catalog", () => {
-  it("includes code_execution, web_search, x_search, web_fetch, and update_plan in the coding profile policy", () => {
+  it("includes session_summaries and modern hosted tools in the coding profile policy", () => {
     const policy = resolveCoreToolProfilePolicy("coding");
     expect(policy).toBeDefined();
     expect(policy!.allow).toContain("code_execution");
@@ -12,6 +12,7 @@ describe("tool-catalog", () => {
     expect(policy!.allow).toContain("image_generate");
     expect(policy!.allow).toContain("music_generate");
     expect(policy!.allow).toContain("video_generate");
+    expect(policy!.allow).toContain("session_summaries");
     expect(policy!.allow).toContain("update_plan");
   });
 });

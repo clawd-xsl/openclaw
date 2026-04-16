@@ -37,6 +37,7 @@ import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import type { PluginHookSessionEndReason } from "../../plugins/hook-types.js";
 import { normalizeMainKey } from "../../routing/session-key.js";
 import { isInterSessionInputProvenance } from "../../sessions/input-provenance.js";
+import { generateSessionSummary } from "../../sessions/session-summary.js";
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalLowercaseString,
@@ -702,6 +703,8 @@ export async function initSessionState(params: {
   sessionEntry = resolvedSessionFile.sessionEntry;
   if (isNewSession) {
     sessionEntry.compactionCount = 0;
+    sessionEntry.previousSessionId = previousSessionEntry?.sessionId;
+    sessionEntry.createdAt = Date.now();
     sessionEntry.memoryFlushCompactionCount = undefined;
     sessionEntry.memoryFlushAt = undefined;
     // Clear stale context hash so the first flush in the new session is not
@@ -761,6 +764,24 @@ export async function initSessionState(params: {
       agentId,
       archivedTranscripts,
     });
+    const summaryTranscriptFile = previousSessionTranscript.sessionFile;
+    if (summaryTranscriptFile) {
+      void generateSessionSummary({
+        sessionFilePath: summaryTranscriptFile,
+        sessionId: previousSessionEntry.sessionId,
+        previousSessionId: previousSessionEntry.previousSessionId,
+        sessionKey,
+        agentId,
+        config: cfg,
+        createdAt: previousSessionEntry.createdAt ?? Date.now(),
+        endedAt: Date.now(),
+        model: previousSessionEntry.model ?? previousSessionEntry.modelOverride,
+      }).catch((error) => {
+        log.warn(`failed to generate session summary for ${previousSessionEntry.sessionId}`, {
+          error: String(error),
+        });
+      });
+    }
     await disposeSessionMcpRuntime(previousSessionEntry.sessionId).catch((error) => {
       log.warn(
         `failed to dispose bundle MCP runtime for session ${previousSessionEntry.sessionId}`,
@@ -792,6 +813,7 @@ export async function initSessionState(params: {
     ),
     SessionId: sessionId,
     IsNewSession: isNewSession ? "true" : "false",
+    PreviousSessionId: previousSessionEntry?.sessionId,
   };
 
   // Run session plugin hooks (fire-and-forget)

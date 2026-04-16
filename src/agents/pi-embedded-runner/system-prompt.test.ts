@@ -117,4 +117,29 @@ describe("buildEmbeddedSystemPrompt", () => {
 
     expect(prompt).not.toContain("## Memory Recall");
   });
+
+  it("forwards session continuity metadata into the embedded prompt", () => {
+    const prompt = buildEmbeddedSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      reasoningTagHint: false,
+      runtimeInfo: {
+        host: "local",
+        os: "darwin",
+        arch: "arm64",
+        node: process.version,
+        model: "gpt-5.4",
+        provider: "openai",
+      },
+      tools: [],
+      modelAliasLines: [],
+      userTimezone: "UTC",
+      previousSessionId: "session-prev",
+      sessionCreatedAt: Date.UTC(2026, 2, 14, 18, 55, 20),
+      recentSessionHistory: "## Recent Session History\n- Previous work item",
+    });
+
+    expect(prompt).toContain("## Recent Session History");
+    expect(prompt).toContain("Previous session: session-prev");
+    expect(prompt).toContain("Session started: 2026-03-14T18:55:20.000Z");
+  });
 });

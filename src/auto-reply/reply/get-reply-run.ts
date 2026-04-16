@@ -15,6 +15,10 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { logVerbose } from "../../globals.js";
 import { clearCommandLane, getQueueSize } from "../../process/command-queue.js";
 import { normalizeMainKey } from "../../routing/session-key.js";
+import {
+  buildSessionHistorySection,
+  loadRecentSummaries,
+} from "../../sessions/session-summary-loader.js";
 import { normalizeOptionalString } from "../../shared/string-coerce.js";
 import { isReasoningTagProvider } from "../../utils/provider-utils.js";
 import { hasControlCommand } from "../command-detection.js";
@@ -543,6 +547,19 @@ export async function runPreparedReply(
   const { runReplyAgent } = await loadAgentRunnerRuntime();
   const queueKey = sessionKey ?? sessionIdFinal;
   preparedSessionState = resolvePreparedSessionState();
+  let recentSessionHistory: string | undefined;
+  try {
+    const summaries = loadRecentSummaries({
+      sessionKey,
+      agentId,
+      config: cfg,
+    });
+    if (summaries.length > 0) {
+      recentSessionHistory = buildSessionHistorySection(summaries);
+    }
+  } catch {
+    // Best-effort prompt enrichment only.
+  }
   const resolveActiveQueueSessionId = () =>
     piRuntime?.resolveActiveEmbeddedRunSessionId(sessionKey) ?? preparedSessionState.sessionId;
   const resolveQueueBusyState = () => {
@@ -678,6 +695,9 @@ export async function runPreparedReply(
       ownerNumbers: command.ownerList.length > 0 ? command.ownerList : undefined,
       inputProvenance: ctx.InputProvenance ?? sessionCtx.InputProvenance,
       extraSystemPrompt: extraSystemPromptParts.join("\n\n") || undefined,
+      previousSessionId: preparedSessionState.sessionEntry?.previousSessionId,
+      recentSessionHistory,
+      sessionCreatedAt: preparedSessionState.sessionEntry?.createdAt,
       skipProviderRuntimeHints: useFastReplyRuntime,
       ...(!useFastReplyRuntime &&
       isReasoningTagProvider(provider, {

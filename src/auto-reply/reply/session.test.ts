@@ -26,6 +26,12 @@ import { drainFormattedSystemEvents } from "./session-updates.js";
 import { persistSessionUsageUpdate } from "./session-usage.js";
 import { initSessionState } from "./session.js";
 
+const generateSessionSummaryMock = vi.hoisted(() => vi.fn(async () => undefined));
+
+vi.mock("../../sessions/session-summary.js", () => ({
+  generateSessionSummary: generateSessionSummaryMock,
+}));
+
 // Perf: session-store locks are exercised elsewhere; most session tests don't need FS lock files.
 vi.mock("../../agents/session-write-lock.js", async () => {
   const actual = await vi.importActual<typeof import("../../agents/session-write-lock.js")>(
@@ -216,6 +222,7 @@ function registerCurrentConversationBindingAdapterForTest(params: {
 
 beforeEach(() => {
   sessionBindingTesting.resetSessionBindingAdaptersForTests();
+  generateSessionSummaryMock.mockClear();
 });
 afterEach(async () => {
   await sessionMcpTesting.resetSessionMcpRuntimeManager();
@@ -1210,6 +1217,11 @@ describe("initSessionState reset policy", () => {
 
     expect(result.isNewSession).toBe(true);
     expect(result.sessionId).not.toBe(existingSessionId);
+    expect(result.sessionEntry).toMatchObject({
+      previousSessionId: existingSessionId,
+      createdAt: new Date(2026, 0, 18, 5, 0, 0).getTime(),
+    });
+    expect(result.sessionCtx.PreviousSessionId).toBe(existingSessionId);
     expect(clearBootstrapSnapshotOnSessionRolloverSpy).toHaveBeenCalledWith({
       sessionKey,
       previousSessionId: existingSessionId,
@@ -1915,6 +1927,13 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
         entry.startsWith(`${existingSessionId}.jsonl.reset.`),
       );
       expect(archived).toHaveLength(1);
+      expect(generateSessionSummaryMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: existingSessionId,
+          previousSessionId: undefined,
+          sessionKey,
+        }),
+      );
     } finally {
       vi.useRealTimers();
     }

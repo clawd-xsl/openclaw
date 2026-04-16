@@ -126,6 +126,10 @@ export type SessionEntry = {
   heartbeatTaskState?: Record<string, number>;
   sessionId: string;
   updatedAt: number;
+  /** Session ID of the predecessor session when this session was rotated/reset. */
+  previousSessionId?: string;
+  /** Epoch ms when this session was created. */
+  createdAt?: number;
   sessionFile?: string;
   /** Parent session key that spawned this session (used for sandbox session-tool scoping). */
   spawnedBy?: string;

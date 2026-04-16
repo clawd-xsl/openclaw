@@ -1,4 +1,4 @@
-import type { AgentSession } from "@mariozechner/pi-coding-agent";
+import type { AgentSession, SessionManager } from "@mariozechner/pi-coding-agent";
 import type { ReplyPayload } from "../auto-reply/reply-payload.js";
 import type { ReasoningLevel, VerboseLevel } from "../auto-reply/thinking.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -11,6 +11,7 @@ export type { BlockReplyChunking, ToolResultFormat } from "./pi-embedded-subscri
 
 export type SubscribeEmbeddedPiSessionParams = {
   session: AgentSession;
+  sessionManager?: SessionManager;
   runId: string;
   initialReplayState?: EmbeddedRunReplayState;
   hookRunner?: HookRunner;
@@ -34,6 +35,7 @@ export type SubscribeEmbeddedPiSessionParams = {
   enforceFinalTag?: boolean;
   silentExpected?: boolean;
   config?: OpenClawConfig;
+  workspaceDir?: string;
   sessionKey?: string;
   /** Ephemeral session UUID — regenerated on /new and /reset. */
   sessionId?: string;

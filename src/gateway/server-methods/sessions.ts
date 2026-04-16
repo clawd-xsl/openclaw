@@ -38,6 +38,7 @@ import {
   normalizeOptionalString,
   readStringValue,
 } from "../../shared/string-coerce.js";
+import { querySummaries as querySessionSummaries } from "../../sessions/session-summary-loader.js";
 import { GATEWAY_CLIENT_IDS } from "../protocol/client-info.js";
 import {
   ErrorCodes,
@@ -58,6 +59,7 @@ import {
   validateSessionsResetParams,
   validateSessionsResolveParams,
   validateSessionsSendParams,
+  validateSessionsSummariesParams,
 } from "../protocol/index.js";
 import {
   getSessionCompactionCheckpoint,
@@ -93,6 +95,45 @@ import type {
 } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+type SessionSummaryRow = {
+  session_id: string;
+  session_key: string;
+  created_at: number;
+  ended_at: number;
+  message_count: number;
+  summary: string;
+  model?: string | null;
+  summary_model?: string | null;
+};
+
+type SessionSummaryLoaderModule = {
+  querySummaries(params: {
+    agentId: string;
+    sessionKey?: string;
+    from: number;
+    to: number;
+    limit?: number;
+    query?: string;
+  }): SessionSummaryRow[] | Promise<SessionSummaryRow[]>;
+};
+
+let sessionSummaryLoaderOverride: (() => Promise<SessionSummaryLoaderModule | null>) | undefined;
+
+export function setSessionSummaryLoaderForTests(
+  loader?: () => Promise<SessionSummaryLoaderModule | null>,
+) {
+  sessionSummaryLoaderOverride = loader;
+}
+
+async function loadSessionSummaryLoader(): Promise<SessionSummaryLoaderModule | null> {
+  if (sessionSummaryLoaderOverride) {
+    return await sessionSummaryLoaderOverride();
+  }
+  return { querySummaries: querySessionSummaries };
+}
+
 function requireSessionKey(key: unknown, respond: RespondFn): string | null {
   const raw =
     typeof key === "string"
@@ -114,6 +155,49 @@ function resolveGatewaySessionTargetFromKey(key: string) {
   const cfg = loadConfig();
   const target = resolveGatewaySessionStoreTarget({ cfg, key });
   return { cfg, target, storePath: target.storePath };
+}
+
+function normalizeSummarySessionKey(value: unknown): string | undefined {
+  const normalized = normalizeOptionalString(value);
+  if (!normalized || normalized === "*") {
+    return undefined;
+  }
+  return normalized;
+}
+
+function parseSummaryTime(value: unknown, fallbackMs: number, nowMs: number): number {
+  const normalized = normalizeOptionalString(value);
+  if (!normalized) {
+    return fallbackMs;
+  }
+  if (normalized === "now") {
+    return nowMs;
+  }
+  const relativeMatch = /^(\d+)d$/i.exec(normalized);
+  if (relativeMatch) {
+    return nowMs - Number.parseInt(relativeMatch[1] ?? "0", 10) * DAY_MS;
+  }
+  const parsed = new Date(normalized).getTime();
+  return Number.isNaN(parsed) ? fallbackMs : parsed;
+}
+
+function formatSessionSummaryRow(row: SessionSummaryRow) {
+  let summary: unknown;
+  try {
+    summary = JSON.parse(row.summary);
+  } catch {
+    summary = row.summary;
+  }
+  return {
+    sessionId: row.session_id,
+    sessionKey: row.session_key,
+    createdAt: row.created_at,
+    endedAt: row.ended_at,
+    messageCount: row.message_count,
+    model: row.model ?? null,
+    summaryModel: row.summary_model ?? null,
+    summary,
+  };
 }
 
 function resolveOptionalInitialSessionMessage(params: {
@@ -567,6 +651,71 @@ export const sessionsHandlers: GatewayRequestHandlers = {
       opts: p,
     });
     respond(true, result, undefined);
+  },
+  "sessions.summaries": async ({ params, respond }) => {
+    if (
+      !assertValidParams(params, validateSessionsSummariesParams, "sessions.summaries", respond)
+    ) {
+      return;
+    }
+
+    const loader = await loadSessionSummaryLoader();
+    if (!loader) {
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.UNAVAILABLE,
+          "session summaries backend is not available in this build yet",
+        ),
+      );
+      return;
+    }
+
+    const cfg = loadConfig();
+    const nowMs = Date.now();
+    const sessionKey = normalizeSummarySessionKey((params as { sessionKey?: unknown }).sessionKey);
+    const from = parseSummaryTime((params as { from?: unknown }).from, nowMs - 7 * DAY_MS, nowMs);
+    const to = parseSummaryTime((params as { to?: unknown }).to, nowMs, nowMs);
+    if (from > to) {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, "from must be earlier than or equal to to"),
+      );
+      return;
+    }
+
+    const limitRaw = (params as { limit?: unknown }).limit;
+    const limit =
+      typeof limitRaw === "number" && Number.isFinite(limitRaw)
+        ? Math.min(Math.max(1, Math.trunc(limitRaw)), 1000)
+        : 50;
+    const query = normalizeOptionalString((params as { query?: unknown }).query) ?? undefined;
+    const agentId = sessionKey
+      ? resolveAgentIdFromSessionKey(sessionKey)
+      : resolveDefaultAgentId(cfg);
+
+    try {
+      const rows = await loader.querySummaries({
+        agentId,
+        sessionKey,
+        from,
+        to,
+        limit,
+        query,
+      });
+      respond(true, { summaries: rows.map(formatSessionSummaryRow) }, undefined);
+    } catch (error) {
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.UNAVAILABLE,
+          `failed to query session summaries: ${formatErrorMessage(error)}`,
+        ),
+      );
+    }
   },
   "sessions.subscribe": ({ client, context, respond }) => {
     const connId = client?.connId?.trim();

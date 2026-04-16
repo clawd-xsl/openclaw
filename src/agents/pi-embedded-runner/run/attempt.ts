@@ -794,6 +794,9 @@ export async function runEmbeddedAttempt(
         includeMemorySection: !params.contextEngine || params.contextEngine.info.id === "legacy",
         memoryCitationsMode: params.config?.memory?.citations,
         promptContribution,
+        previousSessionId: params.previousSessionId,
+        recentSessionHistory: params.recentSessionHistory,
+        sessionCreatedAt: params.sessionCreatedAt,
       });
     const appendPrompt = transformProviderSystemPrompt({
       provider: params.provider,

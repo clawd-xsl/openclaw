@@ -176,6 +176,9 @@ export function buildEmbeddedRunBaseParams(params: {
     execOverrides: params.run.execOverrides,
     bashElevated: params.run.bashElevated,
     timeoutMs: params.run.timeoutMs,
+    previousSessionId: params.run.previousSessionId,
+    recentSessionHistory: params.run.recentSessionHistory,
+    sessionCreatedAt: params.run.sessionCreatedAt,
     runId: params.runId,
     allowTransientCooldownProbe: params.allowTransientCooldownProbe,
   };

@@ -56,6 +56,9 @@ export function buildEmbeddedSystemPrompt(params: {
   includeMemorySection?: boolean;
   memoryCitationsMode?: MemoryCitationsMode;
   promptContribution?: ProviderSystemPromptContribution;
+  previousSessionId?: string;
+  recentSessionHistory?: string;
+  sessionCreatedAt?: number;
 }): string {
   return buildAgentSystemPrompt({
     workspaceDir: params.workspaceDir,
@@ -86,6 +89,9 @@ export function buildEmbeddedSystemPrompt(params: {
     includeMemorySection: params.includeMemorySection,
     memoryCitationsMode: params.memoryCitationsMode,
     promptContribution: params.promptContribution,
+    previousSessionId: params.previousSessionId,
+    recentSessionHistory: params.recentSessionHistory,
+    sessionCreatedAt: params.sessionCreatedAt,
   });
 }
 

@@ -19,6 +19,11 @@ const subCliCommandCatalog = defineCommandDescriptorCatalog([
     hasSubcommands: true,
   },
   {
+    name: "summary",
+    description: "Generate historical session summaries",
+    hasSubcommands: true,
+  },
+  {
     name: "models",
     description: "Discover, scan, and configure models",
     hasSubcommands: true,

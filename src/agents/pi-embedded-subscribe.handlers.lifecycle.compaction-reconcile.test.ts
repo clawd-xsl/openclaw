@@ -1,7 +1,12 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  drainSessionStoreLockQueuesForTest,
+  resetSessionStoreLockRuntimeForTests,
+  setSessionWriteLockAcquirerForTests,
+} from "../config/sessions.js";
 import {
   readCompactionCount,
   seedSessionStore,
@@ -92,6 +97,17 @@ function createLifecycleContext(params: {
     getCompactionCount: () => compactionCount,
   } as unknown as EmbeddedPiSubscribeContext;
 }
+
+beforeEach(() => {
+  setSessionWriteLockAcquirerForTests(async () => ({
+    release: async () => {},
+  }));
+});
+
+afterEach(async () => {
+  resetSessionStoreLockRuntimeForTests();
+  await drainSessionStoreLockQueuesForTest();
+});
 
 describe("createEmbeddedPiSessionEventHandler compaction reconciliation", () => {
   it("reconciles sessions.json on routed auto_compaction_end success", async () => {

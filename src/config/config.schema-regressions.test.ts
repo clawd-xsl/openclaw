@@ -166,6 +166,20 @@ describe("config schema regressions", () => {
     expect(res.ok).toBe(true);
   });
 
+  it("accepts agents.session summary settings", () => {
+    const res = validateConfigObject({
+      agents: {
+        session: {
+          summaryModel: "anthropic/claude-sonnet-4-6",
+          summaryDays: 5,
+          summaryMaxChars: 12000,
+        },
+      },
+    });
+
+    expect(res.ok).toBe(true);
+  });
+
   it("rejects oversized agents.defaults.startupContext overrides", () => {
     const res = validateConfigObject({
       agents: {

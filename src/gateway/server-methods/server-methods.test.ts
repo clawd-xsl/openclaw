@@ -36,6 +36,7 @@ describe("waitForAgentJob", () => {
     startedAt: number;
     endedAt: number;
     aborted?: boolean;
+    timedOut?: boolean;
   }) {
     const runId = `${params.runIdPrefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const waitPromise = waitForAgentJob({ runId, timeoutMs: 1_000 });
@@ -48,23 +49,41 @@ describe("waitForAgentJob", () => {
     emitAgentEvent({
       runId,
       stream: "lifecycle",
-      data: { phase: "end", endedAt: params.endedAt, aborted: params.aborted },
+      data: {
+        phase: "end",
+        endedAt: params.endedAt,
+        aborted: params.aborted,
+        timedOut: params.timedOut,
+      },
     });
 
     return waitPromise;
   }
 
-  it("maps lifecycle end events with aborted=true to timeout", async () => {
+  it("maps lifecycle end events with timedOut=true to timeout", async () => {
     const snapshot = await runLifecycleScenario({
       runIdPrefix: "run-timeout",
       startedAt: 100,
       endedAt: 200,
       aborted: true,
+      timedOut: true,
     });
     expect(snapshot).not.toBeNull();
     expect(snapshot?.status).toBe("timeout");
     expect(snapshot?.startedAt).toBe(100);
     expect(snapshot?.endedAt).toBe(200);
+  });
+
+  it("maps lifecycle end events with aborted=true but timedOut=false to ok", async () => {
+    const snapshot = await runLifecycleScenario({
+      runIdPrefix: "run-aborted-not-timeout",
+      startedAt: 100,
+      endedAt: 200,
+      aborted: true,
+      timedOut: false,
+    });
+    expect(snapshot).not.toBeNull();
+    expect(snapshot?.status).toBe("ok");
   });
 
   it("keeps non-aborted lifecycle end events as ok", async () => {

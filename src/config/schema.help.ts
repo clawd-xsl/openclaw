@@ -194,6 +194,14 @@ export const FIELD_HELP: Record<string, string> = {
     "Agent runtime configuration root covering defaults and explicit agent entries used for routing and execution context. Keep this section explicit so model/tool behavior stays predictable across multi-agent workflows.",
   "agents.defaults":
     "Shared default settings inherited by agents unless overridden per entry in agents.list. Use defaults to enforce consistent baseline behavior and reduce duplicated per-agent configuration.",
+  "agents.session":
+    "Session-summary controls for generated history snippets that help agents recover recent context across resets and restarts.",
+  "agents.session.summaryModel":
+    "Model used to generate session summaries (provider/model). Defaults to anthropic/claude-sonnet-4-6.",
+  "agents.session.summaryDays":
+    "How many recent days of summaries to consider for prompt injection and default summary lookups. Defaults to 7.",
+  "agents.session.summaryMaxChars":
+    "Maximum total summary characters to inject into prompt context before older summaries are trimmed. Defaults to 8000.",
   "agents.defaults.skills":
     "Optional default skill allowlist inherited by agents that omit agents.list[].skills. Omit for unrestricted skills, set [] to give inheriting agents no skills, and remember explicit agents.list[].skills replaces this default instead of merging with it.",
   "agents.list":

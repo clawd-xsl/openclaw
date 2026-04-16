@@ -112,7 +112,17 @@ export type AgentConfig = {
   runtime?: AgentRuntimeConfig;
 };
 
+export type AgentSessionConfig = {
+  /** Model used for session summary generation (provider/model). */
+  summaryModel?: string;
+  /** Number of lookback days for recent session-summary injection. */
+  summaryDays?: number;
+  /** Maximum injected session-summary characters. */
+  summaryMaxChars?: number;
+};
+
 export type AgentsConfig = {
   defaults?: AgentDefaultsConfig;
+  session?: AgentSessionConfig;
   list?: AgentConfig[];
 };
