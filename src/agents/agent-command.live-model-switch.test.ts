@@ -290,13 +290,22 @@ type FallbackRunnerParams = {
   run: (provider: string, model: string) => Promise<unknown>;
 };
 
-function makeSuccessResult(provider: string, model: string) {
+function makeSuccessResult(
+  provider: string,
+  model: string,
+  metaOverrides?: Partial<{
+    aborted: boolean;
+    timedOut: boolean;
+    stopReason: string;
+  }>,
+) {
   return {
     payloads: [{ text: "ok" }],
     meta: {
       durationMs: 100,
-      aborted: false,
-      stopReason: "end_turn",
+      aborted: metaOverrides?.aborted ?? false,
+      timedOut: metaOverrides?.timedOut ?? false,
+      stopReason: metaOverrides?.stopReason ?? "end_turn",
       agentMeta: { provider, model },
     },
   };
@@ -417,6 +426,40 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
       return arg?.stream === "lifecycle" && arg?.data?.phase === "end";
     });
     expect(lifecycleEndCalls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("emits timedOut on lifecycle end instead of inferring from aborted", async () => {
+    state.runWithModelFallbackMock.mockImplementation(async (params: FallbackRunnerParams) => {
+      const result = await params.run(params.provider, params.model);
+      return {
+        result,
+        provider: params.provider,
+        model: params.model,
+        attempts: [],
+      };
+    });
+    state.runAgentAttemptMock.mockResolvedValue(
+      makeSuccessResult("anthropic", "claude", {
+        aborted: true,
+        timedOut: true,
+      }),
+    );
+
+    const agentCommand = await getAgentCommand();
+    await agentCommand({
+      message: "hello",
+      to: "+1234567890",
+      senderIsOwner: true,
+    });
+
+    const lifecycleEnd = state.emitAgentEventMock.mock.calls.find((call: unknown[]) => {
+      const arg = call[0] as { stream?: string; data?: { phase?: string } };
+      return arg?.stream === "lifecycle" && arg?.data?.phase === "end";
+    })?.[0] as { data?: { aborted?: boolean; timedOut?: boolean } } | undefined;
+    expect(lifecycleEnd?.data).toMatchObject({
+      aborted: true,
+      timedOut: true,
+    });
   });
 
   it("propagates authProfileId from the switch error to the retried session entry", async () => {

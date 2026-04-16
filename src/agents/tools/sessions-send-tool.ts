@@ -15,6 +15,7 @@ import {
   readLatestAssistantReplySnapshot,
   waitForAgentRunAndReadUpdatedAssistantReply,
 } from "../run-wait.js";
+import { reactivateSubagentRun, registerSubagentRun } from "../subagent-registry.js";
 import {
   describeSessionsSendTool,
   SESSIONS_SEND_TOOL_DISPLAY_SUMMARY,
@@ -314,7 +315,26 @@ export function createSessionsSendTool(opts?: {
           return start.result;
         }
         runId = start.runId;
-        startA2AFlow(undefined, runId);
+        const reactivation = reactivateSubagentRun({
+          childSessionKey: resolvedKey,
+          newRunId: runId,
+        });
+        if (!reactivation.reactivated && requesterSessionKey) {
+          registerSubagentRun({
+            runId,
+            childSessionKey: resolvedKey,
+            requesterSessionKey,
+            requesterOrigin: requesterChannel ? { channel: requesterChannel } : undefined,
+            requesterDisplayKey: displayKey,
+            task: `[revived via sessions_send] ${message.slice(0, 200)}`,
+            cleanup: "keep",
+            expectsCompletionMessage: true,
+            spawnMode: "run",
+          });
+        }
+        if (!reactivation.reactivated && !requesterSessionKey) {
+          startA2AFlow(undefined, runId);
+        }
         return jsonResult({
           runId,
           status: "accepted",
@@ -333,6 +353,25 @@ export function createSessionsSendTool(opts?: {
         return start.result;
       }
       runId = start.runId;
+      const reactivation = reactivateSubagentRun({
+        childSessionKey: resolvedKey,
+        newRunId: runId,
+      });
+      let didFallbackRegister = false;
+      if (!reactivation.reactivated && requesterSessionKey) {
+        registerSubagentRun({
+          runId,
+          childSessionKey: resolvedKey,
+          requesterSessionKey,
+          requesterOrigin: requesterChannel ? { channel: requesterChannel } : undefined,
+          requesterDisplayKey: displayKey,
+          task: `[revived via sessions_send] ${message.slice(0, 200)}`,
+          cleanup: "keep",
+          expectsCompletionMessage: true,
+          spawnMode: "run",
+        });
+        didFallbackRegister = true;
+      }
       const result = await waitForAgentRunAndReadUpdatedAssistantReply({
         runId,
         sessionKey: resolvedKey,
@@ -346,6 +385,7 @@ export function createSessionsSendTool(opts?: {
         return jsonResult({
           runId,
           status: "timeout",
+          accepted: true,
           error: result.error,
           sessionKey: displayKey,
         });
@@ -359,7 +399,9 @@ export function createSessionsSendTool(opts?: {
         });
       }
       const reply = result.replyText;
-      startA2AFlow(reply ?? undefined);
+      if (!reactivation.reactivated && !didFallbackRegister) {
+        startA2AFlow(reply ?? undefined);
+      }
 
       return jsonResult({
         runId,

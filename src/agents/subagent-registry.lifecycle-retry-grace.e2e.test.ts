@@ -13,6 +13,7 @@ type LifecycleData = {
   startedAt?: number;
   endedAt?: number;
   aborted?: boolean;
+  timedOut?: boolean;
   error?: string;
 };
 type LifecycleEvent = {
@@ -57,7 +58,7 @@ let agentCallPlan: Array<"ok" | "throw"> = [];
 let chatHistoryBySessionKey = new Map<string, Array<Record<string, unknown>>>();
 let sessionStore: Record<string, SessionStoreEntry> = {};
 
-const callGatewayMock = vi.fn(async (request: GatewayRequest) => {
+const defaultCallGatewayImpl = async (request: GatewayRequest) => {
   const method = request.method;
   if (method === "agent.wait") {
     // Keep wait unresolved from the RPC path so lifecycle fallback logic is exercised.
@@ -78,7 +79,8 @@ const callGatewayMock = vi.fn(async (request: GatewayRequest) => {
     return {};
   }
   return {};
-});
+};
+const callGatewayMock = vi.fn(defaultCallGatewayImpl);
 const onAgentEventMock = vi.fn((handler: typeof lifecycleHandler) => {
   lifecycleHandler = handler;
   return noop;
@@ -120,7 +122,7 @@ describe("subagent registry lifecycle error grace", () => {
     previousFastTestEnv = process.env.OPENCLAW_TEST_FAST;
     process.env.OPENCLAW_TEST_FAST = "1";
     vi.useFakeTimers();
-    callGatewayMock.mockClear();
+    callGatewayMock.mockReset().mockImplementation(defaultCallGatewayImpl);
     onAgentEventMock.mockClear();
     registryStoreMocks.loadRegistryMock.mockClear().mockReturnValue(new Map());
     registryStoreMocks.saveRegistryMock.mockClear();
@@ -348,6 +350,22 @@ describe("subagent registry lifecycle error grace", () => {
     expect(readFirstAnnounceOutcome()?.status).toBe("ok");
   });
 
+  it("announces timeout only when lifecycle end sets timedOut=true", async () => {
+    registerCompletionRun("run-terminal-timeout", "terminal-timeout", "terminal timeout test");
+    setAssistantOutput("agent:main:subagent:terminal-timeout", "Timed out summary");
+
+    emitLifecycleEvent("run-terminal-timeout", {
+      phase: "end",
+      endedAt: 1_500,
+      aborted: true,
+      timedOut: true,
+    });
+    await flushAsync();
+
+    await waitForAgentCallCount(1);
+    expect(readFirstAnnounceOutcome()?.status).toBe("timeout");
+  });
+
   it("announces error when lifecycle error remains terminal after grace window", async () => {
     registerCompletionRun("run-terminal-error", "terminal-error", "terminal error test");
     setAssistantOutput("agent:main:subagent:terminal-error", "fatal summary");
@@ -366,6 +384,30 @@ describe("subagent registry lifecycle error grace", () => {
     await waitForAgentCallCount(1);
     expect(readFirstAnnounceOutcome()?.status).toBe("error");
     expect(readFirstAnnounceOutcome()?.error).toContain("fatal failure");
+  });
+
+  it("keeps the run active when agent.wait expires without a terminal snapshot", async () => {
+    callGatewayMock.mockImplementationOnce(async (request: GatewayRequest) => {
+      if (request.method === "agent.wait") {
+        return { status: "timeout", startedAt: 2_000 };
+      }
+      return defaultCallGatewayImpl(request);
+    });
+
+    registerCompletionRun("run-wait-expired", "wait-expired", "wait expiry test");
+    await flushAsync();
+
+    expect(getAgentCalls()).toHaveLength(0);
+    const run = mod
+      .listSubagentRunsForRequester(MAIN_REQUESTER_SESSION_KEY)
+      .find((candidate) => candidate.runId === "run-wait-expired");
+    expect(run).toMatchObject({
+      runId: "run-wait-expired",
+      startedAt: 2_000,
+    });
+    expect(run?.endedAt).toBeUndefined();
+    expect(run?.outcome).toBeUndefined();
+    expect(run?.cleanupCompletedAt).toBeUndefined();
   });
 
   it("freezes completion result at run termination across deferred announce retries", async () => {

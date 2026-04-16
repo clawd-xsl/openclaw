@@ -94,6 +94,14 @@ export function createSubagentRunManager(params: {
         }
         mutated = true;
       }
+      // A waiter-side timeout without terminal metadata only means the poll
+      // window expired. Keep the child run active until a terminal snapshot arrives.
+      if (wait.status === "timeout" && typeof wait.endedAt !== "number") {
+        if (mutated) {
+          params.persist();
+        }
+        return;
+      }
       if (typeof wait.endedAt === "number") {
         entry.endedAt = wait.endedAt;
         mutated = true;
@@ -129,6 +137,85 @@ export function createSubagentRunManager(params: {
     } catch {
       // ignore
     }
+  };
+
+  const reactivateSubagentRun = (reactivateParams: {
+    childSessionKey: string;
+    newRunId: string;
+  }): { reactivated: boolean; entry?: SubagentRunRecord } => {
+    const childSessionKey = reactivateParams.childSessionKey.trim();
+    const newRunId = reactivateParams.newRunId.trim();
+    if (!childSessionKey || !newRunId) {
+      return { reactivated: false };
+    }
+
+    let latestEntry: SubagentRunRecord | undefined;
+    let latestRunId: string | undefined;
+    for (const [runId, entry] of params.runs.entries()) {
+      if (entry.childSessionKey !== childSessionKey || typeof entry.endedAt !== "number") {
+        continue;
+      }
+      if (!latestEntry || (entry.endedAt ?? 0) > (latestEntry.endedAt ?? 0)) {
+        latestEntry = entry;
+        latestRunId = runId;
+      }
+    }
+    if (!latestEntry || !latestRunId) {
+      return { reactivated: false };
+    }
+    if (latestEntry.endedReason === SUBAGENT_ENDED_REASON_KILLED) {
+      return { reactivated: false };
+    }
+
+    const now = Date.now();
+    const cfg = params.loadConfig();
+    const archiveAfterMs = resolveArchiveAfterMs(cfg);
+    const waitTimeoutMs = params.resolveSubagentWaitTimeoutMs(cfg, latestEntry.runTimeoutSeconds);
+    const sessionStartedAt = getSubagentSessionStartedAt(latestEntry) ?? now;
+    const accumulatedRuntimeMs =
+      getSubagentSessionRuntimeMs(
+        latestEntry,
+        typeof latestEntry.endedAt === "number" ? latestEntry.endedAt : now,
+      ) ?? 0;
+
+    if (latestRunId !== newRunId) {
+      params.runs.delete(latestRunId);
+      params.resumedRuns.delete(latestRunId);
+      params.clearPendingLifecycleError(latestRunId);
+    }
+
+    const reactivated: SubagentRunRecord = {
+      ...latestEntry,
+      runId: newRunId,
+      createdAt: now,
+      startedAt: now,
+      sessionStartedAt,
+      accumulatedRuntimeMs,
+      endedAt: undefined,
+      endedReason: undefined,
+      endedHookEmittedAt: undefined,
+      outcome: undefined,
+      cleanupCompletedAt: undefined,
+      cleanupHandled: false,
+      completionAnnouncedAt: undefined,
+      suppressAnnounceReason: undefined,
+      announceRetryCount: undefined,
+      lastAnnounceRetryAt: undefined,
+      archiveAtMs:
+        latestEntry.cleanup === "keep"
+          ? undefined
+          : archiveAfterMs
+            ? now + archiveAfterMs
+            : undefined,
+    };
+
+    params.runs.set(newRunId, reactivated);
+    params.ensureListener();
+    params.persist();
+    params.startSweeper();
+    params.resumedRuns.delete(newRunId);
+    void waitForSubagentCompletion(newRunId, waitTimeoutMs);
+    return { reactivated: true, entry: reactivated };
   };
 
   const markSubagentRunForSteerRestart = (runId: string) => {
@@ -477,6 +564,7 @@ export function createSubagentRunManager(params: {
     clearSubagentRunSteerRestart,
     markSubagentRunForSteerRestart,
     markSubagentRunTerminated,
+    reactivateSubagentRun,
     registerSubagentRun,
     releaseSubagentRun,
     replaceSubagentRunAfterSteer,

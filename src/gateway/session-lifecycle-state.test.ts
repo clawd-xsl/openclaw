@@ -87,7 +87,34 @@ describe("session lifecycle state", () => {
     });
   });
 
-  it("maps aborted lifecycle end events without stopReason to timeout", () => {
+  it("maps timedOut lifecycle end events without stopReason to timeout", () => {
+    expect(
+      derivePersistedSessionLifecyclePatch({
+        entry: {
+          updatedAt: 1_000,
+          startedAt: 1_050,
+        },
+        event: {
+          ts: 2_000,
+          data: {
+            phase: "end",
+            endedAt: 1_550,
+            aborted: true,
+            timedOut: true,
+          },
+        },
+      }),
+    ).toEqual({
+      updatedAt: 1_550,
+      status: "timeout",
+      startedAt: 1_050,
+      endedAt: 1_550,
+      runtimeMs: 500,
+      abortedLastRun: false,
+    });
+  });
+
+  it("keeps aborted lifecycle end events without timedOut as done", () => {
     expect(
       derivePersistedSessionLifecyclePatch({
         entry: {
@@ -105,7 +132,7 @@ describe("session lifecycle state", () => {
       }),
     ).toEqual({
       updatedAt: 1_550,
-      status: "timeout",
+      status: "done",
       startedAt: 1_050,
       endedAt: 1_550,
       runtimeMs: 500,

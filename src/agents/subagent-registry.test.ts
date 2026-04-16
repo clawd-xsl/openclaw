@@ -221,6 +221,57 @@ describe("subagent registry seam flow", () => {
     expect(mocks.persistSubagentRunsToDisk).toHaveBeenCalled();
   });
 
+  it("reactivates a completed keep run for revived session sends", async () => {
+    mocks.callGateway.mockImplementation(async (request: { method?: string }) => {
+      if (request.method === "agent.wait") {
+        return { status: "pending" };
+      }
+      return {};
+    });
+    const now = Date.parse("2026-03-24T12:00:00Z");
+
+    mod.addSubagentRunForTests({
+      runId: "run-old",
+      childSessionKey: "agent:main:subagent:child",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      task: "previous run",
+      cleanup: "keep",
+      expectsCompletionMessage: true,
+      createdAt: now - 1_000,
+      startedAt: now - 900,
+      sessionStartedAt: now - 1_100,
+      accumulatedRuntimeMs: 250,
+      endedAt: now - 300,
+      outcome: { status: "ok" },
+      cleanupHandled: true,
+      cleanupCompletedAt: now - 250,
+    });
+
+    const result = mod.reactivateSubagentRun({
+      childSessionKey: "agent:main:subagent:child",
+      newRunId: "run-new",
+    });
+
+    expect(result.reactivated).toBe(true);
+    expect(mod.getLatestSubagentRunByChildSessionKey("agent:main:subagent:child")).toMatchObject({
+      runId: "run-new",
+      childSessionKey: "agent:main:subagent:child",
+      requesterSessionKey: "agent:main:main",
+      cleanup: "keep",
+      startedAt: now,
+      sessionStartedAt: now - 1_100,
+      accumulatedRuntimeMs: 850,
+      cleanupHandled: false,
+      archiveAtMs: undefined,
+    });
+    expect(
+      mod
+        .listSubagentRunsForRequester("agent:main:main")
+        .some((entry) => entry.runId === "run-old"),
+    ).toBe(false);
+  });
+
   it("deletes delete-mode completion runs when announce cleanup gives up after retry limit", async () => {
     mocks.runSubagentAnnounceFlow.mockResolvedValue(false);
     const endedAt = Date.parse("2026-03-24T12:00:00Z");

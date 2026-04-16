@@ -5,9 +5,23 @@ import type { OpenClawConfig } from "../config/config.js";
 import { createTestRegistry } from "../test-utils/channel-plugins.js";
 
 const callGatewayMock = vi.fn();
+const subagentRegistryMocks = vi.hoisted(() => ({
+  reactivateSubagentRun: vi.fn(() => ({ reactivated: false })),
+  registerSubagentRun: vi.fn(),
+}));
 vi.mock("../gateway/call.js", () => ({
   callGateway: (opts: unknown) => callGatewayMock(opts),
 }));
+vi.mock("./subagent-registry.js", async () => {
+  const actual =
+    await vi.importActual<typeof import("./subagent-registry.js")>("./subagent-registry.js");
+  return {
+    ...actual,
+    reactivateSubagentRun: (...args: unknown[]) =>
+      subagentRegistryMocks.reactivateSubagentRun(...args),
+    registerSubagentRun: (...args: unknown[]) => subagentRegistryMocks.registerSubagentRun(...args),
+  };
+});
 
 vi.mock("../config/config.js", async () => {
   const actual = await vi.importActual<typeof import("../config/config.js")>("../config/config.js");
@@ -158,6 +172,8 @@ const waitForCalls = async (getCount: () => number, count: number, timeoutMs = 2
 describe("sessions tools", () => {
   beforeEach(() => {
     callGatewayMock.mockClear();
+    subagentRegistryMocks.reactivateSubagentRun.mockReset().mockReturnValue({ reactivated: false });
+    subagentRegistryMocks.registerSubagentRun.mockReset();
     installMessagingTestRegistry();
     agentStepTesting.setDepsForTest({
       callGateway: (opts: unknown) => callGatewayMock(opts),
@@ -736,9 +752,7 @@ describe("sessions tools", () => {
       runId: "run-1",
       delivery: { status: "pending", mode: "announce" },
     });
-    await waitForCalls(() => calls.filter((call) => call.method === "agent").length, 4);
-    await waitForCalls(() => calls.filter((call) => call.method === "agent.wait").length, 4);
-    await waitForCalls(() => calls.filter((call) => call.method === "chat.history").length, 4);
+    await waitForCalls(() => calls.filter((call) => call.method === "agent").length, 1);
 
     const waitPromise = tool.execute("call6", {
       sessionKey: "main",
@@ -752,14 +766,14 @@ describe("sessions tools", () => {
       delivery: { status: "pending", mode: "announce" },
     });
     expect(typeof (waited.details as { runId?: string }).runId).toBe("string");
-    await waitForCalls(() => calls.filter((call) => call.method === "agent").length, 8);
-    await waitForCalls(() => calls.filter((call) => call.method === "agent.wait").length, 8);
-    await waitForCalls(() => calls.filter((call) => call.method === "chat.history").length, 8);
+    await waitForCalls(() => calls.filter((call) => call.method === "agent").length, 2);
+    await waitForCalls(() => calls.filter((call) => call.method === "agent.wait").length, 1);
+    await waitForCalls(() => calls.filter((call) => call.method === "chat.history").length, 2);
 
     const agentCalls = calls.filter((call) => call.method === "agent");
     const waitCalls = calls.filter((call) => call.method === "agent.wait");
     const historyOnlyCalls = calls.filter((call) => call.method === "chat.history");
-    expect(agentCalls).toHaveLength(8);
+    expect(agentCalls).toHaveLength(2);
     for (const call of agentCalls) {
       expect(call.params).toMatchObject({
         lane: "nested",
@@ -784,7 +798,7 @@ describe("sessions tools", () => {
             "Agent-to-agent reply step",
           ),
       ),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       agentCalls.some(
         (call) =>
@@ -793,10 +807,116 @@ describe("sessions tools", () => {
             "Agent-to-agent announce step",
           ),
       ),
-    ).toBe(true);
-    expect(waitCalls).toHaveLength(8);
-    expect(historyOnlyCalls).toHaveLength(9);
+    ).toBe(false);
+    expect(waitCalls).toHaveLength(1);
+    expect(historyOnlyCalls).toHaveLength(2);
     expect(sendCallCount).toBe(0);
+    expect(subagentRegistryMocks.registerSubagentRun).toHaveBeenCalledTimes(2);
+  });
+
+  it("sessions_send reports accepted=true when the waited run times out", async () => {
+    const requesterKey = "discord:group:req";
+    callGatewayMock.mockImplementation(async (opts: unknown) => {
+      const request = opts as { method?: string };
+      if (request.method === "agent") {
+        return {
+          runId: "run-timeout",
+          status: "accepted",
+          acceptedAt: 1234,
+        };
+      }
+      if (request.method === "agent.wait") {
+        return { runId: "run-timeout", status: "timeout", error: "still running" };
+      }
+      if (request.method === "chat.history") {
+        return { messages: [] };
+      }
+      return {};
+    });
+
+    const tool = createOpenClawTools({
+      agentSessionKey: requesterKey,
+      agentChannel: "discord",
+    }).find((candidate) => candidate.name === "sessions_send");
+    expect(tool).toBeDefined();
+    if (!tool) {
+      throw new Error("missing sessions_send tool");
+    }
+
+    const result = await tool.execute("call-timeout", {
+      sessionKey: "main",
+      message: "wait",
+      timeoutSeconds: 1,
+    });
+
+    expect(result.details).toMatchObject({
+      runId: "run-timeout",
+      status: "timeout",
+      accepted: true,
+      error: "still running",
+      sessionKey: "main",
+    });
+  });
+
+  it("sessions_send fallback-registers revived subagent runs and skips A2A announce flow", async () => {
+    const requesterKey = "discord:group:req";
+    callGatewayMock.mockImplementation(async (opts: unknown) => {
+      const request = opts as { method?: string };
+      if (request.method === "agent") {
+        return {
+          runId: "run-revived",
+          status: "accepted",
+          acceptedAt: 4321,
+        };
+      }
+      if (request.method === "chat.history") {
+        return { messages: [] };
+      }
+      return {};
+    });
+
+    const tool = createOpenClawTools({
+      agentSessionKey: requesterKey,
+      agentChannel: "discord",
+    }).find((candidate) => candidate.name === "sessions_send");
+    expect(tool).toBeDefined();
+    if (!tool) {
+      throw new Error("missing sessions_send tool");
+    }
+
+    const result = await tool.execute("call-revived", {
+      sessionKey: "discord:group:target",
+      message: "resume work",
+      timeoutSeconds: 0,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(result.details).toMatchObject({
+      runId: "run-revived",
+      status: "accepted",
+      delivery: { status: "pending", mode: "announce" },
+    });
+    expect(subagentRegistryMocks.reactivateSubagentRun).toHaveBeenCalledWith({
+      childSessionKey: "discord:group:target",
+      newRunId: "run-revived",
+    });
+    expect(subagentRegistryMocks.registerSubagentRun).toHaveBeenCalledWith({
+      runId: "run-revived",
+      childSessionKey: "discord:group:target",
+      requesterSessionKey: requesterKey,
+      requesterOrigin: { channel: "discord" },
+      requesterDisplayKey: "discord:group:target",
+      task: "[revived via sessions_send] resume work",
+      cleanup: "keep",
+      expectsCompletionMessage: true,
+      spawnMode: "run",
+    });
+    expect(
+      callGatewayMock.mock.calls.filter(
+        ([request]) => (request as { method?: string }).method === "agent.wait",
+      ),
+    ).toHaveLength(0);
   });
 
   it("sessions_send resolves sessionId inputs", async () => {
@@ -847,12 +967,11 @@ describe("sessions tools", () => {
     });
   });
 
-  it("sessions_send runs ping-pong then announces", async () => {
+  it("sessions_send announces directly when no requester session is present", async () => {
     const calls: Array<{ method?: string; params?: unknown }> = [];
     let agentCallCount = 0;
     let lastWaitedRunId: string | undefined;
     const replyByRunId = new Map<string, string>();
-    const requesterKey = "discord:group:req";
     const targetKey = "discord:group:target";
     let sendParams: { to?: string; channel?: string; message?: string } = {};
     callGatewayMock.mockImplementation(async (opts: unknown) => {
@@ -870,7 +989,7 @@ describe("sessions tools", () => {
           | undefined;
         let reply = "initial";
         if (params?.extraSystemPrompt?.includes("Agent-to-agent reply step")) {
-          reply = params.sessionKey === requesterKey ? "pong-1" : "pong-2";
+          reply = "pong";
         }
         if (params?.extraSystemPrompt?.includes("Agent-to-agent announce step")) {
           reply = "announce now";
@@ -913,10 +1032,7 @@ describe("sessions tools", () => {
       return {};
     });
 
-    const tool = createOpenClawTools({
-      agentSessionKey: requesterKey,
-      agentChannel: "discord",
-    }).find((candidate) => candidate.name === "sessions_send");
+    const tool = createOpenClawTools().find((candidate) => candidate.name === "sessions_send");
     expect(tool).toBeDefined();
     if (!tool) {
       throw new Error("missing sessions_send tool");
@@ -933,13 +1049,13 @@ describe("sessions tools", () => {
     });
     await vi.waitFor(
       () => {
-        expect(calls.filter((call) => call.method === "agent")).toHaveLength(4);
+        expect(calls.filter((call) => call.method === "send")).toHaveLength(1);
       },
       { timeout: 2_000, interval: 5 },
     );
 
     const agentCalls = calls.filter((call) => call.method === "agent");
-    expect(agentCalls).toHaveLength(4);
+    expect(agentCalls).toHaveLength(2);
     for (const call of agentCalls) {
       expect(call.params).toMatchObject({
         lane: "nested",
@@ -947,16 +1063,6 @@ describe("sessions tools", () => {
         inputProvenance: { kind: "inter_session" },
       });
     }
-
-    const replySteps = calls.filter(
-      (call) =>
-        call.method === "agent" &&
-        typeof (call.params as { extraSystemPrompt?: string })?.extraSystemPrompt === "string" &&
-        (call.params as { extraSystemPrompt?: string })?.extraSystemPrompt?.includes(
-          "Agent-to-agent reply step",
-        ),
-    );
-    expect(replySteps).toHaveLength(2);
     expect(sendParams).toMatchObject({
       to: "group:target",
       channel: "discord",
@@ -969,7 +1075,6 @@ describe("sessions tools", () => {
     let agentCallCount = 0;
     let lastWaitedRunId: string | undefined;
     const replyByRunId = new Map<string, string>();
-    const requesterKey = "discord:group:req";
     const targetKey = "agent:main:worker";
     let sendParams: {
       to?: string;
@@ -993,7 +1098,7 @@ describe("sessions tools", () => {
           | undefined;
         let reply = "initial";
         if (params?.extraSystemPrompt?.includes("Agent-to-agent reply step")) {
-          reply = params.sessionKey === requesterKey ? "pong-1" : "pong-2";
+          reply = "pong";
         }
         if (params?.extraSystemPrompt?.includes("Agent-to-agent announce step")) {
           reply = "announce now";
@@ -1059,10 +1164,7 @@ describe("sessions tools", () => {
       return {};
     });
 
-    const tool = createOpenClawTools({
-      agentSessionKey: requesterKey,
-      agentChannel: "discord",
-    }).find((candidate) => candidate.name === "sessions_send");
+    const tool = createOpenClawTools().find((candidate) => candidate.name === "sessions_send");
     expect(tool).toBeDefined();
     if (!tool) {
       throw new Error("missing sessions_send tool");

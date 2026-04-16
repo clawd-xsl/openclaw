@@ -11,6 +11,7 @@ type LifecycleEventLike = Pick<AgentEventPayload, "ts"> & {
     startedAt?: unknown;
     endedAt?: unknown;
     aborted?: unknown;
+    timedOut?: unknown;
     stopReason?: unknown;
   };
 };
@@ -47,7 +48,7 @@ function resolveTerminalStatus(event: LifecycleEventLike): SessionRunStatus {
     return "killed";
   }
 
-  return event.data?.aborted === true ? "timeout" : "done";
+  return event.data?.timedOut === true ? "timeout" : "done";
 }
 
 function resolveLifecycleStartedAt(

@@ -653,7 +653,7 @@ function ensureListener() {
         return;
       }
       clearPendingLifecycleError(evt.runId);
-      const outcome: SubagentRunOutcome = evt.data?.aborted
+      const outcome: SubagentRunOutcome = evt.data?.timedOut
         ? { status: "timeout" }
         : { status: "ok" };
       await completeSubagentRun({
@@ -734,6 +734,13 @@ export function registerSubagentRun(params: {
   retainAttachmentsOnKeep?: boolean;
 }) {
   subagentRunManager.registerSubagentRun(params);
+}
+
+export function reactivateSubagentRun(params: { childSessionKey: string; newRunId: string }): {
+  reactivated: boolean;
+  entry?: SubagentRunRecord;
+} {
+  return subagentRunManager.reactivateSubagentRun(params);
 }
 
 export function resetSubagentRegistryForTests(opts?: { persist?: boolean }) {

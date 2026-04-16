@@ -929,6 +929,7 @@ async function agentCommandInternal(
               startedAt,
               endedAt: Date.now(),
               aborted: result.meta.aborted ?? false,
+              timedOut: result.meta.timedOut ?? false,
               stopReason,
             },
           });
