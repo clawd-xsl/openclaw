@@ -15,12 +15,21 @@ import {
   waitForSystemEvent,
 } from "./test-helpers.js";
 
+const { requestHookAgentTurnMock } = vi.hoisted(() => ({
+  requestHookAgentTurnMock: vi.fn(),
+}));
+
+vi.mock("../infra/hook-agent-turn.js", () => ({
+  requestHookAgentTurn: requestHookAgentTurnMock,
+}));
+
 installGatewayTestHooks({ scope: "suite" });
 
 const resolveMainKey = () => resolveMainSessionKeyFromConfig();
 const HOOK_TOKEN = "hook-secret";
 
 afterEach(() => {
+  vi.clearAllMocks();
   vi.restoreAllMocks();
 });
 
@@ -139,6 +148,15 @@ describe("gateway server hooks", () => {
       const wakeEvents = await waitForSystemEvent();
       expect(wakeEvents.some((e) => e.includes("Ping"))).toBe(true);
       drainSystemEvents(resolveMainKey());
+      expect(requestHookAgentTurnMock).not.toHaveBeenCalled();
+
+      const resWakeNow = await postHook(port, "/hooks/wake", { text: "Ping now", mode: "now" });
+      expect(resWakeNow.status).toBe(200);
+      const wakeNowEvents = await waitForSystemEvent();
+      expect(wakeNowEvents.some((e) => e.includes("Ping now"))).toBe(true);
+      expect(requestHookAgentTurnMock).toHaveBeenCalledWith({ reason: "hook:wake" });
+      requestHookAgentTurnMock.mockClear();
+      drainSystemEvents(resolveMainKey());
 
       mockIsolatedRunOkOnce();
       const resAgent = await postHook(port, "/hooks/agent", { message: "Do it", name: "Email" });
@@ -147,10 +165,15 @@ describe("gateway server hooks", () => {
       expect(agentEvents.some((e) => e.includes("Hook Email: done"))).toBe(true);
       const firstCall = (cronIsolatedRun.mock.calls[0] as unknown[] | undefined)?.[0] as {
         deliveryContract?: string;
-        job?: { payload?: { externalContentSource?: string } };
+        job?: { deleteAfterRun?: boolean; payload?: { externalContentSource?: string } };
       };
       expect(firstCall?.deliveryContract).toBe("shared");
+      expect(firstCall?.job?.deleteAfterRun).toBe(true);
       expect(firstCall?.job?.payload?.externalContentSource).toBe("webhook");
+      expect(requestHookAgentTurnMock).toHaveBeenCalledWith({
+        reason: expect.stringMatching(/^hook:/),
+      });
+      requestHookAgentTurnMock.mockClear();
       drainSystemEvents(resolveMainKey());
 
       mockIsolatedRunOkOnce();

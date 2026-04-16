@@ -498,6 +498,58 @@ describe("dispatchCronDelivery — double-announce guard", () => {
       },
       timeoutMs: 10_000,
     });
+    expect(callGateway).toHaveBeenCalledTimes(1);
+  });
+
+  it("cleans up once after structured direct delivery when deleteAfterRun is enabled", async () => {
+    vi.mocked(countActiveDescendantRuns).mockReturnValue(0);
+    vi.mocked(isLikelyInterimCronMessage).mockReturnValue(false);
+
+    const params = makeBaseParams({ synthesizedText: "Structured delivery payload." });
+    (params as Record<string, unknown>).deliveryPayloadHasStructuredContent = true;
+    (params.job as { deleteAfterRun?: boolean }).deleteAfterRun = true;
+
+    const state = await dispatchCronDelivery(params);
+
+    expect(state.result).toBeUndefined();
+    expect(state.delivered).toBe(true);
+    expect(deliverOutboundPayloads).toHaveBeenCalledTimes(1);
+    expect(callGateway).toHaveBeenCalledWith({
+      method: "sessions.delete",
+      params: {
+        key: "agent:main",
+        deleteTranscript: true,
+        emitLifecycleHooks: false,
+      },
+      timeoutMs: 10_000,
+    });
+    expect(callGateway).toHaveBeenCalledTimes(1);
+  });
+
+  it("cleans up after messaging-tool-owned delivery when deleteAfterRun is enabled", async () => {
+    vi.mocked(countActiveDescendantRuns).mockReturnValue(0);
+    vi.mocked(isLikelyInterimCronMessage).mockReturnValue(false);
+
+    const params = makeBaseParams({ synthesizedText: "Agent already delivered this." });
+    (params as Record<string, unknown>).skipMessagingToolDelivery = true;
+    (params.job as { deleteAfterRun?: boolean }).deleteAfterRun = true;
+
+    const state = await dispatchCronDelivery(params);
+
+    expect(state.result).toBeUndefined();
+    expect(state.delivered).toBe(true);
+    expect(state.deliveryAttempted).toBe(true);
+    expect(deliverOutboundPayloads).not.toHaveBeenCalled();
+    expect(callGateway).toHaveBeenCalledWith({
+      method: "sessions.delete",
+      params: {
+        key: "agent:main",
+        deleteTranscript: true,
+        emitLifecycleHooks: false,
+      },
+      timeoutMs: 10_000,
+    });
+    expect(callGateway).toHaveBeenCalledTimes(1);
   });
 
   it("text delivery fires exactly once (no double-deliver)", async () => {

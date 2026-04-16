@@ -149,6 +149,50 @@ describe("followup queue drain restart after idle window", () => {
     expect(freshCalls[0]?.prompt).toBe("queued-while-busy");
   });
 
+  it("refreshes to the newest callback while the drain is still active", async () => {
+    const key = `test-active-drain-refreshes-callback-${Date.now()}`;
+    const settings: QueueSettings = { mode: "followup", debounceMs: 0, cap: 50 };
+    const staleCalls: FollowupRun[] = [];
+    const freshCalls: FollowupRun[] = [];
+    const firstStarted = createDeferred<void>();
+    let releaseFirstRun!: () => void;
+    const firstRunGate = new Promise<void>((resolve) => {
+      releaseFirstRun = resolve;
+    });
+
+    const staleFollowup = async (run: FollowupRun) => {
+      staleCalls.push(run);
+      if (staleCalls.length === 1) {
+        firstStarted.resolve();
+        await firstRunGate;
+      }
+    };
+    const freshFollowup = async (run: FollowupRun) => {
+      freshCalls.push(run);
+    };
+
+    enqueueFollowupRun(key, createRun({ prompt: "first" }), settings);
+    scheduleFollowupDrain(key, staleFollowup);
+    await firstStarted.promise;
+
+    enqueueFollowupRun(
+      key,
+      createRun({ prompt: "second" }),
+      settings,
+      "message-id",
+      freshFollowup,
+    );
+    releaseFirstRun();
+
+    await vi.waitFor(() => {
+      expect(freshCalls).toHaveLength(1);
+    });
+
+    expect(staleCalls).toHaveLength(1);
+    expect(staleCalls[0]?.prompt).toBe("first");
+    expect(freshCalls[0]?.prompt).toBe("second");
+  });
+
   it("restarts an idle drain across distinct enqueue and drain module instances when enqueue refreshes the callback", async () => {
     const drainA = await importFreshModule<typeof import("./queue/drain.js")>(
       import.meta.url,

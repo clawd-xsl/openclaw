@@ -348,6 +348,59 @@ describe("resolveReplyDirectives", () => {
     });
   });
 
+  it("disables block streaming for heartbeat runs even when the agent default is on", async () => {
+    const { resolveReplyDirectives } = await loadResolveReplyDirectivesForTest();
+
+    const result = await resolveReplyDirectives({
+      ctx: buildTestCtx({
+        Body: "heartbeat tick",
+        CommandBody: "heartbeat tick",
+      }),
+      cfg: {},
+      agentId: "main",
+      agentDir: "/tmp/main-agent",
+      workspaceDir: "/tmp",
+      agentCfg: {
+        blockStreamingDefault: "on",
+      },
+      sessionCtx: {
+        Body: "heartbeat tick",
+        BodyStripped: "heartbeat tick",
+        BodyForAgent: "heartbeat tick",
+        CommandBody: "heartbeat tick",
+        Provider: "heartbeat",
+      } as TemplateContext,
+      sessionEntry: makeSessionEntry(),
+      sessionStore: {},
+      sessionKey: "agent:main:heartbeat:self",
+      storePath: "/tmp/sessions.json",
+      sessionScope: "per-sender",
+      groupResolution: undefined,
+      isGroup: false,
+      triggerBodyNormalized: "heartbeat tick",
+      commandAuthorized: false,
+      defaultProvider: "openai",
+      defaultModel: "gpt-4o-mini",
+      aliasIndex: { byAlias: new Map(), byKey: new Map() },
+      provider: "openai",
+      model: "gpt-4o-mini",
+      hasResolvedHeartbeatModelOverride: false,
+      typing: makeTypingController(),
+      opts: {
+        isHeartbeat: true,
+      },
+      skillFilter: undefined,
+    });
+
+    expect(result).toEqual({
+      kind: "continue",
+      result: expect.objectContaining({
+        blockStreamingEnabled: false,
+        blockReplyChunking: undefined,
+      }),
+    });
+  });
+
   it("uses the model reasoning default when thinking is off", async () => {
     const resolveDefaultThinkingLevel = vi.fn(async () => "off");
     const resolveDefaultReasoningLevel = vi.fn(async () => "on");

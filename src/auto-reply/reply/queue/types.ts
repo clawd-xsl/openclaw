@@ -81,6 +81,9 @@ export type FollowupRun = {
     ownerNumbers?: string[];
     inputProvenance?: InputProvenance;
     extraSystemPrompt?: string;
+    previousSessionId?: string;
+    recentSessionHistory?: string;
+    sessionCreatedAt?: number;
     enforceFinalTag?: boolean;
     skipProviderRuntimeHints?: boolean;
     silentExpected?: boolean;

@@ -6,7 +6,7 @@ import { resolveMainSessionKeyFromConfig } from "../../config/sessions.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { runCronIsolatedAgentTurn } from "../../cron/isolated-agent.js";
 import type { CronJob } from "../../cron/types.js";
-import { requestHeartbeatNow } from "../../infra/heartbeat-wake.js";
+import { requestHookAgentTurn } from "../../infra/hook-agent-turn.js";
 import { enqueueSystemEvent } from "../../infra/system-events.js";
 import type { createSubsystemLogger } from "../../logging/subsystem.js";
 import { normalizeOptionalString } from "../../shared/string-coerce.js";
@@ -36,7 +36,7 @@ export function createGatewayHooksRequestHandler(params: {
     const sessionKey = resolveMainSessionKeyFromConfig();
     enqueueSystemEvent(value.text, { sessionKey, trusted: false });
     if (value.mode === "now") {
-      requestHeartbeatNow({ reason: "hook:wake" });
+      requestHookAgentTurn({ reason: "hook:wake" });
     }
   };
 
@@ -61,6 +61,7 @@ export function createGatewayHooksRequestHandler(params: {
       createdAtMs: now,
       updatedAtMs: now,
       schedule: { kind: "at", at: new Date(now).toISOString() },
+      deleteAfterRun: true,
       sessionTarget: "isolated",
       wakeMode: value.wakeMode,
       payload: {
@@ -101,7 +102,7 @@ export function createGatewayHooksRequestHandler(params: {
             trusted: false,
           });
           if (value.wakeMode === "now") {
-            requestHeartbeatNow({ reason: `hook:${jobId}` });
+            requestHookAgentTurn({ reason: `hook:${jobId}` });
           }
         }
       } catch (err) {
@@ -111,7 +112,7 @@ export function createGatewayHooksRequestHandler(params: {
           trusted: false,
         });
         if (value.wakeMode === "now") {
-          requestHeartbeatNow({ reason: `hook:${jobId}:error` });
+          requestHookAgentTurn({ reason: `hook:${jobId}:error` });
         }
       }
     })();

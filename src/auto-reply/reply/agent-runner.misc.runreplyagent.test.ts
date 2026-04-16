@@ -15,6 +15,7 @@ import {
   registerMemoryFlushPlanResolver,
 } from "../../plugins/memory-state.js";
 import type { TemplateContext } from "../templating.js";
+import { SILENT_REPLY_TOKEN } from "../tokens.js";
 import type { FollowupRun, QueueSettings } from "./queue.js";
 import { __testing as replyRunRegistryTesting } from "./reply-run-registry.js";
 import { createMockTypingController } from "./test-helpers.js";
@@ -484,6 +485,99 @@ describe("runReplyAgent block streaming", () => {
 
     expect(sawAbort).toBe(true);
     expect(result).toMatchObject({ text: "Final message" });
+  });
+
+  it("does not flush buffered block replies after a user abort", async () => {
+    vi.useFakeTimers();
+    const onBlockReply = vi.fn();
+
+    runEmbeddedPiAgentMock.mockImplementationOnce(async (params) => {
+      const block = params.onBlockReply as ((payload: { text?: string }) => Promise<void>) | undefined;
+      await block?.({ text: "Buffered chunk" });
+      params.replyOperation?.abortByUser();
+      return {
+        payloads: [{ text: "Final message should stay hidden" }],
+        meta: {},
+      };
+    });
+
+    const typing = createMockTypingController();
+    const sessionCtx = {
+      Provider: "discord",
+      OriginatingTo: "channel:C1",
+      AccountId: "primary",
+      MessageSid: "msg",
+    } as unknown as TemplateContext;
+    const resolvedQueue = { mode: "interrupt" } as unknown as QueueSettings;
+    const followupRun = {
+      prompt: "hello",
+      summaryLine: "hello",
+      enqueuedAt: Date.now(),
+      run: {
+        sessionId: "session",
+        sessionKey: "main",
+        messageProvider: "discord",
+        sessionFile: "/tmp/session.jsonl",
+        workspaceDir: "/tmp",
+        config: {
+          agents: {
+            defaults: {
+              blockStreamingCoalesce: {
+                minChars: 1,
+                maxChars: 200,
+                idleMs: 1_000,
+              },
+            },
+          },
+        },
+        skillsSnapshot: {},
+        provider: "anthropic",
+        model: "claude",
+        thinkLevel: "low",
+        reasoningLevel: "on",
+        verboseLevel: "off",
+        elevatedLevel: "off",
+        bashElevated: {
+          enabled: false,
+          allowed: false,
+          defaultLevel: "off",
+        },
+        timeoutMs: 1_000,
+        blockReplyBreak: "text_end",
+      },
+    } as unknown as FollowupRun;
+
+    const resultPromise = runReplyAgent({
+      commandBody: "hello",
+      followupRun,
+      queueKey: "main",
+      resolvedQueue,
+      shouldSteer: false,
+      shouldFollowup: false,
+      isActive: false,
+      isStreaming: false,
+      opts: { onBlockReply },
+      typing,
+      sessionCtx,
+      defaultModel: "anthropic/claude-opus-4-6",
+      resolvedVerboseLevel: "off",
+      isNewSession: false,
+      blockStreamingEnabled: true,
+      blockReplyChunking: {
+        minChars: 1,
+        maxChars: 200,
+        breakPreference: "paragraph",
+      },
+      resolvedBlockStreamingBreak: "text_end",
+      shouldInjectGroupIntro: false,
+      typingMode: "instant",
+    });
+
+    const result = await resultPromise;
+    await vi.advanceTimersByTimeAsync(1_500);
+
+    expect(result).toMatchObject({ text: SILENT_REPLY_TOKEN });
+    expect(onBlockReply).not.toHaveBeenCalled();
   });
 });
 

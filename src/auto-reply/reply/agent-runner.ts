@@ -1074,6 +1074,25 @@ export async function runReplyAgent(params: {
   let runFollowupTurn = queuedRunFollowupTurn;
   const prePreflightCompactionCount = activeSessionEntry?.compactionCount ?? 0;
   let preflightCompactionApplied = false;
+  const finalizeReplyOperationAbortIfNeeded = async () => {
+    if (replyOperation.result?.kind !== "aborted") {
+      return undefined;
+    }
+    // User/restart aborts should drop any buffered block reply chunks instead of
+    // force-flushing stale partial output after the run has already been canceled.
+    blockReplyPipeline?.stop();
+    if (pendingToolTasks.size > 0) {
+      await Promise.allSettled(pendingToolTasks);
+    }
+    if (replyOperation.result.code === "aborted_for_restart") {
+      return finalizeWithFollowup(
+        { text: "⚠️ Gateway is restarting. Please wait a few seconds and try again." },
+        queueKey,
+        runFollowupTurn,
+      );
+    }
+    return finalizeWithFollowup({ text: SILENT_REPLY_TOKEN }, queueKey, runFollowupTurn);
+  };
 
   try {
     await typingSignals.signalRunStart();
@@ -1237,6 +1256,10 @@ export async function runReplyAgent(params: {
     }
 
     const payloadArray = runResult.payloads ?? [];
+    const abortedReply = await finalizeReplyOperationAbortIfNeeded();
+    if (abortedReply !== undefined) {
+      return abortedReply;
+    }
 
     if (blockReplyPipeline) {
       await blockReplyPipeline.flush({ force: true });
@@ -1715,8 +1738,9 @@ export async function runReplyAgent(params: {
         runFollowupTurn,
       );
     }
-    if (replyOperation.result?.kind === "aborted") {
-      return finalizeWithFollowup({ text: SILENT_REPLY_TOKEN }, queueKey, runFollowupTurn);
+    const abortedReply = await finalizeReplyOperationAbortIfNeeded();
+    if (abortedReply !== undefined) {
+      return abortedReply;
     }
     if (error instanceof GatewayDrainingError) {
       replyOperation.fail("gateway_draining", error);

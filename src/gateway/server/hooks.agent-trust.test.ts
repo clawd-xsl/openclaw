@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const enqueueSystemEventMock = vi.fn();
-const requestHeartbeatNowMock = vi.fn();
+const requestHookAgentTurnMock = vi.fn();
 const runCronIsolatedAgentTurnMock = vi.fn();
 const resolveMainSessionKeyMock = vi.fn(() => "main-session");
 const loadConfigMock = vi.fn(() => ({}));
@@ -9,8 +9,8 @@ const loadConfigMock = vi.fn(() => ({}));
 vi.mock("../../infra/system-events.js", () => ({
   enqueueSystemEvent: enqueueSystemEventMock,
 }));
-vi.mock("../../infra/heartbeat-wake.js", () => ({
-  requestHeartbeatNow: requestHeartbeatNowMock,
+vi.mock("../../infra/hook-agent-turn.js", () => ({
+  requestHookAgentTurn: requestHookAgentTurnMock,
 }));
 vi.mock("../../cron/isolated-agent.js", () => ({
   runCronIsolatedAgentTurn: runCronIsolatedAgentTurnMock,
@@ -102,6 +102,9 @@ describe("dispatchAgentHook trust handling", () => {
         trusted: false,
       },
     );
+    expect(requestHookAgentTurnMock).toHaveBeenCalledWith({
+      reason: expect.stringMatching(/^hook:/),
+    });
   });
 
   it("marks error events as untrusted and sanitizes hook names", async () => {
@@ -118,5 +121,8 @@ describe("dispatchAgentHook trust handling", () => {
         trusted: false,
       },
     );
+    expect(requestHookAgentTurnMock).toHaveBeenCalledWith({
+      reason: expect.stringMatching(/^hook:.*:error$/),
+    });
   });
 });

@@ -398,6 +398,7 @@ export async function dispatchCronDelivery(
   // remains the only source of delivered state.
   let delivered = skipMessagingToolDelivery;
   let deliveryAttempted = skipMessagingToolDelivery;
+  let sessionCleaned = false;
   const failDeliveryTarget = (error: string) =>
     params.withRunSession({
       status: "error",
@@ -409,9 +410,10 @@ export async function dispatchCronDelivery(
       ...params.telemetry,
     });
   const cleanupDirectCronSessionIfNeeded = async (): Promise<void> => {
-    if (!params.job.deleteAfterRun) {
+    if (sessionCleaned || !params.job.deleteAfterRun) {
       return;
     }
+    sessionCleaned = true;
     try {
       const { callGateway } = await loadGatewayCallRuntime();
       await callGateway({
@@ -771,6 +773,8 @@ export async function dispatchCronDelivery(
       }
     }
   }
+
+  await cleanupDirectCronSessionIfNeeded();
 
   return {
     delivered,

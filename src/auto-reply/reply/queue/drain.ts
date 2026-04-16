@@ -140,7 +140,11 @@ export function scheduleFollowupDrain(
   if (!queue) {
     return;
   }
-  const effectiveRunFollowup = FOLLOWUP_RUN_CALLBACKS.get(key) ?? runFollowup;
+  const resolveCurrentRunFollowup = () => FOLLOWUP_RUN_CALLBACKS.get(key) ?? runFollowup;
+  const invokeCurrentRunFollowup = async (run: FollowupRun) => {
+    await resolveCurrentRunFollowup()(run);
+  };
+  const effectiveRunFollowup = resolveCurrentRunFollowup();
   // Cache callback only when a drain actually starts. Avoid keeping stale
   // callbacks around from finalize calls where no queue work is pending.
   rememberFollowupDrainCallback(key, effectiveRunFollowup);
@@ -162,13 +166,13 @@ export function scheduleFollowupDrain(
             collectState,
             isCrossChannel,
             items: queue.items,
-            run: effectiveRunFollowup,
+            run: invokeCurrentRunFollowup,
           });
           if (collectDrainResult === "empty") {
             const summaryOnlyPrompt = previewQueueSummaryPrompt({ state: queue, noun: "message" });
             const run = queue.lastRun;
             if (summaryOnlyPrompt && run) {
-              await effectiveRunFollowup({
+              await invokeCurrentRunFollowup({
                 prompt: summaryOnlyPrompt,
                 run,
                 enqueuedAt: Date.now(),
@@ -190,7 +194,7 @@ export function scheduleFollowupDrain(
             if (!summary || !run) {
               break;
             }
-            await effectiveRunFollowup({
+            await invokeCurrentRunFollowup({
               prompt: summary,
               run,
               enqueuedAt: Date.now(),
@@ -213,7 +217,7 @@ export function scheduleFollowupDrain(
               summary: pendingSummary,
               renderItem: renderCollectItem,
             });
-            await effectiveRunFollowup({
+            await invokeCurrentRunFollowup({
               prompt,
               run,
               enqueuedAt: Date.now(),
@@ -236,7 +240,7 @@ export function scheduleFollowupDrain(
           }
           if (
             !(await drainNextQueueItem(queue.items, async (item) => {
-              await effectiveRunFollowup({
+              await invokeCurrentRunFollowup({
                 prompt: summaryPrompt,
                 run,
                 enqueuedAt: Date.now(),
@@ -253,7 +257,7 @@ export function scheduleFollowupDrain(
           continue;
         }
 
-        if (!(await drainNextQueueItem(queue.items, effectiveRunFollowup))) {
+        if (!(await drainNextQueueItem(queue.items, invokeCurrentRunFollowup))) {
           break;
         }
       }
@@ -266,7 +270,7 @@ export function scheduleFollowupDrain(
         FOLLOWUP_QUEUES.delete(key);
         clearFollowupDrainCallback(key);
       } else {
-        scheduleFollowupDrain(key, effectiveRunFollowup);
+        scheduleFollowupDrain(key, resolveCurrentRunFollowup());
       }
     }
   })();
