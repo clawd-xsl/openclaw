@@ -4,6 +4,7 @@ import { logVerbose, shouldLogVerbose } from "../globals.js";
 import { SafeOpenError, readLocalFileSafely } from "../infra/fs-safe.js";
 import { assertNoWindowsNetworkPath, safeFileURLToPath } from "../infra/local-file-access.js";
 import type { SsrFPolicy } from "../infra/net/ssrf.js";
+import { throwIfAborted } from "../infra/outbound/abort.js";
 import { resolveUserPath } from "../utils.js";
 import { maxBytesForKind, type MediaKind } from "./constants.js";
 import { fetchRemoteMedia } from "./fetch.js";
@@ -49,6 +50,8 @@ type WebMediaOptions = {
   readFile?: (filePath: string) => Promise<Buffer>;
   /** Host-local fs-policy read piggyback; rejects plaintext-like document sends. */
   hostReadCapability?: boolean;
+  remoteTimeoutMs?: number;
+  signal?: AbortSignal;
 };
 
 function resolveWebMediaOptions(params: {
@@ -229,7 +232,10 @@ async function loadWebMediaInternal(
     sandboxValidated = false,
     readFile: readFileOverride,
     hostReadCapability = false,
+    remoteTimeoutMs,
+    signal,
   } = options;
+  throwIfAborted(signal);
   // Strip MEDIA: prefix used by agent tools (e.g. TTS) to tag media paths.
   // Be lenient: LLM output may add extra whitespace (e.g. "  MEDIA :  /tmp/x.png").
   mediaUrl = mediaUrl.replace(/^\s*MEDIA\s*:\s*/i, "");
@@ -311,6 +317,7 @@ async function loadWebMediaInternal(
   };
 
   if (/^https?:\/\//i.test(mediaUrl)) {
+    throwIfAborted(signal);
     // Enforce a download cap during fetch to avoid unbounded memory usage.
     // For optimized images, allow fetching larger payloads before compression.
     const defaultFetchCap = maxBytesForKind("document");
@@ -320,7 +327,13 @@ async function loadWebMediaInternal(
         : optimizeImages
           ? Math.max(maxBytes, defaultFetchCap)
           : maxBytes;
-    const fetched = await fetchRemoteMedia({ url: mediaUrl, maxBytes: fetchCap, ssrfPolicy });
+    const fetched = await fetchRemoteMedia({
+      url: mediaUrl,
+      maxBytes: fetchCap,
+      ssrfPolicy,
+      timeoutMs: remoteTimeoutMs,
+      signal,
+    });
     const { buffer, contentType, fileName } = fetched;
     const kind = kindFromMime(contentType);
     return await clampAndFinalize({ buffer, contentType, kind, fileName });
@@ -356,9 +369,11 @@ async function loadWebMediaInternal(
   // Local path
   let data: Buffer;
   if (readFileOverride) {
+    throwIfAborted(signal);
     data = await readFileOverride(mediaUrl);
   } else {
     try {
+      throwIfAborted(signal);
       data = (await readLocalFileSafely({ filePath: mediaUrl })).buffer;
     } catch (err) {
       if (err instanceof SafeOpenError) {
@@ -383,6 +398,7 @@ async function loadWebMediaInternal(
       throw err;
     }
   }
+  throwIfAborted(signal);
   const sniffedMime = await detectMime({ buffer: data });
   const mime = await detectMime({ buffer: data, filePath: mediaUrl });
   const kind = kindFromMime(mime);

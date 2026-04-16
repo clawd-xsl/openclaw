@@ -349,6 +349,144 @@ describe("createInboundDebouncer", () => {
     vi.useRealTimers();
   });
 
+  it("retries a failed buffered flush before reporting an error", async () => {
+    vi.useFakeTimers();
+    const calls: Array<string[]> = [];
+    const onError = vi.fn();
+    let attempt = 0;
+
+    const debouncer = createInboundDebouncer<{ key: string; id: string }>({
+      debounceMs: 10,
+      buildKey: (item) => item.key,
+      onFlush: async (items) => {
+        calls.push(items.map((entry) => entry.id));
+        attempt += 1;
+        if (attempt === 1) {
+          throw new Error("transient failure");
+        }
+      },
+      onError,
+    });
+
+    try {
+      await debouncer.enqueue({ key: "a", id: "1" });
+
+      await vi.advanceTimersByTimeAsync(10);
+      expect(calls).toEqual([["1"]]);
+      expect(onError).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(calls).toEqual([["1"], ["1"]]);
+      expect(onError).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps items appended during retry and flushes them in order", async () => {
+    vi.useFakeTimers();
+    const calls: Array<string[]> = [];
+    let attempt = 0;
+
+    const debouncer = createInboundDebouncer<{ key: string; id: string }>({
+      debounceMs: 10,
+      buildKey: (item) => item.key,
+      onFlush: async (items) => {
+        calls.push(items.map((entry) => entry.id));
+        attempt += 1;
+        if (attempt === 1) {
+          throw new Error("transient failure");
+        }
+      },
+    });
+
+    try {
+      await debouncer.enqueue({ key: "a", id: "1" });
+
+      await vi.advanceTimersByTimeAsync(10);
+      expect(calls).toEqual([["1"]]);
+
+      await debouncer.enqueue({ key: "a", id: "2" });
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(calls).toEqual([["1"], ["1", "2"]]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports the final buffered items after retries are exhausted", async () => {
+    vi.useFakeTimers();
+    const onError = vi.fn();
+
+    const debouncer = createInboundDebouncer<{ key: string; id: string }>({
+      debounceMs: 10,
+      buildKey: (item) => item.key,
+      onFlush: async () => {
+        throw new Error("still failing");
+      },
+      onError,
+    });
+
+    try {
+      await debouncer.enqueue({ key: "a", id: "1" });
+
+      await vi.advanceTimersByTimeAsync(10);
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(4_000);
+
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(onError).toHaveBeenCalledWith(expect.any(Error), [{ key: "a", id: "1" }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("flushKey retries buffered failures and preserves later same-key work", async () => {
+    vi.useFakeTimers();
+    const calls: Array<string[]> = [];
+    const onError = vi.fn();
+    let attempt = 0;
+
+    const debouncer = createInboundDebouncer<{ key: string; id: string; debounce: boolean }>({
+      debounceMs: 50,
+      buildKey: (item) => item.key,
+      shouldDebounce: (item) => item.debounce,
+      onFlush: async (items) => {
+        calls.push(items.map((entry) => entry.id));
+        if (items[0]?.id === "1") {
+          attempt += 1;
+          if (attempt === 1) {
+            throw new Error("retryable flush failure");
+          }
+        }
+      },
+      onError,
+    });
+
+    try {
+      await debouncer.enqueue({ key: "a", id: "1", debounce: true });
+
+      const flushPromise = debouncer.flushKey("a");
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(calls).toEqual([["1"]]);
+
+      const immediatePromise = debouncer.enqueue({ key: "a", id: "2", debounce: false });
+      await Promise.resolve();
+      expect(calls).toEqual([["1"]]);
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      await Promise.all([flushPromise, immediatePromise]);
+
+      expect(calls).toEqual([["1"], ["1"], ["2"]]);
+      expect(onError).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps later same-key work behind a timer-backed flush that already started", async () => {
     const started: string[] = [];
     const finished: string[] = [];
@@ -444,6 +582,15 @@ describe("createInboundDebouncer", () => {
 
       const secondEnqueue = debouncer.enqueue({ key: "a", id: "2", debounce: false });
       const thirdEnqueue = debouncer.enqueue({ key: "a", id: "3", debounce: true });
+      await Promise.resolve();
+
+      expect(started).toEqual(["1"]);
+      expect(finished).toEqual([]);
+
+      releaseFirst();
+      await vi.waitFor(() => {
+        expect(started).toEqual(["1", "2"]);
+      });
 
       const thirdTimerIndex = setTimeoutSpy.mock.calls.findLastIndex(
         (call, index) => index > firstTimerIndex && call[1] === 50,
@@ -456,12 +603,6 @@ describe("createInboundDebouncer", () => {
         setTimeoutSpy.mock.calls[thirdTimerIndex]?.[0] as (() => Promise<void>) | undefined
       )?.();
 
-      await Promise.resolve();
-
-      expect(started).toEqual(["1"]);
-      expect(finished).toEqual([]);
-
-      releaseFirst();
       await Promise.all([firstFlush, secondEnqueue, thirdFlush, thirdEnqueue]);
 
       expect(started).toEqual(["1", "2", "3"]);

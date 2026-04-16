@@ -187,6 +187,7 @@ describe("fetchRemoteMedia", () => {
         url: string;
         fetchImpl?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
         init?: RequestInit;
+        signal?: AbortSignal;
       };
       if (params.url.startsWith("http://127.0.0.1/")) {
         throw new Error("Blocked hostname or private/internal/special-use IP address");
@@ -195,8 +196,12 @@ describe("fetchRemoteMedia", () => {
       if (!fetcher) {
         throw new Error("fetch is not available");
       }
+      const init = {
+        ...params.init,
+        ...(params.signal ? { signal: params.signal } : {}),
+      };
       return {
-        response: await fetcher(params.url, params.init),
+        response: await fetcher(params.url, init),
         finalUrl: params.url,
         release: async () => {},
       };
@@ -221,6 +226,88 @@ describe("fetchRemoteMedia", () => {
     },
   ] as const)("$name", async ({ fetchImpl }) => {
     await expectRemoteMediaMaxBytesError({ fetchImpl, maxBytes: 4 });
+  });
+
+  it("passes caller abort signals through guarded fetch", async () => {
+    const controller = new AbortController();
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(init?.signal).toBe(controller.signal);
+      return new Response(makeStream([new Uint8Array([1, 2, 3])]), {
+        status: 200,
+        headers: { "content-type": "application/pdf" },
+      });
+    });
+
+    const result = await fetchRemoteMedia({
+      url: "https://example.com/file.pdf",
+      fetchImpl,
+      lookupFn: makeLookupFn(),
+      maxBytes: 1024,
+      signal: controller.signal,
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(result.buffer).toEqual(Buffer.from([1, 2, 3]));
+  });
+
+  it("aborts fetches when timeoutMs expires", async () => {
+    fetchWithSsrFGuardMock.mockImplementationOnce(async (paramsUnknown: unknown) => {
+      const params = paramsUnknown as {
+        url: string;
+        timeoutMs?: number;
+        signal?: AbortSignal;
+        fetchImpl?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+        init?: RequestInit;
+      };
+      const signal =
+        typeof params.timeoutMs === "number" && params.timeoutMs > 0
+          ? AbortSignal.timeout(params.timeoutMs)
+          : params.signal;
+      const fetcher = params.fetchImpl ?? globalThis.fetch;
+      if (!fetcher) {
+        throw new Error("fetch is not available");
+      }
+      return {
+        response: await fetcher(params.url, {
+          ...params.init,
+          ...(signal ? { signal } : {}),
+        }),
+        finalUrl: params.url,
+        release: async () => {},
+      };
+    });
+
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const signal = init?.signal;
+      return await new Promise<Response>((_resolve, reject) => {
+        if (!signal) {
+          reject(new Error("missing signal"));
+          return;
+        }
+        signal.addEventListener(
+          "abort",
+          () => {
+            const err = new Error("timed out");
+            err.name = "AbortError";
+            reject(err);
+          },
+          { once: true },
+        );
+      });
+    });
+
+    await expect(
+      fetchRemoteMedia({
+        url: "https://example.com/file.pdf",
+        fetchImpl,
+        lookupFn: makeLookupFn(),
+        maxBytes: 1024,
+        timeoutMs: 5,
+      }),
+    ).rejects.toMatchObject({
+      code: "fetch_failed",
+      name: "MediaFetchError",
+    });
   });
 
   it.each([

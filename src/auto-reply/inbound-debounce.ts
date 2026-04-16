@@ -37,12 +37,14 @@ type DebounceBuffer<T> = {
   items: T[];
   timeout: ReturnType<typeof setTimeout> | null;
   debounceMs: number;
+  flushing: boolean;
   releaseReady: () => void;
   readyReleased: boolean;
   task: Promise<void>;
 };
 
 const DEFAULT_MAX_TRACKED_KEYS = 2048;
+const FLUSH_RETRY_DELAYS_MS = [1_000, 2_000, 4_000] as const;
 
 export type InboundDebounceCreateParams<T> = {
   debounceMs: number;
@@ -71,6 +73,7 @@ export function createInboundDebouncer<T>(params: InboundDebounceCreateParams<T>
   const runFlush = async (items: T[]) => {
     try {
       await params.onFlush(items);
+      return true;
     } catch (err) {
       try {
         params.onError?.(err, items);
@@ -78,7 +81,24 @@ export function createInboundDebouncer<T>(params: InboundDebounceCreateParams<T>
         // Flush failures are reported via onError, but this helper stays
         // non-throwing so keyed chains can continue processing later items.
       }
+      return false;
     }
+  };
+
+  const reportFlushError = (err: unknown, items: T[]) => {
+    try {
+      params.onError?.(err, items);
+    } catch {
+      // Flush failures are reported via onError, but this helper stays
+      // non-throwing so keyed chains can continue processing later items.
+    }
+  };
+
+  const waitForRetryDelay = async (delayMs: number) => {
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, delayMs);
+      timer.unref?.();
+    });
   };
 
   const enqueueKeyTask = (key: string, task: () => Promise<void>) => {
@@ -124,16 +144,66 @@ export function createInboundDebouncer<T>(params: InboundDebounceCreateParams<T>
     buffer.releaseReady();
   };
 
-  const flushBuffer = async (key: string, buffer: DebounceBuffer<T>) => {
-    if (buffers.get(key) === buffer) {
-      buffers.delete(key);
+  const armBufferTask = (key: string, buffer: DebounceBuffer<T>) => {
+    const reservedTask = enqueueReservedKeyTask(key, async () => {
+      await drainBuffer(key, buffer);
+    });
+    buffer.releaseReady = reservedTask.release;
+    buffer.readyReleased = false;
+    buffer.task = reservedTask.task;
+  };
+
+  const drainBuffer = async (key: string, buffer: DebounceBuffer<T>) => {
+    if (buffer.flushing) {
+      return;
     }
+    buffer.flushing = true;
+    try {
+      let retryIndex = 0;
+      while (buffer.items.length > 0) {
+        const itemsToFlush = buffer.items.slice();
+        try {
+          await params.onFlush(itemsToFlush);
+          buffer.items.splice(0, itemsToFlush.length);
+          if (buffer.items.length === 0) {
+            retryIndex = 0;
+            return;
+          }
+          armBufferTask(key, buffer);
+          scheduleFlush(key, buffer);
+          return;
+        } catch (err) {
+          if (retryIndex < FLUSH_RETRY_DELAYS_MS.length) {
+            const delayMs = FLUSH_RETRY_DELAYS_MS[retryIndex];
+            retryIndex += 1;
+            await waitForRetryDelay(delayMs);
+            continue;
+          }
+          reportFlushError(err, buffer.items.slice());
+          buffer.items.length = 0;
+        }
+      }
+    } finally {
+      buffer.flushing = false;
+      if (buffer.items.length === 0 && buffers.get(key) === buffer) {
+        buffers.delete(key);
+      }
+    }
+  };
+
+  const flushBuffer = async (key: string, buffer: DebounceBuffer<T>) => {
     if (buffer.timeout) {
       clearTimeout(buffer.timeout);
       buffer.timeout = null;
     }
     // Reserve each key's execution slot as soon as the first buffered item
     // arrives, so later same-key work cannot overtake a timer-backed flush.
+    if (buffer.items.length === 0) {
+      if (buffers.get(key) === buffer) {
+        buffers.delete(key);
+      }
+      return;
+    }
     releaseBuffer(buffer);
     await buffer.task;
   };
@@ -201,7 +271,9 @@ export function createInboundDebouncer<T>(params: InboundDebounceCreateParams<T>
     if (existing) {
       existing.items.push(item);
       existing.debounceMs = debounceMs;
-      scheduleFlush(key, existing);
+      if (!existing.flushing) {
+        scheduleFlush(key, existing);
+      }
       return;
     }
     if (!canTrackKey(key)) {
@@ -213,21 +285,16 @@ export function createInboundDebouncer<T>(params: InboundDebounceCreateParams<T>
       return;
     }
 
-    let buffer!: DebounceBuffer<T>;
-    const reservedTask = enqueueReservedKeyTask(key, async () => {
-      if (buffer.items.length === 0) {
-        return;
-      }
-      await runFlush(buffer.items);
-    });
-    buffer = {
+    const buffer: DebounceBuffer<T> = {
       items: [item],
       timeout: null,
       debounceMs,
-      releaseReady: reservedTask.release,
+      flushing: false,
+      releaseReady: () => {},
       readyReleased: false,
-      task: reservedTask.task,
+      task: Promise.resolve(),
     };
+    armBufferTask(key, buffer);
     buffers.set(key, buffer);
     scheduleFlush(key, buffer);
   };

@@ -16,6 +16,8 @@ function makeAnthropicAnalyzeParams(
     pdfs: Array<{ base64: string; filename: string }>;
     maxTokens: number;
     baseUrl: string;
+    timeoutMs: number;
+    signal: AbortSignal;
   }> = {},
 ) {
   return {
@@ -34,6 +36,8 @@ function makeGeminiAnalyzeParams(
     prompt: string;
     pdfs: Array<{ base64: string; filename: string }>;
     baseUrl: string;
+    timeoutMs: number;
+    signal: AbortSignal;
   }> = {},
 ) {
   return {
@@ -55,7 +59,66 @@ describe("native PDF provider API calls", () => {
   };
 
   afterEach(() => {
+    vi.useRealTimers();
     global.fetch = priorFetch;
+  });
+
+  it("anthropicAnalyzePdf rewrites internal timeouts to a stable provider error", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const signal = init?.signal;
+      return await new Promise<Response>((_resolve, reject) => {
+        if (!signal) {
+          reject(new Error("missing signal"));
+          return;
+        }
+        signal.addEventListener(
+          "abort",
+          () => {
+            const err = new Error("timed out");
+            err.name = "AbortError";
+            reject(err);
+          },
+          { once: true },
+        );
+      });
+    });
+    global.fetch = Object.assign(fetchMock, { preconnect: vi.fn() }) as typeof global.fetch;
+
+    const rejection = expect(
+      pdfNativeProviders.anthropicAnalyzePdf(makeAnthropicAnalyzeParams({ timeoutMs: 5 })),
+    ).rejects.toThrow("Anthropic PDF request timed out after 1s");
+    await vi.advanceTimersByTimeAsync(10);
+    await rejection;
+  });
+
+  it("geminiAnalyzePdf rewrites internal timeouts to a stable provider error", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const signal = init?.signal;
+      return await new Promise<Response>((_resolve, reject) => {
+        if (!signal) {
+          reject(new Error("missing signal"));
+          return;
+        }
+        signal.addEventListener(
+          "abort",
+          () => {
+            const err = new Error("timed out");
+            err.name = "AbortError";
+            reject(err);
+          },
+          { once: true },
+        );
+      });
+    });
+    global.fetch = Object.assign(fetchMock, { preconnect: vi.fn() }) as typeof global.fetch;
+
+    const rejection = expect(
+      pdfNativeProviders.geminiAnalyzePdf(makeGeminiAnalyzeParams({ timeoutMs: 5 })),
+    ).rejects.toThrow("Gemini PDF request timed out after 1s");
+    await vi.advanceTimersByTimeAsync(10);
+    await rejection;
   });
 
   it("anthropicAnalyzePdf sends correct request shape", async () => {

@@ -42,6 +42,8 @@ type FetchMediaOptions = {
   filePathHint?: string;
   maxBytes?: number;
   maxRedirects?: number;
+  timeoutMs?: number;
+  signal?: AbortSignal;
   /** Abort if the response body stops yielding data for this long (ms). */
   readIdleTimeoutMs?: number;
   ssrfPolicy?: SsrFPolicy;
@@ -110,6 +112,8 @@ export async function fetchRemoteMedia(options: FetchMediaOptions): Promise<Fetc
     filePathHint,
     maxBytes,
     maxRedirects,
+    timeoutMs,
+    signal,
     readIdleTimeoutMs,
     ssrfPolicy,
     lookupFn,
@@ -135,6 +139,8 @@ export async function fetchRemoteMedia(options: FetchMediaOptions): Promise<Fetc
         fetchImpl,
         init: requestInit,
         maxRedirects,
+        timeoutMs,
+        signal,
         policy: ssrfPolicy,
         lookupFn: attempt.lookupFn ?? lookupFn,
         dispatcherPolicy: attempt.dispatcherPolicy,
