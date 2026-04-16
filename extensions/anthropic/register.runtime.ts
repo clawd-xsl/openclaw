@@ -18,6 +18,7 @@ import {
   upsertAuthProfile,
   validateAnthropicSetupToken,
 } from "openclaw/plugin-sdk/provider-auth";
+import { findCatalogTemplate } from "openclaw/plugin-sdk/provider-catalog-shared";
 import { cloneFirstTemplateModel } from "openclaw/plugin-sdk/provider-model-shared";
 import { fetchClaudeUsage } from "openclaw/plugin-sdk/provider-usage";
 import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/text-runtime";
@@ -45,6 +46,7 @@ const ANTHROPIC_OPUS_TEMPLATE_MODEL_IDS = ["claude-opus-4-5", "claude-opus-4.5"]
 const ANTHROPIC_SONNET_46_MODEL_ID = "claude-sonnet-4-6";
 const ANTHROPIC_SONNET_46_DOT_MODEL_ID = "claude-sonnet-4.6";
 const ANTHROPIC_SONNET_TEMPLATE_MODEL_IDS = ["claude-sonnet-4-5", "claude-sonnet-4.5"] as const;
+const ANTHROPIC_HAIKU_TEMPLATE_MODEL_IDS = ["claude-haiku-4-5", "claude-haiku-4.5"] as const;
 const ANTHROPIC_MODERN_MODEL_PREFIXES = [
   "claude-opus-4-6",
   "claude-sonnet-4-6",
@@ -255,6 +257,70 @@ function shouldUseAnthropicAdaptiveThinkingDefault(modelId: string): boolean {
     lowerModelId.startsWith(ANTHROPIC_SONNET_46_MODEL_ID) ||
     lowerModelId.startsWith(ANTHROPIC_SONNET_46_DOT_MODEL_ID)
   );
+}
+
+const ANTHROPIC_CLI_CATALOG_SPECS = [
+  {
+    id: ANTHROPIC_SONNET_46_MODEL_ID,
+    name: "Claude Sonnet 4.6",
+    templateIds: [
+      ANTHROPIC_SONNET_46_MODEL_ID,
+      ANTHROPIC_SONNET_46_DOT_MODEL_ID,
+      ...ANTHROPIC_SONNET_TEMPLATE_MODEL_IDS,
+    ] as const,
+  },
+  {
+    id: ANTHROPIC_OPUS_46_MODEL_ID,
+    name: "Claude Opus 4.6",
+    templateIds: [
+      ANTHROPIC_OPUS_46_MODEL_ID,
+      ANTHROPIC_OPUS_46_DOT_MODEL_ID,
+      ...ANTHROPIC_OPUS_TEMPLATE_MODEL_IDS,
+    ] as const,
+  },
+  {
+    id: ANTHROPIC_OPUS_TEMPLATE_MODEL_IDS[0],
+    name: "Claude Opus 4.5",
+    templateIds: ANTHROPIC_OPUS_TEMPLATE_MODEL_IDS,
+  },
+  {
+    id: ANTHROPIC_SONNET_TEMPLATE_MODEL_IDS[0],
+    name: "Claude Sonnet 4.5",
+    templateIds: ANTHROPIC_SONNET_TEMPLATE_MODEL_IDS,
+  },
+  {
+    id: ANTHROPIC_HAIKU_TEMPLATE_MODEL_IDS[0],
+    name: "Claude Haiku 4.5",
+    templateIds: ANTHROPIC_HAIKU_TEMPLATE_MODEL_IDS,
+  },
+] as const;
+
+function buildAnthropicCliCatalogEntries(ctx: {
+  entries: Array<{
+    provider: string;
+    id: string;
+    name: string;
+    contextWindow?: number;
+    reasoning?: boolean;
+    input?: ("text" | "image" | "document")[];
+  }>;
+}) {
+  return ANTHROPIC_CLI_CATALOG_SPECS.map((spec) => {
+    const template = findCatalogTemplate({
+      entries: ctx.entries,
+      providerId: PROVIDER_ID,
+      templateIds: spec.templateIds,
+    });
+    if (!template) {
+      return undefined;
+    }
+    return {
+      ...template,
+      provider: CLAUDE_CLI_BACKEND_ID,
+      id: spec.id,
+      name: spec.name,
+    };
+  }).filter((entry): entry is NonNullable<typeof entry> => entry !== undefined);
 }
 
 function matchesAnthropicModernModel(modelId: string): boolean {
@@ -468,6 +534,7 @@ export function registerAnthropicPlugin(api: OpenClawPluginApi): void {
     ],
     normalizeConfig: ({ providerConfig }) => normalizeAnthropicProviderConfig(providerConfig),
     applyConfigDefaults: ({ config, env }) => applyAnthropicConfigDefaults({ config, env }),
+    augmentModelCatalog: (ctx) => buildAnthropicCliCatalogEntries(ctx),
     resolveDynamicModel: (ctx) => resolveAnthropicForwardCompatModel(ctx),
     resolveSyntheticAuth: ({ provider }) =>
       normalizeLowercaseStringOrEmpty(provider) === CLAUDE_CLI_BACKEND_ID

@@ -35,6 +35,77 @@ describe("anthropic provider replay hooks", () => {
     );
   });
 
+  it("augments the catalog with claude-cli synthetic models", async () => {
+    const provider = await registerSingleProviderPlugin(anthropicPlugin);
+
+    const entries = await provider.augmentModelCatalog?.({
+      config: {},
+      env: {},
+      entries: [
+        {
+          provider: "anthropic",
+          id: "claude-opus-4-5",
+          name: "Claude Opus 4.5",
+          reasoning: true,
+          input: ["text", "image"],
+          contextWindow: 200_000,
+        },
+        {
+          provider: "anthropic",
+          id: "claude-sonnet-4-5",
+          name: "Claude Sonnet 4.5",
+          reasoning: true,
+          input: ["text", "image"],
+          contextWindow: 200_000,
+        },
+        {
+          provider: "anthropic",
+          id: "claude-haiku-4-5",
+          name: "Claude Haiku 4.5",
+          reasoning: false,
+          input: ["text", "image"],
+          contextWindow: 200_000,
+        },
+      ],
+    } as never);
+
+    expect(entries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          provider: "claude-cli",
+          id: "claude-sonnet-4-6",
+          name: "Claude Sonnet 4.6",
+          reasoning: true,
+          input: ["text", "image"],
+          contextWindow: 200_000,
+        }),
+        expect.objectContaining({
+          provider: "claude-cli",
+          id: "claude-opus-4-6",
+          name: "Claude Opus 4.6",
+          reasoning: true,
+          input: ["text", "image"],
+          contextWindow: 200_000,
+        }),
+        expect.objectContaining({
+          provider: "claude-cli",
+          id: "claude-opus-4-5",
+          name: "Claude Opus 4.5",
+        }),
+        expect.objectContaining({
+          provider: "claude-cli",
+          id: "claude-sonnet-4-5",
+          name: "Claude Sonnet 4.5",
+        }),
+        expect.objectContaining({
+          provider: "claude-cli",
+          id: "claude-haiku-4-5",
+          name: "Claude Haiku 4.5",
+        }),
+      ]),
+    );
+  });
+
   it("owns native reasoning output mode for Claude transports", async () => {
     const provider = await registerSingleProviderPlugin(anthropicPlugin);
 
