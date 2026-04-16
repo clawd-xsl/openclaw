@@ -9,6 +9,7 @@ import { normalizeOptionalString } from "../shared/string-coerce.js";
 import { sanitizeForLog } from "../terminal/ansi.js";
 import { hasAnyAuthProfileStoreSource } from "./auth-profiles/source-check.js";
 import type { AuthProfileStore } from "./auth-profiles/types.js";
+import { isCliSessionContinuityError } from "./cli-session.js";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "./defaults.js";
 import {
   FailoverError,
@@ -178,6 +179,9 @@ async function runFallbackCandidate<T>(params: {
       result,
     };
   } catch (err) {
+    if (isCliSessionContinuityError(err)) {
+      throw err;
+    }
     // Normalize abort-wrapped rate-limit errors (e.g. Google Vertex RESOURCE_EXHAUSTED)
     // so they become FailoverErrors and continue the fallback loop instead of aborting.
     const normalizedFailover = coerceToFailoverError(err, {
@@ -823,6 +827,9 @@ export async function runWithModelFallback<T>(params: {
       // throw, rethrow it immediately rather than trying a different model
       // that may have a smaller context window and fail worse.
       const errMessage = formatErrorMessage(err);
+      if (isCliSessionContinuityError(err)) {
+        throw err;
+      }
       if (isLikelyContextOverflowError(errMessage)) {
         throw err;
       }

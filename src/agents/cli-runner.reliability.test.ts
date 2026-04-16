@@ -9,11 +9,14 @@ import {
 import { executePreparedCliRun } from "./cli-runner/execute.js";
 import { resolveCliNoOutputTimeoutMs } from "./cli-runner/helpers.js";
 import type { PreparedCliRunContext } from "./cli-runner/types.js";
+import { CliSessionContinuityError } from "./cli-session.js";
 
 function buildPreparedContext(params?: {
   sessionKey?: string;
   cliSessionId?: string;
   runId?: string;
+  invalidatedReason?: "auth-profile" | "auth-epoch" | "system-prompt" | "mcp";
+  continuityBreakMode?: "internal-retry" | "throw";
 }): PreparedCliRunContext {
   const backend = {
     command: "codex",
@@ -36,6 +39,12 @@ function buildPreparedContext(params?: {
       thinkLevel: "low",
       timeoutMs: 1_000,
       runId: params?.runId ?? "run-2",
+      continuityBreakMode: params?.continuityBreakMode,
+      cliSessionBinding: params?.cliSessionId
+        ? {
+            sessionId: params.cliSessionId,
+          }
+        : undefined,
     },
     started: Date.now(),
     workspaceDir: "/tmp",
@@ -49,7 +58,12 @@ function buildPreparedContext(params?: {
       backend,
       env: {},
     },
-    reusableCliSession: params?.cliSessionId ? { sessionId: params.cliSessionId } : {},
+    reusableCliSession: params?.cliSessionId
+      ? {
+          sessionId: params.cliSessionId,
+          invalidatedReason: params.invalidatedReason,
+        }
+      : {},
     modelId: "gpt-5.4",
     normalizedModel: "gpt-5.4",
     systemPrompt: "You are a helpful assistant.",
@@ -137,6 +151,58 @@ describe("runCliAgent reliability", () => {
         "thread-123",
       ),
     ).rejects.toThrow("exceeded timeout");
+  });
+
+  it("throws a continuity error instead of silently minting a new CLI thread when reuse is invalidated", async () => {
+    await expect(
+      runPreparedCliAgent(
+        buildPreparedContext({
+          sessionKey: "agent:main:main",
+          cliSessionId: "thread-123",
+          invalidatedReason: "mcp",
+          continuityBreakMode: "throw",
+        }),
+      ),
+    ).rejects.toMatchObject<CliSessionContinuityError>({
+      name: "CliSessionContinuityError",
+      reason: "mcp",
+      previousCliSessionId: "thread-123",
+      provider: "codex-cli",
+    });
+  });
+
+  it("throws a continuity error for session-expired when auto-reply requests rollover", async () => {
+    supervisorSpawnMock.mockClear();
+    supervisorSpawnMock.mockResolvedValueOnce(
+      createManagedRun({
+        reason: "exit",
+        exitCode: 1,
+        exitSignal: null,
+        durationMs: 150,
+        stdout: "",
+        stderr: "session expired",
+        timedOut: false,
+        noOutputTimedOut: false,
+      }),
+    );
+
+    await expect(
+      runPreparedCliAgent(
+        buildPreparedContext({
+          sessionKey: "agent:main:subagent:retry",
+          runId: "run-session-expired",
+          cliSessionId: "thread-123",
+          continuityBreakMode: "throw",
+        }),
+      ),
+    ).rejects.toMatchObject<CliSessionContinuityError>({
+      name: "CliSessionContinuityError",
+      reason: "session_expired",
+      previousCliSessionId: "thread-123",
+      provider: "codex-cli",
+    });
+
+    expect(supervisorSpawnMock).toHaveBeenCalledTimes(1);
   });
 
   it("rethrows the retry failure when session-expired recovery retry also fails", async () => {
@@ -245,6 +311,71 @@ describe("runCliAgent reliability", () => {
     expect(result.payloads).toEqual([{ text: "goodbye from cli" }]);
     expect(result.meta.finalAssistantVisibleText).toBe("goodbye from cli");
     expect(result.meta.finalAssistantRawText).toBe("hello from cli");
+  });
+
+  it("preserves multiple finalized Claude payloads instead of collapsing to the last one", async () => {
+    supervisorSpawnMock.mockResolvedValueOnce(
+      createManagedRun({
+        reason: "exit",
+        exitCode: 0,
+        exitSignal: null,
+        durationMs: 50,
+        stdout: [
+          JSON.stringify({ type: "init", session_id: "session-multi" }),
+          JSON.stringify({
+            type: "assistant",
+            session_id: "session-multi",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "First reply" }],
+            },
+          }),
+          JSON.stringify({
+            type: "assistant",
+            session_id: "session-multi",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "Second reply" }],
+            },
+          }),
+          JSON.stringify({
+            type: "result",
+            session_id: "session-multi",
+            result: "Second reply",
+          }),
+        ].join("\n"),
+        stderr: "",
+        timedOut: false,
+        noOutputTimedOut: false,
+      }),
+    );
+
+    const base = buildPreparedContext();
+    const result = await runPreparedCliAgent({
+      ...base,
+      backendResolved: {
+        ...base.backendResolved,
+        id: "claude-cli",
+      },
+      preparedBackend: {
+        ...base.preparedBackend,
+        backend: {
+          command: "claude",
+          args: ["-p", "--output-format", "stream-json"],
+          output: "jsonl",
+          input: "stdin",
+          sessionMode: "always",
+          serialize: true,
+        },
+      },
+      params: {
+        ...base.params,
+        provider: "claude-cli",
+      },
+    });
+
+    expect(result.payloads).toEqual([{ text: "First reply" }, { text: "Second reply" }]);
+    expect(result.meta.finalAssistantVisibleText).toBe("Second reply");
   });
 });
 

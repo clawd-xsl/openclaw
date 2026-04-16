@@ -7,6 +7,7 @@ import type { CliBackendConfig } from "../../config/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { PromptImageOrderEntry } from "../../media/prompt-image-order.js";
 import type { ResolvedCliBackend } from "../cli-backends.js";
+import type { CliSessionInvalidationReason } from "../cli-session.js";
 import type { SkillSnapshot } from "../skills.js";
 
 export type RunCliAgentParams = {
@@ -42,6 +43,7 @@ export type RunCliAgentParams = {
   sessionCreatedAt?: number;
   abortSignal?: AbortSignal;
   replyOperation?: ReplyOperation;
+  continuityBreakMode?: "internal-retry" | "throw";
 };
 
 export type CliPreparedBackend = {
@@ -53,7 +55,7 @@ export type CliPreparedBackend = {
 
 export type CliReusableSession = {
   sessionId?: string;
-  invalidatedReason?: "auth-profile" | "auth-epoch" | "system-prompt" | "mcp";
+  invalidatedReason?: CliSessionInvalidationReason;
 };
 
 export type PreparedCliRunContext = {

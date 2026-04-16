@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   createCliJsonlStreamingParser,
   extractCliErrorMessage,
+  hasStructuredCliOutput,
   parseCliJson,
   parseCliJsonl,
+  summarizeCliOutputForLog,
 } from "./cli-output.js";
 
 describe("parseCliJson", () => {
@@ -184,6 +186,7 @@ describe("parseCliJsonl", () => {
 
     expect(result).toEqual({
       text: "Claude says hello",
+      payloads: [{ text: "Claude says hello" }],
       sessionId: "session-123",
       usage: {
         input: 12,
@@ -248,6 +251,7 @@ describe("parseCliJsonl", () => {
 
     expect(result).toEqual({
       text: "Claude says hello",
+      payloads: [{ text: "Claude says hello" }],
       sessionId: "session-cache-123",
       usage: {
         input: 12,
@@ -294,6 +298,90 @@ describe("parseCliJsonl", () => {
     });
   });
 
+  it("keeps multiple finalized Claude assistant messages as separate payloads", () => {
+    const result = parseCliJsonl(
+      [
+        JSON.stringify({ type: "init", session_id: "session-multi" }),
+        JSON.stringify({
+          type: "assistant",
+          session_id: "session-multi",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "First reply" }],
+          },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          session_id: "session-multi",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Second reply" }],
+          },
+        }),
+        JSON.stringify({
+          type: "result",
+          session_id: "session-multi",
+          result: "Second reply",
+        }),
+      ].join("\n"),
+      {
+        command: "claude",
+        output: "jsonl",
+        sessionIdFields: ["session_id"],
+      },
+      "claude-cli",
+    );
+
+    expect(result).toEqual({
+      text: "Second reply",
+      payloads: [{ text: "First reply" }, { text: "Second reply" }],
+      sessionId: "session-multi",
+      usage: undefined,
+    });
+  });
+
+  it("collapses growing Claude assistant snapshots into one payload", () => {
+    const result = parseCliJsonl(
+      [
+        JSON.stringify({ type: "init", session_id: "session-growing" }),
+        JSON.stringify({
+          type: "assistant",
+          session_id: "session-growing",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Hello" }],
+          },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          session_id: "session-growing",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Hello world" }],
+          },
+        }),
+        JSON.stringify({
+          type: "result",
+          session_id: "session-growing",
+          result: "Hello world",
+        }),
+      ].join("\n"),
+      {
+        command: "claude",
+        output: "jsonl",
+        sessionIdFields: ["session_id"],
+      },
+      "claude-cli",
+    );
+
+    expect(result).toEqual({
+      text: "Hello world",
+      payloads: [{ text: "Hello world" }],
+      sessionId: "session-growing",
+      usage: undefined,
+    });
+  });
+
   it("parses multiple JSON objects embedded on the same line", () => {
     const result = parseCliJsonl(
       '{"type":"init","session_id":"session-999"} {"type":"result","session_id":"session-999","result":"done"}',
@@ -307,6 +395,7 @@ describe("parseCliJsonl", () => {
 
     expect(result).toEqual({
       text: "done",
+      payloads: [{ text: "done" }],
       sessionId: "session-999",
       usage: undefined,
     });
@@ -348,6 +437,39 @@ describe("parseCliJsonl", () => {
 
     expect(result).toBe(message);
   });
+
+  it("detects normal Claude stream-json transcripts as structured output without inventing an error", () => {
+    const raw = [
+      JSON.stringify({ type: "system", subtype: "init", session_id: "session-normal" }),
+      JSON.stringify({
+        type: "assistant",
+        session_id: "session-normal",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "I will check that now." }],
+        },
+      }),
+      JSON.stringify({
+        type: "rate_limit_event",
+        rate_limit_info: { status: "allowed" },
+        session_id: "session-normal",
+      }),
+    ].join("\n");
+
+    expect(
+      hasStructuredCliOutput({
+        raw,
+        backend: {
+          command: "claude",
+          output: "jsonl",
+          sessionIdFields: ["session_id"],
+        },
+        providerId: "claude-cli",
+        outputMode: "jsonl",
+      }),
+    ).toBe(true);
+    expect(extractCliErrorMessage(raw)).toBeNull();
+  });
 });
 
 describe("createCliJsonlStreamingParser", () => {
@@ -381,5 +503,85 @@ describe("createCliJsonlStreamingParser", () => {
     expect(deltas).toEqual([
       { text: "hello", delta: "hello", sessionId: "session-stream", usage: undefined },
     ]);
+  });
+});
+
+describe("summarizeCliOutputForLog", () => {
+  it("passes plain-text output through unchanged", () => {
+    const raw = "plain text output";
+
+    expect(
+      summarizeCliOutputForLog({
+        raw,
+        backend: {
+          command: "claude",
+          output: "jsonl",
+          sessionIdFields: ["session_id"],
+        },
+        providerId: "claude-cli",
+        outputMode: "jsonl",
+      }),
+    ).toBe(raw);
+  });
+
+  it("suppresses structured Claude stream-json payloads in logs", () => {
+    const raw = [
+      JSON.stringify({ type: "system", subtype: "init", session_id: "session-log" }),
+      JSON.stringify({
+        type: "assistant",
+        session_id: "session-log",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "I will check that now." }],
+        },
+      }),
+      JSON.stringify({
+        type: "result",
+        session_id: "session-log",
+        result: "I will check that now.",
+      }),
+    ].join("\n");
+
+    expect(
+      summarizeCliOutputForLog({
+        raw,
+        backend: {
+          command: "claude",
+          output: "jsonl",
+          sessionIdFields: ["session_id"],
+        },
+        providerId: "claude-cli",
+        outputMode: "jsonl",
+      }),
+    ).toBe(
+      "<structured jsonl output suppressed (session=session-log, payloads=1, textChars=22, text=I will check that now.)>",
+    );
+  });
+
+  it("summarizes structured json payloads without logging the raw body", () => {
+    const raw = JSON.stringify({
+      session_id: "gemini-log",
+      response: "Gemini says hello",
+      stats: {
+        total_tokens: 21,
+        input_tokens: 13,
+        output_tokens: 5,
+      },
+    });
+
+    expect(
+      summarizeCliOutputForLog({
+        raw,
+        backend: {
+          command: "gemini",
+          output: "json",
+          sessionIdFields: ["session_id"],
+        },
+        providerId: "google-gemini-cli",
+        outputMode: "json",
+      }),
+    ).toBe(
+      "<structured json output suppressed (session=gemini-log, textChars=17, text=Gemini says hello)>",
+    );
   });
 });

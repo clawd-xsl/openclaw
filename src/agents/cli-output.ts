@@ -1,6 +1,10 @@
 import type { CliBackendConfig } from "../config/types.js";
-import { normalizeLowercaseStringOrEmpty } from "../shared/string-coerce.js";
+import {
+  normalizeLowercaseStringOrEmpty,
+  normalizeOptionalString,
+} from "../shared/string-coerce.js";
 import { isRecord } from "../utils.js";
+import { extractAssistantText } from "./tools/chat-history-text.js";
 
 type CliUsage = {
   input?: number;
@@ -12,6 +16,7 @@ type CliUsage = {
 
 export type CliOutput = {
   text: string;
+  payloads?: Array<{ text: string }>;
   rawText?: string;
   sessionId?: string;
   usage?: CliUsage;
@@ -343,6 +348,40 @@ function parseClaudeCliJsonlResult(params: {
   return null;
 }
 
+function readCliAssistantMessageText(parsed: Record<string, unknown>): string | undefined {
+  if (parsed.type !== "assistant" || !isRecord(parsed.message)) {
+    return undefined;
+  }
+  if (collectExplicitCliErrorText(parsed)) {
+    return undefined;
+  }
+  return normalizeOptionalString(extractAssistantText(parsed.message));
+}
+
+function appendCliPayloadText(texts: string[], nextText: string | undefined): void {
+  const trimmed = normalizeOptionalString(nextText);
+  if (!trimmed) {
+    return;
+  }
+  const last = texts[texts.length - 1];
+  if (!last) {
+    texts.push(trimmed);
+    return;
+  }
+  if (last === trimmed) {
+    return;
+  }
+  // Claude stream-json may emit a growing snapshot of the same assistant
+  // message before the message is finalized. Replace the last payload when the
+  // next snapshot is a strict extension instead of turning it into a second
+  // outbound reply.
+  if (trimmed.startsWith(last) && trimmed.length > last.length) {
+    texts[texts.length - 1] = trimmed;
+    return;
+  }
+  texts.push(trimmed);
+}
+
 function parseClaudeCliStreamingDelta(params: {
   backend: CliBackendConfig;
   providerId: string;
@@ -466,6 +505,8 @@ export function parseCliJsonl(
   }
   let sessionId: string | undefined;
   let usage: CliUsage | undefined;
+  let finalClaudeResult: CliOutput | null = null;
+  const assistantPayloadTexts: string[] = [];
   const texts: string[] = [];
   for (const line of lines) {
     for (const parsed of parseJsonRecordCandidates(line)) {
@@ -485,7 +526,13 @@ export function parseCliJsonl(
         usage,
       });
       if (claudeResult) {
-        return claudeResult;
+        finalClaudeResult = claudeResult;
+      }
+
+      appendCliPayloadText(assistantPayloadTexts, readCliAssistantMessageText(parsed));
+
+      if (finalClaudeResult) {
+        continue;
       }
 
       const item = isRecord(parsed.item) ? parsed.item : null;
@@ -497,11 +544,26 @@ export function parseCliJsonl(
       }
     }
   }
+  if (assistantPayloadTexts.length > 0) {
+    const text = assistantPayloadTexts[assistantPayloadTexts.length - 1] ?? "";
+    return {
+      text,
+      payloads: assistantPayloadTexts.map((entry) => ({ text: entry })),
+      sessionId,
+      usage,
+    };
+  }
+  if (finalClaudeResult) {
+    if (finalClaudeResult.text) {
+      finalClaudeResult.payloads = [{ text: finalClaudeResult.text }];
+    }
+    return finalClaudeResult;
+  }
   const text = texts.join("\n").trim();
   if (!text) {
     return null;
   }
-  return { text, sessionId, usage };
+  return { text, payloads: [{ text }], sessionId, usage };
 }
 
 export function parseCliOutput(params: {
@@ -529,6 +591,79 @@ export function parseCliOutput(params: {
       sessionId: params.fallbackSessionId,
     }
   );
+}
+
+export function hasStructuredCliOutput(params: {
+  raw: string;
+  backend: CliBackendConfig;
+  providerId: string;
+  outputMode?: "json" | "jsonl" | "text";
+}): boolean {
+  const outputMode = params.outputMode ?? "text";
+  if (outputMode === "jsonl") {
+    return parseCliJsonl(params.raw, params.backend, params.providerId) !== null;
+  }
+  if (outputMode === "json") {
+    return parseCliJson(params.raw, params.backend) !== null;
+  }
+  return false;
+}
+
+function truncateCliLogDetail(text: string, maxChars = 160): string {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return "";
+  }
+  if (trimmed.length <= maxChars) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, maxChars - 1)}…`;
+}
+
+export function summarizeCliOutputForLog(params: {
+  raw: string;
+  backend: CliBackendConfig;
+  providerId: string;
+  outputMode?: "json" | "jsonl" | "text";
+  fallbackSessionId?: string;
+}): string | null {
+  const trimmed = params.raw.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  if (
+    !hasStructuredCliOutput({
+      raw: trimmed,
+      backend: params.backend,
+      providerId: params.providerId,
+      outputMode: params.outputMode,
+    })
+  ) {
+    return trimmed;
+  }
+
+  const parsed = parseCliOutput({
+    raw: trimmed,
+    backend: params.backend,
+    providerId: params.providerId,
+    outputMode: params.outputMode,
+    fallbackSessionId: params.fallbackSessionId,
+  });
+  const detailParts: string[] = [];
+  if (parsed.sessionId) {
+    detailParts.push(`session=${parsed.sessionId}`);
+  }
+  if (parsed.payloads && parsed.payloads.length > 0) {
+    detailParts.push(`payloads=${parsed.payloads.length}`);
+  }
+  if (parsed.text) {
+    detailParts.push(`textChars=${parsed.text.length}`);
+    detailParts.push(`text=${truncateCliLogDetail(parsed.text)}`);
+  }
+  const outputMode = params.outputMode ?? "text";
+  const outputLabel = outputMode === "jsonl" ? "structured jsonl" : "structured json";
+  return `<${outputLabel} output suppressed${detailParts.length > 0 ? ` (${detailParts.join(", ")})` : ""}>`;
 }
 
 export function extractCliErrorMessage(raw: string): string | null {

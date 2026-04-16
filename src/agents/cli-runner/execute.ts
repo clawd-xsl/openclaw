@@ -10,7 +10,9 @@ import { prependBootstrapPromptWarning } from "../bootstrap-budget.js";
 import {
   createCliJsonlStreamingParser,
   extractCliErrorMessage,
+  hasStructuredCliOutput,
   parseCliOutput,
+  summarizeCliOutputForLog,
   type CliOutput,
 } from "../cli-output.js";
 import { FailoverError, resolveFailoverStatus } from "../failover-error.js";
@@ -180,6 +182,7 @@ export async function executePreparedCliRun(
   const useResume = Boolean(
     cliSessionIdToUse && resolvedSessionId && backend.resumeArgs && backend.resumeArgs.length > 0,
   );
+  const outputMode = useResume ? (backend.resumeOutput ?? backend.output) : backend.output;
   const systemPromptArg = resolveSystemPromptUsage({
     backend,
     isNewSession: isNew,
@@ -390,20 +393,34 @@ export async function executePreparedCliRun(
 
         const stdout = result.stdout.trim();
         const stderr = result.stderr.trim();
+        const stdoutLog = summarizeCliOutputForLog({
+          raw: stdout,
+          backend,
+          providerId: context.backendResolved.id,
+          outputMode,
+          fallbackSessionId: resolvedSessionId,
+        });
+        const stderrLog = summarizeCliOutputForLog({
+          raw: stderr,
+          backend,
+          providerId: context.backendResolved.id,
+          outputMode,
+          fallbackSessionId: resolvedSessionId,
+        });
         if (logOutputText) {
-          if (stdout) {
-            cliBackendLog.info(`cli stdout:\n${stdout}`);
+          if (stdoutLog) {
+            cliBackendLog.info(`cli stdout:\n${stdoutLog}`);
           }
-          if (stderr) {
-            cliBackendLog.info(`cli stderr:\n${stderr}`);
+          if (stderrLog) {
+            cliBackendLog.info(`cli stderr:\n${stderrLog}`);
           }
         }
         if (shouldLogVerbose()) {
-          if (stdout) {
-            cliBackendLog.debug(`cli stdout:\n${stdout}`);
+          if (stdoutLog) {
+            cliBackendLog.debug(`cli stdout:\n${stdoutLog}`);
           }
-          if (stderr) {
-            cliBackendLog.debug(`cli stderr:\n${stderr}`);
+          if (stderrLog) {
+            cliBackendLog.debug(`cli stderr:\n${stderrLog}`);
           }
         }
 
@@ -440,11 +457,31 @@ export async function executePreparedCliRun(
               status: resolveFailoverStatus("timeout"),
             });
           }
-          const primaryErrorText = stderr || stdout;
-          const structuredError =
-            extractCliErrorMessage(primaryErrorText) ??
-            (stderr ? extractCliErrorMessage(stdout) : null);
-          const err = structuredError || primaryErrorText || "CLI failed.";
+          const structuredError = extractCliErrorMessage(stderr) ?? extractCliErrorMessage(stdout);
+          const stdoutHasStructuredOutput =
+            stdout.length > 0 &&
+            hasStructuredCliOutput({
+              raw: stdout,
+              backend,
+              providerId: context.backendResolved.id,
+              outputMode,
+            });
+          const stderrHasStructuredOutput =
+            stderr.length > 0 &&
+            hasStructuredCliOutput({
+              raw: stderr,
+              backend,
+              providerId: context.backendResolved.id,
+              outputMode,
+            });
+          const unstructuredErrorText =
+            (stderr && !stderrHasStructuredOutput ? stderr : "") ||
+            (stdout && !stdoutHasStructuredOutput ? stdout : "");
+          const genericFailureText =
+            result.reason === "exit" && typeof result.exitCode === "number"
+              ? `CLI exited with code ${result.exitCode}.`
+              : `CLI failed (${result.reason}).`;
+          const err = structuredError || unstructuredErrorText || genericFailureText;
           const reason = classifyFailoverReason(err, { provider: params.provider }) ?? "unknown";
           const status = resolveFailoverStatus(reason);
           throw new FailoverError(err, {
@@ -459,15 +496,25 @@ export async function executePreparedCliRun(
           raw: stdout,
           backend,
           providerId: context.backendResolved.id,
-          outputMode: useResume ? (backend.resumeOutput ?? backend.output) : backend.output,
+          outputMode,
           fallbackSessionId: resolvedSessionId,
         });
         const rawText = parsed.text;
+        const transformedPayloads = parsed.payloads?.map((payload) => ({
+          text: applyPluginTextReplacements(
+            payload.text,
+            context.backendResolved.textTransforms?.output,
+          ),
+        }));
         return {
           ...parsed,
+          payloads: transformedPayloads,
           rawText,
           finalPromptText: prompt,
-          text: applyPluginTextReplacements(rawText, context.backendResolved.textTransforms?.output),
+          text: applyPluginTextReplacements(
+            rawText,
+            context.backendResolved.textTransforms?.output,
+          ),
         };
       } finally {
         restoreSkillEnv?.();

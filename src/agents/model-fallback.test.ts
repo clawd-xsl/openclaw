@@ -11,6 +11,7 @@ import * as authProfileSourceCheckModule from "./auth-profiles/source-check.js";
 import * as authProfileStoreModule from "./auth-profiles/store.js";
 import { saveAuthProfileStore } from "./auth-profiles/store.js";
 import type { AuthProfileStore } from "./auth-profiles/types.js";
+import { CliSessionContinuityError } from "./cli-session.js";
 import { isAnthropicBillingError } from "./live-auth-keys.js";
 import { LiveSessionModelSwitchError } from "./live-model-switch-error.js";
 import { runWithImageModelFallback, runWithModelFallback } from "./model-fallback.js";
@@ -342,6 +343,26 @@ describe("runWithModelFallback", () => {
     });
     expect(result.result).toBe("ok");
     expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  it("rethrows CLI session continuity errors instead of model-fallbacking", async () => {
+    const continuityError = new CliSessionContinuityError({
+      provider: "claude-cli",
+      reason: "session_expired",
+      previousCliSessionId: "thread-123",
+    });
+    const run = vi.fn().mockRejectedValueOnce(continuityError);
+
+    await expect(
+      runWithModelFallback({
+        cfg: makeCfg(),
+        provider: "claude-cli",
+        model: "claude-sonnet-4-6",
+        run,
+      }),
+    ).rejects.toBe(continuityError);
+
+    expect(run).toHaveBeenCalledTimes(1);
   });
 
   it("falls back on auth errors", async () => {

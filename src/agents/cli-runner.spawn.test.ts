@@ -238,6 +238,56 @@ describe("runCliAgent spawn path", () => {
     expect(context.systemPrompt).toContain("channel=webchat");
   });
 
+  it("can keep CLI session reuse alive when prompt-based invalidation is disabled", async () => {
+    setCliRunnerPrepareTestDeps({
+      makeBootstrapWarn: () => () => {},
+      resolveBootstrapContextForRun: async () => ({
+        bootstrapFiles: [],
+        contextFiles: [],
+      }),
+      resolveOpenClawDocsPath: async () => undefined,
+      getActiveMcpLoopbackRuntime: () => undefined,
+      ensureMcpLoopbackServer: async () => {},
+    });
+
+    const context = await prepareCliRunContext({
+      sessionId: "session-current",
+      sessionKey: "agent:main:test",
+      agentId: "main",
+      sessionFile: "/tmp/session.jsonl",
+      workspaceDir: "/tmp",
+      config: {
+        agents: {
+          defaults: {
+            cliBackends: {
+              "test-cli": {
+                command: "test-cli",
+                args: ["--print"],
+                input: "stdin",
+                output: "text",
+                systemPromptArg: "--system-prompt",
+                systemPromptWhen: "first",
+                invalidateOnSystemPromptChange: false,
+              },
+            },
+          },
+        },
+      },
+      prompt: "hello",
+      provider: "test-cli",
+      model: "demo",
+      timeoutMs: 1_000,
+      runId: "run-cli-continuity-no-prompt-reset",
+      extraSystemPrompt: "Prompt B",
+      cliSessionBinding: {
+        sessionId: "cli-thread-1",
+        extraSystemPromptHash: "prompt-a",
+      },
+    });
+
+    expect(context.reusableCliSession).toEqual({ sessionId: "cli-thread-1" });
+  });
+
   it("pipes Claude prompts over stdin instead of argv", async () => {
     supervisorSpawnMock.mockResolvedValueOnce(
       createManagedRun({
@@ -720,6 +770,51 @@ describe("runCliAgent spawn path", () => {
       message,
       reason: "billing",
       status: 402,
+    });
+  });
+
+  it("does not classify structured Claude stream-json transcripts as raw failover text", async () => {
+    supervisorSpawnMock.mockResolvedValueOnce(
+      createManagedRun({
+        reason: "exit",
+        exitCode: 1,
+        exitSignal: null,
+        durationMs: 50,
+        stdout: [
+          JSON.stringify({ type: "system", subtype: "init", session_id: "session-structured" }),
+          JSON.stringify({
+            type: "assistant",
+            session_id: "session-structured",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "Checking the gateway now." }],
+            },
+          }),
+          JSON.stringify({
+            type: "rate_limit_event",
+            rate_limit_info: { status: "allowed" },
+            session_id: "session-structured",
+          }),
+        ].join("\n"),
+        stderr: "",
+        timedOut: false,
+        noOutputTimedOut: false,
+      }),
+    );
+
+    const run = executePreparedCliRun(
+      buildPreparedCliRunContext({
+        provider: "claude-cli",
+        model: "sonnet",
+        runId: "run-claude-structured-nonzero-exit",
+      }),
+    );
+
+    await expect(run).rejects.toMatchObject({
+      name: "FailoverError",
+      message: "CLI exited with code 1.",
+      reason: "unknown",
+      status: undefined,
     });
   });
 

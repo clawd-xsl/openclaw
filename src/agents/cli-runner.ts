@@ -1,5 +1,6 @@
 import { formatErrorMessage } from "../infra/errors.js";
 import type { PreparedCliRunContext, RunCliAgentParams } from "./cli-runner/types.js";
+import { CliSessionContinuityError } from "./cli-session.js";
 import { FailoverError, isFailoverError, resolveFailoverStatus } from "./failover-error.js";
 import { classifyFailoverReason, isFailoverErrorMessage } from "./pi-embedded-helpers.js";
 import type { EmbeddedPiRunResult } from "./pi-embedded-runner.js";
@@ -21,7 +22,15 @@ export async function runPreparedCliAgent(
   }): EmbeddedPiRunResult => {
     const text = resultParams.output.text?.trim();
     const rawText = resultParams.output.rawText?.trim();
-    const payloads = text ? [{ text }] : undefined;
+    const normalizedPayloads =
+      resultParams.output.payloads
+        ?.map((payload) => {
+          const payloadText = payload.text?.trim();
+          return payloadText ? { text: payloadText } : null;
+        })
+        .filter((payload): payload is { text: string } => payload !== null) ?? [];
+    const payloads =
+      normalizedPayloads.length > 0 ? normalizedPayloads : text ? [{ text }] : undefined;
 
     return {
       payloads,
@@ -86,6 +95,17 @@ export async function runPreparedCliAgent(
 
   // Try with the provided CLI session ID first
   try {
+    if (
+      params.continuityBreakMode === "throw" &&
+      context.reusableCliSession.invalidatedReason &&
+      context.params.cliSessionBinding?.sessionId
+    ) {
+      throw new CliSessionContinuityError({
+        provider: params.provider,
+        reason: context.reusableCliSession.invalidatedReason,
+        previousCliSessionId: context.params.cliSessionBinding.sessionId,
+      });
+    }
     try {
       const output = await executePreparedCliRun(context, context.reusableCliSession.sessionId);
       const effectiveCliSessionId = output.sessionId ?? context.reusableCliSession.sessionId;
@@ -94,7 +114,17 @@ export async function runPreparedCliAgent(
       if (isFailoverError(err)) {
         const retryableSessionId = context.reusableCliSession.sessionId ?? params.cliSessionId;
         // Check if this is a session expired error and we have a session to clear
-        if (err.reason === "session_expired" && retryableSessionId && params.sessionKey) {
+        if (err.reason === "session_expired" && retryableSessionId) {
+          if (params.continuityBreakMode === "throw") {
+            throw new CliSessionContinuityError({
+              provider: params.provider,
+              reason: "session_expired",
+              previousCliSessionId: retryableSessionId,
+            });
+          }
+          if (!params.sessionKey) {
+            throw err;
+          }
           // Clear the expired session ID from the session entry
           // This requires access to the session store, which we don't have here
           // We'll need to modify the caller to handle this case
