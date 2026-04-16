@@ -1,3 +1,4 @@
+import { t } from "../../i18n/index.ts";
 import type { GatewayBrowserClient } from "../gateway.ts";
 import {
   formatMissingOperatorReadScopeMessage,
@@ -84,7 +85,9 @@ export async function loadSummaries(
   } catch (error) {
     if (isMissingOperatorReadScopeError(error)) {
       state.summariesResult = null;
-      state.summariesError = formatMissingOperatorReadScopeMessage("session summaries");
+      state.summariesError =
+        t("summariesPage.missingScope") ??
+        formatMissingOperatorReadScopeMessage("session summaries");
     } else {
       state.summariesError = toErrorMessage(error);
     }

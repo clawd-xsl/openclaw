@@ -24,7 +24,7 @@ export type SummariesProps = {
 
 function formatDate(ts: number): string {
   if (!Number.isFinite(ts) || ts <= 0) {
-    return "n/a";
+    return t("common.na");
   }
   return new Date(ts).toLocaleString([], {
     year: "numeric",
@@ -87,16 +87,18 @@ function renderSummaryCard(row: SummaryEntry) {
       >
         <span class="mono muted">${truncateId(row.sessionId)}</span>
         <span>${formatDate(row.endedAt || row.createdAt)}</span>
-        <span>${row.messageCount} msgs</span>
+        <span>${t("summariesPage.messageCount", { count: String(row.messageCount) })}</span>
         <span class="mono muted">${row.sessionKey}</span>
       </summary>
       <div style="margin-top: 10px; white-space: pre-wrap; line-height: 1.55;">
-        ${text || "No summary text captured."}
+        ${text || t("summariesPage.emptyFallback")}
       </div>
       <div class="muted" style="margin-top: 8px;">
-        ${row.model ? html`Model: <span class="mono">${row.model}</span>` : nothing}
+        ${row.model
+          ? html`${t("summariesPage.modelLabel")}: <span class="mono">${row.model}</span>`
+          : nothing}
         ${row.summaryModel
-          ? html`${row.model ? html` · ` : nothing}Summary:
+          ? html`${row.model ? html` · ` : nothing}${t("summariesPage.summaryModelLabel")}:
               <span class="mono">${row.summaryModel}</span>`
           : nothing}
       </div>
@@ -117,8 +119,8 @@ export function renderSummaries(props: SummariesProps) {
           <div class="card-title">${t("tabs.summaries")}</div>
           <div class="card-sub">
             ${totalCount > 0
-              ? `${totalCount} summaries found`
-              : "Browse and search past session summaries."}
+              ? t("summariesPage.resultsFound", { count: String(totalCount) })
+              : t("summariesPage.browseHint")}
           </div>
         </div>
         <button class="btn" ?disabled=${props.loading} @click=${props.onRefresh}>
@@ -130,10 +132,10 @@ export function renderSummaries(props: SummariesProps) {
         style="margin-top: 14px; display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));"
       >
         <label class="field">
-          <span>Session key</span>
+          <span>${t("summariesPage.sessionKey")}</span>
           <input
             .value=${props.filterKey}
-            placeholder="* or agent:main:%"
+            placeholder=${t("summariesPage.sessionKeyPlaceholder")}
             @input=${(event: Event) =>
               props.onFiltersChange({
                 filterKey: (event.target as HTMLInputElement).value,
@@ -147,7 +149,7 @@ export function renderSummaries(props: SummariesProps) {
           <span>${t("common.search")}</span>
           <input
             .value=${props.filterQuery}
-            placeholder="keyword search"
+            placeholder=${t("summariesPage.queryPlaceholder")}
             @input=${(event: Event) =>
               props.onFiltersChange({
                 filterKey: props.filterKey,
@@ -158,10 +160,10 @@ export function renderSummaries(props: SummariesProps) {
           />
         </label>
         <label class="field">
-          <span>From</span>
+          <span>${t("summariesPage.fromLabel")}</span>
           <input
             .value=${props.filterFrom}
-            placeholder="30d or 2026-01-01"
+            placeholder=${t("summariesPage.fromPlaceholder")}
             @input=${(event: Event) =>
               props.onFiltersChange({
                 filterKey: props.filterKey,
@@ -172,10 +174,10 @@ export function renderSummaries(props: SummariesProps) {
           />
         </label>
         <label class="field">
-          <span>To</span>
+          <span>${t("summariesPage.toLabel")}</span>
           <input
             .value=${props.filterTo}
-            placeholder="now"
+            placeholder=${t("summariesPage.toPlaceholder")}
             @input=${(event: Event) =>
               props.onFiltersChange({
                 filterKey: props.filterKey,
@@ -187,10 +189,7 @@ export function renderSummaries(props: SummariesProps) {
         </label>
       </div>
 
-      <div class="muted" style="margin-top: 8px;">
-        Use <span class="mono">*</span> for all summaries and SQL-style wildcards such as
-        <span class="mono"> %subagent%</span> for pattern matches.
-      </div>
+      <div class="muted" style="margin-top: 8px;">${t("summariesPage.wildcardHelp")}</div>
 
       ${props.error
         ? html`<div class="callout danger" style="margin-top: 12px;">${props.error}</div>`
@@ -198,7 +197,7 @@ export function renderSummaries(props: SummariesProps) {
 
       <div style="margin-top: 12px;">
         ${!props.loading && totalCount === 0
-          ? html`<div class="muted">No summaries found.</div>`
+          ? html`<div class="muted">${t("summariesPage.noneFound")}</div>`
           : rows.map(renderSummaryCard)}
       </div>
 
@@ -212,15 +211,20 @@ export function renderSummaries(props: SummariesProps) {
                 ?disabled=${currentPage === 0}
                 @click=${() => props.onPageChange(currentPage - 1)}
               >
-                Prev
+                ${t("summariesPage.prev")}
               </button>
-              <span class="muted">Page ${currentPage + 1} of ${totalPages}</span>
+              <span class="muted"
+                >${t("summariesPage.pageOf", {
+                  current: String(currentPage + 1),
+                  total: String(totalPages),
+                })}</span
+              >
               <button
                 class="btn btn--ghost"
                 ?disabled=${currentPage >= totalPages - 1}
                 @click=${() => props.onPageChange(currentPage + 1)}
               >
-                Next
+                ${t("summariesPage.next")}
               </button>
             </div>
           `
