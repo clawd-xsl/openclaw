@@ -1147,17 +1147,21 @@ export async function runReplyAgent(params: {
       failureLabel: string;
       buildLogMessage: (nextSessionId: string) => string;
       cleanupTranscripts?: boolean;
+      promoteToSessionRollover?: boolean;
     };
     const resetSession = async ({
       failureLabel,
       buildLogMessage,
       cleanupTranscripts,
+      promoteToSessionRollover,
     }: SessionResetOptions): Promise<boolean> =>
       await resetReplyRunSession({
         options: {
           failureLabel,
           buildLogMessage,
           cleanupTranscripts,
+          promoteToSessionRollover,
+          rolloverReason: promoteToSessionRollover ? "unknown" : undefined,
         },
         sessionKey,
         queueKey,
@@ -1170,8 +1174,9 @@ export async function runReplyAgent(params: {
         onActiveSessionEntry: (nextEntry) => {
           activeSessionEntry = nextEntry;
         },
-        onNewSession: () => {
+        onNewSession: (nextSessionId) => {
           activeIsNewSession = true;
+          replyOperation.updateSessionId(nextSessionId);
         },
       });
     const resetSessionAfterCompactionFailure = async (reason: string): Promise<boolean> =>
@@ -1186,6 +1191,13 @@ export async function runReplyAgent(params: {
         buildLogMessage: (nextSessionId) =>
           `Role ordering conflict (${reason}). Restarting session ${sessionKey} -> ${nextSessionId}.`,
         cleanupTranscripts: true,
+      });
+    const resetSessionAfterCliContinuityBreak = async (reason: string): Promise<boolean> =>
+      resetSession({
+        failureLabel: "CLI session continuity break",
+        buildLogMessage: (nextSessionId) =>
+          `CLI session continuity lost (${reason}). Restarting session ${sessionKey} -> ${nextSessionId} and retrying.`,
+        promoteToSessionRollover: true,
       });
 
     replyOperation.setPhase("running");
@@ -1207,6 +1219,7 @@ export async function runReplyAgent(params: {
       pendingToolTasks,
       resetSessionAfterCompactionFailure,
       resetSessionAfterRoleOrderingConflict,
+      resetSessionAfterCliContinuityBreak,
       isHeartbeat,
       sessionKey,
       getActiveSessionEntry: () => activeSessionEntry,

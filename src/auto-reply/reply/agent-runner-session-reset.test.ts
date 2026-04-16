@@ -11,6 +11,17 @@ import type { FollowupRun } from "./queue.js";
 
 const refreshQueuedFollowupSessionMock = vi.fn();
 const errorMock = vi.fn();
+const archiveStableSessionTranscriptMock = vi.fn();
+const generateSessionSummaryMock = vi.fn();
+const loadRecentSummariesMock = vi.fn();
+const buildSessionHistorySectionMock = vi.fn();
+const disposeSessionMcpRuntimeMock = vi.fn();
+const resetRegisteredAgentHarnessSessionsMock = vi.fn();
+const clearBootstrapSnapshotOnSessionRolloverMock = vi.fn();
+const hookHasHooksMock = vi.fn();
+const runSessionEndMock = vi.fn();
+const runSessionStartMock = vi.fn();
+const ensureSessionHeaderMock = vi.fn();
 
 function createFollowupRun(): FollowupRun {
   return {
@@ -20,6 +31,7 @@ function createFollowupRun(): FollowupRun {
     run: {
       sessionId: "session",
       sessionKey: "main",
+      agentId: "main",
       messageProvider: "whatsapp",
       sessionFile: "/tmp/session.jsonl",
       workspaceDir: "/tmp",
@@ -53,10 +65,61 @@ describe("resetReplyRunSession", () => {
     rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-reset-run-"));
     refreshQueuedFollowupSessionMock.mockReset();
     errorMock.mockReset();
+    archiveStableSessionTranscriptMock.mockReset();
+    archiveStableSessionTranscriptMock.mockResolvedValue({
+      sessionFile: path.join(rootDir, "archived-session.jsonl"),
+      transcriptArchived: true,
+    });
+    generateSessionSummaryMock.mockReset();
+    generateSessionSummaryMock.mockResolvedValue(undefined);
+    loadRecentSummariesMock.mockReset();
+    loadRecentSummariesMock.mockReturnValue([]);
+    buildSessionHistorySectionMock.mockReset();
+    buildSessionHistorySectionMock.mockReturnValue("");
+    disposeSessionMcpRuntimeMock.mockReset();
+    disposeSessionMcpRuntimeMock.mockResolvedValue(undefined);
+    resetRegisteredAgentHarnessSessionsMock.mockReset();
+    resetRegisteredAgentHarnessSessionsMock.mockResolvedValue(undefined);
+    clearBootstrapSnapshotOnSessionRolloverMock.mockReset();
+    hookHasHooksMock.mockReset();
+    hookHasHooksMock.mockReturnValue(false);
+    runSessionEndMock.mockReset();
+    runSessionEndMock.mockResolvedValue(undefined);
+    runSessionStartMock.mockReset();
+    runSessionStartMock.mockResolvedValue(undefined);
+    ensureSessionHeaderMock.mockReset();
+    ensureSessionHeaderMock.mockResolvedValue(undefined);
     setAgentRunnerSessionResetTestDeps({
       generateSecureUuid: () => "00000000-0000-0000-0000-000000000123",
       refreshQueuedFollowupSession: refreshQueuedFollowupSessionMock as never,
+      now: () => 1_713_000_000_000,
+      archiveStableSessionTranscript: archiveStableSessionTranscriptMock as unknown as (
+        params: unknown,
+      ) => Promise<{ sessionFile?: string; transcriptArchived?: boolean }>,
+      generateSessionSummary:
+        generateSessionSummaryMock as unknown as typeof generateSessionSummaryMock,
+      loadRecentSummaries: loadRecentSummariesMock as unknown as typeof loadRecentSummariesMock,
+      buildSessionHistorySection:
+        buildSessionHistorySectionMock as unknown as typeof buildSessionHistorySectionMock,
+      disposeSessionMcpRuntime: disposeSessionMcpRuntimeMock as unknown as (
+        sessionId: string,
+      ) => Promise<void>,
+      resetRegisteredAgentHarnessSessions: resetRegisteredAgentHarnessSessionsMock as unknown as (
+        params: unknown,
+      ) => Promise<void>,
+      clearBootstrapSnapshotOnSessionRollover:
+        clearBootstrapSnapshotOnSessionRolloverMock as unknown as (params: unknown) => void,
+      getHookRunner: () => ({
+        hasHooks: hookHasHooksMock,
+        runSessionEnd: runSessionEndMock,
+        runSessionStart: runSessionStartMock,
+      }),
+      ensureSessionHeader: ensureSessionHeaderMock as unknown as (params: {
+        sessionFile: string;
+        sessionId: string;
+      }) => Promise<void>,
       error: errorMock,
+      warn: errorMock,
     });
   });
 
@@ -166,5 +229,144 @@ describe("resetReplyRunSession", () => {
     });
 
     await expect(fs.access(oldTranscriptPath)).rejects.toThrow();
+  });
+
+  it("promotes continuity resets into a full session rollover", async () => {
+    ensureSessionHeaderMock.mockImplementation(
+      async ({ sessionFile, sessionId }: { sessionFile: string; sessionId: string }) => {
+        await fs.mkdir(path.dirname(sessionFile), { recursive: true });
+        await fs.writeFile(
+          sessionFile,
+          `${JSON.stringify({ type: "session", id: sessionId, version: 2 })}\n`,
+          "utf8",
+        );
+      },
+    );
+    hookHasHooksMock.mockImplementation(
+      (name: string) => name === "session_end" || name === "session_start",
+    );
+    loadRecentSummariesMock.mockReturnValue([
+      {
+        session_id: "old-session",
+        previous_session_id: "older-session",
+        session_key: "main",
+        agent_id: "main",
+        created_at: 10,
+        ended_at: 20,
+        message_count: 5,
+        summary: "summary",
+        model: "claude",
+        summary_model: "claude-cli/claude-sonnet-4-6",
+        generated_at: 30,
+      },
+    ]);
+    buildSessionHistorySectionMock.mockReturnValue("## Recent Session History\nsummary");
+
+    const storePath = path.join(rootDir, "sessions.json");
+    const sessionEntry: SessionEntry = {
+      sessionId: "old-session",
+      previousSessionId: "older-session",
+      createdAt: 1_712_000_000_000,
+      updatedAt: 1,
+      sessionFile: path.join(rootDir, "old-session.jsonl"),
+      compactionCount: 3,
+      claudeCliSessionId: "thread-123",
+      cliSessionIds: { "claude-cli": "thread-123" },
+      cliSessionBindings: {
+        "claude-cli": {
+          sessionId: "thread-123",
+          mcpConfigHash: "mcp-a",
+        },
+      },
+      model: "claude-sonnet-4-6",
+      modelOverride: "claude-sonnet-4-6",
+    };
+    const sessionStore = { main: sessionEntry };
+    await writeSessionStore(storePath, "main", sessionEntry);
+    const followupRun = createFollowupRun();
+    let activeSessionEntry: SessionEntry | undefined = sessionEntry;
+
+    const reset = await resetReplyRunSession({
+      options: {
+        failureLabel: "CLI session continuity break",
+        buildLogMessage: (next) => `reset ${next}`,
+        promoteToSessionRollover: true,
+        rolloverReason: "unknown",
+      },
+      sessionKey: "main",
+      queueKey: "main",
+      activeSessionEntry,
+      activeSessionStore: sessionStore,
+      storePath,
+      followupRun,
+      onActiveSessionEntry: (entry) => {
+        activeSessionEntry = entry;
+      },
+      onNewSession: () => {},
+    });
+
+    expect(reset).toBe(true);
+    expect(activeSessionEntry?.sessionId).toBe("00000000-0000-0000-0000-000000000123");
+    expect(activeSessionEntry?.sessionFile).toBe(sessionEntry.sessionFile);
+    expect(activeSessionEntry?.previousSessionId).toBe("old-session");
+    expect(activeSessionEntry?.createdAt).toBe(1_713_000_000_000);
+    expect(activeSessionEntry?.compactionCount).toBe(0);
+    expect(activeSessionEntry?.claudeCliSessionId).toBeUndefined();
+    expect(activeSessionEntry?.cliSessionIds).toBeUndefined();
+    expect(activeSessionEntry?.cliSessionBindings).toBeUndefined();
+    expect(followupRun.run.sessionId).toBe("00000000-0000-0000-0000-000000000123");
+    expect(followupRun.run.previousSessionId).toBe("old-session");
+    expect(followupRun.run.sessionCreatedAt).toBe(1_713_000_000_000);
+    expect(followupRun.run.recentSessionHistory).toBe("## Recent Session History\nsummary");
+    expect(clearBootstrapSnapshotOnSessionRolloverMock).toHaveBeenCalledWith({
+      sessionKey: "main",
+      previousSessionId: "old-session",
+    });
+    expect(archiveStableSessionTranscriptMock).toHaveBeenCalledWith({
+      sessionId: "old-session",
+      storePath,
+      sessionFile: sessionEntry.sessionFile,
+      agentId: "main",
+    });
+    expect(generateSessionSummaryMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "old-session",
+        previousSessionId: "older-session",
+        sessionKey: "main",
+        agentId: "main",
+        createdAt: 1_712_000_000_000,
+        endedAt: 1_713_000_000_000,
+      }),
+    );
+    expect(loadRecentSummariesMock).toHaveBeenCalledWith({
+      sessionKey: "main",
+      agentId: "main",
+      config: followupRun.run.config,
+    });
+    expect(disposeSessionMcpRuntimeMock).toHaveBeenCalledWith("old-session");
+    expect(resetRegisteredAgentHarnessSessionsMock).toHaveBeenCalledWith({
+      sessionId: "old-session",
+      sessionKey: "main",
+      sessionFile: sessionEntry.sessionFile,
+      reason: "unknown",
+    });
+    expect(refreshQueuedFollowupSessionMock).toHaveBeenCalledWith({
+      key: "main",
+      previousSessionId: "old-session",
+      nextSessionId: "00000000-0000-0000-0000-000000000123",
+      nextSessionFile: activeSessionEntry?.sessionFile,
+      nextPreviousSessionId: "old-session",
+      nextRecentSessionHistory: "## Recent Session History\nsummary",
+      nextSessionCreatedAt: 1_713_000_000_000,
+    });
+    expect(runSessionEndMock).toHaveBeenCalledTimes(1);
+    expect(runSessionStartMock).toHaveBeenCalledTimes(1);
+    expect(ensureSessionHeaderMock).toHaveBeenCalledWith({
+      sessionFile: sessionEntry.sessionFile,
+      sessionId: "00000000-0000-0000-0000-000000000123",
+    });
+    await expect(fs.readFile(sessionEntry.sessionFile, "utf8")).resolves.toContain(
+      '"id":"00000000-0000-0000-0000-000000000123"',
+    );
   });
 });

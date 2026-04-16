@@ -92,6 +92,9 @@ export function refreshQueuedFollowupSession(params: {
   previousSessionId?: string;
   nextSessionId?: string;
   nextSessionFile?: string;
+  nextPreviousSessionId?: string;
+  nextRecentSessionHistory?: string;
+  nextSessionCreatedAt?: number;
   nextProvider?: string;
   nextModel?: string;
   nextAuthProfileId?: string;
@@ -127,6 +130,19 @@ export function refreshQueuedFollowupSession(params: {
       const nextSessionFile = normalizeOptionalString(params.nextSessionFile);
       if (nextSessionFile) {
         run.sessionFile = nextSessionFile;
+      }
+      if (Object.hasOwn(params, "nextPreviousSessionId")) {
+        run.previousSessionId = normalizeOptionalString(params.nextPreviousSessionId);
+      }
+      if (Object.hasOwn(params, "nextRecentSessionHistory")) {
+        run.recentSessionHistory = normalizeOptionalString(params.nextRecentSessionHistory);
+      }
+      if (Object.hasOwn(params, "nextSessionCreatedAt")) {
+        run.sessionCreatedAt =
+          typeof params.nextSessionCreatedAt === "number" &&
+          Number.isFinite(params.nextSessionCreatedAt)
+            ? params.nextSessionCreatedAt
+            : undefined;
       }
     }
     if (shouldRewriteSelection) {

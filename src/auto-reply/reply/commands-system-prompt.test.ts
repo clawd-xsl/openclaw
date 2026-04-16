@@ -4,6 +4,10 @@ import { resolveBootstrapContextForRun } from "../../agents/bootstrap-files.js";
 import { createOpenClawCodingTools } from "../../agents/pi-tools.js";
 import { resolveSandboxRuntimeStatus } from "../../agents/sandbox.js";
 import { buildAgentSystemPrompt } from "../../agents/system-prompt.js";
+import {
+  buildSessionHistorySection,
+  loadRecentSummaries,
+} from "../../sessions/session-summary-loader.js";
 import { resolveCommandsSystemPromptBundle } from "./commands-system-prompt.js";
 import type { HandleCommandsParams } from "./commands-types.js";
 
@@ -54,6 +58,11 @@ vi.mock("../../agents/system-prompt.js", () => ({
 
 vi.mock("../../agents/pi-tools.js", () => ({
   createOpenClawCodingTools: createOpenClawCodingToolsMock,
+}));
+
+vi.mock("../../sessions/session-summary-loader.js", () => ({
+  loadRecentSummaries: vi.fn(() => []),
+  buildSessionHistorySection: vi.fn(() => ""),
 }));
 
 vi.mock("../../tts/tts.js", () => ({
@@ -118,6 +127,10 @@ describe("resolveCommandsSystemPromptBundle", () => {
     vi.clearAllMocks();
     createOpenClawCodingToolsMock.mockClear();
     createOpenClawCodingToolsMock.mockReturnValue([]);
+    vi.mocked(resolveSessionAgentIds).mockReturnValue({ sessionAgentId: "main" });
+    vi.mocked(resolveSandboxRuntimeStatus).mockReturnValue({ sandboxed: false, mode: "off" });
+    vi.mocked(loadRecentSummaries).mockReturnValue([]);
+    vi.mocked(buildSessionHistorySection).mockReturnValue("");
   });
 
   it("opts command tool builds into gateway subagent binding", async () => {
@@ -234,6 +247,47 @@ describe("resolveCommandsSystemPromptBundle", () => {
             fullAccessBlockedReason: "host-policy",
           }),
         }),
+      }),
+    );
+  });
+
+  it("forwards recent session summaries and continuity fields into the prompt bundle", async () => {
+    const params = makeParams();
+    params.sessionEntry = {
+      sessionId: "session-1",
+      updatedAt: Date.now(),
+      previousSessionId: "session-prev",
+      createdAt: 1_700_000_000_000,
+    };
+    vi.mocked(loadRecentSummaries).mockReturnValue([
+      {
+        session_id: "session-prev",
+        previous_session_id: null,
+        session_key: "agent:main:default",
+        agent_id: "main",
+        created_at: 1_699_999_900_000,
+        ended_at: 1_699_999_950_000,
+        message_count: 12,
+        summary: "Summary text",
+        model: "claude-cli/claude-sonnet-4-6",
+        summary_model: "claude-cli/claude-sonnet-4-6",
+        generated_at: 1_699_999_960_000,
+      },
+    ]);
+    vi.mocked(buildSessionHistorySection).mockReturnValue("## Recent Session History\n...");
+
+    await resolveCommandsSystemPromptBundle(params);
+
+    expect(vi.mocked(loadRecentSummaries)).toHaveBeenCalledWith({
+      sessionKey: "agent:main:default",
+      agentId: "main",
+      config: params.cfg,
+    });
+    expect(vi.mocked(buildAgentSystemPrompt)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        previousSessionId: "session-prev",
+        recentSessionHistory: "## Recent Session History\n...",
+        sessionCreatedAt: 1_700_000_000_000,
       }),
     );
   });

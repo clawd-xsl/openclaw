@@ -13,6 +13,10 @@ import { buildSystemPromptParams } from "../../agents/system-prompt-params.js";
 import { buildAgentSystemPrompt } from "../../agents/system-prompt.js";
 import type { WorkspaceBootstrapFile } from "../../agents/workspace.js";
 import { getRemoteSkillEligibility } from "../../infra/skills-remote.js";
+import {
+  buildSessionHistorySection,
+  loadRecentSummaries,
+} from "../../sessions/session-summary-loader.js";
 import { buildTtsSystemPromptHint } from "../../tts/tts.js";
 import type { HandleCommandsParams } from "./commands-types.js";
 
@@ -29,6 +33,7 @@ export async function resolveCommandsSystemPromptBundle(
   params: HandleCommandsParams,
 ): Promise<CommandsSystemPromptBundle> {
   const workspaceDir = params.workspaceDir;
+  const targetSessionKey = params.sessionKey ?? params.ctx.SessionKey;
   const targetSessionEntry = params.sessionStore?.[params.sessionKey] ?? params.sessionEntry;
   const { sessionAgentId } = resolveSessionAgentIds({
     sessionKey: params.sessionKey,
@@ -135,6 +140,19 @@ export async function resolveCommandsSystemPromptBundle(
       }
     : { enabled: false };
   const ttsHint = params.cfg ? buildTtsSystemPromptHint(params.cfg) : undefined;
+  let recentSessionHistory: string | undefined;
+  try {
+    const summaries = loadRecentSummaries({
+      sessionKey: targetSessionKey,
+      agentId: sessionAgentId,
+      config: params.cfg,
+    });
+    if (summaries.length > 0) {
+      recentSessionHistory = buildSessionHistorySection(summaries);
+    }
+  } catch {
+    // Best-effort prompt enrichment only.
+  }
 
   const systemPrompt = buildAgentSystemPrompt({
     workspaceDir,
@@ -156,6 +174,9 @@ export async function resolveCommandsSystemPromptBundle(
     runtimeInfo,
     sandboxInfo,
     memoryCitationsMode: params.cfg?.memory?.citations,
+    previousSessionId: targetSessionEntry?.previousSessionId,
+    recentSessionHistory,
+    sessionCreatedAt: targetSessionEntry?.createdAt,
   });
 
   return { systemPrompt, tools, skillsPrompt, bootstrapFiles, injectedFiles, sandboxRuntime };

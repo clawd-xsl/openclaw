@@ -10,6 +10,7 @@ import {
 } from "../../agents/auth-profiles/oauth-refresh-failure.js";
 import { resolveBootstrapWarningSignaturesSeen } from "../../agents/bootstrap-budget.js";
 import { runCliAgent } from "../../agents/cli-runner.js";
+import { isCliSessionContinuityError } from "../../agents/cli-session.js";
 import { getCliSessionBinding } from "../../agents/cli-session.js";
 import { LiveSessionModelSwitchError } from "../../agents/live-model-switch-error.js";
 import { runWithModelFallback, isFallbackSummaryError } from "../../agents/model-fallback.js";
@@ -571,6 +572,7 @@ export async function runAgentTurnWithFallback(params: {
   pendingToolTasks: Set<Promise<void>>;
   resetSessionAfterCompactionFailure: (reason: string) => Promise<boolean>;
   resetSessionAfterRoleOrderingConflict: (reason: string) => Promise<boolean>;
+  resetSessionAfterCliContinuityBreak?: (reason: string) => Promise<boolean>;
   isHeartbeat: boolean;
   sessionKey?: string;
   getActiveSessionEntry: () => SessionEntry | undefined;
@@ -624,6 +626,7 @@ export async function runAgentTurnWithFallback(params: {
   let fallbackModel = params.followupRun.run.model;
   let fallbackAttempts: RuntimeFallbackAttempt[] = [];
   let didResetAfterCompactionFailure = false;
+  let didResetAfterCliContinuityBreak = false;
   let didRetryTransientHttpError = false;
   let liveModelSwitchRetries = 0;
   let bootstrapPromptWarningSignaturesSeen = resolveBootstrapWarningSignaturesSeen(
@@ -877,6 +880,7 @@ export async function runAgentTurnWithFallback(params: {
                   previousSessionId: params.followupRun.run.previousSessionId,
                   recentSessionHistory: params.followupRun.run.recentSessionHistory,
                   sessionCreatedAt: params.followupRun.run.sessionCreatedAt,
+                  continuityBreakMode: "throw",
                   abortSignal: params.replyOperation?.abortSignal ?? params.opts?.abortSignal,
                   replyOperation: params.replyOperation,
                 });
@@ -884,11 +888,13 @@ export async function runAgentTurnWithFallback(params: {
                   result.meta?.systemPromptReport,
                 );
 
-                // CLI backends don't emit streaming assistant events, so we need to
-                // emit one with the final text so server-chat can populate its buffer
-                // and send the response to TUI/WebSocket clients.
-                const cliText = normalizeOptionalString(result.payloads?.[0]?.text);
-                if (cliText) {
+                // CLI backends do not flow assistant payloads through the
+                // embedded onAgentEvent path, so emit the resolved final
+                // payloads here for server-chat/TUI/WebSocket consumers.
+                const cliPayloadTexts = (result.payloads ?? [])
+                  .map((payload) => normalizeOptionalString(payload.text))
+                  .filter((text): text is string => Boolean(text));
+                for (const cliText of cliPayloadTexts) {
                   emitAgentEvent({
                     runId,
                     stream: "assistant",
@@ -1321,6 +1327,14 @@ export async function runAgentTurnWithFallback(params: {
           : undefined;
         fallbackProvider = err.provider;
         fallbackModel = err.model;
+        continue;
+      }
+      if (
+        isCliSessionContinuityError(err) &&
+        !didResetAfterCliContinuityBreak &&
+        (await params.resetSessionAfterCliContinuityBreak?.(err.reason))
+      ) {
+        didResetAfterCliContinuityBreak = true;
         continue;
       }
       const message = formatErrorMessage(err);

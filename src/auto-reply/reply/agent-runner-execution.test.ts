@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { CliSessionContinuityError } from "../../agents/cli-session.js";
 import { LiveSessionModelSwitchError } from "../../agents/live-model-switch-error.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { CommandLaneClearedError, GatewayDrainingError } from "../../process/command-queue.js";
@@ -10,9 +11,15 @@ import type { ReplyOperation } from "./reply-run-registry.js";
 import type { TypingSignaler } from "./typing-mode.js";
 
 const state = vi.hoisted(() => ({
+  runCliAgentMock: vi.fn(),
   runEmbeddedPiAgentMock: vi.fn(),
   runWithModelFallbackMock: vi.fn(),
+  isCliProviderMock: vi.fn((_: unknown) => false),
   isInternalMessageChannelMock: vi.fn((_: unknown) => false),
+}));
+
+vi.mock("../../agents/cli-runner.js", () => ({
+  runCliAgent: (params: unknown) => state.runCliAgentMock(params),
 }));
 
 vi.mock("../../agents/pi-embedded.js", () => ({
@@ -33,7 +40,8 @@ vi.mock("../../agents/model-selection.js", async () => {
   );
   return {
     ...actual,
-    isCliProvider: () => false,
+    isCliProvider: (provider: string, runtimeConfig?: unknown) =>
+      state.isCliProviderMock(provider, runtimeConfig),
   };
 });
 
@@ -227,8 +235,11 @@ function createMockReplyOperation(): {
 
 describe("runAgentTurnWithFallback", () => {
   beforeEach(() => {
+    state.runCliAgentMock.mockReset();
     state.runEmbeddedPiAgentMock.mockReset();
     state.runWithModelFallbackMock.mockReset();
+    state.isCliProviderMock.mockReset();
+    state.isCliProviderMock.mockReturnValue(false);
     state.isInternalMessageChannelMock.mockReset();
     state.isInternalMessageChannelMock.mockReturnValue(false);
     state.runWithModelFallbackMock.mockImplementation(async (params: FallbackRunnerParams) => ({
@@ -1605,6 +1616,92 @@ describe("runAgentTurnWithFallback", () => {
     expect(sessionEntry.authProfileOverrideSource).toBe("user");
     expect(sessionStore.main.providerOverride).toBe("zai");
     expect(sessionStore.main.modelOverride).toBe("glm-5");
+  });
+
+  it("rolls over the OpenClaw session and retries the same CLI turn when CLI continuity breaks", async () => {
+    state.isCliProviderMock.mockImplementation((provider: string) => provider === "claude-cli");
+    state.runWithModelFallbackMock.mockImplementation(
+      async (params: { run: (provider: string, model: string) => Promise<unknown> }) => ({
+        result: await params.run("claude-cli", "claude-sonnet-4-6"),
+        provider: "claude-cli",
+        model: "claude-sonnet-4-6",
+        attempts: [],
+      }),
+    );
+    state.runCliAgentMock
+      .mockRejectedValueOnce(
+        new CliSessionContinuityError({
+          provider: "claude-cli",
+          reason: "session_expired",
+          previousCliSessionId: "thread-123",
+        }),
+      )
+      .mockResolvedValueOnce({
+        payloads: [{ text: "ok after rollover" }],
+        meta: {
+          agentMeta: {
+            sessionId: "new-cli-thread",
+            provider: "claude-cli",
+            model: "claude-sonnet-4-6",
+          },
+        },
+      });
+
+    const runAgentTurnWithFallback = await getRunAgentTurnWithFallback();
+    const followupRun = createFollowupRun();
+    followupRun.run.provider = "claude-cli";
+    followupRun.run.model = "claude-sonnet-4-6";
+    followupRun.run.sessionId = "session-old";
+    followupRun.run.sessionFile = "/tmp/session-old.jsonl";
+
+    const resetSessionAfterCliContinuityBreak = vi.fn(async () => {
+      followupRun.run.sessionId = "session-new";
+      followupRun.run.sessionFile = "/tmp/session-new.jsonl";
+      followupRun.run.previousSessionId = "session-old";
+      followupRun.run.sessionCreatedAt = 1_713_000_000_000;
+      followupRun.run.recentSessionHistory = "## Recent Session History\nsummary";
+      return true;
+    });
+
+    const result = await runAgentTurnWithFallback({
+      commandBody: "hello",
+      followupRun,
+      sessionCtx: {
+        Provider: "signal",
+        MessageSid: "msg",
+      } as unknown as TemplateContext,
+      opts: {},
+      typingSignals: createMockTypingSignaler(),
+      blockReplyPipeline: null,
+      blockStreamingEnabled: false,
+      resolvedBlockStreamingBreak: "message_end",
+      applyReplyToMode: (payload) => payload,
+      shouldEmitToolResult: () => true,
+      shouldEmitToolOutput: () => false,
+      pendingToolTasks: new Set(),
+      resetSessionAfterCompactionFailure: async () => false,
+      resetSessionAfterRoleOrderingConflict: async () => false,
+      resetSessionAfterCliContinuityBreak,
+      isHeartbeat: false,
+      sessionKey: "main",
+      getActiveSessionEntry: () => undefined,
+      resolvedVerboseLevel: "off",
+    });
+
+    expect(result.kind).toBe("success");
+    expect(resetSessionAfterCliContinuityBreak).toHaveBeenCalledWith("session_expired");
+    expect(state.runCliAgentMock).toHaveBeenCalledTimes(2);
+    expect(state.runCliAgentMock.mock.calls[0]?.[0]).toMatchObject({
+      sessionId: "session-old",
+      continuityBreakMode: "throw",
+    });
+    expect(state.runCliAgentMock.mock.calls[1]?.[0]).toMatchObject({
+      sessionId: "session-new",
+      previousSessionId: "session-old",
+      sessionCreatedAt: 1_713_000_000_000,
+      recentSessionHistory: "## Recent Session History\nsummary",
+      continuityBreakMode: "throw",
+    });
   });
 
   it("drops authProfileId when fallback switches providers", async () => {
