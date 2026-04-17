@@ -53,6 +53,7 @@
   "media-generation-runtime",
   "conversation-binding-runtime",
   "conversation-runtime",
+  "session-transcript-runtime",
   "matrix-runtime-heavy",
   "matrix-runtime-shared",
   "thread-bindings-runtime",

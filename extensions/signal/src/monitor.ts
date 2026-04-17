@@ -42,6 +42,15 @@ import type {
 import { sendMessageSignal } from "./send.js";
 import { runSignalSseLoop } from "./sse-reconnect.js";
 
+let sessionTranscriptRuntimePromise:
+  | Promise<typeof import("openclaw/plugin-sdk/session-transcript-runtime")>
+  | undefined;
+
+async function loadSessionTranscriptRuntime() {
+  sessionTranscriptRuntimePromise ??= import("openclaw/plugin-sdk/session-transcript-runtime");
+  return await sessionTranscriptRuntimePromise;
+}
+
 export type MonitorSignalOpts = {
   runtime?: RuntimeEnv;
   abortSignal?: AbortSignal;
@@ -352,6 +361,10 @@ async function deliverReplies(params: {
   maxBytes: number;
   textLimit: number;
   chunkMode: "length" | "newline";
+  mirror?: {
+    sessionKey: string;
+    agentId?: string;
+  };
 }) {
   const { replies, target, baseUrl, account, accountId, runtime, maxBytes, textLimit, chunkMode } =
     params;
@@ -374,6 +387,20 @@ async function deliverReplies(params: {
     });
     if (delivered !== "empty") {
       runtime.log?.(`delivered reply to ${target}`);
+      if (params.mirror) {
+        const { appendAssistantMessageToSessionTranscript } = await loadSessionTranscriptRuntime();
+        const appended = await appendAssistantMessageToSessionTranscript({
+          agentId: params.mirror.agentId,
+          sessionKey: params.mirror.sessionKey,
+          text: reply.text,
+          mediaUrls: reply.mediaUrls.length > 0 ? reply.mediaUrls : undefined,
+        });
+        if (!appended.ok) {
+          runtime.error?.(
+            `signal: failed to append assistant transcript mirror (${params.mirror.sessionKey}): ${appended.reason}`,
+          );
+        }
+      }
     }
   }
 }

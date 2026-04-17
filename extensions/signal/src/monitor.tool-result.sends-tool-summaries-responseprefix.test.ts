@@ -18,6 +18,7 @@ installSignalToolResultTestHooks();
 const { monitorSignalProvider } = await import("./monitor.js");
 
 const {
+  appendAssistantMessageToSessionTranscriptMock,
   replyMock,
   sendMock,
   streamMock,
@@ -51,6 +52,7 @@ async function receiveSignalPayloads(params: {
         data: JSON.stringify(payload),
       });
     }
+    await flush();
     abortController.abort();
   });
 
@@ -123,6 +125,12 @@ function setReactionNotificationConfig(mode: "all" | "own", extra: Record<string
 describe("monitorSignalProvider tool results", () => {
   it("skips tool summaries with responsePrefix", async () => {
     replyMock.mockResolvedValue({ text: "final reply" });
+    const route = resolveAgentRoute({
+      cfg: config as OpenClawConfig,
+      channel: "signal",
+      accountId: "default",
+      peer: { kind: "direct", id: normalizeE164("+15550001111") },
+    });
 
     await receiveSignalPayloads({
       payloads: [
@@ -143,6 +151,12 @@ describe("monitorSignalProvider tool results", () => {
       expect(sendMock).toHaveBeenCalledTimes(1);
     });
     expect(sendMock.mock.calls[0][1]).toBe("PFX final reply");
+    expect(appendAssistantMessageToSessionTranscriptMock).toHaveBeenCalledWith({
+      agentId: route.agentId,
+      sessionKey: route.sessionKey,
+      text: "PFX final reply",
+      mediaUrls: undefined,
+    });
   });
 
   it("replies with pairing code when dmPolicy is pairing and no allowFrom is set", async () => {

@@ -262,6 +262,10 @@
       "types": "./dist/plugin-sdk/conversation-runtime.d.ts",
       "default": "./dist/plugin-sdk/conversation-runtime.js"
     },
+    "./plugin-sdk/session-transcript-runtime": {
+      "types": "./dist/plugin-sdk/session-transcript-runtime.d.ts",
+      "default": "./dist/plugin-sdk/session-transcript-runtime.js"
+    },
     "./plugin-sdk/matrix-runtime-heavy": {
       "types": "./dist/plugin-sdk/matrix-runtime-heavy.d.ts",
       "default": "./dist/plugin-sdk/matrix-runtime-heavy.js"

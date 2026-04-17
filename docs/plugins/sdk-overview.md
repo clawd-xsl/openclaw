@@ -98,6 +98,7 @@ explicitly promotes one as public.
     | `plugin-sdk/thread-bindings-runtime` | Thread-binding lifecycle and adapter helpers |
     | `plugin-sdk/agent-media-payload` | Legacy agent media payload builder |
     | `plugin-sdk/conversation-runtime` | Conversation/thread binding, pairing, and configured-binding helpers |
+    | `plugin-sdk/session-transcript-runtime` | Assistant transcript mirror append helpers for delivered replies |
     | `plugin-sdk/runtime-config-snapshot` | Runtime config snapshot helper |
     | `plugin-sdk/runtime-group-policy` | Runtime group-policy resolution helpers |
     | `plugin-sdk/channel-status` | Shared channel status snapshot/summary helpers |

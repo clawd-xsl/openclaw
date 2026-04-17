@@ -321,7 +321,7 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
       ...replyPipeline,
       humanDelay: resolveHumanDelayConfig(deps.cfg, route.agentId),
       typingCallbacks,
-      deliver: async (payload) => {
+      deliver: async (payload, info) => {
         await deps.deliverReplies({
           replies: [payload],
           target: ctxPayload.To,
@@ -331,6 +331,13 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
           runtime: deps.runtime,
           maxBytes: deps.mediaMaxBytes,
           textLimit: deps.textLimit,
+          mirror:
+            info.kind === "final"
+              ? {
+                  sessionKey: route.sessionKey,
+                  agentId: route.agentId,
+                }
+              : undefined,
         });
       },
       onError: (err, info) => {

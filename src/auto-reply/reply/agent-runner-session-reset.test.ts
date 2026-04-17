@@ -285,6 +285,10 @@ describe("resetReplyRunSession", () => {
     await writeSessionStore(storePath, "main", sessionEntry);
     const followupRun = createFollowupRun();
     let activeSessionEntry: SessionEntry | undefined = sessionEntry;
+    const expectedNextSessionFile = path.join(
+      rootDir,
+      "00000000-0000-0000-0000-000000000123.jsonl",
+    );
 
     const reset = await resetReplyRunSession({
       options: {
@@ -307,7 +311,7 @@ describe("resetReplyRunSession", () => {
 
     expect(reset).toBe(true);
     expect(activeSessionEntry?.sessionId).toBe("00000000-0000-0000-0000-000000000123");
-    expect(activeSessionEntry?.sessionFile).toBe(sessionEntry.sessionFile);
+    expect(activeSessionEntry?.sessionFile).toBe(expectedNextSessionFile);
     expect(activeSessionEntry?.previousSessionId).toBe("old-session");
     expect(activeSessionEntry?.createdAt).toBe(1_713_000_000_000);
     expect(activeSessionEntry?.compactionCount).toBe(0);
@@ -362,10 +366,10 @@ describe("resetReplyRunSession", () => {
     expect(runSessionEndMock).toHaveBeenCalledTimes(1);
     expect(runSessionStartMock).toHaveBeenCalledTimes(1);
     expect(ensureSessionHeaderMock).toHaveBeenCalledWith({
-      sessionFile: sessionEntry.sessionFile,
+      sessionFile: expectedNextSessionFile,
       sessionId: "00000000-0000-0000-0000-000000000123",
     });
-    await expect(fs.readFile(sessionEntry.sessionFile, "utf8")).resolves.toContain(
+    await expect(fs.readFile(expectedNextSessionFile, "utf8")).resolves.toContain(
       '"id":"00000000-0000-0000-0000-000000000123"',
     );
   });

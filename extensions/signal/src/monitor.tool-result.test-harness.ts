@@ -5,6 +5,7 @@ import type { SignalDaemonExitEvent, SignalDaemonHandle } from "./daemon.js";
 type SignalToolResultTestMocks = {
   waitForTransportReadyMock: MockFn;
   enqueueSystemEventMock: MockFn;
+  appendAssistantMessageToSessionTranscriptMock: MockFn;
   sendMock: MockFn;
   replyMock: MockFn;
   updateLastRouteMock: MockFn;
@@ -18,6 +19,9 @@ type SignalToolResultTestMocks = {
 
 const waitForTransportReadyMock = vi.hoisted(() => vi.fn()) as unknown as MockFn;
 const enqueueSystemEventMock = vi.hoisted(() => vi.fn()) as unknown as MockFn;
+const appendAssistantMessageToSessionTranscriptMock = vi.hoisted(() =>
+  vi.fn(),
+) as unknown as MockFn;
 const sendMock = vi.hoisted(() => vi.fn()) as unknown as MockFn;
 const replyMock = vi.hoisted(() => vi.fn()) as unknown as MockFn;
 const updateLastRouteMock = vi.hoisted(() => vi.fn()) as unknown as MockFn;
@@ -35,6 +39,7 @@ export function getSignalToolResultTestMocks(): SignalToolResultTestMocks {
   return {
     waitForTransportReadyMock,
     enqueueSystemEventMock,
+    appendAssistantMessageToSessionTranscriptMock,
     sendMock,
     replyMock,
     updateLastRouteMock,
@@ -175,6 +180,11 @@ vi.mock("openclaw/plugin-sdk/conversation-runtime", async () => {
   };
 });
 
+vi.mock("openclaw/plugin-sdk/session-transcript-runtime", () => ({
+  appendAssistantMessageToSessionTranscript: (...args: unknown[]) =>
+    appendAssistantMessageToSessionTranscriptMock(...args),
+}));
+
 vi.mock("openclaw/plugin-sdk/security-runtime", async () => {
   const actual = await vi.importActual<typeof import("openclaw/plugin-sdk/security-runtime")>(
     "openclaw/plugin-sdk/security-runtime",
@@ -239,6 +249,11 @@ export function installSignalToolResultTestHooks() {
     upsertPairingRequestMock.mockReset().mockResolvedValue({ code: "PAIRCODE", created: true });
     waitForTransportReadyMock.mockReset().mockResolvedValue(undefined);
     enqueueSystemEventMock.mockReset();
+    appendAssistantMessageToSessionTranscriptMock.mockReset().mockResolvedValue({
+      ok: true,
+      sessionFile: "session-file",
+      messageId: "message-id",
+    });
 
     resetSystemEventsForTest();
   });

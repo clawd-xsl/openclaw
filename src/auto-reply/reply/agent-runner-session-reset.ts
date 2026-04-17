@@ -10,6 +10,7 @@ import {
   resolveSessionFilePath,
   resolveSessionFilePathOptions,
   resolveSessionTranscriptPath,
+  resolveSessionTranscriptPathInDir,
   updateSessionStore,
 } from "../../config/sessions.js";
 import { generateSecureUuid } from "../../infra/secure-random.js";
@@ -177,11 +178,11 @@ export async function resetReplyRunSession(params: {
     storePath: params.storePath,
   });
   const nextSessionFile =
-    params.options.promoteToSessionRollover && prevEntry.sessionFile
-      ? resolveSessionFilePath(
+    params.options.promoteToSessionRollover && sessionPathOpts?.sessionsDir
+      ? resolveSessionTranscriptPathInDir(
           nextSessionId,
-          { sessionFile: prevEntry.sessionFile },
-          sessionPathOpts,
+          sessionPathOpts.sessionsDir,
+          params.messageThreadId,
         )
       : resolveSessionTranscriptPath(nextSessionId, agentId, params.messageThreadId);
   nextEntry.sessionFile = nextSessionFile;
