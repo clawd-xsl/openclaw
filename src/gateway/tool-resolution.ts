@@ -1,5 +1,6 @@
 import { resolveAgentWorkspaceDir, resolveDefaultAgentId } from "../agents/agent-scope.js";
 import { createOpenClawTools } from "../agents/openclaw-tools.js";
+import { createOpenClawCodingTools } from "../agents/pi-tools.js";
 import {
   resolveEffectiveToolPolicy,
   resolveGroupToolPolicy,
@@ -22,6 +23,63 @@ import { isSubagentSessionKey } from "../routing/session-key.js";
 import { DEFAULT_GATEWAY_HTTP_TOOL_DENY } from "../security/dangerous-tools.js";
 
 export type GatewayScopedToolSurface = "http" | "loopback";
+export type GatewayLoopbackToolSurface = "filtered" | "full";
+
+function resolveFilteredGatewayTools(params: {
+  cfg: OpenClawConfig;
+  sessionKey: string;
+  messageProvider?: string;
+  accountId?: string;
+  agentTo?: string;
+  agentThreadId?: string;
+  allowGatewaySubagentBinding?: boolean;
+  allowMediaInvokeCommands?: boolean;
+  disablePluginTools?: boolean;
+  senderIsOwner?: boolean;
+  workspaceDir: string;
+  policyAllowlist?: string[];
+}) {
+  return createOpenClawTools({
+    agentSessionKey: params.sessionKey,
+    agentChannel: params.messageProvider ?? undefined,
+    agentAccountId: params.accountId,
+    agentTo: params.agentTo,
+    agentThreadId: params.agentThreadId,
+    allowGatewaySubagentBinding: params.allowGatewaySubagentBinding,
+    allowMediaInvokeCommands: params.allowMediaInvokeCommands,
+    disablePluginTools: params.disablePluginTools,
+    senderIsOwner: params.senderIsOwner,
+    config: params.cfg,
+    workspaceDir: params.workspaceDir,
+    pluginToolAllowlist: params.policyAllowlist,
+  });
+}
+
+function resolveFullLoopbackTools(params: {
+  cfg: OpenClawConfig;
+  sessionKey: string;
+  messageProvider?: string;
+  accountId?: string;
+  agentTo?: string;
+  agentThreadId?: string;
+  allowGatewaySubagentBinding?: boolean;
+  senderIsOwner?: boolean;
+  workspaceDir: string;
+  agentId?: string;
+}) {
+  return createOpenClawCodingTools({
+    agentId: params.agentId,
+    sessionKey: params.sessionKey,
+    messageProvider: params.messageProvider,
+    agentAccountId: params.accountId,
+    messageTo: params.agentTo,
+    messageThreadId: params.agentThreadId,
+    allowGatewaySubagentBinding: params.allowGatewaySubagentBinding,
+    senderIsOwner: params.senderIsOwner,
+    config: params.cfg,
+    workspaceDir: params.workspaceDir,
+  });
+}
 
 export function resolveGatewayScopedTools(params: {
   cfg: OpenClawConfig;
@@ -33,6 +91,7 @@ export function resolveGatewayScopedTools(params: {
   allowGatewaySubagentBinding?: boolean;
   allowMediaInvokeCommands?: boolean;
   surface?: GatewayScopedToolSurface;
+  loopbackToolSurface?: GatewayLoopbackToolSurface;
   excludeToolNames?: Iterable<string>;
   disablePluginTools?: boolean;
   senderIsOwner?: boolean;
@@ -68,55 +127,68 @@ export function resolveGatewayScopedTools(params: {
     params.cfg,
     agentId ?? resolveDefaultAgentId(params.cfg),
   );
-
-  const allTools = createOpenClawTools({
-    agentSessionKey: params.sessionKey,
-    agentChannel: params.messageProvider ?? undefined,
-    agentAccountId: params.accountId,
-    agentTo: params.agentTo,
-    agentThreadId: params.agentThreadId,
-    allowGatewaySubagentBinding: params.allowGatewaySubagentBinding,
-    allowMediaInvokeCommands: params.allowMediaInvokeCommands,
-    disablePluginTools: params.disablePluginTools,
-    senderIsOwner: params.senderIsOwner,
-    config: params.cfg,
-    workspaceDir,
-    pluginToolAllowlist: collectExplicitAllowlist([
-      profilePolicy,
-      providerProfilePolicy,
-      globalPolicy,
-      globalProviderPolicy,
-      agentPolicy,
-      agentProviderPolicy,
-      groupPolicy,
-      subagentPolicy,
-    ]),
-  });
-
-  const policyFiltered = applyToolPolicyPipeline({
-    tools: allTools,
-    toolMeta: (tool: AnyAgentTool) => getPluginToolMeta(tool),
-    warn: logWarn,
-    steps: [
-      ...buildDefaultToolPolicyPipelineSteps({
-        profilePolicy: profilePolicyWithAlsoAllow,
-        profile,
-        profileUnavailableCoreWarningAllowlist: profilePolicy?.allow,
-        providerProfilePolicy: providerProfilePolicyWithAlsoAllow,
-        providerProfile,
-        providerProfileUnavailableCoreWarningAllowlist: providerProfilePolicy?.allow,
-        globalPolicy,
-        globalProviderPolicy,
-        agentPolicy,
-        agentProviderPolicy,
-        groupPolicy,
-        agentId,
-      }),
-      { policy: subagentPolicy, label: "subagent tools.allow" },
-    ],
-  });
-
+  const policyAllowlist = collectExplicitAllowlist([
+    profilePolicy,
+    providerProfilePolicy,
+    globalPolicy,
+    globalProviderPolicy,
+    agentPolicy,
+    agentProviderPolicy,
+    groupPolicy,
+    subagentPolicy,
+  ]);
   const surface = params.surface ?? "http";
+  const loopbackToolSurface = params.loopbackToolSurface ?? "filtered";
+
+  const scopedTools =
+    surface === "loopback" && loopbackToolSurface === "full"
+      ? resolveFullLoopbackTools({
+          cfg: params.cfg,
+          sessionKey: params.sessionKey,
+          messageProvider: params.messageProvider,
+          accountId: params.accountId,
+          agentTo: params.agentTo,
+          agentThreadId: params.agentThreadId,
+          allowGatewaySubagentBinding: params.allowGatewaySubagentBinding,
+          senderIsOwner: params.senderIsOwner,
+          workspaceDir,
+          agentId,
+        })
+      : applyToolPolicyPipeline({
+          tools: resolveFilteredGatewayTools({
+            cfg: params.cfg,
+            sessionKey: params.sessionKey,
+            messageProvider: params.messageProvider,
+            accountId: params.accountId,
+            agentTo: params.agentTo,
+            agentThreadId: params.agentThreadId,
+            allowGatewaySubagentBinding: params.allowGatewaySubagentBinding,
+            allowMediaInvokeCommands: params.allowMediaInvokeCommands,
+            disablePluginTools: params.disablePluginTools,
+            senderIsOwner: params.senderIsOwner,
+            workspaceDir,
+            policyAllowlist,
+          }),
+          toolMeta: (tool: AnyAgentTool) => getPluginToolMeta(tool),
+          warn: logWarn,
+          steps: [
+            ...buildDefaultToolPolicyPipelineSteps({
+              profilePolicy: profilePolicyWithAlsoAllow,
+              profile,
+              profileUnavailableCoreWarningAllowlist: profilePolicy?.allow,
+              providerProfilePolicy: providerProfilePolicyWithAlsoAllow,
+              providerProfile,
+              providerProfileUnavailableCoreWarningAllowlist: providerProfilePolicy?.allow,
+              globalPolicy,
+              globalProviderPolicy,
+              agentPolicy,
+              agentProviderPolicy,
+              groupPolicy,
+              agentId,
+            }),
+            { policy: subagentPolicy, label: "subagent tools.allow" },
+          ],
+        });
   const gatewayToolsCfg = params.cfg.gateway?.tools;
   const defaultGatewayDeny =
     surface === "http"
@@ -130,6 +202,6 @@ export function resolveGatewayScopedTools(params: {
 
   return {
     agentId,
-    tools: policyFiltered.filter((tool) => !gatewayDenySet.has(tool.name)),
+    tools: scopedTools.filter((tool) => !gatewayDenySet.has(tool.name)),
   };
 }

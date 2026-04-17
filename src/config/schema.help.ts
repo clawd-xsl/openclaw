@@ -95,6 +95,10 @@ export const FIELD_HELP: Record<string, string> = {
     "Explicit gateway-level tool allowlist when you want a narrow set of tools available at runtime. Use this for locked-down environments where tool scope must be tightly controlled.",
   "gateway.tools.deny":
     "Explicit gateway-level tool denylist to block risky tools even if lower-level policies allow them. Use deny rules for emergency response and defense-in-depth hardening.",
+  "gateway.cliMcp":
+    "Loopback MCP bridge settings for CLI backends that opt into bundleMcp. Use this to choose whether CLI backends see the current filtered gateway-tool subset or the full OpenClaw coding tool surface.",
+  "gateway.cliMcp.toolSurface":
+    'Controls which OpenClaw tool surface is exposed through the CLI loopback MCP bridge: "filtered" keeps the current gateway-tool subset and excludes local coding tools, while "full" exposes the full OpenClaw coding toolset.',
   "gateway.channelHealthCheckMinutes":
     "Interval in minutes for automatic channel health probing and status updates. Use lower intervals for faster detection, or higher intervals to reduce periodic probe noise.",
   "gateway.channelStaleEventThresholdMinutes":

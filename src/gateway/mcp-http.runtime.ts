@@ -10,10 +10,14 @@ import {
   type McpLoopbackTool,
   type McpToolSchemaEntry,
 } from "./mcp-http.schema.js";
-import { resolveGatewayScopedTools } from "./tool-resolution.js";
+import { resolveGatewayScopedTools, type GatewayLoopbackToolSurface } from "./tool-resolution.js";
 
 const TOOL_CACHE_TTL_MS = 30_000;
 const NATIVE_TOOL_EXCLUDE = new Set(["read", "write", "edit", "apply_patch", "exec", "process"]);
+
+function resolveLoopbackToolSurface(cfg: OpenClawConfig): GatewayLoopbackToolSurface {
+  return cfg.gateway?.cliMcp?.toolSurface === "full" ? "full" : "filtered";
+}
 
 type CachedScopedTools = {
   tools: McpLoopbackTool[];
@@ -44,6 +48,7 @@ export class McpLoopbackToolCache {
       return cached;
     }
 
+    const toolSurface = resolveLoopbackToolSurface(params.cfg);
     const next = resolveGatewayScopedTools({
       cfg: params.cfg,
       sessionKey: params.sessionKey,
@@ -51,7 +56,8 @@ export class McpLoopbackToolCache {
       accountId: params.accountId,
       senderIsOwner: params.senderIsOwner,
       surface: "loopback",
-      excludeToolNames: NATIVE_TOOL_EXCLUDE,
+      loopbackToolSurface: toolSurface,
+      excludeToolNames: toolSurface === "filtered" ? NATIVE_TOOL_EXCLUDE : undefined,
     });
     const nextEntry: CachedScopedTools = {
       tools: next.tools,

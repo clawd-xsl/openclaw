@@ -384,6 +384,15 @@ export type GatewayToolsConfig = {
   allow?: string[];
 };
 
+export type GatewayCliMcpConfig = {
+  /**
+   * Tool surface exposed to CLI backends through the loopback MCP bridge.
+   * - filtered: current gateway-tool subset (default)
+   * - full: full OpenClaw coding tool surface
+   */
+  toolSurface?: "filtered" | "full";
+};
+
 export type GatewayWebchatConfig = {
   /** Max characters per text field in chat.history responses before truncation (default: 12000). */
   chatHistoryMaxChars?: number;
@@ -431,6 +440,8 @@ export type GatewayConfig = {
   allowRealIpFallback?: boolean;
   /** Tool access restrictions for HTTP /tools/invoke endpoint. */
   tools?: GatewayToolsConfig;
+  /** Loopback MCP bridge settings for CLI backends that opt into bundleMcp. */
+  cliMcp?: GatewayCliMcpConfig;
   /** WebChat display/history settings. */
   webchat?: GatewayWebchatConfig;
   /**

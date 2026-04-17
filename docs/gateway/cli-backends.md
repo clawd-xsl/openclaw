@@ -13,7 +13,7 @@ OpenClaw can run **local AI CLIs** as a **text-only fallback** when API provider
 rate-limited, or temporarily misbehaving. This is intentionally conservative:
 
 - **OpenClaw tools are not injected directly**, but backends with `bundleMcp: true`
-  can receive gateway tools via a loopback MCP bridge.
+  can receive OpenClaw tools via a loopback MCP bridge.
 - **JSONL streaming** for CLIs that support it.
 - **Sessions are supported** (so follow-up turns stay coherent).
 - **Images can be passed through** if the CLI accepts image paths.
@@ -301,12 +301,16 @@ Current bundled behavior:
 
 When bundle MCP is enabled, OpenClaw:
 
-- spawns a loopback HTTP MCP server that exposes gateway tools to the CLI process
+- spawns a loopback HTTP MCP server that exposes OpenClaw tools to the CLI process
 - authenticates the bridge with a per-session token (`OPENCLAW_MCP_TOKEN`)
 - scopes tool access to the current session, account, and channel context
 - loads enabled bundle-MCP servers for the current workspace
 - merges them with any existing backend MCP config/settings shape
 - rewrites the launch config using the backend-owned integration mode from the owning extension
+
+By default the loopback bridge exposes the current filtered gateway-tool subset.
+Set `gateway.cliMcp.toolSurface: "full"` if a CLI backend should receive the
+full OpenClaw coding tool surface over MCP instead.
 
 If no MCP servers are enabled, OpenClaw still injects a strict config when a
 backend opts into bundle MCP so background runs stay isolated.
@@ -314,7 +318,7 @@ backend opts into bundle MCP so background runs stay isolated.
 ## Limitations
 
 - **No direct OpenClaw tool calls.** OpenClaw does not inject tool calls into
-  the CLI backend protocol. Backends only see gateway tools when they opt into
+  the CLI backend protocol. Backends only see OpenClaw tools when they opt into
   `bundleMcp: true`.
 - **Streaming is backend-specific.** Some backends stream JSONL; others buffer
   until exit.

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getFreePortBlockWithPermissionFallback } from "../test-utils/ports.js";
 
+const loadConfigMock = vi.hoisted(() => vi.fn(() => ({ session: { mainKey: "main" } })));
 const resolveGatewayScopedToolsMock = vi.hoisted(() =>
   vi.fn(() => ({
     agentId: "main",
@@ -18,7 +19,7 @@ const resolveGatewayScopedToolsMock = vi.hoisted(() =>
 );
 
 vi.mock("../config/config.js", () => ({
-  loadConfig: () => ({ session: { mainKey: "main" } }),
+  loadConfig: (...args: Parameters<typeof loadConfigMock>) => loadConfigMock(...args),
 }));
 
 vi.mock("../config/sessions.js", () => ({
@@ -57,6 +58,8 @@ async function sendRaw(params: {
 }
 
 beforeEach(() => {
+  loadConfigMock.mockReset();
+  loadConfigMock.mockReturnValue({ session: { mainKey: "main" } });
   resolveGatewayScopedToolsMock.mockClear();
   resolveGatewayScopedToolsMock.mockReturnValue({
     agentId: "main",
@@ -107,6 +110,32 @@ describe("mcp loopback server", () => {
         messageProvider: "telegram",
         senderIsOwner: undefined,
         surface: "loopback",
+        loopbackToolSurface: "filtered",
+      }),
+    );
+  });
+
+  it("threads gateway.cliMcp.toolSurface into loopback tool resolution", async () => {
+    loadConfigMock.mockReturnValue({
+      session: { mainKey: "main" },
+      gateway: { cliMcp: { toolSurface: "full" } },
+    });
+    server = await startMcpLoopbackServer(0);
+    const runtime = getActiveMcpLoopbackRuntime();
+
+    const response = await sendRaw({
+      port: server.port,
+      token: runtime?.token,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(resolveGatewayScopedToolsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        surface: "loopback",
+        loopbackToolSurface: "full",
+        excludeToolNames: undefined,
       }),
     );
   });
@@ -140,6 +169,7 @@ describe("mcp loopback server", () => {
         messageProvider: "matrix",
         senderIsOwner: true,
         surface: "loopback",
+        loopbackToolSurface: "filtered",
       }),
     );
     expect(resolveGatewayScopedToolsMock).toHaveBeenNthCalledWith(
@@ -149,6 +179,7 @@ describe("mcp loopback server", () => {
         messageProvider: "matrix",
         senderIsOwner: false,
         surface: "loopback",
+        loopbackToolSurface: "filtered",
       }),
     );
   });

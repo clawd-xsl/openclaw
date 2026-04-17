@@ -96,6 +96,8 @@ export const FIELD_LABELS: Record<string, string> = {
   "gateway.tools": "Gateway Tool Exposure Policy",
   "gateway.tools.allow": "Gateway Tool Allowlist",
   "gateway.tools.deny": "Gateway Tool Denylist",
+  "gateway.cliMcp": "Gateway CLI MCP",
+  "gateway.cliMcp.toolSurface": "Gateway CLI MCP Tool Surface",
   "gateway.channelHealthCheckMinutes": "Gateway Channel Health Check Interval (min)",
   "gateway.channelStaleEventThresholdMinutes": "Gateway Channel Stale Event Threshold (min)",
   "gateway.channelMaxRestartsPerHour": "Gateway Channel Max Restarts Per Hour",

@@ -284,6 +284,33 @@ describe("gateway.tools config", () => {
   });
 });
 
+describe("gateway.cliMcp config", () => {
+  it("accepts gateway.cliMcp.toolSurface", () => {
+    const res = validateConfigObject({
+      gateway: {
+        cliMcp: {
+          toolSurface: "full",
+        },
+      },
+    });
+    expect(res.ok).toBe(true);
+  });
+
+  it("rejects invalid gateway.cliMcp.toolSurface values", () => {
+    const res = validateConfigObject({
+      gateway: {
+        cliMcp: {
+          toolSurface: "gateway",
+        },
+      },
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.issues[0]?.path).toBe("gateway.cliMcp.toolSurface");
+    }
+  });
+});
+
 describe("gateway.channelHealthCheckMinutes", () => {
   it("accepts zero to disable monitor", () => {
     const res = validateConfigObject({

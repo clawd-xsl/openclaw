@@ -733,6 +733,12 @@ export const OpenClawSchema = z
           })
           .strict()
           .optional(),
+        cliMcp: z
+          .object({
+            toolSurface: z.union([z.literal("filtered"), z.literal("full")]).optional(),
+          })
+          .strict()
+          .optional(),
         webchat: z
           .object({
             chatHistoryMaxChars: z.number().int().positive().max(500_000).optional(),
