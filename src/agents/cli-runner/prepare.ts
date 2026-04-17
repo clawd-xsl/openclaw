@@ -148,7 +148,7 @@ export async function prepareCliRunContext(
       : undefined,
     warn: (message) => cliBackendLog.warn(message),
   });
-  const reusableCliSession = params.cliSessionBinding
+  const resolvedReusableCliSession = params.cliSessionBinding
     ? resolveCliSessionReuse({
         binding: params.cliSessionBinding,
         authProfileId: params.authProfileId,
@@ -161,6 +161,14 @@ export async function prepareCliRunContext(
     : params.cliSessionId
       ? { sessionId: params.cliSessionId }
       : {};
+  // Claude Code accepts fresh MCP config on --resume, so an MCP hash change
+  // should not be treated as a continuity break for the parent OpenClaw session.
+  const reusableCliSession =
+    backendResolved.id === "claude-cli" &&
+    resolvedReusableCliSession.invalidatedReason === "mcp" &&
+    params.cliSessionBinding?.sessionId
+      ? { sessionId: params.cliSessionBinding.sessionId }
+      : resolvedReusableCliSession;
   if (reusableCliSession.invalidatedReason) {
     cliBackendLog.info(
       `cli session reset: provider=${params.provider} reason=${reusableCliSession.invalidatedReason}`,

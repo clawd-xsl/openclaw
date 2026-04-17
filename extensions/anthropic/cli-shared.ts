@@ -89,7 +89,13 @@ const CLAUDE_LEGACY_SKIP_PERMISSIONS_ARG = "--dangerously-skip-permissions";
 const CLAUDE_PERMISSION_MODE_ARG = "--permission-mode";
 const CLAUDE_BYPASS_PERMISSIONS_MODE = "bypassPermissions";
 const CLAUDE_SETTING_SOURCES_ARG = "--setting-sources";
-const CLAUDE_SAFE_SETTING_SOURCES = "user";
+const CLAUDE_ISOLATED_SETTING_SOURCES = "";
+const CLAUDE_TOOLS_ARG = "--tools";
+const CLAUDE_DISABLE_BUILTINS_VALUE = "";
+const CLAUDE_SETTINGS_ARG = "--settings";
+const CLAUDE_DISABLE_ALL_HOOKS_SETTINGS = JSON.stringify({ disableAllHooks: true });
+const CLAUDE_SYSTEM_PROMPT_ARG = "--system-prompt";
+const CLAUDE_DISABLE_CLAUDE_MDS_ENV = "CLAUDE_CODE_DISABLE_CLAUDE_MDS";
 
 function normalizeClaudeSystemPromptWhen(
   when: CliBackendConfig["systemPromptWhen"],
@@ -97,6 +103,45 @@ function normalizeClaudeSystemPromptWhen(
   // Claude Code does not persist custom system prompts across resumed sessions,
   // so OpenClaw must keep re-supplying them unless the operator disables them.
   return when === "never" ? "never" : "always";
+}
+
+export function normalizeClaudeIsolationArgs(args?: string[]): string[] | undefined {
+  if (!args) {
+    return args;
+  }
+  const normalized: string[] = [];
+  let hasTools = false;
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === CLAUDE_TOOLS_ARG) {
+      hasTools = true;
+      const maybeValue = args[i + 1];
+      if (typeof maybeValue === "string" && !maybeValue.startsWith("-")) {
+        normalized.push(arg, CLAUDE_DISABLE_BUILTINS_VALUE);
+        i += 1;
+      } else {
+        normalized.push(arg, CLAUDE_DISABLE_BUILTINS_VALUE);
+      }
+      continue;
+    }
+    if (arg.startsWith(`${CLAUDE_TOOLS_ARG}=`)) {
+      hasTools = true;
+      normalized.push(CLAUDE_TOOLS_ARG, CLAUDE_DISABLE_BUILTINS_VALUE);
+      continue;
+    }
+    normalized.push(arg);
+  }
+  if (!hasTools) {
+    normalized.push(CLAUDE_TOOLS_ARG, CLAUDE_DISABLE_BUILTINS_VALUE);
+  }
+  return normalized;
+}
+
+function normalizeClaudeEnv(env?: Record<string, string>): Record<string, string> {
+  return {
+    ...env,
+    [CLAUDE_DISABLE_CLAUDE_MDS_ENV]: "1",
+  };
 }
 
 export function isClaudeCliProvider(providerId: string): boolean {
@@ -149,26 +194,80 @@ export function normalizeClaudeSettingSourcesArgs(args?: string[]): string[] | u
     const arg = args[i];
     if (arg === CLAUDE_SETTING_SOURCES_ARG) {
       const maybeValue = args[i + 1];
-      if (
-        typeof maybeValue === "string" &&
-        maybeValue.trim().length > 0 &&
-        !maybeValue.startsWith("-")
-      ) {
+      if (typeof maybeValue === "string" && !maybeValue.startsWith("-")) {
         hasSettingSources = true;
-        normalized.push(arg, CLAUDE_SAFE_SETTING_SOURCES);
+        normalized.push(arg, CLAUDE_ISOLATED_SETTING_SOURCES);
         i += 1;
+      } else {
+        hasSettingSources = true;
+        normalized.push(arg, CLAUDE_ISOLATED_SETTING_SOURCES);
       }
       continue;
     }
     if (arg.startsWith(`${CLAUDE_SETTING_SOURCES_ARG}=`)) {
       hasSettingSources = true;
-      normalized.push(`${CLAUDE_SETTING_SOURCES_ARG}=${CLAUDE_SAFE_SETTING_SOURCES}`);
+      normalized.push(`${CLAUDE_SETTING_SOURCES_ARG}=${CLAUDE_ISOLATED_SETTING_SOURCES}`);
       continue;
     }
     normalized.push(arg);
   }
   if (!hasSettingSources) {
-    normalized.push(CLAUDE_SETTING_SOURCES_ARG, CLAUDE_SAFE_SETTING_SOURCES);
+    normalized.push(CLAUDE_SETTING_SOURCES_ARG, CLAUDE_ISOLATED_SETTING_SOURCES);
+  }
+  return normalized;
+}
+
+function normalizeClaudeSettingsValue(value: string | undefined): string {
+  if (!value || value.trim().length === 0) {
+    return CLAUDE_DISABLE_ALL_HOOKS_SETTINGS;
+  }
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return CLAUDE_DISABLE_ALL_HOOKS_SETTINGS;
+    }
+    return JSON.stringify({
+      ...parsed,
+      disableAllHooks: true,
+    });
+  } catch {
+    return CLAUDE_DISABLE_ALL_HOOKS_SETTINGS;
+  }
+}
+
+export function normalizeClaudeSettingsArgs(args?: string[]): string[] | undefined {
+  if (!args) {
+    return args;
+  }
+  const normalized: string[] = [];
+  let hasSettings = false;
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === CLAUDE_SETTINGS_ARG) {
+      const maybeValue = args[i + 1];
+      if (typeof maybeValue === "string" && !maybeValue.startsWith("-")) {
+        hasSettings = true;
+        normalized.push(arg, normalizeClaudeSettingsValue(maybeValue));
+        i += 1;
+      } else {
+        hasSettings = true;
+        normalized.push(arg, CLAUDE_DISABLE_ALL_HOOKS_SETTINGS);
+      }
+      continue;
+    }
+    if (arg.startsWith(`${CLAUDE_SETTINGS_ARG}=`)) {
+      hasSettings = true;
+      normalized.push(
+        `${CLAUDE_SETTINGS_ARG}=${normalizeClaudeSettingsValue(
+          arg.slice(`${CLAUDE_SETTINGS_ARG}=`.length),
+        )}`,
+      );
+      continue;
+    }
+    normalized.push(arg);
+  }
+  if (!hasSettings) {
+    normalized.push(CLAUDE_SETTINGS_ARG, CLAUDE_DISABLE_ALL_HOOKS_SETTINGS);
   }
   return normalized;
 }
@@ -176,8 +275,19 @@ export function normalizeClaudeSettingSourcesArgs(args?: string[]): string[] | u
 export function normalizeClaudeBackendConfig(config: CliBackendConfig): CliBackendConfig {
   return {
     ...config,
-    args: normalizeClaudePermissionArgs(normalizeClaudeSettingSourcesArgs(config.args)),
-    resumeArgs: normalizeClaudePermissionArgs(normalizeClaudeSettingSourcesArgs(config.resumeArgs)),
+    args: normalizeClaudePermissionArgs(
+      normalizeClaudeSettingsArgs(
+        normalizeClaudeSettingSourcesArgs(normalizeClaudeIsolationArgs(config.args)),
+      ),
+    ),
+    resumeArgs: normalizeClaudePermissionArgs(
+      normalizeClaudeSettingsArgs(
+        normalizeClaudeSettingSourcesArgs(normalizeClaudeIsolationArgs(config.resumeArgs)),
+      ),
+    ),
+    env: normalizeClaudeEnv(config.env),
+    systemPromptArg: CLAUDE_SYSTEM_PROMPT_ARG,
+    systemPromptMode: "replace",
     systemPromptWhen: normalizeClaudeSystemPromptWhen(config.systemPromptWhen),
   };
 }

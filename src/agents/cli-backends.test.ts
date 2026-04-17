@@ -93,8 +93,12 @@ const NORMALIZED_CLAUDE_FALLBACK_ARGS = [
   "-p",
   "--output-format",
   "stream-json",
+  "--tools",
+  "",
   "--setting-sources",
-  "user",
+  "",
+  "--settings",
+  '{"disableAllHooks":true}',
   "--permission-mode",
   "bypassPermissions",
 ];
@@ -103,8 +107,12 @@ const NORMALIZED_CLAUDE_FALLBACK_RESUME_ARGS = [
   "-p",
   "--resume",
   "{sessionId}",
+  "--tools",
+  "",
   "--setting-sources",
-  "user",
+  "",
+  "--settings",
+  '{"disableAllHooks":true}',
   "--permission-mode",
   "bypassPermissions",
 ];
@@ -114,25 +122,62 @@ function normalizeTestClaudeArgs(args?: string[]): string[] | undefined {
     return args;
   }
   const normalized: string[] = [];
+  let hasTools = false;
   let hasSettingSources = false;
+  let hasSettings = false;
   let hasPermissionMode = false;
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
     if (arg === "--dangerously-skip-permissions") {
       continue;
     }
+    if (arg === "--tools") {
+      hasTools = true;
+      const maybeValue = args[i + 1];
+      if (typeof maybeValue === "string" && !maybeValue.startsWith("-")) {
+        normalized.push(arg, "");
+        i += 1;
+      } else {
+        normalized.push(arg, "");
+      }
+      continue;
+    }
+    if (arg.startsWith("--tools=")) {
+      hasTools = true;
+      normalized.push("--tools", "");
+      continue;
+    }
     if (arg === "--setting-sources") {
       const maybeValue = args[i + 1];
-      if (maybeValue && !maybeValue.startsWith("-")) {
+      if (typeof maybeValue === "string" && !maybeValue.startsWith("-")) {
         hasSettingSources = true;
-        normalized.push(arg, "user");
+        normalized.push(arg, "");
         i += 1;
+      } else {
+        hasSettingSources = true;
+        normalized.push(arg, "");
       }
       continue;
     }
     if (arg.startsWith("--setting-sources=")) {
       hasSettingSources = true;
-      normalized.push("--setting-sources=user");
+      normalized.push("--setting-sources=");
+      continue;
+    }
+    if (arg === "--settings") {
+      const maybeValue = args[i + 1];
+      hasSettings = true;
+      if (typeof maybeValue === "string" && !maybeValue.startsWith("-")) {
+        normalized.push("--settings", '{"disableAllHooks":true}');
+        i += 1;
+      } else {
+        normalized.push("--settings", '{"disableAllHooks":true}');
+      }
+      continue;
+    }
+    if (arg.startsWith("--settings=")) {
+      hasSettings = true;
+      normalized.push('--settings={"disableAllHooks":true}');
       continue;
     }
     if (arg === "--permission-mode") {
@@ -149,8 +194,14 @@ function normalizeTestClaudeArgs(args?: string[]): string[] | undefined {
     }
     normalized.push(arg);
   }
+  if (!hasTools) {
+    normalized.push("--tools", "");
+  }
   if (!hasSettingSources) {
-    normalized.push("--setting-sources", "user");
+    normalized.push("--setting-sources", "");
+  }
+  if (!hasSettings) {
+    normalized.push("--settings", '{"disableAllHooks":true}');
   }
   if (!hasPermissionMode) {
     normalized.push("--permission-mode", "bypassPermissions");
@@ -163,6 +214,12 @@ function normalizeTestClaudeBackendConfig(config: CliBackendConfig): CliBackendC
     ...config,
     args: normalizeTestClaudeArgs(config.args),
     resumeArgs: normalizeTestClaudeArgs(config.resumeArgs),
+    env: {
+      ...config.env,
+      CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1",
+    },
+    systemPromptArg: "--system-prompt",
+    systemPromptMode: "replace",
     systemPromptWhen: config.systemPromptWhen === "never" ? "never" : "always",
   };
 }
@@ -184,8 +241,12 @@ beforeEach(() => {
           "stream-json",
           "--include-partial-messages",
           "--verbose",
+          "--tools",
+          "",
           "--setting-sources",
-          "user",
+          "",
+          "--settings",
+          '{"disableAllHooks":true}',
           "--permission-mode",
           "bypassPermissions",
         ],
@@ -193,8 +254,12 @@ beforeEach(() => {
           "stream-json",
           "--include-partial-messages",
           "--verbose",
+          "--tools",
+          "",
           "--setting-sources",
-          "user",
+          "",
+          "--settings",
+          '{"disableAllHooks":true}',
           "--permission-mode",
           "bypassPermissions",
           "--resume",
@@ -294,7 +359,8 @@ beforeEach(() => {
               ...claudeBackend.config,
               sessionArg: "--session-id",
               sessionMode: "always",
-              systemPromptArg: "--append-system-prompt",
+              systemPromptArg: "--system-prompt",
+              systemPromptMode: "replace",
               systemPromptWhen: "first",
             },
           },
@@ -406,8 +472,11 @@ describe("resolveCliBackendConfig claude-cli defaults", () => {
     expect(resolved?.config.args).toContain("stream-json");
     expect(resolved?.config.args).toContain("--include-partial-messages");
     expect(resolved?.config.args).toContain("--verbose");
+    expect(resolved?.config.args).toContain("--tools");
+    expect(resolved?.config.args).toContain("");
     expect(resolved?.config.args).toContain("--setting-sources");
-    expect(resolved?.config.args).toContain("user");
+    expect(resolved?.config.args).toContain("--settings");
+    expect(resolved?.config.args).toContain('{"disableAllHooks":true}');
     expect(resolved?.config.args).toContain("--permission-mode");
     expect(resolved?.config.args).toContain("bypassPermissions");
     expect(resolved?.config.args).not.toContain("--dangerously-skip-permissions");
@@ -415,11 +484,19 @@ describe("resolveCliBackendConfig claude-cli defaults", () => {
     expect(resolved?.config.resumeArgs).toContain("stream-json");
     expect(resolved?.config.resumeArgs).toContain("--include-partial-messages");
     expect(resolved?.config.resumeArgs).toContain("--verbose");
+    expect(resolved?.config.resumeArgs).toContain("--tools");
+    expect(resolved?.config.resumeArgs).toContain("");
     expect(resolved?.config.resumeArgs).toContain("--setting-sources");
-    expect(resolved?.config.resumeArgs).toContain("user");
+    expect(resolved?.config.resumeArgs).toContain("--settings");
+    expect(resolved?.config.resumeArgs).toContain('{"disableAllHooks":true}');
     expect(resolved?.config.resumeArgs).toContain("--permission-mode");
     expect(resolved?.config.resumeArgs).toContain("bypassPermissions");
     expect(resolved?.config.resumeArgs).not.toContain("--dangerously-skip-permissions");
+    expect(resolved?.config.env).toEqual({
+      CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1",
+    });
+    expect(resolved?.config.systemPromptArg).toBe("--system-prompt");
+    expect(resolved?.config.systemPromptMode).toBe("replace");
   });
 
   it("retains default claude safety args when only command is overridden", () => {
@@ -440,14 +517,22 @@ describe("resolveCliBackendConfig claude-cli defaults", () => {
     expect(resolved).not.toBeNull();
     expect(resolved?.config.command).toBe("/usr/local/bin/claude");
     expect(resolved?.config.args).toContain("--setting-sources");
-    expect(resolved?.config.args).toContain("user");
+    expect(resolved?.config.args).toContain("--settings");
+    expect(resolved?.config.args).toContain('{"disableAllHooks":true}');
     expect(resolved?.config.args).toContain("--permission-mode");
     expect(resolved?.config.args).toContain("bypassPermissions");
+    expect(resolved?.config.args).toContain("--tools");
+    expect(resolved?.config.args).toContain("");
     expect(resolved?.config.resumeArgs).toContain("--setting-sources");
-    expect(resolved?.config.resumeArgs).toContain("user");
+    expect(resolved?.config.resumeArgs).toContain("--settings");
+    expect(resolved?.config.resumeArgs).toContain('{"disableAllHooks":true}');
     expect(resolved?.config.resumeArgs).toContain("--permission-mode");
     expect(resolved?.config.resumeArgs).toContain("bypassPermissions");
-    expect(resolved?.config.env).not.toHaveProperty("CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST");
+    expect(resolved?.config.resumeArgs).toContain("--tools");
+    expect(resolved?.config.resumeArgs).toContain("");
+    expect(resolved?.config.env).toEqual({
+      CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1",
+    });
     expect(resolved?.config.clearEnv).toContain("ANTHROPIC_API_TOKEN");
     expect(resolved?.config.clearEnv).toContain("ANTHROPIC_BASE_URL");
     expect(resolved?.config.clearEnv).toContain("ANTHROPIC_CUSTOM_HEADERS");
@@ -522,8 +607,12 @@ describe("resolveCliBackendConfig claude-cli defaults", () => {
       "-p",
       "--permission-mode",
       "acceptEdits",
+      "--tools",
+      "",
       "--setting-sources",
-      "user",
+      "",
+      "--settings",
+      '{"disableAllHooks":true}',
     ]);
     expect(resolved?.config.resumeArgs).not.toContain("--dangerously-skip-permissions");
     expect(resolved?.config.resumeArgs).toEqual([
@@ -531,14 +620,18 @@ describe("resolveCliBackendConfig claude-cli defaults", () => {
       "--permission-mode=acceptEdits",
       "--resume",
       "{sessionId}",
+      "--tools",
+      "",
       "--setting-sources",
-      "user",
+      "",
+      "--settings",
+      '{"disableAllHooks":true}',
     ]);
     expect(resolved?.config.args).not.toContain("bypassPermissions");
     expect(resolved?.config.resumeArgs).not.toContain("bypassPermissions");
   });
 
-  it("forces project or local setting-source overrides back to user-only", () => {
+  it("forces project or local setting-source overrides back to empty", () => {
     const cfg = {
       agents: {
         defaults: {
@@ -565,20 +658,28 @@ describe("resolveCliBackendConfig claude-cli defaults", () => {
     expect(resolved?.config.args).toEqual([
       "-p",
       "--setting-sources",
-      "user",
+      "",
       "--permission-mode",
       "acceptEdits",
+      "--tools",
+      "",
+      "--settings",
+      '{"disableAllHooks":true}',
     ]);
     expect(resolved?.config.resumeArgs).toEqual([
       "-p",
-      "--setting-sources=user",
+      "--setting-sources=",
       "--resume",
       "{sessionId}",
       "--permission-mode=acceptEdits",
+      "--tools",
+      "",
+      "--settings",
+      '{"disableAllHooks":true}',
     ]);
   });
 
-  it("falls back to user-only setting sources when a custom override leaves the flag without a value", () => {
+  it("falls back to empty setting sources when a custom override leaves the flag without a value", () => {
     const cfg = createClaudeCliOverrideConfig({
       command: "claude",
       args: ["-p", "--setting-sources", "--output-format", "stream-json"],
@@ -588,8 +689,32 @@ describe("resolveCliBackendConfig claude-cli defaults", () => {
     const resolved = resolveCliBackendConfig("claude-cli", cfg);
 
     expect(resolved).not.toBeNull();
-    expect(resolved?.config.args).toEqual(NORMALIZED_CLAUDE_FALLBACK_ARGS);
-    expect(resolved?.config.resumeArgs).toEqual(NORMALIZED_CLAUDE_FALLBACK_RESUME_ARGS);
+    expect(resolved?.config.args).toEqual([
+      "-p",
+      "--setting-sources",
+      "",
+      "--output-format",
+      "stream-json",
+      "--tools",
+      "",
+      "--settings",
+      '{"disableAllHooks":true}',
+      "--permission-mode",
+      "bypassPermissions",
+    ]);
+    expect(resolved?.config.resumeArgs).toEqual([
+      "-p",
+      "--setting-sources",
+      "",
+      "--resume",
+      "{sessionId}",
+      "--tools",
+      "",
+      "--settings",
+      '{"disableAllHooks":true}',
+      "--permission-mode",
+      "bypassPermissions",
+    ]);
   });
 
   it("falls back to bypassPermissions when a custom override leaves permission-mode without a value", () => {
@@ -632,13 +757,19 @@ describe("resolveCliBackendConfig claude-cli defaults", () => {
 
     expect(resolved).not.toBeNull();
     expect(resolved?.config.args).toContain("--setting-sources");
-    expect(resolved?.config.args).toContain("user");
+    expect(resolved?.config.args).toContain("--settings");
+    expect(resolved?.config.args).toContain('{"disableAllHooks":true}');
     expect(resolved?.config.args).toContain("--permission-mode");
     expect(resolved?.config.args).toContain("bypassPermissions");
+    expect(resolved?.config.args).toContain("--tools");
+    expect(resolved?.config.args).toContain("");
     expect(resolved?.config.resumeArgs).toContain("--setting-sources");
-    expect(resolved?.config.resumeArgs).toContain("user");
+    expect(resolved?.config.resumeArgs).toContain("--settings");
+    expect(resolved?.config.resumeArgs).toContain('{"disableAllHooks":true}');
     expect(resolved?.config.resumeArgs).toContain("--permission-mode");
     expect(resolved?.config.resumeArgs).toContain("bypassPermissions");
+    expect(resolved?.config.resumeArgs).toContain("--tools");
+    expect(resolved?.config.resumeArgs).toContain("");
   });
 
   it("keeps hardened clearEnv defaults when custom claude env overrides are merged", () => {
@@ -665,6 +796,7 @@ describe("resolveCliBackendConfig claude-cli defaults", () => {
     expect(resolved?.config.env).toEqual({
       SAFE_CUSTOM: "ok",
       ANTHROPIC_BASE_URL: "https://evil.example.com/v1",
+      CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1",
     });
     expect(resolved?.config.clearEnv).toContain("ANTHROPIC_BASE_URL");
     expect(resolved?.config.clearEnv).toContain("ANTHROPIC_API_TOKEN");
@@ -703,8 +835,12 @@ describe("resolveCliBackendConfig claude-cli defaults", () => {
       "-p",
       "--output-format",
       "json",
+      "--tools",
+      "",
       "--setting-sources",
-      "user",
+      "",
+      "--settings",
+      '{"disableAllHooks":true}',
       "--permission-mode",
       "bypassPermissions",
     ]);
@@ -714,17 +850,25 @@ describe("resolveCliBackendConfig claude-cli defaults", () => {
       "json",
       "--resume",
       "{sessionId}",
+      "--tools",
+      "",
       "--setting-sources",
-      "user",
+      "",
+      "--settings",
+      '{"disableAllHooks":true}',
       "--permission-mode",
       "bypassPermissions",
     ]);
-    expect(resolved?.config.systemPromptArg).toBe("--append-system-prompt");
+    expect(resolved?.config.systemPromptArg).toBe("--system-prompt");
+    expect(resolved?.config.systemPromptMode).toBe("replace");
     expect(resolved?.config.systemPromptWhen).toBe("always");
     expect(resolved?.config.sessionArg).toBe("--session-id");
     expect(resolved?.config.sessionMode).toBe("always");
     expect(resolved?.config.input).toBe("stdin");
     expect(resolved?.config.output).toBe("jsonl");
+    expect(resolved?.config.env).toEqual({
+      CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1",
+    });
   });
 });
 

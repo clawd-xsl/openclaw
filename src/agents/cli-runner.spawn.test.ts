@@ -40,13 +40,24 @@ function buildPreparedCliRunContext(params: {
     params.provider === "claude-cli"
       ? {
           command: "claude",
-          args: ["-p", "--output-format", "stream-json"],
+          args: [
+            "-p",
+            "--output-format",
+            "stream-json",
+            "--tools",
+            "",
+            "--setting-sources",
+            "",
+            "--settings",
+            '{"disableAllHooks":true}',
+          ],
           output: "jsonl" as const,
           input: "stdin" as const,
           modelArg: "--model",
           sessionArg: "--session-id",
           sessionMode: "always" as const,
-          systemPromptArg: "--append-system-prompt",
+          systemPromptArg: "--system-prompt",
+          systemPromptMode: "replace" as const,
           systemPromptWhen: "first" as const,
           serialize: true,
         }
@@ -115,12 +126,23 @@ describe("runCliAgent spawn path", () => {
 
     const backendConfig = {
       command: "claude",
-      args: ["-p", "--output-format", "stream-json"],
+      args: [
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--tools",
+        "",
+        "--setting-sources",
+        "",
+        "--settings",
+        '{"disableAllHooks":true}',
+      ],
       output: "jsonl" as const,
       input: "stdin" as const,
       modelArg: "--model",
       sessionArg: "--session-id",
-      systemPromptArg: "--append-system-prompt",
+      systemPromptArg: "--system-prompt",
+      systemPromptMode: "replace" as const,
       systemPromptWhen: "first" as const,
       serialize: true,
     };
@@ -288,6 +310,45 @@ describe("runCliAgent spawn path", () => {
     expect(context.reusableCliSession).toEqual({ sessionId: "cli-thread-1" });
   });
 
+  it("keeps Claude resume alive when only the MCP config hash changed", async () => {
+    setCliRunnerPrepareTestDeps({
+      makeBootstrapWarn: () => () => {},
+      resolveBootstrapContextForRun: async () => ({
+        bootstrapFiles: [],
+        contextFiles: [],
+      }),
+      resolveOpenClawDocsPath: async () => undefined,
+      getActiveMcpLoopbackRuntime: () => ({
+        port: 23119,
+        token: "loopback-token",
+      }),
+      ensureMcpLoopbackServer: async () => {
+        throw new Error("should not start loopback server when runtime is already active");
+      },
+    });
+
+    const context = await prepareCliRunContext({
+      sessionId: "session-current",
+      sessionKey: "agent:main:test",
+      agentId: "main",
+      sessionFile: "/tmp/session.jsonl",
+      workspaceDir: "/tmp",
+      prompt: "hello",
+      provider: "claude-cli",
+      model: "sonnet-4.6",
+      timeoutMs: 1_000,
+      runId: "run-claude-mcp-resume",
+      cliSessionBinding: {
+        sessionId: "claude-session-123",
+        mcpConfigHash: "old-mcp-hash",
+      },
+    });
+
+    expect(context.preparedBackend.mcpConfigHash).toBeTruthy();
+    expect(context.preparedBackend.mcpConfigHash).not.toBe("old-mcp-hash");
+    expect(context.reusableCliSession).toEqual({ sessionId: "claude-session-123" });
+  });
+
   it("pipes Claude prompts over stdin instead of argv", async () => {
     supervisorSpawnMock.mockResolvedValueOnce(
       createManagedRun({
@@ -365,7 +426,7 @@ describe("runCliAgent spawn path", () => {
     };
     expect(input.argv).toContain("--resume");
     expect(input.argv).toContain("claude-session-123");
-    expect(input.argv).toContain("--append-system-prompt");
+    expect(input.argv).toContain("--system-prompt");
     expect(input.argv).toContain("You are a helpful assistant.");
   });
 
