@@ -1,3 +1,5 @@
+import type { CliBackendConfig } from "../../config/types.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { ensureMcpLoopbackServer } from "../../gateway/mcp-http.js";
 import {
   createMcpLoopbackServerConfig,
@@ -18,6 +20,8 @@ import {
 import { resolveCliAuthEpoch } from "../cli-auth-epoch.js";
 import { resolveCliBackendConfig } from "../cli-backends.js";
 import { hashCliSessionText, resolveCliSessionReuse } from "../cli-session.js";
+import { resolveContextTokensForModel } from "../context.js";
+import { DEFAULT_CONTEXT_TOKENS } from "../defaults.js";
 import { resolveHeartbeatPromptForSystemPrompt } from "../heartbeat-system-prompt.js";
 import {
   resolveBootstrapMaxChars,
@@ -45,6 +49,90 @@ const prepareDeps = {
     params: Parameters<typeof import("../docs-path.js").resolveOpenClawDocsPath>[0],
   ) => (await import("../docs-path.js")).resolveOpenClawDocsPath(params),
 };
+
+const CLAUDE_AUTOCOMPACT_ARG = "--autocompact";
+const CLAUDE_AUTOCOMPACT_MIN_TOKENS = 100_000;
+const CLAUDE_AUTOCOMPACT_MAX_TOKENS = 1_000_000;
+
+function injectCliArgValue(
+  args: string[] | undefined,
+  flag: string,
+  value: string,
+): string[] | undefined {
+  if (!args) {
+    return args;
+  }
+  const normalized: string[] = [];
+  let replaced = false;
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i] ?? "";
+    if (arg === flag) {
+      replaced = true;
+      const maybeValue = args[i + 1];
+      if (typeof maybeValue === "string" && !maybeValue.startsWith("-")) {
+        normalized.push(flag, value);
+        i += 1;
+      } else {
+        normalized.push(flag, value);
+      }
+      continue;
+    }
+    if (arg.startsWith(`${flag}=`)) {
+      replaced = true;
+      normalized.push(flag, value);
+      continue;
+    }
+    normalized.push(arg);
+  }
+  if (!replaced) {
+    normalized.push(flag, value);
+  }
+  return normalized;
+}
+
+function resolveClaudeAutoCompactTokens(params: {
+  cfg?: OpenClawConfig;
+  provider: string;
+  modelId: string;
+}): number {
+  const configuredContextTokens = resolveContextTokensForModel({
+    cfg: params.cfg,
+    provider: params.provider,
+    model: params.modelId,
+    contextTokensOverride: params.cfg?.agents?.defaults?.contextTokens,
+    fallbackContextTokens: DEFAULT_CONTEXT_TOKENS,
+    allowAsyncLoad: false,
+  });
+  return Math.floor(
+    Math.max(
+      CLAUDE_AUTOCOMPACT_MIN_TOKENS,
+      Math.min(CLAUDE_AUTOCOMPACT_MAX_TOKENS, configuredContextTokens ?? DEFAULT_CONTEXT_TOKENS),
+    ),
+  );
+}
+
+function applyClaudeAutoCompactConfig(params: {
+  backend: CliBackendConfig;
+  cfg?: OpenClawConfig;
+  provider: string;
+  modelId: string;
+}): CliBackendConfig {
+  if (params.backend.jsonlDialect !== "claude-stream-json") {
+    return params.backend;
+  }
+  const value = String(
+    resolveClaudeAutoCompactTokens({
+      cfg: params.cfg,
+      provider: params.provider,
+      modelId: params.modelId,
+    }),
+  );
+  return {
+    ...params.backend,
+    args: injectCliArgValue(params.backend.args, CLAUDE_AUTOCOMPACT_ARG, value),
+    resumeArgs: injectCliArgValue(params.backend.resumeArgs, CLAUDE_AUTOCOMPACT_ARG, value),
+  };
+}
 
 export function setCliRunnerPrepareTestDeps(overrides: Partial<typeof prepareDeps>): void {
   Object.assign(prepareDeps, overrides);
@@ -92,7 +180,17 @@ export async function prepareCliRunContext(
   const extraSystemPrompt = params.extraSystemPrompt?.trim() ?? "";
   const extraSystemPromptHash = hashCliSessionText(extraSystemPrompt);
   const modelId = (params.model ?? "default").trim() || "default";
-  const normalizedModel = normalizeCliModel(modelId, backendResolved.config);
+  const backendConfig = applyClaudeAutoCompactConfig({
+    backend: backendResolved.config,
+    cfg: params.config,
+    provider: params.provider,
+    modelId,
+  });
+  const resolvedBackend = {
+    ...backendResolved,
+    config: backendConfig,
+  };
+  const normalizedModel = normalizeCliModel(modelId, resolvedBackend.config);
   const modelDisplay = `${params.provider}/${modelId}`;
 
   const sessionLabel = params.sessionKey ?? params.sessionId;
@@ -129,10 +227,10 @@ export async function prepareCliRunContext(
     config: params.config,
     agentId: params.agentId,
   });
-  let mcpLoopbackRuntime = backendResolved.bundleMcp
+  let mcpLoopbackRuntime = resolvedBackend.bundleMcp
     ? prepareDeps.getActiveMcpLoopbackRuntime()
     : undefined;
-  if (backendResolved.bundleMcp && !mcpLoopbackRuntime) {
+  if (resolvedBackend.bundleMcp && !mcpLoopbackRuntime) {
     try {
       await prepareDeps.ensureMcpLoopbackServer();
     } catch (error) {
@@ -142,9 +240,9 @@ export async function prepareCliRunContext(
   }
   trace("mcp-loopback-ready", `active=${mcpLoopbackRuntime ? "yes" : "no"}`);
   const bundleMcpSpec = await prepareCliBundleMcpSpec({
-    enabled: backendResolved.bundleMcp,
-    mode: backendResolved.bundleMcpMode,
-    backend: backendResolved.config,
+    enabled: resolvedBackend.bundleMcp,
+    mode: resolvedBackend.bundleMcpMode,
+    backend: resolvedBackend.config,
     workspaceDir,
     config: params.config,
     additionalConfig: mcpLoopbackRuntime
@@ -164,15 +262,15 @@ export async function prepareCliRunContext(
   });
   trace("bundle-mcp-spec-done", `hash=${bundleMcpSpec.mcpConfigHash ?? "none"}`);
   const preparedBackend =
-    backendResolved.config.executionMode === "persistent-process"
+    resolvedBackend.config.executionMode === "persistent-process"
       ? {
-          backend: backendResolved.config,
+          backend: resolvedBackend.config,
           mcpConfigHash: bundleMcpSpec.mcpConfigHash,
           env: bundleMcpSpec.env,
           bundleMcpSpec: bundleMcpSpec,
         }
       : await materializeCliBundleMcpConfig({
-          backend: backendResolved.config,
+          backend: resolvedBackend.config,
           spec: bundleMcpSpec,
         });
   trace("prepared-backend-done");
@@ -186,7 +284,7 @@ export async function prepareCliRunContext(
         binding: params.cliSessionBinding,
         authProfileId: params.authProfileId,
         authEpoch,
-        ...(backendResolved.config.invalidateOnSystemPromptChange !== false
+        ...(resolvedBackend.config.invalidateOnSystemPromptChange !== false
           ? { extraSystemPromptHash }
           : {}),
         mcpConfigHash: preparedBackend.mcpConfigHash,
@@ -200,7 +298,7 @@ export async function prepareCliRunContext(
   // Older bindings without continuity metadata should cold-start instead of
   // blindly resuming an unknown Claude session after gateway restart.
   const reusableCliSession =
-    backendResolved.config.jsonlDialect === "claude-stream-json" &&
+    resolvedBackend.config.jsonlDialect === "claude-stream-json" &&
     resolvedReusableCliSession.invalidatedReason === "mcp" &&
     params.cliSessionBinding?.sessionId &&
     normalizeOptionalString(params.cliSessionBinding.mcpConfigHash)
@@ -265,7 +363,7 @@ export async function prepareCliRunContext(
     });
   trace("system-prompt-built", `chars=${builtSystemPrompt.length}`);
   const transformedSystemPrompt =
-    backendResolved.transformSystemPrompt?.({
+    resolvedBackend.transformSystemPrompt?.({
       config: params.config,
       workspaceDir,
       provider: params.provider,
@@ -276,7 +374,7 @@ export async function prepareCliRunContext(
     }) ?? builtSystemPrompt;
   const systemPrompt = applyPluginTextReplacements(
     transformedSystemPrompt,
-    backendResolved.textTransforms?.input,
+    resolvedBackend.textTransforms?.input,
   );
   const systemPromptReport = buildSystemPromptReport({
     source: "run",
@@ -305,7 +403,7 @@ export async function prepareCliRunContext(
     params,
     started,
     workspaceDir,
-    backendResolved,
+    backendResolved: resolvedBackend,
     preparedBackend: {
       ...preparedBackend,
       bundleMcpSpec,

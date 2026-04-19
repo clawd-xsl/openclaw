@@ -349,6 +349,47 @@ describe("runCliAgent spawn path", () => {
     expect(context.reusableCliSession).toEqual({ sessionId: "claude-session-123" });
   });
 
+  it.each(["claude-cli", "claude-cli-streaming"] as const)(
+    "passes the effective OpenClaw context limit to %s via --autocompact",
+    async (provider) => {
+      setCliRunnerPrepareTestDeps({
+        makeBootstrapWarn: () => () => {},
+        resolveBootstrapContextForRun: async () => ({
+          bootstrapFiles: [],
+          contextFiles: [],
+        }),
+        resolveOpenClawDocsPath: async () => null,
+        getActiveMcpLoopbackRuntime: () => undefined,
+        ensureMcpLoopbackServer: async () => ({ port: 0, close: async () => {} }) as never,
+      });
+
+      const context = await prepareCliRunContext({
+        sessionId: "session-current",
+        sessionKey: "agent:main:test",
+        agentId: "main",
+        sessionFile: "/tmp/session.jsonl",
+        workspaceDir: "/tmp",
+        config: {
+          agents: {
+            defaults: {
+              contextTokens: 222_000,
+            },
+          },
+        },
+        prompt: "hello",
+        provider,
+        model: "claude-sonnet-4-6",
+        timeoutMs: 1_000,
+        runId: `run-${provider}-autocompact`,
+      });
+
+      expect(context.preparedBackend.backend.args).toContain("--autocompact");
+      expect(context.preparedBackend.backend.args).toContain("222000");
+      expect(context.preparedBackend.backend.resumeArgs).toContain("--autocompact");
+      expect(context.preparedBackend.backend.resumeArgs).toContain("222000");
+    },
+  );
+
   it("does not blindly resume Claude when an old binding is missing MCP continuity metadata", async () => {
     setCliRunnerPrepareTestDeps({
       makeBootstrapWarn: () => () => {},
