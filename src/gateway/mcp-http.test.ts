@@ -1,7 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getFreePortBlockWithPermissionFallback } from "../test-utils/ports.js";
 
-const loadConfigMock = vi.hoisted(() => vi.fn(() => ({ session: { mainKey: "main" } })));
+type MockLoopbackConfig = {
+  session: { mainKey: string };
+  gateway?: { cliMcp?: { toolSurface?: "filtered" | "full" } };
+};
+
+const loadConfigMock = vi.hoisted(() =>
+  vi.fn<() => MockLoopbackConfig>(() => ({ session: { mainKey: "main" } })),
+);
 const resolveGatewayScopedToolsMock = vi.hoisted(() =>
   vi.fn(() => ({
     agentId: "main",
@@ -182,6 +189,47 @@ describe("mcp loopback server", () => {
         loopbackToolSurface: "filtered",
       }),
     );
+  });
+
+  it("returns tools/list in stable name order even when resolver order drifts", async () => {
+    resolveGatewayScopedToolsMock.mockReturnValue({
+      agentId: "main",
+      tools: [
+        {
+          name: "zeta",
+          description: "last",
+          parameters: { type: "object", properties: {} },
+          execute: async () => ({ content: [{ type: "text", text: "ok" }] }),
+        },
+        {
+          name: "alpha",
+          description: "first",
+          parameters: { type: "object", properties: {} },
+          execute: async () => ({ content: [{ type: "text", text: "ok" }] }),
+        },
+        {
+          name: "middle",
+          description: "middle",
+          parameters: { type: "object", properties: {} },
+          execute: async () => ({ content: [{ type: "text", text: "ok" }] }),
+        },
+      ],
+    });
+    server = await startMcpLoopbackServer(0);
+    const runtime = getActiveMcpLoopbackRuntime();
+
+    const response = await sendRaw({
+      port: server.port,
+      token: runtime?.token,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as {
+      result?: { tools?: Array<{ name: string }> };
+    };
+    expect(payload.result?.tools?.map((tool) => tool.name)).toEqual(["alpha", "middle", "zeta"]);
   });
 
   it("tracks the active runtime only while the server is running", async () => {

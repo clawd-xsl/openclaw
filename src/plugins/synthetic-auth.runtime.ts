@@ -1,6 +1,11 @@
 import { normalizeProviderId } from "../agents/provider-id.js";
 import { getPluginRegistryState } from "./runtime-state.js";
-const BUNDLED_SYNTHETIC_AUTH_PROVIDER_REFS = ["claude-cli", "ollama", "xai"] as const;
+const BUNDLED_SYNTHETIC_AUTH_PROVIDER_REFS = [
+  "claude-cli",
+  "claude-cli-streaming",
+  "ollama",
+  "xai",
+] as const;
 
 function uniqueProviderRefs(values: readonly string[]): string[] {
   const seen = new Set<string>();

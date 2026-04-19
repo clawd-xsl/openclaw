@@ -18,11 +18,20 @@ import {
 } from "../../shared/string-coerce.js";
 import { serializeTomlInlineValue } from "./toml-inline.js";
 
-type PreparedCliBundleMcpConfig = {
+export type CliBundleMcpSpec = {
+  mode: CliBundleMcpMode;
+  mergedConfig?: BundleMcpConfig;
+  serializedConfig?: string;
+  mcpConfigHash?: string;
+  env?: Record<string, string>;
+};
+
+export type PreparedCliBundleMcpConfig = {
   backend: CliBackendConfig;
   cleanup?: () => Promise<void>;
   mcpConfigHash?: string;
   env?: Record<string, string>;
+  spec?: CliBundleMcpSpec;
 };
 
 function resolveBundleMcpMode(mode: CliBundleMcpMode | undefined): CliBundleMcpMode {
@@ -255,72 +264,21 @@ async function writeGeminiSystemSettings(
   };
 }
 
-async function prepareModeSpecificBundleMcpConfig(params: {
-  mode: CliBundleMcpMode;
-  backend: CliBackendConfig;
-  mergedConfig: BundleMcpConfig;
-  env?: Record<string, string>;
-}): Promise<PreparedCliBundleMcpConfig> {
-  const serializedConfig = `${JSON.stringify(params.mergedConfig, null, 2)}\n`;
-  const mcpConfigHash = crypto.createHash("sha256").update(serializedConfig).digest("hex");
-
-  if (params.mode === "codex-config-overrides") {
-    return {
-      backend: {
-        ...params.backend,
-        args: injectCodexMcpConfigArgs(params.backend.args, params.mergedConfig),
-        resumeArgs: injectCodexMcpConfigArgs(
-          params.backend.resumeArgs ?? params.backend.args ?? [],
-          params.mergedConfig,
-        ),
-      },
-      mcpConfigHash,
-      env: params.env,
-    };
-  }
-
-  if (params.mode === "gemini-system-settings") {
-    const settings = await writeGeminiSystemSettings(params.mergedConfig, params.env);
-    return {
-      backend: params.backend,
-      mcpConfigHash,
-      env: settings.env,
-      cleanup: settings.cleanup,
-    };
-  }
-
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-cli-mcp-"));
-  const mcpConfigPath = path.join(tempDir, "mcp.json");
-  await fs.writeFile(mcpConfigPath, serializedConfig, "utf-8");
-  return {
-    backend: {
-      ...params.backend,
-      args: injectClaudeMcpConfigArgs(params.backend.args, mcpConfigPath),
-      resumeArgs: injectClaudeMcpConfigArgs(
-        params.backend.resumeArgs ?? params.backend.args ?? [],
-        mcpConfigPath,
-      ),
-    },
-    mcpConfigHash,
-    env: params.env,
-    cleanup: async () => {
-      await fs.rm(tempDir, { recursive: true, force: true });
-    },
-  };
-}
-
-export async function prepareCliBundleMcpConfig(params: {
+export async function prepareCliBundleMcpSpec(params: {
   enabled: boolean;
   mode?: CliBundleMcpMode;
-  backend: CliBackendConfig;
+  backend: Pick<CliBackendConfig, "args" | "resumeArgs">;
   workspaceDir: string;
   config?: OpenClawConfig;
   additionalConfig?: BundleMcpConfig;
   env?: Record<string, string>;
   warn?: (message: string) => void;
-}): Promise<PreparedCliBundleMcpConfig> {
+}): Promise<CliBundleMcpSpec> {
   if (!params.enabled) {
-    return { backend: params.backend, env: params.env };
+    return {
+      mode: resolveBundleMcpMode(params.mode),
+      env: params.env,
+    };
   }
 
   const mode = resolveBundleMcpMode(params.mode);
@@ -352,10 +310,94 @@ export async function prepareCliBundleMcpConfig(params: {
     mergedConfig = applyMergePatch(mergedConfig, params.additionalConfig) as BundleMcpConfig;
   }
 
-  return await prepareModeSpecificBundleMcpConfig({
+  const serializedConfig = `${JSON.stringify(mergedConfig, null, 2)}\n`;
+  return {
     mode,
-    backend: params.backend,
     mergedConfig,
+    serializedConfig,
+    mcpConfigHash: crypto.createHash("sha256").update(serializedConfig).digest("hex"),
     env: params.env,
+  };
+}
+
+export async function materializeCliBundleMcpConfig(params: {
+  backend: CliBackendConfig;
+  spec: CliBundleMcpSpec;
+}): Promise<PreparedCliBundleMcpConfig> {
+  if (!params.spec.mergedConfig || !params.spec.mcpConfigHash) {
+    return {
+      backend: params.backend,
+      env: params.spec.env,
+      mcpConfigHash: params.spec.mcpConfigHash,
+      spec: params.spec,
+    };
+  }
+
+  if (params.spec.mode === "codex-config-overrides") {
+    return {
+      backend: {
+        ...params.backend,
+        args: injectCodexMcpConfigArgs(params.backend.args, params.spec.mergedConfig),
+        resumeArgs: injectCodexMcpConfigArgs(
+          params.backend.resumeArgs ?? params.backend.args ?? [],
+          params.spec.mergedConfig,
+        ),
+      },
+      mcpConfigHash: params.spec.mcpConfigHash,
+      env: params.spec.env,
+      spec: params.spec,
+    };
+  }
+
+  if (params.spec.mode === "gemini-system-settings") {
+    const settings = await writeGeminiSystemSettings(params.spec.mergedConfig, params.spec.env);
+    return {
+      backend: params.backend,
+      mcpConfigHash: params.spec.mcpConfigHash,
+      env: settings.env,
+      cleanup: settings.cleanup,
+      spec: params.spec,
+    };
+  }
+
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-cli-mcp-"));
+  const mcpConfigPath = path.join(tempDir, "mcp.json");
+  await fs.writeFile(
+    mcpConfigPath,
+    params.spec.serializedConfig ?? `${JSON.stringify(params.spec.mergedConfig, null, 2)}\n`,
+    "utf-8",
+  );
+  return {
+    backend: {
+      ...params.backend,
+      args: injectClaudeMcpConfigArgs(params.backend.args, mcpConfigPath),
+      resumeArgs: injectClaudeMcpConfigArgs(
+        params.backend.resumeArgs ?? params.backend.args ?? [],
+        mcpConfigPath,
+      ),
+    },
+    mcpConfigHash: params.spec.mcpConfigHash,
+    env: params.spec.env,
+    cleanup: async () => {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    },
+    spec: params.spec,
+  };
+}
+
+export async function prepareCliBundleMcpConfig(params: {
+  enabled: boolean;
+  mode?: CliBundleMcpMode;
+  backend: CliBackendConfig;
+  workspaceDir: string;
+  config?: OpenClawConfig;
+  additionalConfig?: BundleMcpConfig;
+  env?: Record<string, string>;
+  warn?: (message: string) => void;
+}): Promise<PreparedCliBundleMcpConfig> {
+  const spec = await prepareCliBundleMcpSpec(params);
+  return await materializeCliBundleMcpConfig({
+    backend: params.backend,
+    spec,
   });
 }

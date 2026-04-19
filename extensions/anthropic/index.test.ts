@@ -19,7 +19,7 @@ vi.mock("./cli-auth-seam.js", () => {
 import anthropicPlugin from "./index.js";
 
 describe("anthropic provider replay hooks", () => {
-  it("registers the claude-cli backend", async () => {
+  it("registers both Claude CLI backends", async () => {
     const captured = capturePluginRegistration({ register: anthropicPlugin.register });
 
     expect(captured.cliBackends).toContainEqual(
@@ -33,9 +33,21 @@ describe("anthropic provider replay hooks", () => {
         }),
       }),
     );
+    expect(captured.cliBackends).toContainEqual(
+      expect.objectContaining({
+        id: "claude-cli-streaming",
+        bundleMcp: true,
+        config: expect.objectContaining({
+          command: "claude",
+          executionMode: "persistent-process",
+          modelArg: "--model",
+          sessionArg: "--session-id",
+        }),
+      }),
+    );
   });
 
-  it("augments the catalog with claude-cli synthetic models", async () => {
+  it("augments the catalog with Claude CLI synthetic models", async () => {
     const provider = await registerSingleProviderPlugin(anthropicPlugin);
 
     const entries = await provider.augmentModelCatalog?.({
@@ -101,6 +113,16 @@ describe("anthropic provider replay hooks", () => {
           provider: "claude-cli",
           id: "claude-haiku-4-5",
           name: "Claude Haiku 4.5",
+        }),
+        expect.objectContaining({
+          provider: "claude-cli-streaming",
+          id: "claude-sonnet-4-6",
+          name: "Claude Sonnet 4.6",
+        }),
+        expect.objectContaining({
+          provider: "claude-cli-streaming",
+          id: "claude-opus-4-6",
+          name: "Claude Opus 4.6",
         }),
       ]),
     );
@@ -243,6 +265,29 @@ describe("anthropic provider replay hooks", () => {
       mode: "oauth",
     });
     expect(readClaudeCliCredentialsForRuntimeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("resolves claude-cli-streaming synthetic oauth auth", async () => {
+    readClaudeCliCredentialsForRuntimeMock.mockReset();
+    readClaudeCliCredentialsForRuntimeMock.mockReturnValue({
+      type: "oauth",
+      provider: "anthropic",
+      access: "access-token",
+      refresh: "refresh-token",
+      expires: 123,
+    });
+
+    const provider = await registerSingleProviderPlugin(anthropicPlugin);
+
+    expect(
+      provider.resolveSyntheticAuth?.({
+        provider: "claude-cli-streaming",
+      } as never),
+    ).toEqual({
+      apiKey: "access-token",
+      source: "Claude CLI native auth",
+      mode: "oauth",
+    });
   });
 
   it("resolves claude-cli synthetic token auth", async () => {

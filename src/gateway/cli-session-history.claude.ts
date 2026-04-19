@@ -12,6 +12,7 @@ import { normalizeOptionalString } from "../shared/string-coerce.js";
 import { attachOpenClawTranscriptMeta } from "./session-utils.fs.js";
 
 export const CLAUDE_CLI_PROVIDER = "claude-cli";
+export const CLAUDE_CLI_HISTORY_PROVIDERS = [CLAUDE_CLI_PROVIDER, "claude-cli-streaming"] as const;
 const CLAUDE_PROJECTS_RELATIVE_DIR = path.join(".claude", "projects");
 
 type ClaudeCliProjectEntry = {
@@ -48,16 +49,39 @@ function resolveClaudeProjectsDir(homeDir?: string): string {
 
 export function resolveClaudeCliBindingSessionId(
   entry: SessionEntry | undefined,
+  preferredProvider?: string,
 ): string | undefined {
-  const bindingSessionId = normalizeOptionalString(
-    entry?.cliSessionBindings?.[CLAUDE_CLI_PROVIDER]?.sessionId,
-  );
-  if (bindingSessionId) {
-    return bindingSessionId;
+  const normalizedPreferredProvider = normalizeOptionalString(preferredProvider);
+  if (
+    normalizedPreferredProvider &&
+    CLAUDE_CLI_HISTORY_PROVIDERS.includes(
+      normalizedPreferredProvider as (typeof CLAUDE_CLI_HISTORY_PROVIDERS)[number],
+    )
+  ) {
+    const preferredBindingSessionId = normalizeOptionalString(
+      entry?.cliSessionBindings?.[normalizedPreferredProvider]?.sessionId,
+    );
+    if (preferredBindingSessionId) {
+      return preferredBindingSessionId;
+    }
+    const preferredLegacyMapSessionId = normalizeOptionalString(
+      entry?.cliSessionIds?.[normalizedPreferredProvider],
+    );
+    if (preferredLegacyMapSessionId) {
+      return preferredLegacyMapSessionId;
+    }
   }
-  const legacyMapSessionId = normalizeOptionalString(entry?.cliSessionIds?.[CLAUDE_CLI_PROVIDER]);
-  if (legacyMapSessionId) {
-    return legacyMapSessionId;
+  for (const providerId of CLAUDE_CLI_HISTORY_PROVIDERS) {
+    const bindingSessionId = normalizeOptionalString(
+      entry?.cliSessionBindings?.[providerId]?.sessionId,
+    );
+    if (bindingSessionId) {
+      return bindingSessionId;
+    }
+    const legacyMapSessionId = normalizeOptionalString(entry?.cliSessionIds?.[providerId]);
+    if (legacyMapSessionId) {
+      return legacyMapSessionId;
+    }
   }
   const legacyClaudeSessionId = normalizeOptionalString(entry?.claudeCliSessionId);
   return legacyClaudeSessionId || undefined;

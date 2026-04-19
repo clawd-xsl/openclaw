@@ -95,6 +95,7 @@ const NORMALIZED_CLAUDE_FALLBACK_ARGS = [
   "stream-json",
   "--tools",
   "",
+  "--disable-slash-commands",
   "--setting-sources",
   "",
   "--settings",
@@ -109,6 +110,7 @@ const NORMALIZED_CLAUDE_FALLBACK_RESUME_ARGS = [
   "{sessionId}",
   "--tools",
   "",
+  "--disable-slash-commands",
   "--setting-sources",
   "",
   "--settings",
@@ -123,6 +125,7 @@ function normalizeTestClaudeArgs(args?: string[]): string[] | undefined {
   }
   const normalized: string[] = [];
   let hasTools = false;
+  let hasDisableSlashCommands = false;
   let hasSettingSources = false;
   let hasSettings = false;
   let hasPermissionMode = false;
@@ -145,6 +148,11 @@ function normalizeTestClaudeArgs(args?: string[]): string[] | undefined {
     if (arg.startsWith("--tools=")) {
       hasTools = true;
       normalized.push("--tools", "");
+      continue;
+    }
+    if (arg === "--disable-slash-commands") {
+      hasDisableSlashCommands = true;
+      normalized.push(arg);
       continue;
     }
     if (arg === "--setting-sources") {
@@ -196,6 +204,9 @@ function normalizeTestClaudeArgs(args?: string[]): string[] | undefined {
   }
   if (!hasTools) {
     normalized.push("--tools", "");
+  }
+  if (!hasDisableSlashCommands) {
+    normalized.push("--disable-slash-commands");
   }
   if (!hasSettingSources) {
     normalized.push("--setting-sources", "");
@@ -474,6 +485,7 @@ describe("resolveCliBackendConfig claude-cli defaults", () => {
     expect(resolved?.config.args).toContain("--verbose");
     expect(resolved?.config.args).toContain("--tools");
     expect(resolved?.config.args).toContain("");
+    expect(resolved?.config.args).toContain("--disable-slash-commands");
     expect(resolved?.config.args).toContain("--setting-sources");
     expect(resolved?.config.args).toContain("--settings");
     expect(resolved?.config.args).toContain('{"disableAllHooks":true}');
@@ -486,6 +498,7 @@ describe("resolveCliBackendConfig claude-cli defaults", () => {
     expect(resolved?.config.resumeArgs).toContain("--verbose");
     expect(resolved?.config.resumeArgs).toContain("--tools");
     expect(resolved?.config.resumeArgs).toContain("");
+    expect(resolved?.config.resumeArgs).toContain("--disable-slash-commands");
     expect(resolved?.config.resumeArgs).toContain("--setting-sources");
     expect(resolved?.config.resumeArgs).toContain("--settings");
     expect(resolved?.config.resumeArgs).toContain('{"disableAllHooks":true}');
@@ -523,6 +536,7 @@ describe("resolveCliBackendConfig claude-cli defaults", () => {
     expect(resolved?.config.args).toContain("bypassPermissions");
     expect(resolved?.config.args).toContain("--tools");
     expect(resolved?.config.args).toContain("");
+    expect(resolved?.config.args).toContain("--disable-slash-commands");
     expect(resolved?.config.resumeArgs).toContain("--setting-sources");
     expect(resolved?.config.resumeArgs).toContain("--settings");
     expect(resolved?.config.resumeArgs).toContain('{"disableAllHooks":true}');
@@ -530,6 +544,7 @@ describe("resolveCliBackendConfig claude-cli defaults", () => {
     expect(resolved?.config.resumeArgs).toContain("bypassPermissions");
     expect(resolved?.config.resumeArgs).toContain("--tools");
     expect(resolved?.config.resumeArgs).toContain("");
+    expect(resolved?.config.resumeArgs).toContain("--disable-slash-commands");
     expect(resolved?.config.env).toEqual({
       CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1",
     });
@@ -609,6 +624,7 @@ describe("resolveCliBackendConfig claude-cli defaults", () => {
       "acceptEdits",
       "--tools",
       "",
+      "--disable-slash-commands",
       "--setting-sources",
       "",
       "--settings",
@@ -622,6 +638,7 @@ describe("resolveCliBackendConfig claude-cli defaults", () => {
       "{sessionId}",
       "--tools",
       "",
+      "--disable-slash-commands",
       "--setting-sources",
       "",
       "--settings",
@@ -663,6 +680,7 @@ describe("resolveCliBackendConfig claude-cli defaults", () => {
       "acceptEdits",
       "--tools",
       "",
+      "--disable-slash-commands",
       "--settings",
       '{"disableAllHooks":true}',
     ]);
@@ -674,6 +692,7 @@ describe("resolveCliBackendConfig claude-cli defaults", () => {
       "--permission-mode=acceptEdits",
       "--tools",
       "",
+      "--disable-slash-commands",
       "--settings",
       '{"disableAllHooks":true}',
     ]);
@@ -697,6 +716,7 @@ describe("resolveCliBackendConfig claude-cli defaults", () => {
       "stream-json",
       "--tools",
       "",
+      "--disable-slash-commands",
       "--settings",
       '{"disableAllHooks":true}',
       "--permission-mode",
@@ -710,6 +730,7 @@ describe("resolveCliBackendConfig claude-cli defaults", () => {
       "{sessionId}",
       "--tools",
       "",
+      "--disable-slash-commands",
       "--settings",
       '{"disableAllHooks":true}',
       "--permission-mode",
@@ -837,6 +858,7 @@ describe("resolveCliBackendConfig claude-cli defaults", () => {
       "json",
       "--tools",
       "",
+      "--disable-slash-commands",
       "--setting-sources",
       "",
       "--settings",
@@ -852,6 +874,7 @@ describe("resolveCliBackendConfig claude-cli defaults", () => {
       "{sessionId}",
       "--tools",
       "",
+      "--disable-slash-commands",
       "--setting-sources",
       "",
       "--settings",

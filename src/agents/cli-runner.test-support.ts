@@ -232,6 +232,7 @@ function buildAnthropicCliBackendFixture(): CliBackendPlugin {
         "{sessionId}",
       ],
       output: "jsonl",
+      jsonlDialect: "claude-stream-json",
       input: "stdin",
       modelArg: "--model",
       modelAliases: {

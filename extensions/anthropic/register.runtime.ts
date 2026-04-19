@@ -23,12 +23,13 @@ import { cloneFirstTemplateModel } from "openclaw/plugin-sdk/provider-model-shar
 import { fetchClaudeUsage } from "openclaw/plugin-sdk/provider-usage";
 import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/text-runtime";
 import * as claudeCliAuth from "./cli-auth-seam.js";
-import { buildAnthropicCliBackend } from "./cli-backend.js";
+import { buildAnthropicCliBackend, buildAnthropicStreamingCliBackend } from "./cli-backend.js";
 import { buildAnthropicCliMigrationResult } from "./cli-migration.js";
 import {
-  CLAUDE_CLI_BACKEND_ID,
+  CLAUDE_CLI_BACKEND_IDS,
   CLAUDE_CLI_DEFAULT_ALLOWLIST_REFS,
   CLAUDE_CLI_DEFAULT_MODEL_REF,
+  isClaudeCliFamilyProvider,
 } from "./cli-shared.js";
 import {
   applyAnthropicConfigDefaults,
@@ -219,10 +220,9 @@ function resolveAnthropic46ForwardCompatModel(params: {
     modelId: trimmedModelId,
     templateIds,
     ctx: params.ctx,
-    patch:
-      normalizeLowercaseStringOrEmpty(params.ctx.provider) === CLAUDE_CLI_BACKEND_ID
-        ? { provider: CLAUDE_CLI_BACKEND_ID }
-        : undefined,
+    patch: isClaudeCliFamilyProvider(params.ctx.provider)
+      ? { provider: params.ctx.provider }
+      : undefined,
   });
 }
 
@@ -305,22 +305,24 @@ function buildAnthropicCliCatalogEntries(ctx: {
     input?: ("text" | "image" | "document")[];
   }>;
 }) {
-  return ANTHROPIC_CLI_CATALOG_SPECS.map((spec) => {
-    const template = findCatalogTemplate({
-      entries: ctx.entries,
-      providerId: PROVIDER_ID,
-      templateIds: spec.templateIds,
-    });
-    if (!template) {
-      return undefined;
-    }
-    return {
-      ...template,
-      provider: CLAUDE_CLI_BACKEND_ID,
-      id: spec.id,
-      name: spec.name,
-    };
-  }).filter((entry): entry is NonNullable<typeof entry> => entry !== undefined);
+  return CLAUDE_CLI_BACKEND_IDS.flatMap((backendId) =>
+    ANTHROPIC_CLI_CATALOG_SPECS.map((spec) => {
+      const template = findCatalogTemplate({
+        entries: ctx.entries,
+        providerId: PROVIDER_ID,
+        templateIds: spec.templateIds,
+      });
+      if (!template) {
+        return undefined;
+      }
+      return {
+        ...template,
+        provider: backendId,
+        id: spec.id,
+        name: spec.name,
+      };
+    }).filter((entry): entry is NonNullable<typeof entry> => entry !== undefined),
+  );
 }
 
 function matchesAnthropicModernModel(modelId: string): boolean {
@@ -454,11 +456,12 @@ export function registerAnthropicPlugin(api: OpenClawPluginApi): void {
     "anthropic/claude-haiku-4-5",
   ] as const;
   api.registerCliBackend(buildAnthropicCliBackend());
+  api.registerCliBackend(buildAnthropicStreamingCliBackend());
   api.registerProvider({
     id: providerId,
     label: "Anthropic",
     docsPath: "/providers/models",
-    hookAliases: [CLAUDE_CLI_BACKEND_ID],
+    hookAliases: [...CLAUDE_CLI_BACKEND_IDS],
     envVars: ["ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
     oauthProfileIdRepairs: [
       {
@@ -537,9 +540,7 @@ export function registerAnthropicPlugin(api: OpenClawPluginApi): void {
     augmentModelCatalog: (ctx) => buildAnthropicCliCatalogEntries(ctx),
     resolveDynamicModel: (ctx) => resolveAnthropicForwardCompatModel(ctx),
     resolveSyntheticAuth: ({ provider }) =>
-      normalizeLowercaseStringOrEmpty(provider) === CLAUDE_CLI_BACKEND_ID
-        ? resolveClaudeCliSyntheticAuth()
-        : undefined,
+      isClaudeCliFamilyProvider(provider) ? resolveClaudeCliSyntheticAuth() : undefined,
     buildReplayPolicy: buildAnthropicReplayPolicy,
     isModernModelRef: ({ modelId }) => matchesAnthropicModernModel(modelId),
     resolveReasoningOutputMode: () => "native",

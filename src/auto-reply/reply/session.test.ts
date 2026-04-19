@@ -1679,11 +1679,18 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
       authProfileOverride: "20251001",
       authProfileOverrideSource: "user",
       authProfileOverrideCompactionCount: 2,
-      cliSessionIds: { "claude-cli": "cli-session-123" },
+      cliSessionIds: {
+        "claude-cli": "cli-session-123",
+        "claude-cli-streaming": "cli-stream-session-456",
+      },
       cliSessionBindings: {
         "claude-cli": {
           sessionId: "cli-session-123",
           authProfileId: "anthropic:default",
+        },
+        "claude-cli-streaming": {
+          sessionId: "cli-stream-session-456",
+          authEpoch: "epoch-456",
         },
       },
       claudeCliSessionId: "cli-session-123",
@@ -2239,6 +2246,43 @@ describe("persistSessionUsageUpdate", () => {
       extraSystemPromptHash: "prompt-hash",
       mcpConfigHash: "mcp-hash",
     });
+  });
+
+  it("persists streaming CLI bindings under the streaming backend key", async () => {
+    const storePath = await createStorePath("openclaw-usage-cli-streaming-");
+    const sessionKey = "main";
+    await seedSessionStore({
+      storePath,
+      sessionKey,
+      entry: { sessionId: "s1", updatedAt: Date.now() },
+    });
+
+    await persistSessionUsageUpdate({
+      storePath,
+      sessionKey,
+      usage: { input: 24_000, output: 2_000, cacheRead: 8_000 },
+      usageIsContextSnapshot: true,
+      providerUsed: "claude-cli-streaming",
+      cliSessionBinding: {
+        sessionId: "stream-session-1",
+        authProfileId: "anthropic:default",
+        extraSystemPromptHash: "prompt-hash",
+        mcpConfigHash: "mcp-hash",
+      },
+      contextTokensUsed: 200_000,
+    });
+
+    const stored = JSON.parse(await fs.readFile(storePath, "utf-8"));
+    expect(stored[sessionKey].totalTokens).toBe(32_000);
+    expect(stored[sessionKey].totalTokensFresh).toBe(true);
+    expect(stored[sessionKey].cliSessionIds?.["claude-cli-streaming"]).toBe("stream-session-1");
+    expect(stored[sessionKey].cliSessionBindings?.["claude-cli-streaming"]).toEqual({
+      sessionId: "stream-session-1",
+      authProfileId: "anthropic:default",
+      extraSystemPromptHash: "prompt-hash",
+      mcpConfigHash: "mcp-hash",
+    });
+    expect(stored[sessionKey].claudeCliSessionId).toBeUndefined();
   });
 
   it("persists totalTokens from promptTokens when usage is unavailable", async () => {

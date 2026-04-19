@@ -1,5 +1,5 @@
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
-import { buildAnthropicCliBackend } from "./cli-backend.js";
+import { buildAnthropicCliBackend, buildAnthropicStreamingCliBackend } from "./cli-backend.js";
 
 export default definePluginEntry({
   id: "anthropic",
@@ -7,5 +7,6 @@ export default definePluginEntry({
   description: "Lightweight Anthropic setup hooks",
   register(api) {
     api.registerCliBackend(buildAnthropicCliBackend());
+    api.registerCliBackend(buildAnthropicStreamingCliBackend());
   },
 });

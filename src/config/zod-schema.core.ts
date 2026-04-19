@@ -528,6 +528,9 @@ export const CliBackendSchema = z
   .object({
     command: z.string(),
     args: z.array(z.string()).optional(),
+    executionMode: z
+      .union([z.literal("spawn-per-turn"), z.literal("persistent-process")])
+      .optional(),
     output: z.union([z.literal("json"), z.literal("text"), z.literal("jsonl")]).optional(),
     resumeOutput: z.union([z.literal("json"), z.literal("text"), z.literal("jsonl")]).optional(),
     jsonlDialect: z.literal("claude-stream-json").optional(),

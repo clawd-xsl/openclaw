@@ -153,6 +153,12 @@ told us OpenClaw-style Claude CLI usage is allowed again, so OpenClaw treats
 a new policy.
 </Note>
 
+OpenClaw also ships an opt-in `claude-cli-streaming` backend for Claude Code's
+NDJSON stdin/stdout mode. It keeps one Claude process alive per OpenClaw
+session, reuses that process across turns, and only relaunches when the
+effective Claude launch context changes. The existing `claude-cli` backend
+remains the one-shot fallback path.
+
 The bundled OpenAI `codex-cli` backend passes OpenClaw's system prompt through
 Codex's `model_instructions_file` config override (`-c
 model_instructions_file="..."`). Codex does not expose a Claude-style
@@ -296,6 +302,7 @@ opt into a generated MCP config overlay with `bundleMcp: true`.
 Current bundled behavior:
 
 - `claude-cli`: generated strict MCP config file
+- `claude-cli-streaming`: generated strict MCP config file
 - `codex-cli`: inline config overrides for `mcp_servers`
 - `google-gemini-cli`: generated Gemini system settings file
 

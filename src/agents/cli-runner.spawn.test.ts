@@ -213,9 +213,9 @@ describe("runCliAgent spawn path", () => {
         bootstrapFiles: [],
         contextFiles: [],
       }),
-      resolveOpenClawDocsPath: async () => undefined,
+      resolveOpenClawDocsPath: async () => null,
       getActiveMcpLoopbackRuntime: () => undefined,
-      ensureMcpLoopbackServer: async () => {},
+      ensureMcpLoopbackServer: async () => ({ port: 0, close: async () => {} }) as never,
     });
 
     const context = await prepareCliRunContext({
@@ -267,9 +267,9 @@ describe("runCliAgent spawn path", () => {
         bootstrapFiles: [],
         contextFiles: [],
       }),
-      resolveOpenClawDocsPath: async () => undefined,
+      resolveOpenClawDocsPath: async () => null,
       getActiveMcpLoopbackRuntime: () => undefined,
-      ensureMcpLoopbackServer: async () => {},
+      ensureMcpLoopbackServer: async () => ({ port: 0, close: async () => {} }) as never,
     });
 
     const context = await prepareCliRunContext({
@@ -317,7 +317,7 @@ describe("runCliAgent spawn path", () => {
         bootstrapFiles: [],
         contextFiles: [],
       }),
-      resolveOpenClawDocsPath: async () => undefined,
+      resolveOpenClawDocsPath: async () => null,
       getActiveMcpLoopbackRuntime: () => ({
         port: 23119,
         token: "loopback-token",
@@ -347,6 +347,43 @@ describe("runCliAgent spawn path", () => {
     expect(context.preparedBackend.mcpConfigHash).toBeTruthy();
     expect(context.preparedBackend.mcpConfigHash).not.toBe("old-mcp-hash");
     expect(context.reusableCliSession).toEqual({ sessionId: "claude-session-123" });
+  });
+
+  it("does not blindly resume Claude when an old binding is missing MCP continuity metadata", async () => {
+    setCliRunnerPrepareTestDeps({
+      makeBootstrapWarn: () => () => {},
+      resolveBootstrapContextForRun: async () => ({
+        bootstrapFiles: [],
+        contextFiles: [],
+      }),
+      resolveOpenClawDocsPath: async () => null,
+      getActiveMcpLoopbackRuntime: () => ({
+        port: 23119,
+        token: "loopback-token",
+      }),
+      ensureMcpLoopbackServer: async () => {
+        throw new Error("should not start loopback server when runtime is already active");
+      },
+    });
+
+    const context = await prepareCliRunContext({
+      sessionId: "session-current",
+      sessionKey: "agent:main:test",
+      agentId: "main",
+      sessionFile: "/tmp/session.jsonl",
+      workspaceDir: "/tmp",
+      prompt: "hello",
+      provider: "claude-cli-streaming",
+      model: "sonnet-4.6",
+      timeoutMs: 1_000,
+      runId: "run-claude-mcp-no-metadata-resume",
+      cliSessionBinding: {
+        sessionId: "claude-session-legacy",
+      },
+    });
+
+    expect(context.preparedBackend.mcpConfigHash).toBeTruthy();
+    expect(context.reusableCliSession).toEqual({ invalidatedReason: "mcp" });
   });
 
   it("pipes Claude prompts over stdin instead of argv", async () => {

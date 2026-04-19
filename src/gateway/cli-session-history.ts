@@ -1,7 +1,7 @@
 import { normalizeProviderId } from "../agents/model-selection.js";
 import type { SessionEntry } from "../config/sessions.js";
 import {
-  CLAUDE_CLI_PROVIDER,
+  CLAUDE_CLI_HISTORY_PROVIDERS,
   readClaudeCliSessionMessages,
   resolveClaudeCliBindingSessionId,
   resolveClaudeCliSessionFilePath,
@@ -20,7 +20,7 @@ export function augmentChatHistoryWithCliSessionImports(params: {
   localMessages: unknown[];
   homeDir?: string;
 }): unknown[] {
-  const cliSessionId = resolveClaudeCliBindingSessionId(params.entry);
+  const cliSessionId = resolveClaudeCliBindingSessionId(params.entry, params.provider);
   if (!cliSessionId) {
     return params.localMessages;
   }
@@ -28,7 +28,9 @@ export function augmentChatHistoryWithCliSessionImports(params: {
   const normalizedProvider = normalizeProviderId(params.provider ?? "");
   if (
     normalizedProvider &&
-    normalizedProvider !== CLAUDE_CLI_PROVIDER &&
+    !CLAUDE_CLI_HISTORY_PROVIDERS.includes(
+      normalizedProvider as (typeof CLAUDE_CLI_HISTORY_PROVIDERS)[number],
+    ) &&
     params.localMessages.length > 0
   ) {
     return params.localMessages;

@@ -586,9 +586,9 @@ export async function initSessionState(params: {
       persistedAuthProfileOverrideSource ?? baseEntry?.authProfileOverrideSource,
     authProfileOverrideCompactionCount:
       persistedAuthProfileOverrideCompactionCount ?? baseEntry?.authProfileOverrideCompactionCount,
-    cliSessionIds: baseEntry?.cliSessionIds,
-    cliSessionBindings: baseEntry?.cliSessionBindings,
-    claudeCliSessionId: baseEntry?.claudeCliSessionId,
+    cliSessionIds: isNewSession ? undefined : baseEntry?.cliSessionIds,
+    cliSessionBindings: isNewSession ? undefined : baseEntry?.cliSessionBindings,
+    claudeCliSessionId: isNewSession ? undefined : baseEntry?.claudeCliSessionId,
     label: persistedLabel ?? baseEntry?.label,
     spawnedBy: persistedSpawnedBy ?? baseEntry?.spawnedBy,
     spawnedWorkspaceDir: persistedSpawnedWorkspaceDir ?? baseEntry?.spawnedWorkspaceDir,

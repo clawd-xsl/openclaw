@@ -29,6 +29,10 @@ type CachedScopedTools = {
 export class McpLoopbackToolCache {
   #entries = new Map<string, CachedScopedTools>();
 
+  #sortTools(tools: McpLoopbackTool[]): McpLoopbackTool[] {
+    return [...tools].toSorted((left, right) => left.name.localeCompare(right.name));
+  }
+
   resolve(params: {
     cfg: OpenClawConfig;
     sessionKey: string;
@@ -59,9 +63,13 @@ export class McpLoopbackToolCache {
       loopbackToolSurface: toolSurface,
       excludeToolNames: toolSurface === "filtered" ? NATIVE_TOOL_EXCLUDE : undefined,
     });
+    // Keep Claude-facing MCP tool bytes stable across turns. Internal plugin or
+    // policy resolution can legitimately produce the same tool set in a
+    // different order; sorting here avoids gratuitous prompt-cache churn.
+    const sortedTools = this.#sortTools(next.tools);
     const nextEntry: CachedScopedTools = {
-      tools: next.tools,
-      toolSchema: buildMcpToolSchema(next.tools),
+      tools: sortedTools,
+      toolSchema: buildMcpToolSchema(sortedTools),
       configRef: params.cfg,
       time: now,
     };

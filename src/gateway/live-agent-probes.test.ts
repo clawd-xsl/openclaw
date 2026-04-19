@@ -10,6 +10,7 @@ import {
 describe("live-agent-probes", () => {
   it("normalizes cli backend ids into live agent families", () => {
     expect(normalizeLiveAgentFamily("claude-cli")).toBe("claude");
+    expect(normalizeLiveAgentFamily("claude-cli-streaming")).toBe("claude");
     expect(normalizeLiveAgentFamily("codex")).toBe("codex");
     expect(normalizeLiveAgentFamily("google-gemini-cli")).toBe("gemini");
   });

@@ -1,3 +1,4 @@
+import { logVerbose } from "../globals.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import type { PreparedCliRunContext, RunCliAgentParams } from "./cli-runner/types.js";
 import { CliSessionContinuityError } from "./cli-session.js";
@@ -6,14 +7,32 @@ import { classifyFailoverReason, isFailoverErrorMessage } from "./pi-embedded-he
 import type { EmbeddedPiRunResult } from "./pi-embedded-runner.js";
 
 export async function runCliAgent(params: RunCliAgentParams): Promise<EmbeddedPiRunResult> {
+  const traceId = params.runId ?? params.sessionKey ?? params.sessionId;
+  const traceStartedAt = Date.now();
+  const trace = (stage: string, details?: string) => {
+    const suffix = details ? ` ${details}` : "";
+    logVerbose(
+      `[reply-trace ${traceId}] runCliAgent:${stage} +${Date.now() - traceStartedAt}ms${suffix}`,
+    );
+  };
+  trace("prepare-start", `provider=${params.provider} model=${params.model}`);
   const { prepareCliRunContext } = await import("./cli-runner/prepare.runtime.js");
   const context = await prepareCliRunContext(params);
+  trace("prepare-done");
   return runPreparedCliAgent(context);
 }
 
 export async function runPreparedCliAgent(
   context: PreparedCliRunContext,
 ): Promise<EmbeddedPiRunResult> {
+  const traceId = context.params.runId ?? context.params.sessionKey ?? context.params.sessionId;
+  const traceStartedAt = Date.now();
+  const trace = (stage: string, details?: string) => {
+    const suffix = details ? ` ${details}` : "";
+    logVerbose(
+      `[reply-trace ${traceId}] runPreparedCliAgent:${stage} +${Date.now() - traceStartedAt}ms${suffix}`,
+    );
+  };
   const { executePreparedCliRun } = await import("./cli-runner/execute.runtime.js");
   const { params } = context;
   const buildCliRunResult = (resultParams: {
@@ -107,7 +126,15 @@ export async function runPreparedCliAgent(
       });
     }
     try {
+      trace(
+        "execute-start",
+        `reuse=${context.reusableCliSession.sessionId ? "resume" : "fresh"} provider=${params.provider}`,
+      );
       const output = await executePreparedCliRun(context, context.reusableCliSession.sessionId);
+      trace(
+        "execute-done",
+        `sessionId=${output.sessionId ?? "none"} textChars=${output.text?.length ?? 0}`,
+      );
       const effectiveCliSessionId = output.sessionId ?? context.reusableCliSession.sessionId;
       return buildCliRunResult({ output, effectiveCliSessionId });
     } catch (err) {

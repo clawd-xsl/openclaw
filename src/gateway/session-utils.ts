@@ -1029,7 +1029,7 @@ export async function resolveGatewayModelSupportsImages(params: {
         return true;
       }
       if (
-        normalizedProvider === "claude-cli" &&
+        normalizedProvider?.startsWith("claude-cli") &&
         normalizedCandidates.some(
           (candidate) =>
             candidate === "opus" ||
@@ -1043,7 +1043,7 @@ export async function resolveGatewayModelSupportsImages(params: {
       return false;
     }
     if (
-      normalizedProvider === "claude-cli" &&
+      normalizedProvider?.startsWith("claude-cli") &&
       normalizedCandidates.some(
         (candidate) =>
           candidate === "opus" ||

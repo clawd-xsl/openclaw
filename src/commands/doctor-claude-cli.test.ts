@@ -112,6 +112,36 @@ describe("noteClaudeCliHealth", () => {
     });
   });
 
+  it("detects claude-cli-streaming model selection as Claude CLI usage", async () => {
+    await withTempHome(({ homeDir, workspaceDir }) => {
+      const noteFn = vi.fn();
+      noteClaudeCliHealth(
+        {
+          agents: {
+            defaults: {
+              model: { primary: "claude-cli-streaming/claude-sonnet-4-6" },
+            },
+          },
+        },
+        {
+          homeDir,
+          workspaceDir,
+          noteFn,
+          store: createStore(),
+          readClaudeCliCredentials: () => ({
+            type: "oauth",
+            expires: Date.now() + 60_000,
+          }),
+          resolveCommandPath: () => "/opt/homebrew/bin/claude",
+        },
+      );
+
+      expect(noteFn).toHaveBeenCalledTimes(1);
+      const body = String(noteFn.mock.calls[0]?.[0]);
+      expect(body).toContain("Headless Claude auth: OK (oauth).");
+    });
+  });
+
   it("explains the exact bad wiring when the claude-cli auth profile is missing", async () => {
     await withTempHome(({ homeDir, workspaceDir }) => {
       const noteFn = vi.fn();

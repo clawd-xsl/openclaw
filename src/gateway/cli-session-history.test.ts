@@ -255,6 +255,80 @@ describe("cli session history", () => {
     });
   });
 
+  it("augments chat history when a session uses claude-cli-streaming", async () => {
+    await withClaudeProjectsDir(async ({ homeDir, sessionId }) => {
+      const messages = augmentChatHistoryWithCliSessionImports({
+        entry: {
+          sessionId: "openclaw-session",
+          updatedAt: Date.now(),
+          cliSessionBindings: {
+            "claude-cli-streaming": {
+              sessionId,
+            },
+          },
+        },
+        provider: "claude-cli-streaming",
+        localMessages: [],
+        homeDir,
+      });
+      expect(messages).toHaveLength(3);
+      expect(messages[0]).toMatchObject({
+        role: "user",
+        __openclaw: { cliSessionId: sessionId },
+      });
+    });
+  });
+
+  it("prefers the active streaming binding when both Claude family bindings exist", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-claude-history-dual-"));
+    const homeDir = path.join(root, "home");
+    const legacySessionId = "11111111-1111-4111-8111-111111111111";
+    const streamingSessionId = "22222222-2222-4222-8222-222222222222";
+    const projectsDir = path.join(homeDir, ".claude", "projects", "demo-workspace");
+    await fs.mkdir(projectsDir, { recursive: true });
+    await fs.writeFile(
+      path.join(projectsDir, `${legacySessionId}.jsonl`),
+      createClaudeHistoryLines(legacySessionId),
+      "utf-8",
+    );
+    await fs.writeFile(
+      path.join(projectsDir, `${streamingSessionId}.jsonl`),
+      createClaudeHistoryLines(streamingSessionId),
+      "utf-8",
+    );
+    process.env.HOME = homeDir;
+    try {
+      const messages = augmentChatHistoryWithCliSessionImports({
+        entry: {
+          sessionId: "openclaw-session",
+          updatedAt: Date.now(),
+          cliSessionBindings: {
+            "claude-cli": {
+              sessionId: legacySessionId,
+            },
+            "claude-cli-streaming": {
+              sessionId: streamingSessionId,
+            },
+          },
+        },
+        provider: "claude-cli-streaming",
+        localMessages: [],
+        homeDir,
+      });
+      expect(messages[0]).toMatchObject({
+        role: "user",
+        __openclaw: { cliSessionId: streamingSessionId },
+      });
+    } finally {
+      if (ORIGINAL_HOME === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = ORIGINAL_HOME;
+      }
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("falls back to legacy cliSessionIds when bindings are absent", async () => {
     await withClaudeProjectsDir(async ({ homeDir, sessionId }) => {
       const messages = augmentChatHistoryWithCliSessionImports({

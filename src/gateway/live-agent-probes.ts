@@ -30,7 +30,7 @@ export type LiveCronProbeSpec = {
 
 export function normalizeLiveAgentFamily(raw: string): LiveAgentFamily {
   const normalized = normalizeOptionalLowercaseString(raw);
-  if (normalized === "claude" || normalized === "claude-cli") {
+  if (normalized === "claude" || normalized?.startsWith("claude-cli")) {
     return "claude";
   }
   if (normalized === "codex" || normalized === "codex-cli") {

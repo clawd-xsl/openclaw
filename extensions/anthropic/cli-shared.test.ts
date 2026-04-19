@@ -5,6 +5,7 @@ import {
   normalizeClaudeBackendConfig,
   normalizeClaudeIsolationArgs,
   normalizeClaudePermissionArgs,
+  normalizeClaudeSlashCommandArgs,
   normalizeClaudeSettingsArgs,
   normalizeClaudeSettingSourcesArgs,
 } from "./cli-shared.js";
@@ -96,6 +97,25 @@ describe("normalizeClaudeIsolationArgs", () => {
   });
 });
 
+describe("normalizeClaudeSlashCommandArgs", () => {
+  it("injects disable-slash-commands when args omit the flag", () => {
+    expect(
+      normalizeClaudeSlashCommandArgs(["-p", "--output-format", "stream-json", "--verbose"]),
+    ).toEqual(["-p", "--output-format", "stream-json", "--verbose", "--disable-slash-commands"]);
+  });
+
+  it("does not duplicate disable-slash-commands when already present", () => {
+    expect(
+      normalizeClaudeSlashCommandArgs([
+        "-p",
+        "--disable-slash-commands",
+        "--output-format",
+        "stream-json",
+      ]),
+    ).toEqual(["-p", "--disable-slash-commands", "--output-format", "stream-json"]);
+  });
+});
+
 describe("normalizeClaudeSettingsArgs", () => {
   it("injects disableAllHooks when args omit the flag", () => {
     expect(normalizeClaudeSettingsArgs(["-p", "--output-format", "stream-json"])).toEqual([
@@ -132,6 +152,7 @@ describe("normalizeClaudeBackendConfig", () => {
       "--verbose",
       "--tools",
       "",
+      "--disable-slash-commands",
       "--setting-sources",
       "",
       "--settings",
@@ -148,6 +169,7 @@ describe("normalizeClaudeBackendConfig", () => {
       "{sessionId}",
       "--tools",
       "",
+      "--disable-slash-commands",
       "--setting-sources",
       "",
       "--settings",
@@ -188,6 +210,7 @@ describe("normalizeClaudeBackendConfig", () => {
     expect(normalized?.args).toContain("bypassPermissions");
     expect(normalized?.args).toContain("--tools");
     expect(normalized?.args).toContain("");
+    expect(normalized?.args).toContain("--disable-slash-commands");
     expect(normalized?.args).toContain("--setting-sources");
     expect(normalized?.args).toContain("--settings");
     expect(normalized?.args).toContain('{"disableAllHooks":true}');
@@ -195,6 +218,7 @@ describe("normalizeClaudeBackendConfig", () => {
     expect(normalized?.resumeArgs).toContain("bypassPermissions");
     expect(normalized?.resumeArgs).toContain("--tools");
     expect(normalized?.resumeArgs).toContain("");
+    expect(normalized?.resumeArgs).toContain("--disable-slash-commands");
     expect(normalized?.resumeArgs).toContain("--setting-sources");
     expect(normalized?.resumeArgs).toContain("--settings");
     expect(normalized?.resumeArgs).toContain('{"disableAllHooks":true}');
@@ -214,6 +238,7 @@ describe("normalizeClaudeBackendConfig", () => {
     });
     expect(backend.config.args).toContain("--tools");
     expect(backend.config.args).toContain("");
+    expect(backend.config.args).toContain("--disable-slash-commands");
     expect(backend.config.args).toContain("--setting-sources");
     expect(backend.config.args).toContain("--settings");
     expect(backend.config.args).toContain('{"disableAllHooks":true}');
@@ -222,6 +247,7 @@ describe("normalizeClaudeBackendConfig", () => {
     expect(backend.config.resumeArgs).toContain('{"disableAllHooks":true}');
     expect(backend.config.resumeArgs).toContain("--tools");
     expect(backend.config.resumeArgs).toContain("");
+    expect(backend.config.resumeArgs).toContain("--disable-slash-commands");
     expect(backend.config.systemPromptArg).toBe("--system-prompt");
     expect(backend.config.systemPromptMode).toBe("replace");
     expect(backend.config.systemPromptWhen).toBe("always");

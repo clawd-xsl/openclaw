@@ -9,6 +9,8 @@ import type { PromptImageOrderEntry } from "../../media/prompt-image-order.js";
 import type { ResolvedCliBackend } from "../cli-backends.js";
 import type { CliSessionInvalidationReason } from "../cli-session.js";
 import type { SkillSnapshot } from "../skills.js";
+import type { CliBundleMcpSpec } from "./bundle-mcp.js";
+import type { ClaudeCliSkillsPluginSpec } from "./claude-skills-plugin.js";
 
 export type RunCliAgentParams = {
   sessionId: string;
@@ -51,6 +53,8 @@ export type CliPreparedBackend = {
   cleanup?: () => Promise<void>;
   mcpConfigHash?: string;
   env?: Record<string, string>;
+  bundleMcpSpec?: CliBundleMcpSpec;
+  claudeSkillsPluginSpec?: ClaudeCliSkillsPluginSpec;
 };
 
 export type CliReusableSession = {

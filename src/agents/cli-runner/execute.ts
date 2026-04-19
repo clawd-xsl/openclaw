@@ -5,6 +5,7 @@ import { requestHeartbeatNow as requestHeartbeatNowImpl } from "../../infra/hear
 import { sanitizeHostExecEnv } from "../../infra/host-env-security.js";
 import { enqueueSystemEvent as enqueueSystemEventImpl } from "../../infra/system-events.js";
 import { getProcessSupervisor as getProcessSupervisorImpl } from "../../process/supervisor/index.js";
+import type { RunExit } from "../../process/supervisor/types.js";
 import { scopedHeartbeatWakeOptions } from "../../routing/session-key.js";
 import { prependBootstrapPromptWarning } from "../bootstrap-budget.js";
 import {
@@ -19,7 +20,10 @@ import { FailoverError, resolveFailoverStatus } from "../failover-error.js";
 import { classifyFailoverReason } from "../pi-embedded-helpers.js";
 import { applyPluginTextReplacements } from "../plugin-text-transforms.js";
 import { applySkillEnvOverridesFromSnapshot } from "../skills.js";
-import { prepareClaudeCliSkillsPlugin } from "./claude-skills-plugin.js";
+import {
+  buildClaudeCliSkillsPluginSpec,
+  materializeClaudeCliSkillsPlugin,
+} from "./claude-skills-plugin.js";
 import {
   buildCliSupervisorScopeKey,
   buildCliArgs,
@@ -37,6 +41,7 @@ import {
   CLI_BACKEND_LOG_OUTPUT_ENV,
   LEGACY_CLAUDE_CLI_LOG_OUTPUT_ENV,
 } from "./log.js";
+import { executePersistentCliTurn } from "./persistent-process.js";
 import type { PreparedCliRunContext } from "./types.js";
 
 const executeDeps = {
@@ -183,19 +188,7 @@ export async function executePreparedCliRun(
     cliSessionIdToUse && resolvedSessionId && backend.resumeArgs && backend.resumeArgs.length > 0,
   );
   const outputMode = useResume ? (backend.resumeOutput ?? backend.output) : backend.output;
-  const systemPromptArg = resolveSystemPromptUsage({
-    backend,
-    isNewSession: isNew,
-    systemPrompt: context.systemPrompt,
-  });
-  const includeSystemPromptOnResume = context.backendResolved.id === "claude-cli";
-  const systemPromptFile =
-    (!useResume || includeSystemPromptOnResume) && systemPromptArg
-      ? await writeCliSystemPromptFile({
-          backend,
-          systemPrompt: systemPromptArg,
-        })
-      : undefined;
+  const persistentExecution = backend.executionMode === "persistent-process";
 
   let prompt = applyPluginTextReplacements(
     prependBootstrapPromptWarning(params.prompt, context.bootstrapPromptWarningLines, {
@@ -215,41 +208,68 @@ export async function executePreparedCliRun(
   });
   prompt = promptWithImages;
 
-  const { argsPrompt, stdin } = resolvePromptInput({
-    backend,
-    prompt,
-  });
-  const stdinPayload = stdin ?? "";
-  const baseArgs = useResume ? (backend.resumeArgs ?? backend.args ?? []) : (backend.args ?? []);
-  const resolvedArgs = useResume
-    ? baseArgs.map((entry) => entry.replaceAll("{sessionId}", resolvedSessionId ?? ""))
-    : baseArgs;
-  const claudeSkillsPlugin = await prepareClaudeCliSkillsPlugin({
-    backendId: context.backendResolved.id,
-    skillsSnapshot: params.skillsSnapshot,
-  });
-  const args = buildCliArgs({
-    backend,
-    baseArgs:
-      claudeSkillsPlugin.args.length > 0
-        ? [...resolvedArgs, ...claudeSkillsPlugin.args]
-        : resolvedArgs,
-    modelId: context.normalizedModel,
-    sessionId: resolvedSessionId,
-    systemPrompt: systemPromptArg,
-    systemPromptFilePath: systemPromptFile?.filePath,
-    imagePaths,
-    promptArg: argsPrompt,
-    useResume,
-    includeSystemPromptOnResume,
-  });
+  let argsPrompt: string | undefined;
+  let stdinPayload = "";
+  let claudeSkillsPlugin: Awaited<ReturnType<typeof materializeClaudeCliSkillsPlugin>> | undefined;
+  let systemPromptFile: Awaited<ReturnType<typeof writeCliSystemPromptFile>> | undefined;
+  let args: string[] = [];
+  if (!persistentExecution) {
+    const systemPromptArg = resolveSystemPromptUsage({
+      backend,
+      isNewSession: isNew,
+      systemPrompt: context.systemPrompt,
+    });
+    const includeSystemPromptOnResume = context.backendResolved.id === "claude-cli";
+    systemPromptFile =
+      (!useResume || includeSystemPromptOnResume) && systemPromptArg
+        ? await writeCliSystemPromptFile({
+            backend,
+            systemPrompt: systemPromptArg,
+          })
+        : undefined;
+    const promptInput = resolvePromptInput({
+      backend,
+      prompt,
+    });
+    argsPrompt = promptInput.argsPrompt;
+    stdinPayload = promptInput.stdin ?? "";
+    const baseArgs = useResume ? (backend.resumeArgs ?? backend.args ?? []) : (backend.args ?? []);
+    const resolvedArgs = useResume
+      ? baseArgs.map((entry) => entry.replaceAll("{sessionId}", resolvedSessionId ?? ""))
+      : baseArgs;
+    const claudeSkillsPluginSpec =
+      context.preparedBackend.claudeSkillsPluginSpec ??
+      (await buildClaudeCliSkillsPluginSpec({
+        backendId: context.backendResolved.id,
+        skillsSnapshot: params.skillsSnapshot,
+      }));
+    claudeSkillsPlugin = await materializeClaudeCliSkillsPlugin({
+      spec: claudeSkillsPluginSpec,
+    });
+    args = buildCliArgs({
+      backend,
+      baseArgs:
+        claudeSkillsPlugin.args.length > 0
+          ? [...resolvedArgs, ...claudeSkillsPlugin.args]
+          : resolvedArgs,
+      modelId: context.normalizedModel,
+      sessionId: resolvedSessionId,
+      systemPrompt: systemPromptArg,
+      systemPromptFilePath: systemPromptFile?.filePath,
+      imagePaths,
+      promptArg: argsPrompt,
+      useResume,
+      includeSystemPromptOnResume,
+    });
+  }
 
   const queueKey = resolveCliRunQueueKey({
     backendId: context.backendResolved.id,
     serialize: backend.serialize,
     runId: params.runId,
     workspaceDir: context.workspaceDir,
-    cliSessionId: useResume ? resolvedSessionId : undefined,
+    sessionScopeKey: persistentExecution ? (params.sessionKey ?? params.sessionId) : undefined,
+    cliSessionId: !persistentExecution && useResume ? resolvedSessionId : undefined,
   });
 
   try {
@@ -298,7 +318,7 @@ export async function executePreparedCliRun(
 
           return next;
         })();
-        if (logOutputText) {
+        if (logOutputText && !persistentExecution) {
           const logArgs = buildCliLogArgs({
             args,
             systemPromptArg: backend.systemPromptArg,
@@ -308,6 +328,8 @@ export async function executePreparedCliRun(
             argsPrompt,
           });
           cliBackendLog.info(`cli argv: ${backend.command} ${logArgs.join(" ")}`);
+        }
+        if (logOutputText) {
           cliBackendLog.info(`cli env auth: ${buildCliEnvAuthLog(env)}`);
         }
 
@@ -316,79 +338,98 @@ export async function executePreparedCliRun(
           timeoutMs: params.timeoutMs,
           useResume,
         });
+        const onAssistantDelta = ({ text, delta }: { text: string; delta: string }) => {
+          emitAgentEvent({
+            runId: params.runId,
+            stream: "assistant",
+            data: {
+              text: applyPluginTextReplacements(
+                text,
+                context.backendResolved.textTransforms?.output,
+              ),
+              delta: applyPluginTextReplacements(
+                delta,
+                context.backendResolved.textTransforms?.output,
+              ),
+            },
+          });
+        };
         const streamingParser =
-          backend.output === "jsonl"
+          !persistentExecution && backend.output === "jsonl"
             ? createCliJsonlStreamingParser({
                 backend,
                 providerId: context.backendResolved.id,
-                onAssistantDelta: ({ text, delta }) => {
-                  emitAgentEvent({
-                    runId: params.runId,
-                    stream: "assistant",
-                    data: {
-                      text: applyPluginTextReplacements(
-                        text,
-                        context.backendResolved.textTransforms?.output,
-                      ),
-                      delta: applyPluginTextReplacements(
-                        delta,
-                        context.backendResolved.textTransforms?.output,
-                      ),
-                    },
-                  });
-                },
+                onAssistantDelta,
               })
             : null;
         const supervisor = executeDeps.getProcessSupervisor();
-        const scopeKey = buildCliSupervisorScopeKey({
-          backend,
-          backendId: context.backendResolved.id,
-          cliSessionId: useResume ? resolvedSessionId : undefined,
-        });
+        let result: RunExit & { sessionId?: string };
+        let currentPid: number | undefined;
+        if (persistentExecution) {
+          result = await executePersistentCliTurn({
+            context,
+            backend,
+            env,
+            supervisor,
+            prompt,
+            resumeSessionId: useResume ? resolvedSessionId : undefined,
+            resolvedSessionId,
+            timeoutMs: params.timeoutMs,
+            noOutputTimeoutMs,
+            logOutputText,
+            onAssistantDelta,
+          });
+        } else {
+          const scopeKey = buildCliSupervisorScopeKey({
+            backend,
+            backendId: context.backendResolved.id,
+            cliSessionId: useResume ? resolvedSessionId : undefined,
+          });
 
-        const managedRun = await supervisor.spawn({
-          sessionId: params.sessionId,
-          backendId: context.backendResolved.id,
-          scopeKey,
-          replaceExistingScope: Boolean(useResume && scopeKey),
-          mode: "child",
-          argv: [backend.command, ...args],
-          timeoutMs: params.timeoutMs,
-          noOutputTimeoutMs,
-          cwd: context.workspaceDir,
-          env,
-          input: stdinPayload,
-          onStdout: streamingParser ? (chunk: string) => streamingParser.push(chunk) : undefined,
-        });
-        const replyBackendHandle = params.replyOperation
-          ? {
-              kind: "cli" as const,
-              cancel: () => {
-                managedRun.cancel("manual-cancel");
-              },
-              isStreaming: () => false,
-            }
-          : undefined;
-        if (replyBackendHandle) {
-          params.replyOperation?.attachBackend(replyBackendHandle);
-        }
-        const abortManagedRun = () => {
-          managedRun.cancel("manual-cancel");
-        };
-        params.abortSignal?.addEventListener("abort", abortManagedRun, { once: true });
-        if (params.abortSignal?.aborted) {
-          abortManagedRun();
-        }
-        let result: Awaited<ReturnType<typeof managedRun.wait>>;
-        try {
-          result = await managedRun.wait();
-        } finally {
+          const managedRun = await supervisor.spawn({
+            sessionId: params.sessionId,
+            backendId: context.backendResolved.id,
+            scopeKey,
+            replaceExistingScope: Boolean(useResume && scopeKey),
+            mode: "child",
+            argv: [backend.command, ...args],
+            timeoutMs: params.timeoutMs,
+            noOutputTimeoutMs,
+            cwd: context.workspaceDir,
+            env,
+            input: stdinPayload,
+            onStdout: streamingParser ? (chunk: string) => streamingParser.push(chunk) : undefined,
+          });
+          currentPid = managedRun.pid;
+          const replyBackendHandle = params.replyOperation
+            ? {
+                kind: "cli" as const,
+                cancel: () => {
+                  managedRun.cancel("manual-cancel");
+                },
+                isStreaming: () => false,
+              }
+            : undefined;
           if (replyBackendHandle) {
-            params.replyOperation?.detachBackend(replyBackendHandle);
+            params.replyOperation?.attachBackend(replyBackendHandle);
           }
-          params.abortSignal?.removeEventListener("abort", abortManagedRun);
+          const abortManagedRun = () => {
+            managedRun.cancel("manual-cancel");
+          };
+          params.abortSignal?.addEventListener("abort", abortManagedRun, { once: true });
+          if (params.abortSignal?.aborted) {
+            abortManagedRun();
+          }
+          try {
+            result = await managedRun.wait();
+          } finally {
+            if (replyBackendHandle) {
+              params.replyOperation?.detachBackend(replyBackendHandle);
+            }
+            params.abortSignal?.removeEventListener("abort", abortManagedRun);
+          }
+          streamingParser?.finish();
         }
-        streamingParser?.finish();
         if (params.abortSignal?.aborted && result.reason === "manual-cancel") {
           throw createCliAbortError();
         }
@@ -430,7 +471,7 @@ export async function executePreparedCliRun(
           if (result.reason === "no-output-timeout" || result.noOutputTimedOut) {
             const timeoutReason = `CLI produced no output for ${Math.round(noOutputTimeoutMs / 1000)}s and was terminated.`;
             cliBackendLog.warn(
-              `cli watchdog timeout: provider=${params.provider} model=${context.modelId} session=${resolvedSessionId ?? params.sessionId} noOutputTimeoutMs=${noOutputTimeoutMs} pid=${managedRun.pid ?? "unknown"}`,
+              `cli watchdog timeout: provider=${params.provider} model=${context.modelId} session=${resolvedSessionId ?? params.sessionId} noOutputTimeoutMs=${noOutputTimeoutMs} pid=${currentPid ?? "unknown"}`,
             );
             if (params.sessionKey) {
               const stallNotice = [
@@ -499,7 +540,7 @@ export async function executePreparedCliRun(
           backend,
           providerId: context.backendResolved.id,
           outputMode,
-          fallbackSessionId: resolvedSessionId,
+          fallbackSessionId: result.sessionId ?? resolvedSessionId,
         });
         const rawText = parsed.text;
         const transformedPayloads = parsed.payloads?.map((payload) => ({
@@ -523,10 +564,8 @@ export async function executePreparedCliRun(
       }
     });
   } finally {
-    await claudeSkillsPlugin.cleanup();
-    if (systemPromptFile) {
-      await systemPromptFile.cleanup();
-    }
+    await claudeSkillsPlugin?.cleanup();
+    await systemPromptFile?.cleanup();
     if (cleanupImages) {
       await cleanupImages();
     }

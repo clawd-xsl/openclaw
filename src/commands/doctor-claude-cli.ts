@@ -14,6 +14,7 @@ import { readClaudeCliCredentialsCached } from "../agents/cli-credentials.js";
 import { formatCliCommand } from "../cli/command-format.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveExecutablePath } from "../infra/executable-path.js";
+import { isClaudeCliFamilyProvider } from "../plugin-sdk/anthropic-cli.js";
 import {
   normalizeOptionalLowercaseString,
   normalizeOptionalString,
@@ -36,11 +37,13 @@ function usesClaudeCliModelSelection(cfg: OpenClawConfig): boolean {
   const primary = resolvePrimaryStringValue(
     cfg.agents?.defaults?.model as string | { primary?: string; fallbacks?: string[] } | undefined,
   );
-  if (normalizeOptionalLowercaseString(primary)?.startsWith(`${CLAUDE_CLI_PROVIDER}/`)) {
+  if (
+    isClaudeCliFamilyProvider(normalizeOptionalLowercaseString(primary)?.split("/", 1)[0] ?? "")
+  ) {
     return true;
   }
   return Object.keys(cfg.agents?.defaults?.models ?? {}).some((key) =>
-    normalizeOptionalLowercaseString(key)?.startsWith(`${CLAUDE_CLI_PROVIDER}/`),
+    isClaudeCliFamilyProvider(normalizeOptionalLowercaseString(key)?.split("/", 1)[0] ?? ""),
   );
 }
 
@@ -49,15 +52,11 @@ function hasClaudeCliConfigSignals(cfg: OpenClawConfig): boolean {
     return true;
   }
   const backendConfig = cfg.agents?.defaults?.cliBackends ?? {};
-  if (
-    Object.keys(backendConfig).some(
-      (key) => normalizeOptionalLowercaseString(key) === CLAUDE_CLI_PROVIDER,
-    )
-  ) {
+  if (Object.keys(backendConfig).some((key) => isClaudeCliFamilyProvider(key))) {
     return true;
   }
-  return Object.values(cfg.auth?.profiles ?? {}).some(
-    (profile) => profile?.provider === CLAUDE_CLI_PROVIDER,
+  return Object.values(cfg.auth?.profiles ?? {}).some((profile) =>
+    isClaudeCliFamilyProvider(profile?.provider ?? ""),
   );
 }
 
@@ -65,13 +64,15 @@ function hasClaudeCliStoreSignals(store: AuthProfileStore): boolean {
   if (store.profiles[CLAUDE_CLI_PROFILE_ID]) {
     return true;
   }
-  return Object.values(store.profiles).some((profile) => profile?.provider === CLAUDE_CLI_PROVIDER);
+  return Object.values(store.profiles).some((profile) =>
+    isClaudeCliFamilyProvider(profile?.provider ?? ""),
+  );
 }
 
 function resolveClaudeCliCommand(cfg: OpenClawConfig): string {
   const configured = cfg.agents?.defaults?.cliBackends ?? {};
   for (const [key, entry] of Object.entries(configured)) {
-    if (normalizeOptionalLowercaseString(key) !== CLAUDE_CLI_PROVIDER) {
+    if (!isClaudeCliFamilyProvider(key)) {
       continue;
     }
     const command = normalizeOptionalString(entry?.command);

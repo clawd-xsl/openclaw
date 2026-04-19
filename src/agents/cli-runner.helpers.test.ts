@@ -492,6 +492,19 @@ describe("resolveCliRunQueueKey", () => {
     ).toBe("claude-cli:session:claude-session-123");
   });
 
+  it("keeps persistent Claude CLI runs on the stable OpenClaw session scope", () => {
+    expect(
+      resolveCliRunQueueKey({
+        backendId: "claude-cli-streaming",
+        serialize: true,
+        runId: "run-2b",
+        workspaceDir: "/tmp/project-a",
+        sessionScopeKey: "agent:main:main",
+        cliSessionId: "claude-session-123",
+      }),
+    ).toBe("claude-cli-streaming:scope:agent:main:main");
+  });
+
   it("keeps non-Claude backends on the provider lane when serialized", () => {
     expect(
       resolveCliRunQueueKey({

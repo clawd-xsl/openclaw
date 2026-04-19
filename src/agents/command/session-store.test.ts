@@ -80,4 +80,69 @@ describe("updateSessionStoreAfterAgentRun", () => {
     expect(persisted[sessionKey]?.cliSessionIds?.["claude-cli"]).toBe("cli-session-123");
     expect(persisted[sessionKey]?.claudeCliSessionId).toBe("cli-session-123");
   });
+
+  it("persists claude-cli-streaming session bindings under the streaming provider key", async () => {
+    const cfg = {
+      agents: {
+        defaults: {
+          cliBackends: {
+            "claude-cli-streaming": {
+              command: "claude",
+            },
+          },
+        },
+      },
+    } as OpenClawConfig;
+    const sessionKey = "agent:main:explicit:test-claude-cli-streaming";
+    const sessionId = "test-openclaw-session";
+    const sessionStore: Record<string, SessionEntry> = {
+      [sessionKey]: {
+        sessionId,
+        updatedAt: 1,
+      },
+    };
+    await fs.writeFile(storePath, JSON.stringify(sessionStore, null, 2));
+
+    const result: EmbeddedPiRunResult = {
+      meta: {
+        durationMs: 1,
+        agentMeta: {
+          sessionId: "stream-session-123",
+          provider: "claude-cli-streaming",
+          model: "claude-sonnet-4-6",
+          cliSessionBinding: {
+            sessionId: "stream-session-123",
+          },
+        },
+      },
+    };
+
+    await updateSessionStoreAfterAgentRun({
+      cfg,
+      sessionId,
+      sessionKey,
+      storePath,
+      sessionStore,
+      defaultProvider: "claude-cli-streaming",
+      defaultModel: "claude-sonnet-4-6",
+      result,
+    });
+
+    expect(sessionStore[sessionKey]?.cliSessionBindings?.["claude-cli-streaming"]).toEqual({
+      sessionId: "stream-session-123",
+    });
+    expect(sessionStore[sessionKey]?.cliSessionIds?.["claude-cli-streaming"]).toBe(
+      "stream-session-123",
+    );
+    expect(sessionStore[sessionKey]?.claudeCliSessionId).toBeUndefined();
+
+    const persisted = loadSessionStore(storePath);
+    expect(persisted[sessionKey]?.cliSessionBindings?.["claude-cli-streaming"]).toEqual({
+      sessionId: "stream-session-123",
+    });
+    expect(persisted[sessionKey]?.cliSessionIds?.["claude-cli-streaming"]).toBe(
+      "stream-session-123",
+    );
+    expect(persisted[sessionKey]?.claudeCliSessionId).toBeUndefined();
+  });
 });

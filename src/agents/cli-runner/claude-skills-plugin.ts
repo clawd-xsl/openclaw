@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { resolvePreferredOpenClawTmpDir } from "../../infra/tmp-openclaw-dir.js";
@@ -5,13 +6,18 @@ import { normalizeLowercaseStringOrEmpty } from "../../shared/string-coerce.js";
 import type { SkillSnapshot } from "../skills.js";
 import { cliBackendLog } from "./log.js";
 
-const CLAUDE_CLI_BACKEND_ID = "claude-cli";
+const CLAUDE_CLI_BACKEND_PREFIX = "claude-cli";
 const OPENCLAW_CLAUDE_PLUGIN_NAME = "openclaw-skills";
 
 type MaterializedSkill = {
   name: string;
   sourceDir: string;
   targetDirName: string;
+};
+
+export type ClaudeCliSkillsPluginSpec = {
+  signature?: string;
+  skills: MaterializedSkill[];
 };
 
 function sanitizeSkillDirName(name: string, used: Set<string>): string {
@@ -56,7 +62,30 @@ async function collectClaudePluginSkills(snapshot?: SkillSnapshot): Promise<Mate
       targetDirName: sanitizeSkillDirName(name, usedTargetNames),
     });
   }
-  return materialized;
+  return materialized.toSorted(
+    (left, right) =>
+      left.sourceDir.localeCompare(right.sourceDir) || left.name.localeCompare(right.name),
+  );
+}
+
+function buildClaudeCliSkillsPluginSignature(
+  skills: readonly MaterializedSkill[],
+): string | undefined {
+  if (skills.length === 0) {
+    return undefined;
+  }
+  return crypto
+    .createHash("sha256")
+    .update(
+      JSON.stringify(
+        skills.map((skill) => ({
+          name: skill.name,
+          sourceDir: skill.sourceDir,
+          targetDirName: skill.targetDirName,
+        })),
+      ),
+    )
+    .digest("hex");
 }
 
 async function linkOrCopySkillDir(params: { sourceDir: string; targetDir: string }) {
@@ -75,15 +104,25 @@ async function linkOrCopySkillDir(params: { sourceDir: string; targetDir: string
   }
 }
 
-export async function prepareClaudeCliSkillsPlugin(params: {
+export async function buildClaudeCliSkillsPluginSpec(params: {
   backendId: string;
   skillsSnapshot?: SkillSnapshot;
-}): Promise<{ args: string[]; cleanup: () => Promise<void>; pluginDir?: string }> {
-  if (normalizeLowercaseStringOrEmpty(params.backendId) !== CLAUDE_CLI_BACKEND_ID) {
-    return { args: [], cleanup: async () => {} };
+}): Promise<ClaudeCliSkillsPluginSpec> {
+  if (!normalizeLowercaseStringOrEmpty(params.backendId).startsWith(CLAUDE_CLI_BACKEND_PREFIX)) {
+    return { skills: [] };
   }
 
   const skills = await collectClaudePluginSkills(params.skillsSnapshot);
+  return {
+    skills,
+    signature: buildClaudeCliSkillsPluginSignature(skills),
+  };
+}
+
+export async function materializeClaudeCliSkillsPlugin(params: {
+  spec: ClaudeCliSkillsPluginSpec;
+}): Promise<{ args: string[]; cleanup: () => Promise<void>; pluginDir?: string }> {
+  const skills = params.spec.skills;
   if (skills.length === 0) {
     return { args: [], cleanup: async () => {} };
   }
@@ -139,4 +178,13 @@ export async function prepareClaudeCliSkillsPlugin(params: {
       await fs.rm(tempDir, { recursive: true, force: true });
     },
   };
+}
+
+export async function prepareClaudeCliSkillsPlugin(params: {
+  backendId: string;
+  skillsSnapshot?: SkillSnapshot;
+}): Promise<{ args: string[]; cleanup: () => Promise<void>; pluginDir?: string }> {
+  return await materializeClaudeCliSkillsPlugin({
+    spec: await buildClaudeCliSkillsPluginSpec(params),
+  });
 }

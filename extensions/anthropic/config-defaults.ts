@@ -1,7 +1,12 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/plugin-entry";
 import { normalizeProviderId } from "openclaw/plugin-sdk/provider-model-shared";
 import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/text-runtime";
-import { CLAUDE_CLI_BACKEND_ID, CLAUDE_CLI_DEFAULT_ALLOWLIST_REFS } from "./cli-shared.js";
+import {
+  CLAUDE_CLI_BACKEND_ID,
+  CLAUDE_CLI_BACKEND_IDS,
+  buildClaudeCliAllowlistRefs,
+  isClaudeCliFamilyProvider,
+} from "./cli-shared.js";
 
 const ANTHROPIC_PROVIDER_API = "anthropic-messages";
 
@@ -12,21 +17,23 @@ function resolveAnthropicDefaultAuthMode(
   const profiles = config.auth?.profiles ?? {};
   const anthropicProfiles = Object.entries(profiles).filter(
     ([, profile]) =>
-      profile?.provider === "anthropic" || profile?.provider === CLAUDE_CLI_BACKEND_ID,
+      profile?.provider === "anthropic" || isClaudeCliFamilyProvider(profile?.provider ?? ""),
   );
 
   const order = [
     ...(config.auth?.order?.anthropic ?? []),
-    ...((config.auth?.order as Record<string, string[] | undefined> | undefined)?.[
-      CLAUDE_CLI_BACKEND_ID
-    ] ?? []),
+    ...CLAUDE_CLI_BACKEND_IDS.flatMap(
+      (providerId) =>
+        (config.auth?.order as Record<string, string[] | undefined> | undefined)?.[providerId] ??
+        [],
+    ),
   ];
   for (const profileId of order) {
     const entry = profiles[profileId];
-    if (!entry || (entry.provider !== "anthropic" && entry.provider !== CLAUDE_CLI_BACKEND_ID)) {
+    if (!entry || (entry.provider !== "anthropic" && !isClaudeCliFamilyProvider(entry.provider))) {
       continue;
     }
-    if (entry.provider === CLAUDE_CLI_BACKEND_ID) {
+    if (isClaudeCliFamilyProvider(entry.provider)) {
       return "oauth";
     }
     if (entry.mode === "api_key") {
@@ -42,7 +49,7 @@ function resolveAnthropicDefaultAuthMode(
   );
   const hasOauth = anthropicProfiles.some(
     ([, profile]) =>
-      profile?.provider === CLAUDE_CLI_BACKEND_ID ||
+      isClaudeCliFamilyProvider(profile?.provider ?? "") ||
       profile?.mode === "oauth" ||
       profile?.mode === "token",
   );
@@ -137,13 +144,35 @@ function usesClaudeCliModelSelection(config: OpenClawConfig): boolean {
       | undefined,
   );
   const parsedPrimary = primary ? parseProviderModelRef(primary, "anthropic") : null;
-  if (parsedPrimary?.provider === CLAUDE_CLI_BACKEND_ID) {
+  if (parsedPrimary && isClaudeCliFamilyProvider(parsedPrimary.provider)) {
     return true;
   }
   return Object.keys(config.agents?.defaults?.models ?? {}).some((key) => {
     const parsed = parseProviderModelRef(key, "anthropic");
-    return parsed?.provider === CLAUDE_CLI_BACKEND_ID;
+    return parsed ? isClaudeCliFamilyProvider(parsed.provider) : false;
   });
+}
+
+function resolveClaudeCliAllowlistRefsForConfig(config: OpenClawConfig): readonly string[] {
+  const primary = resolveModelPrimaryValue(
+    config.agents?.defaults?.model as
+      | string
+      | { primary?: string; fallbacks?: string[] }
+      | undefined,
+  );
+  const parsedPrimary = primary ? parseProviderModelRef(primary, "anthropic") : null;
+  if (parsedPrimary && isClaudeCliFamilyProvider(parsedPrimary.provider)) {
+    return buildClaudeCliAllowlistRefs(
+      parsedPrimary.provider as "claude-cli" | "claude-cli-streaming",
+    );
+  }
+  for (const key of Object.keys(config.agents?.defaults?.models ?? {})) {
+    const parsed = parseProviderModelRef(key, "anthropic");
+    if (parsed && isClaudeCliFamilyProvider(parsed.provider)) {
+      return buildClaudeCliAllowlistRefs(parsed.provider as "claude-cli" | "claude-cli-streaming");
+    }
+  }
+  return buildClaudeCliAllowlistRefs(CLAUDE_CLI_BACKEND_ID);
 }
 
 export function normalizeAnthropicProviderConfig<T extends { api?: string; models?: unknown[] }>(
@@ -247,7 +276,7 @@ export function applyAnthropicConfigDefaults(params: {
   if (authMode === "oauth" && usesClaudeCliModelSelection(params.config)) {
     const nextModels = defaults.models ? { ...defaults.models } : {};
     let modelsMutated = false;
-    for (const ref of CLAUDE_CLI_DEFAULT_ALLOWLIST_REFS) {
+    for (const ref of resolveClaudeCliAllowlistRefsForConfig(params.config)) {
       if (ref in nextModels) {
         continue;
       }

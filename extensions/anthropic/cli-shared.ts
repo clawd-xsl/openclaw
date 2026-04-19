@@ -2,14 +2,36 @@ import type { CliBackendConfig } from "openclaw/plugin-sdk/cli-backend";
 import { normalizeOptionalLowercaseString } from "openclaw/plugin-sdk/text-runtime";
 
 export const CLAUDE_CLI_BACKEND_ID = "claude-cli";
-export const CLAUDE_CLI_DEFAULT_MODEL_REF = `${CLAUDE_CLI_BACKEND_ID}/claude-sonnet-4-6`;
-export const CLAUDE_CLI_DEFAULT_ALLOWLIST_REFS = [
-  CLAUDE_CLI_DEFAULT_MODEL_REF,
-  `${CLAUDE_CLI_BACKEND_ID}/claude-opus-4-6`,
-  `${CLAUDE_CLI_BACKEND_ID}/claude-opus-4-5`,
-  `${CLAUDE_CLI_BACKEND_ID}/claude-sonnet-4-5`,
-  `${CLAUDE_CLI_BACKEND_ID}/claude-haiku-4-5`,
+export const CLAUDE_CLI_STREAMING_BACKEND_ID = "claude-cli-streaming";
+export const CLAUDE_CLI_BACKEND_IDS = [
+  CLAUDE_CLI_BACKEND_ID,
+  CLAUDE_CLI_STREAMING_BACKEND_ID,
 ] as const;
+type ClaudeCliBackendId = (typeof CLAUDE_CLI_BACKEND_IDS)[number];
+
+export function buildClaudeCliModelRef(backendId: ClaudeCliBackendId, modelId: string): string {
+  return `${backendId}/${modelId}`;
+}
+
+export function buildClaudeCliAllowlistRefs(backendId: ClaudeCliBackendId): readonly string[] {
+  return [
+    buildClaudeCliModelRef(backendId, "claude-sonnet-4-6"),
+    buildClaudeCliModelRef(backendId, "claude-opus-4-6"),
+    buildClaudeCliModelRef(backendId, "claude-opus-4-5"),
+    buildClaudeCliModelRef(backendId, "claude-sonnet-4-5"),
+    buildClaudeCliModelRef(backendId, "claude-haiku-4-5"),
+  ] as const;
+}
+
+export const CLAUDE_CLI_DEFAULT_MODEL_REF = `${CLAUDE_CLI_BACKEND_ID}/claude-sonnet-4-6`;
+export const CLAUDE_CLI_STREAMING_DEFAULT_MODEL_REF = buildClaudeCliModelRef(
+  CLAUDE_CLI_STREAMING_BACKEND_ID,
+  "claude-sonnet-4-6",
+);
+export const CLAUDE_CLI_DEFAULT_ALLOWLIST_REFS = buildClaudeCliAllowlistRefs(CLAUDE_CLI_BACKEND_ID);
+export const CLAUDE_CLI_STREAMING_DEFAULT_ALLOWLIST_REFS = buildClaudeCliAllowlistRefs(
+  CLAUDE_CLI_STREAMING_BACKEND_ID,
+);
 
 export const CLAUDE_CLI_MODEL_ALIASES: Record<string, string> = {
   opus: "opus",
@@ -96,6 +118,7 @@ const CLAUDE_SETTINGS_ARG = "--settings";
 const CLAUDE_DISABLE_ALL_HOOKS_SETTINGS = JSON.stringify({ disableAllHooks: true });
 const CLAUDE_SYSTEM_PROMPT_ARG = "--system-prompt";
 const CLAUDE_DISABLE_CLAUDE_MDS_ENV = "CLAUDE_CODE_DISABLE_CLAUDE_MDS";
+const CLAUDE_DISABLE_SLASH_COMMANDS_ARG = "--disable-slash-commands";
 
 function normalizeClaudeSystemPromptWhen(
   when: CliBackendConfig["systemPromptWhen"],
@@ -137,6 +160,24 @@ export function normalizeClaudeIsolationArgs(args?: string[]): string[] | undefi
   return normalized;
 }
 
+export function normalizeClaudeSlashCommandArgs(args?: string[]): string[] | undefined {
+  if (!args) {
+    return args;
+  }
+  const normalized: string[] = [];
+  let hasDisableSlashCommands = false;
+  for (const arg of args) {
+    if (arg === CLAUDE_DISABLE_SLASH_COMMANDS_ARG) {
+      hasDisableSlashCommands = true;
+    }
+    normalized.push(arg);
+  }
+  if (!hasDisableSlashCommands) {
+    normalized.push(CLAUDE_DISABLE_SLASH_COMMANDS_ARG);
+  }
+  return normalized;
+}
+
 function normalizeClaudeEnv(env?: Record<string, string>): Record<string, string> {
   return {
     ...env,
@@ -146,6 +187,15 @@ function normalizeClaudeEnv(env?: Record<string, string>): Record<string, string
 
 export function isClaudeCliProvider(providerId: string): boolean {
   return normalizeOptionalLowercaseString(providerId) === CLAUDE_CLI_BACKEND_ID;
+}
+
+export function isClaudeCliStreamingProvider(providerId: string): boolean {
+  return normalizeOptionalLowercaseString(providerId) === CLAUDE_CLI_STREAMING_BACKEND_ID;
+}
+
+export function isClaudeCliFamilyProvider(providerId: string): boolean {
+  const normalized = normalizeOptionalLowercaseString(providerId);
+  return normalized ? CLAUDE_CLI_BACKEND_IDS.includes(normalized as ClaudeCliBackendId) : false;
 }
 
 export function normalizeClaudePermissionArgs(args?: string[]): string[] | undefined {
@@ -277,12 +327,16 @@ export function normalizeClaudeBackendConfig(config: CliBackendConfig): CliBacke
     ...config,
     args: normalizeClaudePermissionArgs(
       normalizeClaudeSettingsArgs(
-        normalizeClaudeSettingSourcesArgs(normalizeClaudeIsolationArgs(config.args)),
+        normalizeClaudeSettingSourcesArgs(
+          normalizeClaudeSlashCommandArgs(normalizeClaudeIsolationArgs(config.args)),
+        ),
       ),
     ),
     resumeArgs: normalizeClaudePermissionArgs(
       normalizeClaudeSettingsArgs(
-        normalizeClaudeSettingSourcesArgs(normalizeClaudeIsolationArgs(config.resumeArgs)),
+        normalizeClaudeSettingSourcesArgs(
+          normalizeClaudeSlashCommandArgs(normalizeClaudeIsolationArgs(config.resumeArgs)),
+        ),
       ),
     ),
     env: normalizeClaudeEnv(config.env),

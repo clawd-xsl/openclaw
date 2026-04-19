@@ -51,6 +51,20 @@ describe("resolveCliAuthEpoch", () => {
     expect(second).not.toBe(first);
   });
 
+  it("treats claude-cli-streaming as the same local Claude credential source", async () => {
+    setCliAuthEpochTestDeps({
+      readClaudeCliCredentialsCached: () => ({
+        type: "oauth",
+        provider: "anthropic",
+        access: "streaming-access",
+        refresh: "refresh",
+        expires: 1,
+      }),
+    });
+
+    await expect(resolveCliAuthEpoch({ provider: "claude-cli-streaming" })).resolves.toBeDefined();
+  });
+
   it("changes when auth profile credentials change", async () => {
     let store: AuthProfileStore = {
       version: 1,

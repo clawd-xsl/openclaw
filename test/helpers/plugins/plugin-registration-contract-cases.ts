@@ -7,7 +7,7 @@ export const pluginRegistrationContractCases = {
     pluginId: "anthropic",
     providerIds: ["anthropic"],
     mediaUnderstandingProviderIds: ["anthropic"],
-    cliBackendIds: ["claude-cli"],
+    cliBackendIds: ["claude-cli", "claude-cli-streaming"],
     requireDescribeImages: true,
   },
   brave: {

@@ -988,7 +988,7 @@ describe("resolveGatewayModelSupportsImages", () => {
     ).resolves.toBe(true);
   });
 
-  test("treats claude-cli Claude models as image-capable even when catalog metadata is stale or missing", async () => {
+  test("treats Claude CLI family models as image-capable even when catalog metadata is stale or missing", async () => {
     await expect(
       resolveGatewayModelSupportsImages({
         model: "claude-sonnet-4-6",
@@ -998,6 +998,20 @@ describe("resolveGatewayModelSupportsImages", () => {
             id: "claude-sonnet-4-6",
             name: "Claude Sonnet 4.6",
             provider: "claude-cli",
+            input: ["text"],
+          },
+        ],
+      }),
+    ).resolves.toBe(true);
+    await expect(
+      resolveGatewayModelSupportsImages({
+        model: "claude-sonnet-4-6",
+        provider: "claude-cli-streaming",
+        loadGatewayModelCatalog: async () => [
+          {
+            id: "claude-sonnet-4-6",
+            name: "Claude Sonnet 4.6",
+            provider: "claude-cli-streaming",
             input: ["text"],
           },
         ],

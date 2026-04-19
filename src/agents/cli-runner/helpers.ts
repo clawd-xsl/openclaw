@@ -33,7 +33,7 @@ export { buildCliSupervisorScopeKey, resolveCliNoOutputTimeoutMs } from "./relia
 const CLI_RUN_QUEUE = new KeyedAsyncQueue();
 
 function isClaudeCliProvider(providerId: string): boolean {
-  return normalizeOptionalLowercaseString(providerId) === "claude-cli";
+  return normalizeOptionalLowercaseString(providerId)?.startsWith("claude-cli") === true;
 }
 
 export function enqueueCliRun<T>(key: string, task: () => Promise<T>): Promise<T> {
@@ -45,12 +45,17 @@ export function resolveCliRunQueueKey(params: {
   serialize?: boolean;
   runId: string;
   workspaceDir: string;
+  sessionScopeKey?: string;
   cliSessionId?: string;
 }): string {
   if (params.serialize === false) {
     return `${params.backendId}:${params.runId}`;
   }
   if (isClaudeCliProvider(params.backendId)) {
+    const sessionScopeKey = params.sessionScopeKey?.trim();
+    if (sessionScopeKey) {
+      return `${params.backendId}:scope:${sessionScopeKey}`;
+    }
     const sessionId = params.cliSessionId?.trim();
     if (sessionId) {
       return `${params.backendId}:session:${sessionId}`;

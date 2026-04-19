@@ -70,6 +70,8 @@ export type CliBackendConfig = {
   command: string;
   /** Base args applied to every invocation. */
   args?: string[];
+  /** Whether this backend launches once per turn or keeps a persistent process alive. */
+  executionMode?: "spawn-per-turn" | "persistent-process";
   /** Output parsing mode (default: json). */
   output?: "json" | "text" | "jsonl";
   /** Output parsing mode when resuming a CLI session. */
