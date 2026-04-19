@@ -15,6 +15,7 @@ import {
 } from "../../config/sessions.js";
 import type { TypingMode } from "../../config/types.js";
 import { resolveSessionTranscriptCandidates } from "../../gateway/session-utils.fs.js";
+import { logVerbose } from "../../globals.js";
 import { emitAgentEvent } from "../../infra/agent-events.js";
 import { emitDiagnosticEvent, isDiagnosticsEnabled } from "../../infra/diagnostic-events.js";
 import { enqueueSystemEvent } from "../../infra/system-events.js";
@@ -917,6 +918,25 @@ export async function runReplyAgent(params: {
     resetTriggered,
     replyOperation: providedReplyOperation,
   } = params;
+  const traceId =
+    normalizeOptionalString(
+      followupRun.messageId ??
+        sessionCtx.MessageSidFull ??
+        sessionCtx.MessageSid ??
+        sessionKey ??
+        followupRun.run.sessionId,
+    ) ?? "unknown";
+  const traceStartedAt = Date.now();
+  const trace = (stage: string, details?: string) => {
+    const suffix = details ? ` ${details}` : "";
+    logVerbose(
+      `[reply-trace ${traceId}] runReplyAgent:${stage} +${Date.now() - traceStartedAt}ms${suffix}`,
+    );
+  };
+  trace(
+    "start",
+    `session=${sessionKey ?? "none"} provider=${followupRun.run.provider} model=${followupRun.run.model}`,
+  );
 
   let activeSessionEntry = sessionEntry;
   const activeSessionStore = sessionStore;
@@ -1110,6 +1130,7 @@ export async function runReplyAgent(params: {
       isHeartbeat,
       replyOperation,
     });
+    trace("preflight-compaction-done");
     preflightCompactionApplied =
       (activeSessionEntry?.compactionCount ?? 0) > prePreflightCompactionCount;
 
@@ -1129,6 +1150,7 @@ export async function runReplyAgent(params: {
       isHeartbeat,
       replyOperation,
     });
+    trace("memory-flush-done");
 
     runFollowupTurn = createFollowupRunner({
       opts,
@@ -1202,6 +1224,7 @@ export async function runReplyAgent(params: {
 
     replyOperation.setPhase("running");
     const runStartedAt = Date.now();
+    trace("runAgentTurnWithFallback-start");
     const runOutcome = await runAgentTurnWithFallback({
       commandBody,
       followupRun,
@@ -1227,6 +1250,10 @@ export async function runReplyAgent(params: {
       storePath,
       resolvedVerboseLevel,
     });
+    trace(
+      "runAgentTurnWithFallback-done",
+      `kind=${runOutcome.kind}${runOutcome.kind === "final" ? "" : ` payloads=${runOutcome.runResult.payloads?.length ?? 0}`}`,
+    );
 
     if (runOutcome.kind === "final") {
       if (!replyOperation.result) {
@@ -1271,6 +1298,7 @@ export async function runReplyAgent(params: {
     const payloadArray = runResult.payloads ?? [];
     const abortedReply = await finalizeReplyOperationAbortIfNeeded();
     if (abortedReply !== undefined) {
+      trace("finalizeReplyOperationAbortIfNeeded-aborted");
       return abortedReply;
     }
 
@@ -1281,6 +1309,7 @@ export async function runReplyAgent(params: {
     if (pendingToolTasks.size > 0) {
       await Promise.allSettled(pendingToolTasks);
     }
+    trace("post-run-delivery-drain-done", `pendingToolTasks=${pendingToolTasks.size}`);
 
     const usage = runResult.meta?.agentMeta?.usage;
     const promptTokens = runResult.meta?.agentMeta?.promptTokens;
@@ -1339,26 +1368,55 @@ export async function runReplyAgent(params: {
         allowAsyncLoad: false,
       }) ?? DEFAULT_CONTEXT_TOKENS;
 
-    await persistRunSessionUsage({
-      storePath,
-      sessionKey,
-      cfg,
-      usage,
-      lastCallUsage: runResult.meta?.agentMeta?.lastCallUsage,
-      promptTokens,
-      modelUsed,
-      providerUsed,
-      contextTokensUsed,
-      systemPromptReport: runResult.meta?.systemPromptReport,
-      cliSessionId,
-      cliSessionBinding,
-      usageIsContextSnapshot: isCliProvider(providerUsed, cfg),
-    });
+    let persistRunSessionUsagePromise: Promise<void> | null = null;
+    let persistRunSessionUsageAwaited = false;
+    const beginPersistRunSessionUsage = () => {
+      if (persistRunSessionUsagePromise) {
+        return persistRunSessionUsagePromise;
+      }
+      trace(
+        "persistRunSessionUsage-start",
+        `provider=${providerUsed} model=${modelUsed} hasUsage=${usage ? "yes" : "no"}`,
+      );
+      persistRunSessionUsagePromise = persistRunSessionUsage({
+        storePath,
+        sessionKey,
+        cfg,
+        usage,
+        lastCallUsage: runResult.meta?.agentMeta?.lastCallUsage,
+        promptTokens,
+        modelUsed,
+        providerUsed,
+        contextTokensUsed,
+        systemPromptReport: runResult.meta?.systemPromptReport,
+        cliSessionId,
+        cliSessionBinding,
+        usageIsContextSnapshot: isCliProvider(providerUsed, cfg),
+        logLabel: traceId,
+      });
+      void persistRunSessionUsagePromise.catch((err) => {
+        if (!persistRunSessionUsageAwaited) {
+          logVerbose(`persistRunSessionUsage failed: ${String(err)}`);
+        }
+      });
+      return persistRunSessionUsagePromise;
+    };
+    const awaitPersistRunSessionUsage = async (reason: string) => {
+      if (!persistRunSessionUsagePromise) {
+        return;
+      }
+      persistRunSessionUsageAwaited = true;
+      trace("persistRunSessionUsage-await", reason);
+      await persistRunSessionUsagePromise;
+      trace("persistRunSessionUsage-done");
+    };
+    void beginPersistRunSessionUsage();
 
     // Drain any late tool/block deliveries before deciding there's "nothing to send".
     // Otherwise, a late typing trigger (e.g. from a tool callback) can outlive the run and
     // keep the typing indicator stuck.
     if (payloadArray.length === 0) {
+      await awaitPersistRunSessionUsage("no-payload-array");
       return finalizeWithFollowup(undefined, queueKey, runFollowupTurn);
     }
 
@@ -1385,11 +1443,14 @@ export async function runReplyAgent(params: {
       }),
       accountId: sessionCtx.AccountId,
       normalizeMediaPaths: normalizeReplyMediaPaths,
+      traceLabel: traceId,
     });
+    trace("buildReplyPayloads-done");
     const { replyPayloads } = payloadResult;
     didLogHeartbeatStrip = payloadResult.didLogHeartbeatStrip;
 
     if (replyPayloads.length === 0) {
+      await awaitPersistRunSessionUsage("no-reply-payloads");
       return finalizeWithFollowup(undefined, queueKey, runFollowupTurn);
     }
 
@@ -1415,6 +1476,7 @@ export async function runReplyAgent(params: {
         : replyPayloads;
 
     await signalTypingIfNeeded(guardedReplyPayloads, typingSignals);
+    trace("signalTypingIfNeeded-done", `replyPayloads=${guardedReplyPayloads.length}`);
 
     if (isDiagnosticsEnabled(cfg) && hasNonzeroUsage(usage)) {
       const input = usage.input ?? 0;
@@ -1482,6 +1544,7 @@ export async function runReplyAgent(params: {
     }
 
     if (verboseEnabled) {
+      await awaitPersistRunSessionUsage("verbose-refresh");
       activeSessionEntry = refreshSessionEntryFromStore({
         storePath,
         sessionKey,

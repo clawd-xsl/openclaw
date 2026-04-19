@@ -166,6 +166,10 @@ type WorkspaceSetupState = {
   setupCompletedAt?: string;
 };
 
+function hasWorkspaceStateMarker(value: string | undefined): boolean {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
 /** Set of recognized bootstrap filenames for runtime validation */
 const VALID_BOOTSTRAP_NAMES: ReadonlySet<string> = new Set([
   DEFAULT_AGENTS_FILENAME,
@@ -353,14 +357,35 @@ export async function ensureAgentWorkspace(params?: {
   const bootstrapPath = path.join(dir, DEFAULT_BOOTSTRAP_FILENAME);
   const statePath = resolveWorkspaceStatePath(dir);
 
+  const warmState = await readWorkspaceSetupState(statePath);
+  const corePaths = [agentsPath, soulPath, toolsPath, identityPath, userPath, heartbeatPath];
+  const [corePathStates, warmBootstrapExists] = await Promise.all([
+    Promise.all(corePaths.map(async (filePath) => await fileExists(filePath))),
+    fileExists(bootstrapPath),
+  ]);
+  const allCoreFilesExist = corePathStates.every(Boolean);
+  const bootstrapSeeded = hasWorkspaceStateMarker(warmState.bootstrapSeededAt);
+  const setupCompleted = hasWorkspaceStateMarker(warmState.setupCompletedAt);
+  if (allCoreFilesExist && ((bootstrapSeeded && warmBootstrapExists) || setupCompleted)) {
+    return {
+      dir,
+      agentsPath,
+      soulPath,
+      toolsPath,
+      identityPath,
+      userPath,
+      heartbeatPath,
+      bootstrapPath,
+    };
+  }
+
   const isBrandNewWorkspace = await (async () => {
-    const templatePaths = [agentsPath, soulPath, toolsPath, identityPath, userPath, heartbeatPath];
     const userContentPaths = [
       path.join(dir, "memory"),
       path.join(dir, DEFAULT_MEMORY_FILENAME),
       path.join(dir, ".git"),
     ];
-    const paths = [...templatePaths, ...userContentPaths];
+    const paths = [...corePaths, ...userContentPaths];
     const existing = await Promise.all(
       paths.map(async (p) => {
         try {
@@ -374,20 +399,31 @@ export async function ensureAgentWorkspace(params?: {
     return existing.every((v) => !v);
   })();
 
-  const agentsTemplate = await loadTemplate(DEFAULT_AGENTS_FILENAME);
-  const soulTemplate = await loadTemplate(DEFAULT_SOUL_FILENAME);
-  const toolsTemplate = await loadTemplate(DEFAULT_TOOLS_FILENAME);
-  const identityTemplate = await loadTemplate(DEFAULT_IDENTITY_FILENAME);
-  const userTemplate = await loadTemplate(DEFAULT_USER_FILENAME);
-  const heartbeatTemplate = await loadTemplate(DEFAULT_HEARTBEAT_FILENAME);
-  await writeFileIfMissing(agentsPath, agentsTemplate);
-  await writeFileIfMissing(soulPath, soulTemplate);
-  await writeFileIfMissing(toolsPath, toolsTemplate);
-  const identityPathCreated = await writeFileIfMissing(identityPath, identityTemplate);
-  await writeFileIfMissing(userPath, userTemplate);
-  await writeFileIfMissing(heartbeatPath, heartbeatTemplate);
+  const [
+    agentsTemplate,
+    soulTemplate,
+    toolsTemplate,
+    identityTemplate,
+    userTemplate,
+    heartbeatTemplate,
+  ] = await Promise.all([
+    loadTemplate(DEFAULT_AGENTS_FILENAME),
+    loadTemplate(DEFAULT_SOUL_FILENAME),
+    loadTemplate(DEFAULT_TOOLS_FILENAME),
+    loadTemplate(DEFAULT_IDENTITY_FILENAME),
+    loadTemplate(DEFAULT_USER_FILENAME),
+    loadTemplate(DEFAULT_HEARTBEAT_FILENAME),
+  ]);
+  const [, , , identityPathCreated] = await Promise.all([
+    writeFileIfMissing(agentsPath, agentsTemplate),
+    writeFileIfMissing(soulPath, soulTemplate),
+    writeFileIfMissing(toolsPath, toolsTemplate),
+    writeFileIfMissing(identityPath, identityTemplate),
+    writeFileIfMissing(userPath, userTemplate),
+    writeFileIfMissing(heartbeatPath, heartbeatTemplate),
+  ]);
 
-  let state = await readWorkspaceSetupState(statePath);
+  let state = warmState;
   let stateDirty = false;
   const markState = (next: Partial<WorkspaceSetupState>) => {
     state = { ...state, ...next };
@@ -412,22 +448,15 @@ export async function ensureAgentWorkspace(params?: {
       fs.readFile(identityPath, "utf-8"),
       fs.readFile(userPath, "utf-8"),
     ]);
-    const hasUserContent = await (async () => {
-      const indicators = [
-        path.join(dir, "memory"),
-        path.join(dir, DEFAULT_MEMORY_FILENAME),
-        path.join(dir, ".git"),
-      ];
-      for (const indicator of indicators) {
-        try {
-          await fs.access(indicator);
-          return true;
-        } catch {
-          // continue
-        }
-      }
-      return false;
-    })();
+    const hasUserContent = (
+      await Promise.all(
+        [
+          path.join(dir, "memory"),
+          path.join(dir, DEFAULT_MEMORY_FILENAME),
+          path.join(dir, ".git"),
+        ].map(async (indicator) => await fileExists(indicator)),
+      )
+    ).some(Boolean);
     const legacySetupCompleted =
       identityContent !== identityTemplate || userContent !== userTemplate || hasUserContent;
     if (legacySetupCompleted) {

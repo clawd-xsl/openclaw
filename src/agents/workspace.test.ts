@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { makeTempWorkspace, writeWorkspaceFile } from "../test-helpers/workspace.js";
 import {
   DEFAULT_AGENTS_FILENAME,
@@ -187,6 +187,20 @@ describe("ensureAgentWorkspace", () => {
     expect(heartbeat).toContain(
       "# Add tasks below when you want the agent to check something periodically.",
     );
+  });
+
+  it("fast-paths repeated warm ensures without rewriting workspace files", async () => {
+    const tempDir = await makeTempWorkspace("openclaw-workspace-");
+    await ensureAgentWorkspace({ dir: tempDir, ensureBootstrapFiles: true });
+
+    const writeSpy = vi.spyOn(fs, "writeFile");
+    try {
+      await ensureAgentWorkspace({ dir: tempDir, ensureBootstrapFiles: true });
+    } finally {
+      writeSpy.mockRestore();
+    }
+
+    expect(writeSpy).not.toHaveBeenCalled();
   });
 });
 

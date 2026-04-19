@@ -236,21 +236,34 @@ describe("runReplyAgent heartbeat followup guard", () => {
     expect(state.runEmbeddedPiAgentMock).not.toHaveBeenCalled();
   });
 
-  it("drains followup queue when an unexpected exception escapes the run path", async () => {
+  it("does not block a successful reply on persistRunSessionUsage", async () => {
     const accounting = await import("./session-run-accounting.js");
-    const persistSpy = vi
-      .spyOn(accounting, "persistRunSessionUsage")
-      .mockRejectedValueOnce(new Error("persist exploded"));
-    state.runEmbeddedPiAgentMock.mockResolvedValueOnce({
-      payloads: [{ text: "ok" }],
-      meta: { agentMeta: { usage: { input: 1, output: 1 } } },
-    });
+    let resolvePersist: (() => void) | undefined;
+    let runPromise: ReturnType<ReturnType<typeof createMinimalRun>["run"]> | undefined;
+    const persistSpy = vi.spyOn(accounting, "persistRunSessionUsage").mockImplementationOnce(
+      async () =>
+        await new Promise<void>((resolve) => {
+          resolvePersist = resolve;
+        }),
+    );
 
     try {
       const { run } = createMinimalRun();
-      await expect(run()).rejects.toThrow("persist exploded");
-      expect(vi.mocked(scheduleFollowupDrain)).toHaveBeenCalledTimes(1);
+      runPromise = run();
+      const result = await Promise.race([
+        runPromise.then((value) => ({ kind: "resolved" as const, value })),
+        new Promise<{ kind: "timeout" }>((resolve) =>
+          setTimeout(() => resolve({ kind: "timeout" }), 500),
+        ),
+      ]);
+      expect(result).toMatchObject({
+        kind: "resolved",
+        value: { text: "final" },
+      });
+      expect(persistSpy).toHaveBeenCalledTimes(1);
     } finally {
+      resolvePersist?.();
+      await runPromise?.catch(() => undefined);
       persistSpy.mockRestore();
     }
   });

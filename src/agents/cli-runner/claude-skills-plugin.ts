@@ -42,24 +42,46 @@ async function collectClaudePluginSkills(snapshot?: SkillSnapshot): Promise<Mate
     return [];
   }
 
+  const candidates = skills
+    .map((skill) => {
+      const name = skill.name?.trim();
+      const skillFilePath = skill.filePath?.trim();
+      if (!name || !skillFilePath) {
+        return null;
+      }
+      return { name, skillFilePath };
+    })
+    .filter(
+      (candidate): candidate is { name: string; skillFilePath: string } => candidate !== null,
+    );
+  if (candidates.length === 0) {
+    return [];
+  }
+
+  const existingSkillFilePaths = await Promise.all(
+    candidates.map(async ({ skillFilePath }) => {
+      try {
+        await fs.access(skillFilePath);
+        return true;
+      } catch {
+        return false;
+      }
+    }),
+  );
+
   const usedTargetNames = new Set<string>();
   const materialized: MaterializedSkill[] = [];
-  for (const skill of skills) {
-    const name = skill.name?.trim();
-    const skillFilePath = skill.filePath?.trim();
-    if (!name || !skillFilePath) {
-      continue;
-    }
-    try {
-      await fs.access(skillFilePath);
-    } catch {
-      cliBackendLog.warn(`claude skill plugin skipped missing skill file: ${skillFilePath}`);
+  for (const [index, candidate] of candidates.entries()) {
+    if (!existingSkillFilePaths[index]) {
+      cliBackendLog.warn(
+        `claude skill plugin skipped missing skill file: ${candidate.skillFilePath}`,
+      );
       continue;
     }
     materialized.push({
-      name,
-      sourceDir: path.dirname(skillFilePath),
-      targetDirName: sanitizeSkillDirName(name, usedTargetNames),
+      name: candidate.name,
+      sourceDir: path.dirname(candidate.skillFilePath),
+      targetDirName: sanitizeSkillDirName(candidate.name, usedTargetNames),
     });
   }
   return materialized.toSorted(
