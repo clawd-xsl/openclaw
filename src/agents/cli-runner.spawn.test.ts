@@ -350,7 +350,7 @@ describe("runCliAgent spawn path", () => {
   });
 
   it.each(["claude-cli", "claude-cli-streaming"] as const)(
-    "passes the effective OpenClaw context limit to %s via --autocompact",
+    "passes the effective OpenClaw context limit to %s via CLAUDE_CODE_AUTO_COMPACT_WINDOW",
     async (provider) => {
       setCliRunnerPrepareTestDeps({
         makeBootstrapWarn: () => () => {},
@@ -383,10 +383,9 @@ describe("runCliAgent spawn path", () => {
         runId: `run-${provider}-autocompact`,
       });
 
-      expect(context.preparedBackend.backend.args).toContain("--autocompact");
-      expect(context.preparedBackend.backend.args).toContain("222000");
-      expect(context.preparedBackend.backend.resumeArgs).toContain("--autocompact");
-      expect(context.preparedBackend.backend.resumeArgs).toContain("222000");
+      expect(context.preparedBackend.backend.env).toMatchObject({
+        CLAUDE_CODE_AUTO_COMPACT_WINDOW: "222000",
+      });
     },
   );
 

@@ -50,45 +50,9 @@ const prepareDeps = {
   ) => (await import("../docs-path.js")).resolveOpenClawDocsPath(params),
 };
 
-const CLAUDE_AUTOCOMPACT_ARG = "--autocompact";
+const CLAUDE_AUTOCOMPACT_ENV = "CLAUDE_CODE_AUTO_COMPACT_WINDOW";
 const CLAUDE_AUTOCOMPACT_MIN_TOKENS = 100_000;
 const CLAUDE_AUTOCOMPACT_MAX_TOKENS = 1_000_000;
-
-function injectCliArgValue(
-  args: string[] | undefined,
-  flag: string,
-  value: string,
-): string[] | undefined {
-  if (!args) {
-    return args;
-  }
-  const normalized: string[] = [];
-  let replaced = false;
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i] ?? "";
-    if (arg === flag) {
-      replaced = true;
-      const maybeValue = args[i + 1];
-      if (typeof maybeValue === "string" && !maybeValue.startsWith("-")) {
-        normalized.push(flag, value);
-        i += 1;
-      } else {
-        normalized.push(flag, value);
-      }
-      continue;
-    }
-    if (arg.startsWith(`${flag}=`)) {
-      replaced = true;
-      normalized.push(flag, value);
-      continue;
-    }
-    normalized.push(arg);
-  }
-  if (!replaced) {
-    normalized.push(flag, value);
-  }
-  return normalized;
-}
 
 function resolveClaudeAutoCompactTokens(params: {
   cfg?: OpenClawConfig;
@@ -129,8 +93,10 @@ function applyClaudeAutoCompactConfig(params: {
   );
   return {
     ...params.backend,
-    args: injectCliArgValue(params.backend.args, CLAUDE_AUTOCOMPACT_ARG, value),
-    resumeArgs: injectCliArgValue(params.backend.resumeArgs, CLAUDE_AUTOCOMPACT_ARG, value),
+    env: {
+      ...params.backend.env,
+      [CLAUDE_AUTOCOMPACT_ENV]: value,
+    },
   };
 }
 
