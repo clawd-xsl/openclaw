@@ -2,6 +2,7 @@ import { loadConfig, type OpenClawConfig } from "openclaw/plugin-sdk/config-runt
 import { resolveMarkdownTableMode } from "openclaw/plugin-sdk/config-runtime";
 import { kindFromMime } from "openclaw/plugin-sdk/media-runtime";
 import { resolveOutboundAttachmentFromUrl } from "openclaw/plugin-sdk/media-runtime";
+import { createTimingTrace } from "openclaw/plugin-sdk/runtime-env";
 import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/text-runtime";
 import { resolveSignalAccount } from "./accounts.js";
 import { signalRpcRequest } from "./client.js";
@@ -25,6 +26,7 @@ export type SignalSendOpts = {
   textMode?: "markdown" | "plain";
   textStyles?: SignalTextStyleRange[];
   replyToId?: string;
+  traceLabel?: string;
 };
 
 export type SignalSendResult = {
@@ -32,7 +34,10 @@ export type SignalSendResult = {
   timestamp?: number;
 };
 
-export type SignalRpcOpts = Pick<SignalSendOpts, "baseUrl" | "account" | "accountId" | "timeoutMs">;
+export type SignalRpcOpts = Pick<
+  SignalSendOpts,
+  "baseUrl" | "account" | "accountId" | "timeoutMs" | "traceLabel"
+>;
 
 export type SignalReceiptType = "read" | "viewed";
 
@@ -130,6 +135,14 @@ export async function sendMessageSignal(
   text: string,
   opts: SignalSendOpts = {},
 ): Promise<SignalSendResult> {
+  const trace = opts.traceLabel
+    ? createTimingTrace({
+        channel: "signal-trace",
+        label: opts.traceLabel,
+        scope: "sendMessageSignal",
+        sink: "stderr",
+      })
+    : (_stage: string, _details?: string) => {};
   const cfg = opts.cfg ?? loadConfig();
   const accountInfo = resolveSignalAccount({
     cfg,
@@ -220,10 +233,15 @@ export async function sendMessageSignal(
     }
   }
 
+  trace(
+    "rpc-start",
+    `targetType=${target.type} replyTo=${opts.replyToId ?? "none"} textChars=${message.length} attachments=${attachments?.length ?? 0}`,
+  );
   const result = await signalRpcRequest<{ timestamp?: number }>("send", params, {
     baseUrl,
     timeoutMs: opts.timeoutMs,
   });
+  trace("rpc-done", `timestamp=${result?.timestamp ?? "none"}`);
   const timestamp = result?.timestamp;
   return {
     messageId: timestamp ? String(timestamp) : "unknown",
@@ -235,9 +253,18 @@ export async function sendTypingSignal(
   to: string,
   opts: SignalRpcOpts & { stop?: boolean } = {},
 ): Promise<boolean> {
+  const trace = opts.traceLabel
+    ? createTimingTrace({
+        channel: "signal-trace",
+        label: opts.traceLabel,
+        scope: "sendTypingSignal",
+        sink: "stderr",
+      })
+    : (_stage: string, _details?: string) => {};
   const accountInfo = await resolveSignalRpcAccountInfo(opts);
   const { baseUrl, account } = resolveSignalRpcContext(opts, accountInfo);
-  const targetParams = buildTargetParams(parseTarget(to), {
+  const target = parseTarget(to);
+  const targetParams = buildTargetParams(target, {
     recipient: true,
     group: true,
   });
@@ -251,10 +278,12 @@ export async function sendTypingSignal(
   if (opts.stop) {
     params.stop = true;
   }
+  trace("rpc-start", `targetType=${target.type} stop=${opts.stop === true ? "yes" : "no"}`);
   await signalRpcRequest("sendTyping", params, {
     baseUrl,
     timeoutMs: opts.timeoutMs,
   });
+  trace("rpc-done");
   return true;
 }
 

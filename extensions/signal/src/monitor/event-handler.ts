@@ -37,7 +37,12 @@ import { dispatchInboundMessage } from "openclaw/plugin-sdk/reply-runtime";
 import { finalizeInboundContext } from "openclaw/plugin-sdk/reply-runtime";
 import { createReplyDispatcherWithTyping } from "openclaw/plugin-sdk/reply-runtime";
 import { resolveAgentRoute } from "openclaw/plugin-sdk/routing";
-import { danger, logVerbose, shouldLogVerbose } from "openclaw/plugin-sdk/runtime-env";
+import {
+  createTimingTrace,
+  danger,
+  logVerbose,
+  shouldLogVerbose,
+} from "openclaw/plugin-sdk/runtime-env";
 import {
   DM_GROUP_ACCESS_REASON,
   resolvePinnedMainDmOwnerFromAllowlist,
@@ -120,6 +125,8 @@ function resolveSignalInboundRoute(params: {
   });
 }
 
+const SIGNAL_TYPING_START_DEDUPE_WINDOW_MS = 2_500;
+
 export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
   type SignalInboundEntry = {
     senderName: string;
@@ -145,6 +152,15 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
   };
 
   async function handleSignalInboundMessage(entry: SignalInboundEntry) {
+    const traceLabel =
+      entry.messageId && entry.messageId.length > 0
+        ? `msg:${entry.messageId}`
+        : `sender:${entry.senderPeerId}:${entry.timestamp ?? "unknown"}`;
+    const trace = createTimingTrace({
+      channel: "signal-trace",
+      label: traceLabel,
+      sink: "stderr",
+    });
     const fromLabel = formatInboundFromLabel({
       isGroup: entry.isGroup,
       groupLabel: entry.groupName ?? undefined,
@@ -153,6 +169,10 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
       directLabel: entry.senderName,
       directId: entry.senderDisplay,
     });
+    trace(
+      "handle-start",
+      `group=${entry.isGroup ? "yes" : "no"} bodyChars=${entry.bodyText.length} sender=${entry.senderDisplay}`,
+    );
     const route = resolveSignalInboundRoute({
       cfg: deps.cfg,
       accountId: deps.accountId,
@@ -249,6 +269,46 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
       OriginatingTo: signalTo,
     });
 
+    let lastTypingSignalAt = 0;
+    const handleTypingStartError = (err: unknown) => {
+      logTypingFailure({
+        log: logVerbose,
+        channel: "signal",
+        target: ctxPayload.To ?? undefined,
+        error: err,
+      });
+    };
+    const startSignalTyping = async () => {
+      if (!ctxPayload.To) {
+        return;
+      }
+      const now = Date.now();
+      if (now - lastTypingSignalAt < SIGNAL_TYPING_START_DEDUPE_WINDOW_MS) {
+        return;
+      }
+      lastTypingSignalAt = now;
+      await sendTypingSignal(ctxPayload.To, {
+        baseUrl: deps.baseUrl,
+        account: deps.account,
+        accountId: deps.accountId,
+        traceLabel,
+      });
+    };
+    if (!entry.isGroup) {
+      trace("typing-ingress-start", `target=${ctxPayload.To ?? "unknown"}`);
+      void startSignalTyping()
+        .then(() => {
+          trace("typing-ingress-done");
+        })
+        .catch((err) => {
+          trace(
+            "typing-ingress-failed",
+            `error=${err instanceof Error ? err.message : String(err)}`,
+          );
+          handleTypingStartError(err);
+        });
+    }
+
     await recordInboundSession({
       storePath,
       sessionKey: ctxPayload.SessionKey ?? route.sessionKey,
@@ -284,6 +344,10 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
         logVerbose(`signal: failed updating session meta: ${String(err)}`);
       },
     });
+    trace(
+      "record-inbound-session",
+      `session=${ctxPayload.SessionKey ?? route.sessionKey} target=${ctxPayload.To ?? "unknown"}`,
+    );
 
     if (shouldLogVerbose()) {
       const preview = body.slice(0, 200).replace(/\\n/g, "\\\\n");
@@ -296,24 +360,8 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
       channel: "signal",
       accountId: route.accountId,
       typing: {
-        start: async () => {
-          if (!ctxPayload.To) {
-            return;
-          }
-          await sendTypingSignal(ctxPayload.To, {
-            baseUrl: deps.baseUrl,
-            account: deps.account,
-            accountId: deps.accountId,
-          });
-        },
-        onStartError: (err) => {
-          logTypingFailure({
-            log: logVerbose,
-            channel: "signal",
-            target: ctxPayload.To ?? undefined,
-            error: err,
-          });
-        },
+        start: startSignalTyping,
+        onStartError: handleTypingStartError,
       },
     });
 
@@ -322,8 +370,14 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
       humanDelay: resolveHumanDelayConfig(deps.cfg, route.agentId),
       typingCallbacks,
       deliver: async (payload, info) => {
+        trace(
+          "deliver-start",
+          `kind=${info.kind} replyTo=${payload.replyToId ?? "none"} textChars=${payload.text?.length ?? 0}`,
+        );
         await deps.deliverReplies({
           replies: [payload],
+          traceLabel,
+          cfg: deps.cfg,
           target: ctxPayload.To,
           baseUrl: deps.baseUrl,
           account: deps.account,
@@ -339,12 +393,14 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
                 }
               : undefined,
         });
+        trace("deliver-done", `kind=${info.kind}`);
       },
       onError: (err, info) => {
         deps.runtime.error?.(danger(`signal ${info.kind} reply failed: ${String(err)}`));
       },
     });
 
+    trace("dispatch-start", `session=${route.sessionKey} agent=${route.agentId}`);
     const { queuedFinal } = await dispatchInboundMessage({
       ctx: ctxPayload,
       cfg: deps.cfg,
@@ -356,6 +412,7 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
         onModelSelected,
       },
     });
+    trace("dispatch-done", `queuedFinal=${queuedFinal ? "yes" : "no"}`);
     markDispatchIdle();
     if (!queuedFinal) {
       if (entry.isGroup && historyKey) {
@@ -625,6 +682,7 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
         accountId: deps.accountId,
         sendPairingReply: async (text) => {
           await sendMessageSignal(`signal:${senderRecipient}`, text, {
+            cfg: deps.cfg,
             baseUrl: deps.baseUrl,
             account: deps.account,
             maxBytes: deps.mediaMaxBytes,

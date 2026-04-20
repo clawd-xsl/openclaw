@@ -147,6 +147,37 @@ describe("signal createSignalEventHandler inbound context", () => {
     );
   });
 
+  it("starts DM typing before dispatch begins", async () => {
+    dispatchInboundMessageMock.mockImplementationOnce(async (params: { ctx: MsgContext }) => {
+      capture.ctx = params.ctx;
+      expect(sendTypingMock).toHaveBeenCalledTimes(1);
+      return { queuedFinal: false, counts: { tool: 0, block: 0, final: 0 } };
+    });
+
+    const handler = createSignalEventHandler(
+      createBaseSignalEventHandlerDeps({
+        cfg: {
+          messages: { inbound: { debounceMs: 0 } },
+          channels: { signal: { dmPolicy: "open", allowFrom: ["*"] } },
+        },
+        account: "+15550009999",
+        blockStreaming: false,
+        historyLimit: 0,
+        groupHistories: new Map(),
+      }),
+    );
+
+    await handler(
+      createSignalReceiveEvent({
+        dataMessage: {
+          message: "ping",
+        },
+      }),
+    );
+
+    expect(sendTypingMock).toHaveBeenCalledTimes(1);
+  });
+
   it("does not auto-authorize DM commands in open mode without allowlists", async () => {
     const handler = createSignalEventHandler(
       createBaseSignalEventHandlerDeps({

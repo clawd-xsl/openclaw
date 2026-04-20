@@ -20,6 +20,7 @@ import {
   resolveTextChunkLimit,
 } from "openclaw/plugin-sdk/reply-runtime";
 import {
+  createTimingTrace,
   createNonExitingRuntime,
   type BackoffPolicy,
   type RuntimeEnv,
@@ -313,12 +314,14 @@ async function fetchAttachment(params: {
 }
 
 function createSingleUseSignalReplySender(params: {
+  cfg: OpenClawConfig;
   target: string;
   baseUrl: string;
   account?: string;
   accountId?: string;
   maxBytes: number;
   replyToId?: string;
+  traceLabel?: string;
   sendMessage?: typeof sendMessageSignal;
 }) {
   const sendMessage = params.sendMessage ?? sendMessageSignal;
@@ -329,6 +332,7 @@ function createSingleUseSignalReplySender(params: {
     return replyToId;
   };
   const baseOpts = {
+    cfg: params.cfg,
     baseUrl: params.baseUrl,
     account: params.account,
     maxBytes: params.maxBytes,
@@ -336,23 +340,59 @@ function createSingleUseSignalReplySender(params: {
   };
   return {
     sendText: async (text: string) => {
+      const replyToId = consumeReplyToId();
+      const sendStartedAt = Date.now();
+      const trace = params.traceLabel
+        ? createTimingTrace({
+            channel: "signal-trace",
+            label: params.traceLabel,
+            scope: "deliverReplies:sendText",
+            sink: "stderr",
+            startedAtMs: sendStartedAt,
+          })
+        : (_stage: string, _details?: string) => {};
+      trace("start", `replyTo=${replyToId ?? "none"} textChars=${text.length}`);
       await sendMessage(params.target, text, {
         ...baseOpts,
-        replyToId: consumeReplyToId(),
+        replyToId,
+        traceLabel: params.traceLabel,
       });
+      trace("done", `replyTo=${replyToId ?? "none"} textChars=${text.length}`);
     },
     sendMedia: async ({ mediaUrl, caption }: { mediaUrl: string; caption?: string }) => {
+      const replyToId = consumeReplyToId();
+      const sendStartedAt = Date.now();
+      const trace = params.traceLabel
+        ? createTimingTrace({
+            channel: "signal-trace",
+            label: params.traceLabel,
+            scope: "deliverReplies:sendMedia",
+            sink: "stderr",
+            startedAtMs: sendStartedAt,
+          })
+        : (_stage: string, _details?: string) => {};
+      trace(
+        "start",
+        `replyTo=${replyToId ?? "none"} captionChars=${caption?.length ?? 0} mediaUrl=${mediaUrl}`,
+      );
       await sendMessage(params.target, caption ?? "", {
         ...baseOpts,
         mediaUrl,
-        replyToId: consumeReplyToId(),
+        replyToId,
+        traceLabel: params.traceLabel,
       });
+      trace(
+        "done",
+        `replyTo=${replyToId ?? "none"} captionChars=${caption?.length ?? 0} mediaUrl=${mediaUrl}`,
+      );
     },
   };
 }
 
 async function deliverReplies(params: {
   replies: ReplyPayload[];
+  traceLabel?: string;
+  cfg: OpenClawConfig;
   target: string;
   baseUrl: string;
   account?: string;
@@ -366,17 +406,35 @@ async function deliverReplies(params: {
     agentId?: string;
   };
 }) {
+  const trace = params.traceLabel
+    ? createTimingTrace({
+        channel: "signal-trace",
+        label: params.traceLabel,
+        scope: "deliverReplies",
+        sink: "stderr",
+      })
+    : (_stage: string, _details?: string) => {};
   const { replies, target, baseUrl, account, accountId, runtime, maxBytes, textLimit, chunkMode } =
     params;
+  trace(
+    "start",
+    `count=${replies.length} target=${target} mirror=${params.mirror?.sessionKey ?? "none"}`,
+  );
   for (const payload of replies) {
     const reply = resolveSendableOutboundReplyParts(payload);
+    trace(
+      "payload-start",
+      `replyTo=${payload.replyToId ?? "none"} textChars=${reply.text.length} media=${reply.mediaUrls.length}`,
+    );
     const sender = createSingleUseSignalReplySender({
+      cfg: params.cfg,
       target,
       baseUrl,
       account,
       accountId,
       maxBytes,
       replyToId: payload.replyToId ?? undefined,
+      traceLabel: params.traceLabel,
     });
     const delivered = await deliverTextOrMediaReply({
       payload,
@@ -385,9 +443,11 @@ async function deliverReplies(params: {
       sendText: sender.sendText,
       sendMedia: sender.sendMedia,
     });
+    trace("payload-delivered", `result=${delivered}`);
     if (delivered !== "empty") {
       runtime.log?.(`delivered reply to ${target}`);
       if (params.mirror) {
+        trace("payload-mirror-start", `session=${params.mirror.sessionKey}`);
         const { appendAssistantMessageToSessionTranscript } = await loadSessionTranscriptRuntime();
         const appended = await appendAssistantMessageToSessionTranscript({
           agentId: params.mirror.agentId,
@@ -400,9 +460,11 @@ async function deliverReplies(params: {
             `signal: failed to append assistant transcript mirror (${params.mirror.sessionKey}): ${appended.reason}`,
           );
         }
+        trace("payload-mirror-done", `ok=${appended.ok ? "yes" : "no"}`);
       }
     }
   }
+  trace("done");
 }
 
 export const __testing = {

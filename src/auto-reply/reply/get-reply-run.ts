@@ -13,6 +13,7 @@ import { resolveSessionStoreEntry } from "../../config/sessions/store.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { logVerbose } from "../../globals.js";
+import { createTimingTrace } from "../../infra/timing-trace.js";
 import { clearCommandLane, getQueueSize } from "../../process/command-queue.js";
 import { normalizeMainKey } from "../../routing/session-key.js";
 import {
@@ -238,6 +239,18 @@ export async function runPreparedReply(
     execOverrides,
     abortedLastRun,
   } = params;
+  const traceLabel =
+    sessionCtx.MessageSidFull ??
+    sessionCtx.MessageSid ??
+    sessionCtx.SessionKey ??
+    sessionKey ??
+    sessionId ??
+    "unknown";
+  const trace = createTimingTrace({
+    channel: "reply-trace",
+    label: traceLabel,
+    scope: "runPreparedReply",
+  });
   const useFastReplyRuntime = shouldUseReplyFastTestRuntime({
     cfg,
     isFastTestEnv: process.env.OPENCLAW_TEST_FAST === "1",
@@ -269,6 +282,18 @@ export async function runPreparedReply(
     typingPolicy,
     suppressTyping,
   });
+  let queuedImmediateTypingStart = false;
+  const startImmediateTypingIfNeeded = () => {
+    if (queuedImmediateTypingStart || suppressTyping || typingMode !== "instant") {
+      return;
+    }
+    queuedImmediateTypingStart = true;
+    void Promise.resolve(typing.onReplyStart()).catch((error) => {
+      logVerbose(
+        `early typing start failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
+  };
   const shouldInjectGroupIntro = Boolean(
     isGroupChat && (isFirstTurnInSession || sessionEntry?.groupActivationNeedsSystemIntro),
   );
@@ -319,6 +344,7 @@ export async function runPreparedReply(
     typing.cleanup();
     return undefined;
   }
+  startImmediateTypingIfNeeded();
   const isBareNewOrReset = /^\/(new|reset)$/.test(normalizedCommandBody);
   const isBareSessionReset =
     isNewSession &&
@@ -357,7 +383,7 @@ export async function runPreparedReply(
     // Skip onReplyStart when typing is suppressed (e.g. sendPolicy deny) —
     // otherwise channels that wire onReplyStart to typing indicators leak
     // visible signals even though outbound delivery is suppressed.
-    if (!suppressTyping) {
+    if (!suppressTyping && !queuedImmediateTypingStart) {
       await typing.onReplyStart();
     }
     logVerbose("Inbound body empty after normalization; skipping agent run");
@@ -451,10 +477,15 @@ export async function runPreparedReply(
             skillFilter: opts?.skillFilter,
           });
         })();
+  trace(
+    "skill-snapshot-done",
+    `systemSent=${currentSystemSent ? "yes" : "no"} skills=${skillResult.skillsSnapshot?.skills?.length ?? 0}`,
+  );
   sessionEntry = skillResult.sessionEntry ?? sessionEntry;
   currentSystemSent = skillResult.systemSent;
   const skillsSnapshot = skillResult.skillsSnapshot;
   let { prefixedCommandBody, queuedBody } = await rebuildPromptBodies();
+  trace("prompt-bodies-done");
   if (!resolvedThinkLevel) {
     resolvedThinkLevel = await modelState.resolveDefaultThinkingLevel();
   }
@@ -519,7 +550,12 @@ export async function runPreparedReply(
         inlineMode: perMessageQueueMode,
         inlineOptions: perMessageQueueOptions,
       });
+  trace(
+    "queue-settings-done",
+    `mode=${resolvedQueue.mode} debounceMs=${resolvedQueue.debounceMs} cap=${resolvedQueue.cap}`,
+  );
   const piRuntime = useFastReplyRuntime ? null : await loadPiEmbeddedRuntime();
+  trace("pi-runtime-done", `loaded=${piRuntime ? "yes" : "no"}`);
   const sessionLaneKey = piRuntime
     ? piRuntime.resolveEmbeddedSessionLane(sessionKey ?? sessionIdFinal)
     : undefined;
@@ -544,7 +580,9 @@ export async function runPreparedReply(
         storePath,
         isNewSession,
       });
+  trace("auth-profile-done", `authProfileId=${authProfileId ?? "none"}`);
   const { runReplyAgent } = await loadAgentRunnerRuntime();
+  trace("agent-runner-runtime-done");
   const queueKey = sessionKey ?? sessionIdFinal;
   preparedSessionState = resolvePreparedSessionState();
   let recentSessionHistory: string | undefined;
@@ -560,6 +598,10 @@ export async function runPreparedReply(
   } catch {
     // Best-effort prompt enrichment only.
   }
+  trace(
+    "recent-session-history-done",
+    `chars=${recentSessionHistory?.length ?? 0} previousSessionId=${preparedSessionState.sessionEntry?.previousSessionId ?? "none"}`,
+  );
   const resolveActiveQueueSessionId = () =>
     piRuntime?.resolveActiveEmbeddedRunSessionId(sessionKey) ?? preparedSessionState.sessionId;
   const resolveQueueBusyState = () => {

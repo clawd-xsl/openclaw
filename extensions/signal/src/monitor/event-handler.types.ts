@@ -111,6 +111,8 @@ export type SignalEventHandlerDeps = {
   }) => Promise<{ path: string; contentType?: string } | null>;
   deliverReplies: (params: {
     replies: ReplyPayload[];
+    traceLabel?: string;
+    cfg: OpenClawConfig;
     target: string;
     baseUrl: string;
     account?: string;

@@ -265,6 +265,43 @@ describe("runPreparedReply media-only handling", () => {
     expect(call?.followupRun.prompt).toContain("[User sent media without caption]");
   });
 
+  it("starts instant typing early without waiting for it before running the agent", async () => {
+    vi.mocked(resolveTypingMode).mockReturnValueOnce("instant");
+    let resolveTypingStart!: () => void;
+    const typingStartPromise = new Promise<void>((resolve) => {
+      resolveTypingStart = resolve;
+    });
+    const typing = {
+      onReplyStart: vi.fn(async () => await typingStartPromise),
+      cleanup: vi.fn(),
+    } as never;
+
+    const runPromise = runPreparedReply(
+      baseParams({
+        typing,
+        ctx: {
+          Body: "hello",
+          RawBody: "hello",
+          CommandBody: "hello",
+        },
+        sessionCtx: {
+          Body: "hello",
+          BodyStripped: "hello",
+          Provider: "slack",
+          ChatType: "direct",
+        },
+      }),
+    );
+
+    await vi.waitFor(() => {
+      expect(typing.onReplyStart).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(runReplyAgent)).toHaveBeenCalledTimes(1);
+    });
+
+    resolveTypingStart();
+    await expect(runPromise).resolves.toEqual({ text: "ok" });
+  });
+
   it("keeps thread history context on follow-up turns", async () => {
     const result = await runPreparedReply(
       baseParams({
