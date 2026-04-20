@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { withFileLock } from "../../infra/file-lock.js";
 import { saveJsonFile } from "../../infra/json-file.js";
+import { isTimingTraceEnabled } from "../../infra/timing-trace.js";
 import {
   AUTH_STORE_LOCK_OPTIONS,
   AUTH_STORE_VERSION,
@@ -150,7 +151,7 @@ export async function updateAuthProfileStoreWithLock(params: {
 }
 
 function shouldLogAuthStoreTiming(): boolean {
-  return process.env.OPENCLAW_DEBUG_INGRESS_TIMING === "1";
+  return isTimingTraceEnabled();
 }
 
 function syncExternalCliCredentialsTimed(

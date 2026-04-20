@@ -1,5 +1,5 @@
-import { logVerbose } from "../globals.js";
 import { formatErrorMessage } from "../infra/errors.js";
+import { createTimingTrace } from "../infra/timing-trace.js";
 import type { PreparedCliRunContext, RunCliAgentParams } from "./cli-runner/types.js";
 import { CliSessionContinuityError } from "./cli-session.js";
 import { FailoverError, isFailoverError, resolveFailoverStatus } from "./failover-error.js";
@@ -7,14 +7,11 @@ import { classifyFailoverReason, isFailoverErrorMessage } from "./pi-embedded-he
 import type { EmbeddedPiRunResult } from "./pi-embedded-runner.js";
 
 export async function runCliAgent(params: RunCliAgentParams): Promise<EmbeddedPiRunResult> {
-  const traceId = params.runId ?? params.sessionKey ?? params.sessionId;
-  const traceStartedAt = Date.now();
-  const trace = (stage: string, details?: string) => {
-    const suffix = details ? ` ${details}` : "";
-    logVerbose(
-      `[reply-trace ${traceId}] runCliAgent:${stage} +${Date.now() - traceStartedAt}ms${suffix}`,
-    );
-  };
+  const trace = createTimingTrace({
+    channel: "reply-trace",
+    label: params.runId ?? params.sessionKey ?? params.sessionId ?? "unknown",
+    scope: "runCliAgent",
+  });
   trace("prepare-start", `provider=${params.provider} model=${params.model}`);
   const { prepareCliRunContext } = await import("./cli-runner/prepare.runtime.js");
   const context = await prepareCliRunContext(params);
@@ -25,14 +22,12 @@ export async function runCliAgent(params: RunCliAgentParams): Promise<EmbeddedPi
 export async function runPreparedCliAgent(
   context: PreparedCliRunContext,
 ): Promise<EmbeddedPiRunResult> {
-  const traceId = context.params.runId ?? context.params.sessionKey ?? context.params.sessionId;
-  const traceStartedAt = Date.now();
-  const trace = (stage: string, details?: string) => {
-    const suffix = details ? ` ${details}` : "";
-    logVerbose(
-      `[reply-trace ${traceId}] runPreparedCliAgent:${stage} +${Date.now() - traceStartedAt}ms${suffix}`,
-    );
-  };
+  const trace = createTimingTrace({
+    channel: "reply-trace",
+    label:
+      context.params.runId ?? context.params.sessionKey ?? context.params.sessionId ?? "unknown",
+    scope: "runPreparedCliAgent",
+  });
   const { executePreparedCliRun } = await import("./cli-runner/execute.runtime.js");
   const { params } = context;
   const buildCliRunResult = (resultParams: {

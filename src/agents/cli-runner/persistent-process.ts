@@ -1,5 +1,7 @@
 import crypto from "node:crypto";
 import type { CliBackendConfig } from "../../config/types.js";
+import { isTruthyEnvValue } from "../../infra/env.js";
+import { createTimingTrace, isTimingTraceEnabled } from "../../infra/timing-trace.js";
 import type {
   ProcessSupervisor,
   RunExit,
@@ -83,6 +85,7 @@ const PERSISTENT_RUNTIME_SESSION_IDS = new Map<string, string>();
 const PERSISTENT_RUNTIME_IDLE_TTL_MS = 6 * 60 * 60_000;
 const PERSISTENT_RUNTIME_MAX_AGE_MS = 24 * 60 * 60_000;
 const PERSISTENT_RUNTIME_SWEEP_INTERVAL_MS = 60_000;
+const PERSISTENT_PREDELTA_TRACE_ENV = "OPENCLAW_DEBUG_CLAUDE_PRETEXT_TRACE";
 let persistentRuntimeReaper: NodeJS.Timeout | null = null;
 let persistentRuntimeReaperPromise: Promise<void> | null = null;
 
@@ -222,22 +225,27 @@ function logPersistentTurnTiming(
   phase: string,
   extra?: Record<string, unknown>,
 ): void {
-  if (!runtime.logOutputText) {
+  if (!runtime.logOutputText || !isTimingTraceEnabled()) {
     return;
   }
+  const trace = createTimingTrace({
+    channel: "cli-persistent-trace",
+    label: `${runtime.key}:turn=${runtime.turnCount + 1}`,
+    scope: "persistentTurn",
+    sink: (line) => {
+      cliBackendLog.info(line);
+    },
+    startedAtMs: turn.startedAtMs,
+  });
   const summary = Object.entries({
     provider: runtime.providerId,
-    session: runtime.key,
-    turn: runtime.turnCount + 1,
-    phase,
-    sinceStartMs: Math.max(0, Date.now() - turn.startedAtMs),
     promptChars: turn.promptChars,
     claudeSessionId: turn.sessionId ?? runtime.sessionId ?? "unknown",
     ...extra,
   })
     .map(([key, value]) => `${key}=${String(value)}`)
     .join(" ");
-  cliBackendLog.info(`cli persistent turn: ${summary}`);
+  trace(phase, summary);
 }
 
 function noteRuntimeActivity(runtime: PersistentRuntime): void {
@@ -286,6 +294,10 @@ function collectPersistentRecordText(value: unknown): string {
     collectPersistentRecordText(candidate.error) ||
     collectPersistentRecordText(candidate.text)
   );
+}
+
+function shouldLogAllPreDeltaRecords(): boolean {
+  return isTruthyEnvValue(process.env[PERSISTENT_PREDELTA_TRACE_ENV]);
 }
 
 function parseRuntimeSessionIdLines(runtime: PersistentRuntime): void {
@@ -479,7 +491,10 @@ function parseTurnStdout(runtime: PersistentRuntime, turn: PersistentTurnState):
       continue;
     }
     const record = parsed as Record<string, unknown>;
-    if (turn.firstDeltaAtMs == null && turn.preDeltaRecordLogCount < 8) {
+    if (
+      turn.firstDeltaAtMs == null &&
+      (shouldLogAllPreDeltaRecords() || turn.preDeltaRecordLogCount < 8)
+    ) {
       turn.preDeltaRecordLogCount += 1;
       const event =
         typeof record.event === "object" && record.event && !Array.isArray(record.event)
@@ -489,13 +504,27 @@ function parseTurnStdout(runtime: PersistentRuntime, turn: PersistentTurnState):
         event && typeof event.delta === "object" && event.delta && !Array.isArray(event.delta)
           ? (event.delta as Record<string, unknown>)
           : null;
+      const contentBlock =
+        event &&
+        typeof event.content_block === "object" &&
+        event.content_block &&
+        !Array.isArray(event.content_block)
+          ? (event.content_block as Record<string, unknown>)
+          : null;
       logPersistentTurnTiming(runtime, turn, "record-before-delta", {
         index: turn.preDeltaRecordLogCount,
         recordType: typeof record.type === "string" ? record.type : "unknown",
         recordSubtype: typeof record.subtype === "string" ? record.subtype : "none",
         eventType: typeof event?.type === "string" ? event.type : "none",
         deltaType: typeof delta?.type === "string" ? delta.type : "none",
+        contentBlockType: typeof contentBlock?.type === "string" ? contentBlock.type : "none",
         textChars: collectPersistentRecordText(record).length,
+        signatureChars:
+          typeof delta?.signature === "string"
+            ? delta.signature.length
+            : typeof delta?.partial_json === "string"
+              ? delta.partial_json.length
+              : 0,
       });
     }
     const sessionId = pickRuntimeSessionId(record);

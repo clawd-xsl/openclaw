@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import type { AgentContextInjection } from "../config/types.agent-defaults.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { createTimingTrace } from "../infra/timing-trace.js";
 import { normalizeOptionalString } from "../shared/string-coerce.js";
 import { resolveSessionAgentIds } from "./agent-scope.js";
 import { getOrLoadBootstrapFiles } from "./bootstrap-cache.js";
@@ -191,19 +192,33 @@ export async function resolveBootstrapFilesForRun(params: {
   contextMode?: BootstrapContextMode;
   runKind?: BootstrapContextRunKind;
 }): Promise<WorkspaceBootstrapFile[]> {
+  const traceId = normalizeOptionalString(params.sessionKey ?? params.sessionId) ?? "unknown";
+  const startedAt = Date.now();
+  const trace = createTimingTrace({
+    channel: "reply-trace",
+    label: traceId,
+    scope: "resolveBootstrapFilesForRun",
+    startedAtMs: startedAt,
+  });
   const excludeHeartbeatBootstrapFile = shouldExcludeHeartbeatBootstrapFile(params);
   const sessionKey = params.sessionKey ?? params.sessionId;
+  trace(
+    "start",
+    `workspace=${params.workspaceDir} sessionKey=${params.sessionKey ?? "none"} sessionId=${params.sessionId ?? "none"}`,
+  );
   const rawFiles = params.sessionKey
     ? await getOrLoadBootstrapFiles({
         workspaceDir: params.workspaceDir,
         sessionKey: params.sessionKey,
       })
     : await loadWorkspaceBootstrapFiles(params.workspaceDir);
+  trace("raw-files-loaded", `count=${rawFiles.length}`);
   const bootstrapFiles = applyContextModeFilter({
     files: filterBootstrapFilesForSession(rawFiles, sessionKey),
     contextMode: params.contextMode,
     runKind: params.runKind,
   });
+  trace("filtered-files-ready", `count=${bootstrapFiles.length}`);
 
   const updated = await applyBootstrapHookOverrides({
     files: bootstrapFiles,
@@ -213,6 +228,7 @@ export async function resolveBootstrapFilesForRun(params: {
     sessionId: params.sessionId,
     agentId: params.agentId,
   });
+  trace("hook-overrides-done", `count=${updated.length}`);
   return sanitizeBootstrapFiles(
     filterHeartbeatBootstrapFile(updated, excludeHeartbeatBootstrapFile),
     params.warn,
@@ -232,11 +248,22 @@ export async function resolveBootstrapContextForRun(params: {
   bootstrapFiles: WorkspaceBootstrapFile[];
   contextFiles: EmbeddedContextFile[];
 }> {
+  const traceId = normalizeOptionalString(params.sessionKey ?? params.sessionId) ?? "unknown";
+  const startedAt = Date.now();
+  const trace = createTimingTrace({
+    channel: "reply-trace",
+    label: traceId,
+    scope: "resolveBootstrapContextForRun",
+    startedAtMs: startedAt,
+  });
+  trace("start");
   const bootstrapFiles = await resolveBootstrapFilesForRun(params);
+  trace("bootstrap-files-done", `count=${bootstrapFiles.length}`);
   const contextFiles = buildBootstrapContextFiles(bootstrapFiles, {
     maxChars: resolveBootstrapMaxChars(params.config),
     totalMaxChars: resolveBootstrapTotalMaxChars(params.config),
     warn: params.warn,
   });
+  trace("context-files-built", `count=${contextFiles.length}`);
   return { bootstrapFiles, contextFiles };
 }

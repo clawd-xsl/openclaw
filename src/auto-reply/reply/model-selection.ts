@@ -17,6 +17,7 @@ import {
 } from "../../agents/model-selection.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { isTimingTraceEnabled } from "../../infra/timing-trace.js";
 import { applyModelOverrideToSessionEntry } from "../../sessions/model-overrides.js";
 import { normalizeLowercaseStringOrEmpty } from "../../shared/string-coerce.js";
 import type { ThinkLevel } from "./directives.js";
@@ -61,7 +62,7 @@ export function createFastTestModelSelectionState(params: {
 }
 
 function shouldLogModelSelectionTiming(): boolean {
-  return process.env.OPENCLAW_DEBUG_INGRESS_TIMING === "1";
+  return isTimingTraceEnabled();
 }
 
 let modelCatalogRuntimePromise:

@@ -37,6 +37,7 @@ import {
 import { logVerbose } from "../../globals.js";
 import { emitAgentEvent, registerAgentRunContext } from "../../infra/agent-events.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import { createTimingTrace } from "../../infra/timing-trace.js";
 import { CommandLaneClearedError, GatewayDrainingError } from "../../process/command-queue.js";
 import { defaultRuntime } from "../../runtime.js";
 import {
@@ -580,6 +581,11 @@ export async function runAgentTurnWithFallback(params: {
   storePath?: string;
   resolvedVerboseLevel: VerboseLevel;
 }): Promise<AgentRunLoopResult> {
+  const trace = createTimingTrace({
+    channel: "reply-trace",
+    label: params.opts?.runId ?? params.sessionKey ?? params.followupRun.run.sessionId ?? "unknown",
+    scope: "runAgentTurnWithFallback",
+  });
   const TRANSIENT_HTTP_RETRY_DELAY_MS = 2_500;
   let didLogHeartbeatStrip = false;
   let autoCompactionCount = 0;
@@ -802,10 +808,15 @@ export async function runAgentTurnWithFallback(params: {
           })
         : undefined;
       const onToolResult = params.opts?.onToolResult;
+      trace("runWithModelFallback-start");
       const fallbackResult = await runWithModelFallback({
         ...resolveModelFallbackOptions(params.followupRun.run),
         runId,
         run: async (provider, model, runOptions) => {
+          trace(
+            "candidate-run-start",
+            `provider=${provider} model=${model} transientProbe=${runOptions?.allowTransientCooldownProbe === true}`,
+          );
           // Notify that model selection is complete (including after fallback).
           // This allows responsePrefix template interpolation with the actual model.
           params.opts?.onModelSelected?.({
@@ -815,9 +826,14 @@ export async function runAgentTurnWithFallback(params: {
           });
           let rollbackFallbackCandidateSelection: (() => Promise<void>) | undefined;
           try {
+            trace("persistFallbackCandidateSelection-start", `provider=${provider} model=${model}`);
             rollbackFallbackCandidateSelection = await persistFallbackCandidateSelection(
               provider,
               model,
+            );
+            trace(
+              "persistFallbackCandidateSelection-done",
+              `provider=${provider} model=${model} changed=${rollbackFallbackCandidateSelection ? "yes" : "no"}`,
             );
           } catch (error) {
             logVerbose(
@@ -827,7 +843,10 @@ export async function runAgentTurnWithFallback(params: {
 
           if (isCliProvider(provider, runtimeConfig)) {
             const startedAt = Date.now();
+            trace("cli-run-notify-start");
             notifyAgentRunStart();
+            trace("cli-run-notify-done");
+            trace("cli-lifecycle-start-emit-start");
             emitAgentEvent({
               runId,
               stream: "lifecycle",
@@ -836,9 +855,15 @@ export async function runAgentTurnWithFallback(params: {
                 startedAt,
               },
             });
+            trace("cli-lifecycle-start-emit-done");
+            trace("cli-session-binding-start");
             const cliSessionBinding = getCliSessionBinding(
               params.getActiveSessionEntry(),
               provider,
+            );
+            trace(
+              "cli-session-binding-done",
+              `binding=${cliSessionBinding?.sessionId ? "yes" : "no"}`,
             );
             const authProfileId =
               provider === params.followupRun.run.provider
@@ -847,6 +872,7 @@ export async function runAgentTurnWithFallback(params: {
             return (async () => {
               let lifecycleTerminalEmitted = false;
               try {
+                trace("runCliAgent-call-start", `provider=${provider} model=${model}`);
                 const result = await runCliAgent({
                   sessionId: params.followupRun.run.sessionId,
                   sessionKey: params.sessionKey,
@@ -884,9 +910,18 @@ export async function runAgentTurnWithFallback(params: {
                   abortSignal: params.replyOperation?.abortSignal ?? params.opts?.abortSignal,
                   replyOperation: params.replyOperation,
                 });
+                const resultTextChars = (result.payloads ?? []).reduce(
+                  (total, payload) => total + (normalizeOptionalString(payload.text)?.length ?? 0),
+                  0,
+                );
+                trace(
+                  "runCliAgent-call-done",
+                  `payloads=${result.payloads?.length ?? 0} textChars=${resultTextChars}`,
+                );
                 bootstrapPromptWarningSignaturesSeen = resolveBootstrapWarningSignaturesSeen(
                   result.meta?.systemPromptReport,
                 );
+                trace("cli-assistant-emit-start");
 
                 // CLI backends do not flow assistant payloads through the
                 // embedded onAgentEvent path, so emit the resolved final
@@ -901,7 +936,9 @@ export async function runAgentTurnWithFallback(params: {
                     data: { text: cliText },
                   });
                 }
+                trace("cli-assistant-emit-done", `count=${cliPayloadTexts.length}`);
 
+                trace("cli-lifecycle-end-emit-start");
                 emitAgentEvent({
                   runId,
                   stream: "lifecycle",
@@ -911,8 +948,10 @@ export async function runAgentTurnWithFallback(params: {
                     endedAt: Date.now(),
                   },
                 });
+                trace("cli-lifecycle-end-emit-done");
                 lifecycleTerminalEmitted = true;
 
+                trace("candidate-run-success-return");
                 return result;
               } catch (err) {
                 if (rollbackFallbackCandidateSelection) {
@@ -1246,6 +1285,10 @@ export async function runAgentTurnWithFallback(params: {
           })();
         },
       });
+      trace(
+        "runWithModelFallback-done",
+        `provider=${fallbackResult.provider} model=${fallbackResult.model} attempts=${fallbackResult.attempts.length}`,
+      );
       runResult = fallbackResult.result;
       fallbackProvider = fallbackResult.provider;
       fallbackModel = fallbackResult.model;
@@ -1291,6 +1334,10 @@ export async function runAgentTurnWithFallback(params: {
         }
       }
 
+      trace(
+        "success-ready",
+        `provider=${fallbackProvider} model=${fallbackModel} payloads=${runResult.payloads?.length ?? 0}`,
+      );
       break;
     } catch (err) {
       if (err instanceof LiveSessionModelSwitchError) {

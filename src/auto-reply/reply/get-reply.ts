@@ -10,6 +10,7 @@ import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
 import { DEFAULT_AGENT_WORKSPACE_DIR, ensureAgentWorkspace } from "../../agents/workspace.js";
 import { resolveChannelModelOverride } from "../../channels/model-overrides.js";
 import { type OpenClawConfig, loadConfig } from "../../config/config.js";
+import { createTimingTrace } from "../../infra/timing-trace.js";
 import { defaultRuntime } from "../../runtime.js";
 import { normalizeOptionalString } from "../../shared/string-coerce.js";
 import { normalizeStringEntries } from "../../shared/string-normalization.js";
@@ -148,6 +149,21 @@ export async function getReplyFromConfig(
   opts?: GetReplyOptions,
   configOverride?: OpenClawConfig,
 ): Promise<ReplyPayload | ReplyPayload[] | undefined> {
+  const trace = createTimingTrace({
+    channel: "reply-trace",
+    label:
+      normalizeOptionalString(
+        ctx.MessageSidFull ??
+          ctx.MessageSid ??
+          ctx.MessageSidFirst ??
+          ctx.MessageSidLast ??
+          ctx.SessionKey ??
+          ctx.To ??
+          ctx.From,
+      ) ?? "unknown",
+    scope: "getReply",
+  });
+  trace("start", `provider=${ctx.Provider ?? "unknown"} session=${ctx.SessionKey ?? "none"}`);
   const isFastTestEnv = process.env.OPENCLAW_TEST_FAST === "1";
   const cfg = resolveGetReplyConfig({
     loadConfig,
@@ -183,6 +199,7 @@ export async function getReplyFromConfig(
     cfg,
     agentId,
   });
+  trace("default-model-ready", `${defaultProvider}/${defaultModel}`);
   let provider = defaultProvider;
   let model = defaultModel;
   let hasResolvedHeartbeatModelOverride = false;
@@ -215,6 +232,7 @@ export async function getReplyFromConfig(
         ensureBootstrapFiles: !agentCfg?.skipBootstrap && !isFastTestEnv,
       });
   const workspaceDir = workspace.dir;
+  trace("workspace-ready", `dir=${workspaceDir}`);
   const agentDir = resolveAgentDir(cfg, agentId);
   const timeoutMs = resolveAgentTimeoutMs({ cfg, overrideSeconds: opts?.timeoutOverrideSeconds });
   const configuredTypingSeconds =
@@ -239,16 +257,19 @@ export async function getReplyFromConfig(
       agentDir,
       activeModel: { provider, model },
     });
+    trace("media-understanding-done");
     await applyLinkUnderstandingIfNeeded({
       ctx: finalized,
       cfg,
     });
+    trace("link-understanding-done");
   }
   emitPreAgentMessageHooks({
     ctx: finalized,
     cfg,
     isFastTestEnv,
   });
+  trace("pre-agent-hooks-done");
 
   const commandAuthorized = finalized.CommandAuthorized;
   const sessionState = useFastTestBootstrap
@@ -264,6 +285,7 @@ export async function getReplyFromConfig(
         cfg,
         commandAuthorized,
       });
+  trace("session-init-done");
   let {
     sessionCtx,
     sessionEntry,
@@ -418,6 +440,7 @@ export async function getReplyFromConfig(
     });
   }
 
+  trace("reply-directives-start");
   const directiveResult = await resolveReplyDirectives({
     ctx: finalized,
     cfg,
@@ -445,6 +468,7 @@ export async function getReplyFromConfig(
     opts: resolvedOpts,
     skillFilter: mergedSkillFilter,
   });
+  trace("reply-directives-done", `kind=${directiveResult.kind}`);
   if (directiveResult.kind === "reply") {
     return directiveResult.reply;
   }
@@ -542,6 +566,7 @@ export async function getReplyFromConfig(
     abortedLastRun,
     skillFilter: mergedSkillFilter,
   });
+  trace("inline-actions-done", `kind=${inlineActionResult.kind}`);
   if (inlineActionResult.kind === "reply") {
     await maybeEmitMissingResetHooks();
     return inlineActionResult.reply;
@@ -587,9 +612,14 @@ export async function getReplyFromConfig(
       sessionKey,
       workspaceDir,
     });
+    trace("stage-sandbox-media-done");
   }
 
-  return runPreparedReply({
+  trace(
+    "runPreparedReply-start",
+    `provider=${provider} model=${model} commandBodyChars=${command.commandBodyNormalized.length} hasQueueDirective=${directives.hasQueueDirective ? "yes" : "no"}`,
+  );
+  const reply = await runPreparedReply({
     ctx,
     sessionCtx,
     cfg,
@@ -634,4 +664,6 @@ export async function getReplyFromConfig(
     workspaceDir,
     abortedLastRun,
   });
+  trace("runPreparedReply-done");
+  return reply;
 }

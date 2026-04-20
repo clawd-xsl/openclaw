@@ -2,6 +2,7 @@ import { resolveSendableOutboundReplyParts } from "openclaw/plugin-sdk/reply-pay
 import type { MessagingToolSend } from "../../agents/pi-embedded-messaging.types.js";
 import type { ReplyToMode } from "../../config/types.js";
 import { logVerbose } from "../../globals.js";
+import { createTimingTrace } from "../../infra/timing-trace.js";
 import { stripHeartbeatToken } from "../heartbeat.js";
 import type { OriginatingChannelType } from "../templating.js";
 import { SILENT_REPLY_TOKEN } from "../tokens.js";
@@ -108,7 +109,16 @@ export async function buildReplyPayloads(params: {
   originatingTo?: string;
   accountId?: string;
   normalizeMediaPaths?: (payload: ReplyPayload) => Promise<ReplyPayload>;
+  traceLabel?: string;
 }): Promise<{ replyPayloads: ReplyPayload[]; didLogHeartbeatStrip: boolean }> {
+  const trace = params.traceLabel
+    ? createTimingTrace({
+        channel: "reply-trace",
+        label: params.traceLabel,
+        scope: "buildReplyPayloads",
+      })
+    : (_stage: string, _details?: string) => {};
+  trace("start", `payloads=${params.payloads.length}`);
   let didLogHeartbeatStrip = params.didLogHeartbeatStrip;
   const sanitizedPayloads = params.isHeartbeat
     ? params.payloads
@@ -133,6 +143,7 @@ export async function buildReplyPayloads(params: {
         }
         return [{ ...payload, text: stripped.text }];
       });
+  trace("sanitized-payloads-ready", `payloads=${sanitizedPayloads.length}`);
 
   const replyTaggedPayloads = (
     await Promise.all(
@@ -156,7 +167,9 @@ export async function buildReplyPayloads(params: {
       }),
     )
   ).filter(isRenderablePayload);
+  trace("reply-threading-done", `payloads=${replyTaggedPayloads.length}`);
   const silentFilteredPayloads = params.silentExpected ? [] : replyTaggedPayloads;
+  trace("silent-filter-done", `payloads=${silentFilteredPayloads.length}`);
 
   // Drop final payloads only when block streaming succeeded end-to-end.
   // If streaming aborted (e.g., timeout), fall back to final payloads.
@@ -173,6 +186,10 @@ export async function buildReplyPayloads(params: {
   const dedupeRuntime = shouldCheckMessagingToolDedupe
     ? await loadReplyPayloadsDedupeRuntime()
     : null;
+  trace(
+    "dedupe-runtime-ready",
+    `enabled=${shouldCheckMessagingToolDedupe ? "yes" : "no"} sentTexts=${messagingToolSentTexts.length} sentMedia=${params.messagingToolSentMediaUrls?.length ?? 0} sentTargets=${messagingToolSentTargets.length}`,
+  );
   const suppressMessagingToolReplies =
     dedupeRuntime?.shouldSuppressMessagingToolReplies({
       messageProvider: resolveOriginMessageProvider({
@@ -199,12 +216,14 @@ export async function buildReplyPayloads(params: {
         normalizeMediaPaths: params.normalizeMediaPaths,
       })
     : (params.messagingToolSentMediaUrls ?? []);
+  trace("sent-media-normalized", `count=${messagingToolSentMediaUrls.length}`);
   const dedupedPayloads = dedupeMessagingToolPayloads
     ? (dedupeRuntime ?? (await loadReplyPayloadsDedupeRuntime())).filterMessagingToolDuplicates({
         payloads: silentFilteredPayloads,
         sentTexts: messagingToolSentTexts,
       })
     : silentFilteredPayloads;
+  trace("text-dedupe-done", `payloads=${dedupedPayloads.length}`);
   const mediaFilteredPayloads = dedupeMessagingToolPayloads
     ? (
         dedupeRuntime ?? (await loadReplyPayloadsDedupeRuntime())
@@ -213,6 +232,7 @@ export async function buildReplyPayloads(params: {
         sentMediaUrls: messagingToolSentMediaUrls,
       })
     : dedupedPayloads;
+  trace("media-dedupe-done", `payloads=${mediaFilteredPayloads.length}`);
   // Filter out payloads already sent via pipeline or directly during tool flush.
   const filteredPayloads = shouldDropFinalPayloads
     ? []
@@ -226,6 +246,10 @@ export async function buildReplyPayloads(params: {
           )
         : mediaFilteredPayloads;
   const replyPayloads = suppressMessagingToolReplies ? [] : filteredPayloads;
+  trace(
+    "done",
+    `replyPayloads=${replyPayloads.length} dropFinal=${shouldDropFinalPayloads ? "yes" : "no"} suppressMessaging=${suppressMessagingToolReplies ? "yes" : "no"}`,
+  );
 
   return {
     replyPayloads,

@@ -26,6 +26,15 @@ export {
   formatDurationPrecise,
   formatDurationSeconds,
 } from "../infra/format-time/format-duration.ts";
+export {
+  createTimingTrace,
+  isTimingTraceEnabled,
+  OPENCLAW_TIMING_TRACE_ENV,
+  resolveTimingTraceWriter,
+  type TimingTraceOptions,
+  type TimingTraceSink,
+  type TimingTraceWriter,
+} from "../infra/timing-trace.js";
 export { retryAsync } from "../infra/retry.js";
 export { ensureGlobalUndiciEnvProxyDispatcher } from "../infra/net/undici-global-dispatcher.js";
 export { registerUnhandledRejectionHandler } from "../infra/unhandled-rejections.js";

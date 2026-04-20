@@ -21,6 +21,7 @@ import {
 } from "../../hooks/message-hook-mappers.js";
 import { isDiagnosticsEnabled } from "../../infra/diagnostic-events.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import { createTimingTrace } from "../../infra/timing-trace.js";
 import {
   logMessageProcessed,
   logMessageQueued,
@@ -202,6 +203,21 @@ export async function dispatchReplyFromConfig(
   params: DispatchFromConfigParams,
 ): Promise<DispatchFromConfigResult> {
   const { ctx, cfg, dispatcher } = params;
+  const traceId =
+    normalizeOptionalString(
+      ctx.MessageSidFull ??
+        ctx.MessageSid ??
+        ctx.MessageSidFirst ??
+        ctx.MessageSidLast ??
+        ctx.SessionKey ??
+        ctx.To ??
+        ctx.From,
+    ) ?? "unknown";
+  const trace = createTimingTrace({
+    channel: "reply-trace",
+    label: traceId,
+    scope: "dispatch",
+  });
   const diagnosticsEnabled = isDiagnosticsEnabled(cfg);
   const channel = normalizeLowercaseStringOrEmpty(ctx.Surface ?? ctx.Provider ?? "unknown");
   const chatId = ctx.To ?? ctx.From;
@@ -256,7 +272,9 @@ export async function dispatchReplyFromConfig(
   };
 
   const inboundDedupeClaim = claimInboundDedupe(ctx);
+  trace("start", `session=${ctx.SessionKey ?? "none"} to=${ctx.To ?? "none"}`);
   if (inboundDedupeClaim.status === "duplicate" || inboundDedupeClaim.status === "inflight") {
+    trace("dedupe-skip", `status=${inboundDedupeClaim.status}`);
     recordProcessed("skipped", { reason: "duplicate" });
     return { queuedFinal: false, counts: dispatcher.getQueuedCounts() };
   }
@@ -849,6 +867,7 @@ export async function dispatchReplyFromConfig(
 
     const replyResolver =
       params.replyResolver ?? (await loadGetReplyFromConfigRuntime()).getReplyFromConfig;
+    trace("replyResolver-start");
     const replyResult = await replyResolver(
       ctx,
       {
@@ -958,6 +977,7 @@ export async function dispatchReplyFromConfig(
       },
       params.configOverride,
     );
+    trace("replyResolver-done");
 
     if (ctx.AcpDispatchTailAfterReset === true) {
       // Command handling prepared a trailing prompt after ACP in-place reset.
