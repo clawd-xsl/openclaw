@@ -5,6 +5,7 @@ import {
   createMcpLoopbackServerConfig,
   getActiveMcpLoopbackRuntime,
 } from "../../gateway/mcp-http.loopback-runtime.js";
+import { createTimingTrace } from "../../infra/timing-trace.js";
 import { normalizeOptionalString } from "../../shared/string-coerce.js";
 import { resolveSessionAgentIds } from "../agent-scope.js";
 import {
@@ -22,6 +23,7 @@ import { resolveCliBackendConfig } from "../cli-backends.js";
 import { hashCliSessionText, resolveCliSessionReuse } from "../cli-session.js";
 import { resolveContextTokensForModel } from "../context.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../defaults.js";
+import { resolveOpenClawDocsPath } from "../docs-path.js";
 import { resolveHeartbeatPromptForSystemPrompt } from "../heartbeat-system-prompt.js";
 import {
   resolveBootstrapMaxChars,
@@ -35,7 +37,7 @@ import { buildSystemPromptReport } from "../system-prompt-report.js";
 import { redactRunIdentifier, resolveRunWorkspaceDir } from "../workspace-run.js";
 import { materializeCliBundleMcpConfig, prepareCliBundleMcpSpec } from "./bundle-mcp.js";
 import { buildClaudeCliSkillsPluginSpec } from "./claude-skills-plugin.js";
-import { buildSystemPrompt, normalizeCliModel } from "./helpers.js";
+import { buildSystemPrompt, getSystemPromptCacheStats, normalizeCliModel } from "./helpers.js";
 import { cliBackendLog } from "./log.js";
 import type { PreparedCliRunContext, RunCliAgentParams } from "./types.js";
 
@@ -45,9 +47,7 @@ const prepareDeps = {
   getActiveMcpLoopbackRuntime,
   ensureMcpLoopbackServer,
   createMcpLoopbackServerConfig,
-  resolveOpenClawDocsPath: async (
-    params: Parameters<typeof import("../docs-path.js").resolveOpenClawDocsPath>[0],
-  ) => (await import("../docs-path.js")).resolveOpenClawDocsPath(params),
+  resolveOpenClawDocsPath,
 };
 
 const CLAUDE_AUTOCOMPACT_ENV = "CLAUDE_CODE_AUTO_COMPACT_WINDOW";
@@ -107,14 +107,14 @@ export function setCliRunnerPrepareTestDeps(overrides: Partial<typeof prepareDep
 export async function prepareCliRunContext(
   params: RunCliAgentParams,
 ): Promise<PreparedCliRunContext> {
-  const traceId = params.runId ?? params.sessionKey ?? params.sessionId;
-  const traceStartedAt = Date.now();
-  const trace = (stage: string, details?: string) => {
-    const suffix = details ? ` ${details}` : "";
-    cliBackendLog.info(
-      `cli prepare trace: run=${traceId} stage=${stage} sinceStartMs=${Date.now() - traceStartedAt}${suffix}`,
-    );
-  };
+  const trace = createTimingTrace({
+    channel: "cli-prepare-trace",
+    label: params.runId ?? params.sessionKey ?? params.sessionId ?? "unknown",
+    scope: "prepareCliRunContext",
+    sink: (line) => {
+      cliBackendLog.info(line);
+    },
+  });
   const started = Date.now();
   const workspaceResolution = resolveRunWorkspaceDir({
     workspaceDir: params.workspaceDir,
@@ -297,12 +297,15 @@ export async function prepareCliRunContext(
     cwd: process.cwd(),
     moduleUrl: import.meta.url,
   });
+  trace("docs-path-done", `present=${docsPath ? "yes" : "no"}`);
   const skillsPrompt = resolveSkillsPromptForRun({
     skillsSnapshot: params.skillsSnapshot,
     workspaceDir,
     config: params.config,
     agentId: sessionAgentId,
   });
+  trace("skills-prompt-done", `chars=${skillsPrompt.length}`);
+  const systemPromptCacheBefore = getSystemPromptCacheStats();
   const builtSystemPrompt =
     resolveSystemPromptOverride({
       config: params.config,
@@ -327,7 +330,11 @@ export async function prepareCliRunContext(
       recentSessionHistory: params.recentSessionHistory,
       sessionCreatedAt: params.sessionCreatedAt,
     });
-  trace("system-prompt-built", `chars=${builtSystemPrompt.length}`);
+  const systemPromptCacheAfter = getSystemPromptCacheStats();
+  trace(
+    "system-prompt-built",
+    `chars=${builtSystemPrompt.length} cacheHit=${systemPromptCacheAfter.hits > systemPromptCacheBefore.hits ? "yes" : "no"}`,
+  );
   const transformedSystemPrompt =
     resolvedBackend.transformSystemPrompt?.({
       config: params.config,

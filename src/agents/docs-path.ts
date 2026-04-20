@@ -2,29 +2,63 @@ import fs from "node:fs";
 import path from "node:path";
 import { resolveOpenClawPackageRoot } from "../infra/openclaw-root.js";
 
+const docsPathCache = new Map<string, Promise<string | null>>();
+
+function buildDocsPathCacheKey(params: {
+  workspaceDir?: string;
+  argv1?: string;
+  cwd?: string;
+  moduleUrl?: string;
+}): string {
+  return JSON.stringify({
+    workspaceDir: params.workspaceDir?.trim() || "",
+    argv1: params.argv1 || "",
+    cwd: params.cwd || "",
+    moduleUrl: params.moduleUrl || "",
+  });
+}
+
 export async function resolveOpenClawDocsPath(params: {
   workspaceDir?: string;
   argv1?: string;
   cwd?: string;
   moduleUrl?: string;
 }): Promise<string | null> {
-  const workspaceDir = params.workspaceDir?.trim();
-  if (workspaceDir) {
-    const workspaceDocs = path.join(workspaceDir, "docs");
-    if (fs.existsSync(workspaceDocs)) {
-      return workspaceDocs;
+  const cacheKey = buildDocsPathCacheKey(params);
+  const cached = docsPathCache.get(cacheKey);
+  if (cached) {
+    return await cached;
+  }
+  const pending = (async () => {
+    const workspaceDir = params.workspaceDir?.trim();
+    if (workspaceDir) {
+      const workspaceDocs = path.join(workspaceDir, "docs");
+      if (fs.existsSync(workspaceDocs)) {
+        return workspaceDocs;
+      }
     }
-  }
 
-  const packageRoot = await resolveOpenClawPackageRoot({
-    cwd: params.cwd,
-    argv1: params.argv1,
-    moduleUrl: params.moduleUrl,
-  });
-  if (!packageRoot) {
-    return null;
-  }
+    const packageRoot = await resolveOpenClawPackageRoot({
+      cwd: params.cwd,
+      argv1: params.argv1,
+      moduleUrl: params.moduleUrl,
+    });
+    if (!packageRoot) {
+      return null;
+    }
 
-  const packageDocs = path.join(packageRoot, "docs");
-  return fs.existsSync(packageDocs) ? packageDocs : null;
+    const packageDocs = path.join(packageRoot, "docs");
+    return fs.existsSync(packageDocs) ? packageDocs : null;
+  })();
+  docsPathCache.set(cacheKey, pending);
+  try {
+    return await pending;
+  } catch (error) {
+    docsPathCache.delete(cacheKey);
+    throw error;
+  }
+}
+
+export function clearOpenClawDocsPathCacheForTest(): void {
+  docsPathCache.clear();
 }

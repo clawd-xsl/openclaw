@@ -4,6 +4,7 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { makeTempWorkspace, writeWorkspaceFile } from "../test-helpers/workspace.js";
 import {
+  clearAgentWorkspaceEnsureCacheForTest,
   DEFAULT_AGENTS_FILENAME,
   DEFAULT_BOOTSTRAP_FILENAME,
   DEFAULT_HEARTBEAT_FILENAME,
@@ -73,6 +74,29 @@ function expectSubagentAllowedBootstrapNames(files: WorkspaceBootstrapFile[]) {
 }
 
 describe("ensureAgentWorkspace", () => {
+  it("memoizes repeated warm ensures and returns identityPathCreated only on the first call", async () => {
+    clearAgentWorkspaceEnsureCacheForTest();
+    const tempDir = await makeTempWorkspace("openclaw-workspace-");
+
+    const first = await ensureAgentWorkspace({ dir: tempDir, ensureBootstrapFiles: true });
+
+    const accessSpy = vi.spyOn(fs, "access");
+    const readSpy = vi.spyOn(fs, "readFile");
+    let second: Awaited<ReturnType<typeof ensureAgentWorkspace>> | undefined;
+    try {
+      second = await ensureAgentWorkspace({ dir: tempDir, ensureBootstrapFiles: true });
+    } finally {
+      accessSpy.mockRestore();
+      readSpy.mockRestore();
+      clearAgentWorkspaceEnsureCacheForTest(tempDir);
+    }
+
+    expect(first.identityPathCreated).toBeDefined();
+    expect(second?.identityPathCreated).toBe(false);
+    expect(accessSpy).not.toHaveBeenCalled();
+    expect(readSpy).not.toHaveBeenCalled();
+  });
+
   it("creates BOOTSTRAP.md and records a seeded marker for brand new workspaces", async () => {
     const tempDir = await makeTempWorkspace("openclaw-workspace-");
 

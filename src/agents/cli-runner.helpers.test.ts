@@ -6,6 +6,9 @@ import { resolvePreferredOpenClawTmpDir } from "../infra/tmp-openclaw-dir.js";
 import { MAX_IMAGE_BYTES } from "../media/constants.js";
 import {
   buildCliArgs,
+  buildSystemPrompt,
+  clearSystemPromptCacheForTest,
+  getSystemPromptCacheStatsForTest,
   loadPromptRefImages,
   prepareCliPromptImagePayload,
   resolveCliRunQueueKey,
@@ -20,6 +23,7 @@ import * as toolImages from "./tool-images.js";
 describe("loadPromptRefImages", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    clearSystemPromptCacheForTest();
   });
 
   it("returns empty results when the prompt has no image refs", async () => {
@@ -197,6 +201,68 @@ describe("buildCliArgs", () => {
       "--model",
       "gemini-3.1-pro-preview",
     ]);
+  });
+});
+
+describe("buildSystemPrompt", () => {
+  beforeEach(() => {
+    clearSystemPromptCacheForTest();
+  });
+
+  it("reuses the cached prompt for repeated stable inputs", () => {
+    const params = {
+      workspaceDir: "/workspace",
+      config: {
+        agents: {
+          defaults: {
+            userTimezone: "America/Los_Angeles",
+          },
+        },
+      },
+      modelDisplay: "claude-cli-streaming/opus",
+      tools: [],
+      contextFiles: [{ path: "USER.md", content: "hello" }],
+      skillsPrompt: "<available_skills></available_skills>",
+      extraSystemPrompt: "extra context",
+      previousSessionId: "prev-session",
+      recentSessionHistory: "history",
+      sessionCreatedAt: 123,
+    } as const;
+
+    const first = buildSystemPrompt(params);
+    const second = buildSystemPrompt(params);
+
+    expect(second).toBe(first);
+    expect(getSystemPromptCacheStatsForTest()).toEqual({
+      size: 1,
+      hits: 1,
+      misses: 1,
+    });
+  });
+
+  it("busts the cache when the prompt minute bucket changes", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-04-19T01:00:00.000Z"));
+      const params = {
+        workspaceDir: "/workspace",
+        modelDisplay: "claude-cli-streaming/opus",
+        tools: [],
+      };
+
+      const first = buildSystemPrompt(params);
+      vi.setSystemTime(new Date("2026-04-19T01:01:01.000Z"));
+      const second = buildSystemPrompt(params);
+
+      expect(second).toBe(first);
+      expect(getSystemPromptCacheStatsForTest()).toEqual({
+        size: 2,
+        hits: 0,
+        misses: 2,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

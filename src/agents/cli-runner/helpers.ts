@@ -25,12 +25,159 @@ import type { SandboxFsBridge } from "../sandbox/fs-bridge.js";
 import { detectRuntimeShell } from "../shell-utils.js";
 import { stripSystemPromptCacheBoundary } from "../system-prompt-cache-boundary.js";
 import { buildSystemPromptParams } from "../system-prompt-params.js";
-import { buildAgentSystemPrompt } from "../system-prompt.js";
+import * as systemPromptModule from "../system-prompt.js";
 import { sanitizeImageBlocks } from "../tool-images.js";
 import { formatTomlConfigOverride } from "./toml-inline.js";
 export { buildCliSupervisorScopeKey, resolveCliNoOutputTimeoutMs } from "./reliability.js";
 
 const CLI_RUN_QUEUE = new KeyedAsyncQueue();
+const SYSTEM_PROMPT_CACHE_BUCKET_MS = 60_000;
+const MAX_SYSTEM_PROMPT_CACHE_ENTRIES = 64;
+const SYSTEM_PROMPT_CACHE = new Map<string, string>();
+let systemPromptCacheHitsForTest = 0;
+let systemPromptCacheMissesForTest = 0;
+
+function stableSerializePromptCacheValue(value: unknown, seen = new WeakSet<object>()): string {
+  if (value == null) {
+    return "null";
+  }
+  if (typeof value === "string") {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "bigint") {
+    return JSON.stringify(value.toString());
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableSerializePromptCacheValue(entry, seen)).join(",")}]`;
+  }
+  if (typeof value === "object") {
+    if (seen.has(value)) {
+      return '"[Circular]"';
+    }
+    seen.add(value);
+    const entries = Object.entries(value).toSorted(([left], [right]) => left.localeCompare(right));
+    const serialized = `{${entries
+      .map(
+        ([key, entryValue]) =>
+          `${JSON.stringify(key)}:${stableSerializePromptCacheValue(entryValue, seen)}`,
+      )
+      .join(",")}}`;
+    seen.delete(value);
+    return serialized;
+  }
+  if (typeof value === "symbol") {
+    return JSON.stringify(value.description ?? "[Symbol]");
+  }
+  return JSON.stringify("[Function]");
+}
+
+function buildSystemPromptCacheKey(params: {
+  workspaceDir: string;
+  defaultThinkLevel?: ThinkLevel;
+  reasoningLevel?: ReasoningLevel;
+  extraSystemPrompt?: string;
+  ownerNumbers?: string[];
+  heartbeatPrompt?: string;
+  docsPath?: string;
+  tools: AgentTool[];
+  contextFiles?: EmbeddedContextFile[];
+  skillsPrompt?: string;
+  runtimeInfo: ReturnType<typeof buildSystemPromptParams>["runtimeInfo"];
+  userTimezone: string;
+  userTimeFormat?: ReturnType<typeof buildSystemPromptParams>["userTimeFormat"];
+  defaultModelLabel: string;
+  ttsHint?: string;
+  ownerDisplay: ReturnType<typeof resolveOwnerDisplaySetting>["ownerDisplay"];
+  ownerDisplaySecret?: string;
+  modelAliasLines: string[];
+  memoryCitationsMode?: unknown;
+  previousSessionId?: string;
+  recentSessionHistory?: string;
+  sessionCreatedAt?: number;
+}): string {
+  const minuteBucket = Math.floor(Date.now() / SYSTEM_PROMPT_CACHE_BUCKET_MS);
+  const serialized = stableSerializePromptCacheValue({
+    minuteBucket,
+    workspaceDir: params.workspaceDir,
+    defaultThinkLevel: params.defaultThinkLevel ?? null,
+    reasoningLevel: params.reasoningLevel ?? null,
+    extraSystemPrompt: params.extraSystemPrompt ?? null,
+    ownerNumbers: params.ownerNumbers ?? [],
+    heartbeatPrompt: params.heartbeatPrompt ?? null,
+    docsPath: params.docsPath ?? null,
+    runtimeInfo: params.runtimeInfo,
+    userTimezone: params.userTimezone,
+    userTimeFormat: params.userTimeFormat ?? null,
+    defaultModelLabel: params.defaultModelLabel,
+    ttsHint: params.ttsHint ?? null,
+    ownerDisplay: params.ownerDisplay,
+    ownerDisplaySecret: params.ownerDisplaySecret ?? null,
+    modelAliasLines: params.modelAliasLines,
+    memoryCitationsMode: params.memoryCitationsMode ?? null,
+    tools: params.tools.map((tool) => ({
+      name: tool.name,
+      description: tool.description ?? null,
+      label: tool.label ?? null,
+      parameters: tool.parameters ?? null,
+    })),
+    contextFiles: (params.contextFiles ?? []).map((file) => ({
+      path: file.path,
+      content: file.content,
+    })),
+    skillsPrompt: params.skillsPrompt ?? null,
+    previousSessionId: params.previousSessionId ?? null,
+    recentSessionHistory: params.recentSessionHistory ?? null,
+    sessionCreatedAt: params.sessionCreatedAt ?? null,
+  });
+  return crypto.createHash("sha256").update(serialized).digest("hex");
+}
+
+function getCachedSystemPrompt(cacheKey: string): string | undefined {
+  const cached = SYSTEM_PROMPT_CACHE.get(cacheKey);
+  if (!cached) {
+    return undefined;
+  }
+  SYSTEM_PROMPT_CACHE.delete(cacheKey);
+  SYSTEM_PROMPT_CACHE.set(cacheKey, cached);
+  return cached;
+}
+
+function setCachedSystemPrompt(cacheKey: string, prompt: string): void {
+  if (SYSTEM_PROMPT_CACHE.has(cacheKey)) {
+    SYSTEM_PROMPT_CACHE.delete(cacheKey);
+  }
+  SYSTEM_PROMPT_CACHE.set(cacheKey, prompt);
+  while (SYSTEM_PROMPT_CACHE.size > MAX_SYSTEM_PROMPT_CACHE_ENTRIES) {
+    const oldestKey = SYSTEM_PROMPT_CACHE.keys().next().value;
+    if (!oldestKey) {
+      break;
+    }
+    SYSTEM_PROMPT_CACHE.delete(oldestKey);
+  }
+}
+
+export function clearSystemPromptCacheForTest(): void {
+  SYSTEM_PROMPT_CACHE.clear();
+  systemPromptCacheHitsForTest = 0;
+  systemPromptCacheMissesForTest = 0;
+}
+
+export function getSystemPromptCacheStats(): {
+  size: number;
+  hits: number;
+  misses: number;
+} {
+  return {
+    size: SYSTEM_PROMPT_CACHE.size,
+    hits: systemPromptCacheHitsForTest,
+    misses: systemPromptCacheMissesForTest,
+  };
+}
+
+export const getSystemPromptCacheStatsForTest = getSystemPromptCacheStats;
 
 function isClaudeCliProvider(providerId: string): boolean {
   return normalizeOptionalLowercaseString(providerId)?.startsWith("claude-cli") === true;
@@ -110,7 +257,38 @@ export function buildSystemPrompt(params: {
   });
   const ttsHint = params.config ? buildTtsSystemPromptHint(params.config) : undefined;
   const ownerDisplay = resolveOwnerDisplaySetting(params.config);
-  return buildAgentSystemPrompt({
+  const modelAliasLines = buildModelAliasLines(params.config);
+  const cacheKey = buildSystemPromptCacheKey({
+    workspaceDir: params.workspaceDir,
+    defaultThinkLevel: params.defaultThinkLevel,
+    reasoningLevel: params.reasoningLevel,
+    extraSystemPrompt: params.extraSystemPrompt,
+    ownerNumbers: params.ownerNumbers,
+    heartbeatPrompt: params.heartbeatPrompt,
+    docsPath: params.docsPath,
+    tools: params.tools,
+    contextFiles: params.contextFiles,
+    skillsPrompt: params.skillsPrompt,
+    runtimeInfo,
+    userTimezone,
+    userTimeFormat,
+    defaultModelLabel,
+    ttsHint,
+    ownerDisplay: ownerDisplay.ownerDisplay,
+    ownerDisplaySecret: ownerDisplay.ownerDisplaySecret,
+    modelAliasLines,
+    memoryCitationsMode: params.config?.memory?.citations,
+    previousSessionId: params.previousSessionId,
+    recentSessionHistory: params.recentSessionHistory,
+    sessionCreatedAt: params.sessionCreatedAt,
+  });
+  const cached = getCachedSystemPrompt(cacheKey);
+  if (cached) {
+    systemPromptCacheHitsForTest += 1;
+    return cached;
+  }
+  systemPromptCacheMissesForTest += 1;
+  const prompt = systemPromptModule.buildAgentSystemPrompt({
     workspaceDir: params.workspaceDir,
     defaultThinkLevel: params.defaultThinkLevel,
     reasoningLevel: params.reasoningLevel,
@@ -124,7 +302,7 @@ export function buildSystemPrompt(params: {
     acpEnabled: params.config?.acp?.enabled !== false,
     runtimeInfo,
     toolNames: params.tools.map((tool) => tool.name),
-    modelAliasLines: buildModelAliasLines(params.config),
+    modelAliasLines,
     skillsPrompt: params.skillsPrompt,
     userTimezone,
     userTime,
@@ -136,6 +314,8 @@ export function buildSystemPrompt(params: {
     recentSessionHistory: params.recentSessionHistory,
     sessionCreatedAt: params.sessionCreatedAt,
   });
+  setCachedSystemPrompt(cacheKey, prompt);
+  return prompt;
 }
 
 export function normalizeCliModel(modelId: string, backend: CliBackendConfig): string {

@@ -39,6 +39,20 @@ const WORKSPACE_STATE_VERSION = 1;
 const workspaceTemplateCache = new Map<string, Promise<string>>();
 let gitAvailabilityPromise: Promise<boolean> | null = null;
 const MAX_WORKSPACE_BOOTSTRAP_FILE_BYTES = 2 * 1024 * 1024;
+const ensureAgentWorkspaceCache = new Map<
+  string,
+  Promise<{
+    dir: string;
+    agentsPath?: string;
+    soulPath?: string;
+    toolsPath?: string;
+    identityPath?: string;
+    userPath?: string;
+    heartbeatPath?: string;
+    bootstrapPath?: string;
+    identityPathCreated?: boolean;
+  }>
+>();
 
 // File content cache keyed by stable file identity to avoid stale reads.
 const workspaceFileCache = new Map<string, { content: string; identity: string }>();
@@ -342,31 +356,154 @@ export async function ensureAgentWorkspace(params?: {
 }> {
   const rawDir = params?.dir?.trim() ? params.dir.trim() : DEFAULT_AGENT_WORKSPACE_DIR;
   const dir = resolveUserPath(rawDir);
-  await fs.mkdir(dir, { recursive: true });
-
-  if (!params?.ensureBootstrapFiles) {
-    return { dir };
+  const cacheKey = `${dir}:${params?.ensureBootstrapFiles === true ? "bootstrap" : "dir"}`;
+  const cached = ensureAgentWorkspaceCache.get(cacheKey);
+  if (cached) {
+    const result = await cached;
+    return params?.ensureBootstrapFiles === true
+      ? { ...result, identityPathCreated: false }
+      : result;
   }
 
-  const agentsPath = path.join(dir, DEFAULT_AGENTS_FILENAME);
-  const soulPath = path.join(dir, DEFAULT_SOUL_FILENAME);
-  const toolsPath = path.join(dir, DEFAULT_TOOLS_FILENAME);
-  const identityPath = path.join(dir, DEFAULT_IDENTITY_FILENAME);
-  const userPath = path.join(dir, DEFAULT_USER_FILENAME);
-  const heartbeatPath = path.join(dir, DEFAULT_HEARTBEAT_FILENAME);
-  const bootstrapPath = path.join(dir, DEFAULT_BOOTSTRAP_FILENAME);
-  const statePath = resolveWorkspaceStatePath(dir);
+  const pending = (async () => {
+    await fs.mkdir(dir, { recursive: true });
 
-  const warmState = await readWorkspaceSetupState(statePath);
-  const corePaths = [agentsPath, soulPath, toolsPath, identityPath, userPath, heartbeatPath];
-  const [corePathStates, warmBootstrapExists] = await Promise.all([
-    Promise.all(corePaths.map(async (filePath) => await fileExists(filePath))),
-    fileExists(bootstrapPath),
-  ]);
-  const allCoreFilesExist = corePathStates.every(Boolean);
-  const bootstrapSeeded = hasWorkspaceStateMarker(warmState.bootstrapSeededAt);
-  const setupCompleted = hasWorkspaceStateMarker(warmState.setupCompletedAt);
-  if (allCoreFilesExist && ((bootstrapSeeded && warmBootstrapExists) || setupCompleted)) {
+    if (!params?.ensureBootstrapFiles) {
+      return { dir };
+    }
+
+    const agentsPath = path.join(dir, DEFAULT_AGENTS_FILENAME);
+    const soulPath = path.join(dir, DEFAULT_SOUL_FILENAME);
+    const toolsPath = path.join(dir, DEFAULT_TOOLS_FILENAME);
+    const identityPath = path.join(dir, DEFAULT_IDENTITY_FILENAME);
+    const userPath = path.join(dir, DEFAULT_USER_FILENAME);
+    const heartbeatPath = path.join(dir, DEFAULT_HEARTBEAT_FILENAME);
+    const bootstrapPath = path.join(dir, DEFAULT_BOOTSTRAP_FILENAME);
+    const statePath = resolveWorkspaceStatePath(dir);
+
+    const warmState = await readWorkspaceSetupState(statePath);
+    const corePaths = [agentsPath, soulPath, toolsPath, identityPath, userPath, heartbeatPath];
+    const [corePathStates, warmBootstrapExists] = await Promise.all([
+      Promise.all(corePaths.map(async (filePath) => await fileExists(filePath))),
+      fileExists(bootstrapPath),
+    ]);
+    const allCoreFilesExist = corePathStates.every(Boolean);
+    const bootstrapSeeded = hasWorkspaceStateMarker(warmState.bootstrapSeededAt);
+    const setupCompleted = hasWorkspaceStateMarker(warmState.setupCompletedAt);
+    if (allCoreFilesExist && ((bootstrapSeeded && warmBootstrapExists) || setupCompleted)) {
+      return {
+        dir,
+        agentsPath,
+        soulPath,
+        toolsPath,
+        identityPath,
+        userPath,
+        heartbeatPath,
+        bootstrapPath,
+      };
+    }
+
+    const isBrandNewWorkspace = await (async () => {
+      const userContentPaths = [
+        path.join(dir, "memory"),
+        path.join(dir, DEFAULT_MEMORY_FILENAME),
+        path.join(dir, ".git"),
+      ];
+      const paths = [...corePaths, ...userContentPaths];
+      const existing = await Promise.all(
+        paths.map(async (p) => {
+          try {
+            await fs.access(p);
+            return true;
+          } catch {
+            return false;
+          }
+        }),
+      );
+      return existing.every((v) => !v);
+    })();
+
+    const [
+      agentsTemplate,
+      soulTemplate,
+      toolsTemplate,
+      identityTemplate,
+      userTemplate,
+      heartbeatTemplate,
+    ] = await Promise.all([
+      loadTemplate(DEFAULT_AGENTS_FILENAME),
+      loadTemplate(DEFAULT_SOUL_FILENAME),
+      loadTemplate(DEFAULT_TOOLS_FILENAME),
+      loadTemplate(DEFAULT_IDENTITY_FILENAME),
+      loadTemplate(DEFAULT_USER_FILENAME),
+      loadTemplate(DEFAULT_HEARTBEAT_FILENAME),
+    ]);
+    const [, , , identityPathCreated] = await Promise.all([
+      writeFileIfMissing(agentsPath, agentsTemplate),
+      writeFileIfMissing(soulPath, soulTemplate),
+      writeFileIfMissing(toolsPath, toolsTemplate),
+      writeFileIfMissing(identityPath, identityTemplate),
+      writeFileIfMissing(userPath, userTemplate),
+      writeFileIfMissing(heartbeatPath, heartbeatTemplate),
+    ]);
+
+    let state = warmState;
+    let stateDirty = false;
+    const markState = (next: Partial<WorkspaceSetupState>) => {
+      state = { ...state, ...next };
+      stateDirty = true;
+    };
+    const nowIso = () => new Date().toISOString();
+
+    let bootstrapExists = await fileExists(bootstrapPath);
+    if (!state.bootstrapSeededAt && bootstrapExists) {
+      markState({ bootstrapSeededAt: nowIso() });
+    }
+
+    if (!state.setupCompletedAt && state.bootstrapSeededAt && !bootstrapExists) {
+      markState({ setupCompletedAt: nowIso() });
+    }
+
+    if (!state.bootstrapSeededAt && !state.setupCompletedAt && !bootstrapExists) {
+      // Legacy migration path: if USER/IDENTITY diverged from templates, or if user-content
+      // indicators exist, treat setup as complete and avoid recreating BOOTSTRAP for
+      // already-configured workspaces.
+      const [identityContent, userContent] = await Promise.all([
+        fs.readFile(identityPath, "utf-8"),
+        fs.readFile(userPath, "utf-8"),
+      ]);
+      const hasUserContent = (
+        await Promise.all(
+          [
+            path.join(dir, "memory"),
+            path.join(dir, DEFAULT_MEMORY_FILENAME),
+            path.join(dir, ".git"),
+          ].map(async (indicator) => await fileExists(indicator)),
+        )
+      ).some(Boolean);
+      const legacySetupCompleted =
+        identityContent !== identityTemplate || userContent !== userTemplate || hasUserContent;
+      if (legacySetupCompleted) {
+        markState({ setupCompletedAt: nowIso() });
+      } else {
+        const bootstrapTemplate = await loadTemplate(DEFAULT_BOOTSTRAP_FILENAME);
+        const wroteBootstrap = await writeFileIfMissing(bootstrapPath, bootstrapTemplate);
+        if (!wroteBootstrap) {
+          bootstrapExists = await fileExists(bootstrapPath);
+        } else {
+          bootstrapExists = true;
+        }
+        if (bootstrapExists && !state.bootstrapSeededAt) {
+          markState({ bootstrapSeededAt: nowIso() });
+        }
+      }
+    }
+
+    if (stateDirty) {
+      await writeWorkspaceSetupState(statePath, state);
+    }
+    await ensureGitRepo(dir, isBrandNewWorkspace);
+
     return {
       dir,
       agentsPath,
@@ -376,121 +513,27 @@ export async function ensureAgentWorkspace(params?: {
       userPath,
       heartbeatPath,
       bootstrapPath,
+      identityPathCreated,
     };
-  }
-
-  const isBrandNewWorkspace = await (async () => {
-    const userContentPaths = [
-      path.join(dir, "memory"),
-      path.join(dir, DEFAULT_MEMORY_FILENAME),
-      path.join(dir, ".git"),
-    ];
-    const paths = [...corePaths, ...userContentPaths];
-    const existing = await Promise.all(
-      paths.map(async (p) => {
-        try {
-          await fs.access(p);
-          return true;
-        } catch {
-          return false;
-        }
-      }),
-    );
-    return existing.every((v) => !v);
   })();
 
-  const [
-    agentsTemplate,
-    soulTemplate,
-    toolsTemplate,
-    identityTemplate,
-    userTemplate,
-    heartbeatTemplate,
-  ] = await Promise.all([
-    loadTemplate(DEFAULT_AGENTS_FILENAME),
-    loadTemplate(DEFAULT_SOUL_FILENAME),
-    loadTemplate(DEFAULT_TOOLS_FILENAME),
-    loadTemplate(DEFAULT_IDENTITY_FILENAME),
-    loadTemplate(DEFAULT_USER_FILENAME),
-    loadTemplate(DEFAULT_HEARTBEAT_FILENAME),
-  ]);
-  const [, , , identityPathCreated] = await Promise.all([
-    writeFileIfMissing(agentsPath, agentsTemplate),
-    writeFileIfMissing(soulPath, soulTemplate),
-    writeFileIfMissing(toolsPath, toolsTemplate),
-    writeFileIfMissing(identityPath, identityTemplate),
-    writeFileIfMissing(userPath, userTemplate),
-    writeFileIfMissing(heartbeatPath, heartbeatTemplate),
-  ]);
-
-  let state = warmState;
-  let stateDirty = false;
-  const markState = (next: Partial<WorkspaceSetupState>) => {
-    state = { ...state, ...next };
-    stateDirty = true;
-  };
-  const nowIso = () => new Date().toISOString();
-
-  let bootstrapExists = await fileExists(bootstrapPath);
-  if (!state.bootstrapSeededAt && bootstrapExists) {
-    markState({ bootstrapSeededAt: nowIso() });
+  ensureAgentWorkspaceCache.set(cacheKey, pending);
+  try {
+    return await pending;
+  } catch (error) {
+    ensureAgentWorkspaceCache.delete(cacheKey);
+    throw error;
   }
+}
 
-  if (!state.setupCompletedAt && state.bootstrapSeededAt && !bootstrapExists) {
-    markState({ setupCompletedAt: nowIso() });
+export function clearAgentWorkspaceEnsureCacheForTest(dir?: string): void {
+  if (!dir) {
+    ensureAgentWorkspaceCache.clear();
+    return;
   }
-
-  if (!state.bootstrapSeededAt && !state.setupCompletedAt && !bootstrapExists) {
-    // Legacy migration path: if USER/IDENTITY diverged from templates, or if user-content
-    // indicators exist, treat setup as complete and avoid recreating BOOTSTRAP for
-    // already-configured workspaces.
-    const [identityContent, userContent] = await Promise.all([
-      fs.readFile(identityPath, "utf-8"),
-      fs.readFile(userPath, "utf-8"),
-    ]);
-    const hasUserContent = (
-      await Promise.all(
-        [
-          path.join(dir, "memory"),
-          path.join(dir, DEFAULT_MEMORY_FILENAME),
-          path.join(dir, ".git"),
-        ].map(async (indicator) => await fileExists(indicator)),
-      )
-    ).some(Boolean);
-    const legacySetupCompleted =
-      identityContent !== identityTemplate || userContent !== userTemplate || hasUserContent;
-    if (legacySetupCompleted) {
-      markState({ setupCompletedAt: nowIso() });
-    } else {
-      const bootstrapTemplate = await loadTemplate(DEFAULT_BOOTSTRAP_FILENAME);
-      const wroteBootstrap = await writeFileIfMissing(bootstrapPath, bootstrapTemplate);
-      if (!wroteBootstrap) {
-        bootstrapExists = await fileExists(bootstrapPath);
-      } else {
-        bootstrapExists = true;
-      }
-      if (bootstrapExists && !state.bootstrapSeededAt) {
-        markState({ bootstrapSeededAt: nowIso() });
-      }
-    }
-  }
-
-  if (stateDirty) {
-    await writeWorkspaceSetupState(statePath, state);
-  }
-  await ensureGitRepo(dir, isBrandNewWorkspace);
-
-  return {
-    dir,
-    agentsPath,
-    soulPath,
-    toolsPath,
-    identityPath,
-    userPath,
-    heartbeatPath,
-    bootstrapPath,
-    identityPathCreated,
-  };
+  const resolvedDir = resolveUserPath(dir);
+  ensureAgentWorkspaceCache.delete(`${resolvedDir}:dir`);
+  ensureAgentWorkspaceCache.delete(`${resolvedDir}:bootstrap`);
 }
 
 async function resolveMemoryBootstrapEntry(
