@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import {
   MCP_LOOPBACK_SERVER_NAME,
@@ -10,25 +11,94 @@ import {
 } from "./mcp-http.protocol.js";
 import type { McpLoopbackTool, McpToolSchemaEntry } from "./mcp-http.schema.js";
 
-type McpTextContent = {
-  type: "text";
-  text: string;
-};
+type McpTextContent = Extract<NonNullable<CallToolResult["content"]>[number], { type: "text" }>;
+type McpImageContent = Extract<NonNullable<CallToolResult["content"]>[number], { type: "image" }>;
+type McpAudioContent = Extract<NonNullable<CallToolResult["content"]>[number], { type: "audio" }>;
+type McpResourceLinkContent = Extract<
+  NonNullable<CallToolResult["content"]>[number],
+  { type: "resource_link" }
+>;
+type McpResourceContent = Extract<
+  NonNullable<CallToolResult["content"]>[number],
+  { type: "resource" }
+>;
+type McpToolCallContent = NonNullable<CallToolResult["content"]>[number];
 
-function normalizeToolCallContent(result: unknown): McpTextContent[] {
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function toTextFallback(block: unknown): McpTextContent {
+  return {
+    type: "text",
+    text: typeof block === "string" ? block : JSON.stringify(block),
+  };
+}
+
+function normalizeToolCallBlock(block: unknown): McpToolCallContent {
+  if (!isPlainRecord(block)) {
+    return toTextFallback(block);
+  }
+
+  if (block.type === "text" && typeof block.text === "string") {
+    return { type: "text", text: block.text } satisfies McpTextContent;
+  }
+
+  if (
+    block.type === "image" &&
+    typeof block.data === "string" &&
+    typeof block.mimeType === "string"
+  ) {
+    return {
+      type: "image",
+      data: block.data,
+      mimeType: block.mimeType,
+    } satisfies McpImageContent;
+  }
+
+  if (
+    block.type === "audio" &&
+    typeof block.data === "string" &&
+    typeof block.mimeType === "string"
+  ) {
+    return {
+      type: "audio",
+      data: block.data,
+      mimeType: block.mimeType,
+    } satisfies McpAudioContent;
+  }
+
+  if (
+    block.type === "resource_link" &&
+    typeof block.name === "string" &&
+    typeof block.uri === "string"
+  ) {
+    return {
+      type: "resource_link",
+      name: block.name,
+      uri: block.uri,
+      ...(typeof block.title === "string" ? { title: block.title } : {}),
+      ...(typeof block.description === "string" ? { description: block.description } : {}),
+      ...(typeof block.mimeType === "string" ? { mimeType: block.mimeType } : {}),
+    } satisfies McpResourceLinkContent;
+  }
+
+  if (block.type === "resource" && isPlainRecord(block.resource)) {
+    return {
+      type: "resource",
+      resource: block.resource as McpResourceContent["resource"],
+    } satisfies McpResourceContent;
+  }
+
+  return toTextFallback(block);
+}
+
+function normalizeToolCallContent(result: unknown): NonNullable<CallToolResult["content"]> {
   const content = (result as { content?: unknown })?.content;
   if (Array.isArray(content)) {
-    return content.map((block: { type?: string; text?: string }) => ({
-      type: (block.type ?? "text") as "text",
-      text: block.text ?? (typeof block === "string" ? block : JSON.stringify(block)),
-    }));
+    return content.map((block) => normalizeToolCallBlock(block));
   }
-  return [
-    {
-      type: "text",
-      text: typeof result === "string" ? result : JSON.stringify(result),
-    },
-  ];
+  return [toTextFallback(result)];
 }
 
 export async function handleMcpJsonRpc(params: {

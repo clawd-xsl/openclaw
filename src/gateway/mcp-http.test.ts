@@ -232,6 +232,49 @@ describe("mcp loopback server", () => {
     expect(payload.result?.tools?.map((tool) => tool.name)).toEqual(["alpha", "middle", "zeta"]);
   });
 
+  it("preserves image blocks in tools/call responses", async () => {
+    resolveGatewayScopedToolsMock.mockReturnValue({
+      agentId: "main",
+      tools: [
+        {
+          name: "read",
+          description: "read a file",
+          parameters: { type: "object", properties: {} },
+          execute: async () => ({
+            content: [
+              { type: "text", text: "Read image file [image/png]" },
+              { type: "image", data: "QUJDRA==", mimeType: "image/png" },
+            ],
+          }),
+        },
+      ],
+    });
+    server = await startMcpLoopbackServer(0);
+    const runtime = getActiveMcpLoopbackRuntime();
+
+    const response = await sendRaw({
+      port: server.port,
+      token: runtime?.token,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "read", arguments: { path: "image.png" } },
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as {
+      result?: { content?: Array<Record<string, unknown>>; isError?: boolean };
+    };
+    expect(payload.result?.isError).toBe(false);
+    expect(payload.result?.content).toEqual([
+      { type: "text", text: "Read image file [image/png]" },
+      { type: "image", data: "QUJDRA==", mimeType: "image/png" },
+    ]);
+  });
+
   it("tracks the active runtime only while the server is running", async () => {
     server = await startMcpLoopbackServer(0);
     const active = getActiveMcpLoopbackRuntime();
