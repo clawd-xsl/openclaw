@@ -7,6 +7,7 @@ import {
   clearSessionStoreCacheForTest,
   loadSessionStore,
   recordSessionMetaFromInbound,
+  resetSessionStoreBackfillRuntimeForTest,
   updateLastRoute,
 } from "../sessions.js";
 
@@ -44,6 +45,7 @@ describe("session store key normalization", () => {
 
   afterEach(async () => {
     clearSessionStoreCacheForTest();
+    resetSessionStoreBackfillRuntimeForTest();
   });
 
   afterAll(async () => {

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, it, expect, beforeEach } from "vitest";
+import { isSessionStoreWriteBusy, withSessionStoreLockForTest } from "../config/sessions/store.js";
 import { isCronRunSessionKey } from "../sessions/session-key-utils.js";
 import type { Logger } from "./service/state.js";
 import { sweepCronRunSessions, resolveRetentionMs, resetReaperThrottle } from "./session-reaper.js";
@@ -254,5 +255,44 @@ describe("sweepCronRunSessions", () => {
       log,
     });
     expect(r3.swept).toBe(false);
+  });
+
+  it("yields when the session store is already busy", async () => {
+    const now = Date.now();
+    const store: Record<string, { sessionId: string; updatedAt: number }> = {
+      "agent:main:cron:job1:run:run1": {
+        sessionId: "run1",
+        updatedAt: now - 25 * 3_600_000,
+      },
+    };
+    fs.writeFileSync(storePath, JSON.stringify(store));
+
+    let releaseLock: (() => void) | undefined;
+    const heldLock = withSessionStoreLockForTest(storePath, async () => {
+      await new Promise<void>((resolve) => {
+        releaseLock = resolve;
+      });
+    });
+
+    while (true) {
+      if (isSessionStoreWriteBusy(storePath) && releaseLock) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+
+    const result = await sweepCronRunSessions({
+      sessionStorePath: storePath,
+      nowMs: now,
+      log,
+      force: true,
+    });
+
+    expect(result).toEqual({ swept: false, pruned: 0 });
+    const updated = JSON.parse(fs.readFileSync(storePath, "utf-8"));
+    expect(updated["agent:main:cron:job1:run:run1"]).toBeDefined();
+
+    releaseLock?.();
+    await heldLock;
   });
 });

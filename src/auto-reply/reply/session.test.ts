@@ -8,7 +8,11 @@ import {
   getOrCreateSessionMcpRuntime,
 } from "../../agents/pi-bundle-mcp-tools.js";
 import type { OpenClawConfig } from "../../config/config.js";
-import type { SessionEntry } from "../../config/sessions.js";
+import {
+  flushSessionStoreBackfillForTest,
+  resetSessionStoreBackfillRuntimeForTest,
+  type SessionEntry,
+} from "../../config/sessions.js";
 import { formatZonedTimestamp } from "../../infra/format-time/format-datetime.ts";
 import {
   __testing as sessionBindingTesting,
@@ -23,7 +27,11 @@ import {
 } from "../../test-utils/channel-plugins.js";
 import { createSessionConversationTestRegistry } from "../../test-utils/session-conversation-registry.js";
 import { drainFormattedSystemEvents } from "./session-updates.js";
-import { persistSessionUsageUpdate } from "./session-usage.js";
+import {
+  persistSessionAccountingUpdate,
+  persistSessionContinuityUpdate,
+  persistSessionUsageUpdate,
+} from "./session-usage.js";
 import { initSessionState } from "./session.js";
 
 const generateSessionSummaryMock = vi.hoisted(() => vi.fn(async () => undefined));
@@ -226,6 +234,7 @@ beforeEach(() => {
 });
 afterEach(async () => {
   await sessionMcpTesting.resetSessionMcpRuntimeManager();
+  resetSessionStoreBackfillRuntimeForTest();
 });
 describe("initSessionState thread forking", () => {
   it("forks a new session from the parent session file", async () => {
@@ -2285,6 +2294,122 @@ describe("persistSessionUsageUpdate", () => {
     expect(stored[sessionKey].claudeCliSessionId).toBeUndefined();
   });
 
+  it("persists continuity fields without touching accounting fields", async () => {
+    const storePath = await createStorePath("openclaw-usage-continuity-");
+    const sessionKey = "main";
+    await seedSessionStore({
+      storePath,
+      sessionKey,
+      entry: {
+        sessionId: "s1",
+        updatedAt: Date.now(),
+        inputTokens: 111,
+        outputTokens: 22,
+        totalTokens: 333,
+        totalTokensFresh: true,
+      },
+    });
+
+    await persistSessionContinuityUpdate({
+      storePath,
+      sessionKey,
+      providerUsed: "claude-cli-streaming",
+      modelUsed: "claude-opus-4-6",
+      contextTokensUsed: 200_000,
+      cliSessionBinding: {
+        sessionId: "stream-session-2",
+        authProfileId: "anthropic:default",
+        extraSystemPromptHash: "prompt-hash",
+        mcpConfigHash: "mcp-hash",
+      },
+      systemPromptReport: {
+        source: "run",
+        generatedAt: Date.now(),
+        systemPrompt: {
+          chars: 10,
+          projectContextChars: 2,
+          nonProjectContextChars: 8,
+        },
+        injectedWorkspaceFiles: [],
+        skills: { promptChars: 0, entries: [] },
+        tools: { listChars: 0, schemaChars: 0, entries: [] },
+      },
+    });
+
+    await flushSessionStoreBackfillForTest(storePath);
+    const stored = JSON.parse(await fs.readFile(storePath, "utf-8"));
+    expect(stored[sessionKey].modelProvider).toBe("claude-cli-streaming");
+    expect(stored[sessionKey].model).toBe("claude-opus-4-6");
+    expect(stored[sessionKey].contextTokens).toBe(200_000);
+    expect(stored[sessionKey].cliSessionIds?.["claude-cli-streaming"]).toBe("stream-session-2");
+    expect(stored[sessionKey].inputTokens).toBe(111);
+    expect(stored[sessionKey].outputTokens).toBe(22);
+    expect(stored[sessionKey].totalTokens).toBe(333);
+    expect(stored[sessionKey].systemPromptReport).toBeUndefined();
+  });
+
+  it("persists accounting fields without touching continuity fields", async () => {
+    const storePath = await createStorePath("openclaw-usage-accounting-");
+    const sessionKey = "main";
+    await seedSessionStore({
+      storePath,
+      sessionKey,
+      entry: {
+        sessionId: "s1",
+        updatedAt: Date.now(),
+        modelProvider: "claude-cli-streaming",
+        model: "claude-opus-4-6",
+        contextTokens: 200_000,
+        cliSessionIds: {
+          "claude-cli-streaming": "stream-session-2",
+        },
+        cliSessionBindings: {
+          "claude-cli-streaming": {
+            sessionId: "stream-session-2",
+            authProfileId: "anthropic:default",
+            extraSystemPromptHash: "prompt-hash",
+            mcpConfigHash: "mcp-hash",
+          },
+        },
+      },
+    });
+
+    await persistSessionAccountingUpdate({
+      storePath,
+      sessionKey,
+      usage: { input: 24_000, output: 2_000, cacheRead: 8_000 },
+      lastCallUsage: { input: 12_000, output: 1_000, cacheRead: 4_000, cacheWrite: 500 },
+      contextTokensUsed: 200_000,
+      systemPromptReport: {
+        source: "run",
+        generatedAt: Date.now(),
+        systemPrompt: {
+          chars: 10,
+          projectContextChars: 2,
+          nonProjectContextChars: 8,
+        },
+        injectedWorkspaceFiles: [],
+        skills: { promptChars: 0, entries: [] },
+        tools: { listChars: 0, schemaChars: 0, entries: [] },
+      },
+    });
+
+    await flushSessionStoreBackfillForTest(storePath);
+    const stored = JSON.parse(await fs.readFile(storePath, "utf-8"));
+    expect(stored[sessionKey].modelProvider).toBe("claude-cli-streaming");
+    expect(stored[sessionKey].model).toBe("claude-opus-4-6");
+    expect(stored[sessionKey].contextTokens).toBe(200_000);
+    expect(stored[sessionKey].cliSessionIds?.["claude-cli-streaming"]).toBe("stream-session-2");
+    expect(stored[sessionKey].inputTokens).toBe(24_000);
+    expect(stored[sessionKey].outputTokens).toBe(2_000);
+    expect(stored[sessionKey].cacheRead).toBe(4_000);
+    expect(stored[sessionKey].totalTokens).toBe(16_500);
+    expect(stored[sessionKey].systemPromptReport).toMatchObject({
+      source: "run",
+      systemPrompt: { chars: 10 },
+    });
+  });
+
   it("persists totalTokens from promptTokens when usage is unavailable", async () => {
     const storePath = await createStorePath("openclaw-usage-");
     const sessionKey = "main";
@@ -2931,6 +3056,36 @@ describe("initSessionState internal channel routing preservation", () => {
     });
 
     expect(result.sessionEntry.lastChannel).toBe("webchat");
+  });
+
+  it("skips persisting a stable warm session when only updatedAt changes", async () => {
+    const storePath = await createStorePath("stable-warm-session-fast-path-");
+    const cfg = { session: { store: storePath } } as OpenClawConfig;
+    const ctx = {
+      Body: "hello again",
+      SessionKey: "agent:main:main",
+      OriginatingChannel: "webchat",
+      OriginatingTo: "session:dashboard",
+      Surface: "webchat",
+    };
+
+    await initSessionState({
+      ctx,
+      cfg,
+      commandAuthorized: true,
+    });
+    const persistedAfterFirstTurn = await fs.readFile(storePath, "utf-8");
+
+    const result = await initSessionState({
+      ctx,
+      cfg,
+      commandAuthorized: true,
+    });
+    const persistedAfterSecondTurn = await fs.readFile(storePath, "utf-8");
+
+    expect(persistedAfterSecondTurn).toBe(persistedAfterFirstTurn);
+    expect(result.sessionEntry.lastChannel).toBe("webchat");
+    expect(result.sessionEntry.updatedAt).toBeGreaterThan(0);
   });
 
   it("preserves external route for main session when webchat accesses without destination (fixes #47745)", async () => {

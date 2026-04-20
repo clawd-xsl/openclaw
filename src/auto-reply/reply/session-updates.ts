@@ -26,6 +26,8 @@ import { normalizeOptionalString } from "../../shared/string-coerce.js";
 import { buildSessionEndHookPayload, buildSessionStartHookPayload } from "./session-hooks.js";
 export { drainFormattedSystemEvents } from "./session-system-events.js";
 
+const RECENT_SKILL_SNAPSHOTS = new Map<string, NonNullable<SessionEntry["skillsSnapshot"]>>();
+
 async function persistSessionEntryUpdate(params: {
   sessionStore?: Record<string, SessionEntry>;
   sessionKey?: string;
@@ -143,7 +145,8 @@ export async function ensureSkillSnapshot(params: {
     }),
   });
   const snapshotVersion = getSkillsSnapshotVersion(workspaceDir);
-  const existingSnapshot = nextEntry?.skillsSnapshot;
+  const cachedSnapshot = sessionKey ? RECENT_SKILL_SNAPSHOTS.get(sessionKey) : undefined;
+  const existingSnapshot = nextEntry?.skillsSnapshot ?? cachedSnapshot;
   ensureSkillsWatcher({ workspaceDir, config: cfg });
   const shouldRefreshSnapshot =
     shouldRefreshSnapshotForVersion(existingSnapshot?.version, snapshotVersion) ||
@@ -179,17 +182,20 @@ export async function ensureSkillSnapshot(params: {
   const hasFreshSnapshotInEntry =
     Boolean(nextEntry?.skillsSnapshot) &&
     (nextEntry?.skillsSnapshot !== existingSnapshot || !shouldRefreshSnapshot);
+  const shouldBuildSnapshot =
+    shouldRefreshSnapshot || (!nextEntry?.skillsSnapshot && !cachedSnapshot);
   const skillsSnapshot = hasFreshSnapshotInEntry
     ? nextEntry?.skillsSnapshot
-    : shouldRefreshSnapshot || !nextEntry?.skillsSnapshot
+    : shouldBuildSnapshot
       ? buildSnapshot()
-      : nextEntry.skillsSnapshot;
+      : (nextEntry?.skillsSnapshot ?? cachedSnapshot);
+  const shouldPersistMissingSnapshot = !nextEntry?.skillsSnapshot && !cachedSnapshot;
   if (
     skillsSnapshot &&
     sessionStore &&
     sessionKey &&
     !isFirstTurnInSession &&
-    (!nextEntry?.skillsSnapshot || shouldRefreshSnapshot)
+    (shouldRefreshSnapshot || shouldPersistMissingSnapshot)
   ) {
     const current = nextEntry ?? {
       sessionId: sessionId ?? crypto.randomUUID(),
@@ -202,6 +208,10 @@ export async function ensureSkillSnapshot(params: {
       skillsSnapshot,
     };
     await persistSessionEntryUpdate({ sessionStore, sessionKey, storePath, nextEntry });
+  }
+
+  if (sessionKey && skillsSnapshot) {
+    RECENT_SKILL_SNAPSHOTS.set(sessionKey, skillsSnapshot);
   }
 
   return { sessionEntry: nextEntry, skillsSnapshot, systemSent };

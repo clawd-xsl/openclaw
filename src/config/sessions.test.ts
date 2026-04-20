@@ -1,12 +1,13 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { withEnv } from "../test-utils/env.js";
 import {
   buildGroupDisplayName,
   deriveSessionKey,
   loadSessionStore,
+  resetSessionStoreBackfillRuntimeForTest,
   resolveSessionFilePath,
   resolveSessionFilePathOptions,
   resolveSessionKey,
@@ -33,6 +34,10 @@ describe("sessions", () => {
 
   afterAll(async () => {
     await fs.rm(fixtureRoot, { recursive: true, force: true });
+  });
+
+  afterEach(() => {
+    resetSessionStoreBackfillRuntimeForTest();
   });
 
   const withStateDir = <T>(stateDir: string, fn: () => T): T =>
@@ -243,7 +248,7 @@ describe("sessions", () => {
 
     const store = loadSessionStore(storePath);
     expect(store[mainSessionKey]?.sessionId).toBe("sess-1");
-    expect(store[mainSessionKey]?.updatedAt).toBeGreaterThanOrEqual(123);
+    expect(store[mainSessionKey]?.updatedAt).toBe(123);
     expect(store[mainSessionKey]?.lastChannel).toBe("telegram");
     expect(store[mainSessionKey]?.lastTo).toBe("12345");
     expect(store[mainSessionKey]?.deliveryContext).toEqual({
@@ -256,6 +261,38 @@ describe("sessions", () => {
     expect(store[mainSessionKey]?.elevatedLevel).toBe("on");
     expect(store[mainSessionKey]?.authProfileOverride).toBe("auth-1");
     expect(store[mainSessionKey]?.compactionCount).toBe(2);
+  });
+
+  it("updateLastRoute leaves updatedAt unchanged when only the route changes", async () => {
+    const mainSessionKey = "agent:main:main";
+    const { storePath } = await createSessionStoreFixture({
+      prefix: "updateLastRoute",
+      entries: {
+        [mainSessionKey]: buildMainSessionEntry({
+          updatedAt: 456,
+          deliveryContext: {
+            channel: "telegram",
+            to: "111",
+          },
+          lastChannel: "telegram",
+          lastTo: "111",
+        }),
+      },
+    });
+
+    await updateLastRoute({
+      storePath,
+      sessionKey: mainSessionKey,
+      deliveryContext: {
+        channel: "signal",
+        to: "+15551234567",
+      },
+    });
+
+    const store = loadSessionStore(storePath);
+    expect(store[mainSessionKey]?.updatedAt).toBe(456);
+    expect(store[mainSessionKey]?.lastChannel).toBe("signal");
+    expect(store[mainSessionKey]?.lastTo).toBe("+15551234567");
   });
 
   it("updateLastRoute prefers explicit deliveryContext", async () => {

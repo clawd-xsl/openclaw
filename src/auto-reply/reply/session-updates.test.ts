@@ -5,6 +5,7 @@ const {
   ensureSkillsWatcherMock,
   getSkillsSnapshotVersionMock,
   shouldRefreshSnapshotForVersionMock,
+  updateSessionStoreMock,
   getRemoteSkillEligibilityMock,
   resolveAgentConfigMock,
   resolveSessionAgentIdMock,
@@ -14,6 +15,7 @@ const {
   ensureSkillsWatcherMock: vi.fn(),
   getSkillsSnapshotVersionMock: vi.fn(() => 0),
   shouldRefreshSnapshotForVersionMock: vi.fn(() => false),
+  updateSessionStoreMock: vi.fn(),
   getRemoteSkillEligibilityMock: vi.fn(() => ({
     platforms: [],
     hasBin: () => false,
@@ -40,7 +42,7 @@ vi.mock("../../agents/skills/refresh.js", () => ({
 }));
 
 vi.mock("../../config/sessions.js", () => ({
-  updateSessionStore: vi.fn(),
+  updateSessionStore: updateSessionStoreMock,
   resolveSessionFilePath: vi.fn(),
   resolveSessionFilePathOptions: vi.fn(),
 }));
@@ -104,5 +106,58 @@ describe("ensureSkillSnapshot", () => {
       expect.objectContaining({ agentId: "writer" }),
     );
     expect(resolveAgentIdFromSessionKeyMock).not.toHaveBeenCalled();
+  });
+
+  it("reuses a cached snapshot without persisting it again on a warm hot-store turn", async () => {
+    vi.stubEnv("OPENCLAW_TEST_FAST", "0");
+
+    const sessionKey = "agent:main:main";
+    const coldBackedStore = {
+      [sessionKey]: {
+        sessionId: "session-1",
+        updatedAt: 1,
+      },
+    };
+
+    await ensureSkillSnapshot({
+      sessionStore: coldBackedStore,
+      sessionKey,
+      storePath: "/tmp/sessions.json",
+      sessionId: "session-1",
+      isFirstTurnInSession: true,
+      workspaceDir: "/tmp/workspace",
+      cfg: {
+        agents: {
+          list: [{ id: "writer", default: true }],
+        },
+      },
+    });
+
+    const hotStoreView = {
+      [sessionKey]: {
+        sessionId: "session-1",
+        updatedAt: 2,
+      },
+    };
+
+    updateSessionStoreMock.mockClear();
+    buildWorkspaceSkillSnapshotMock.mockClear();
+
+    await ensureSkillSnapshot({
+      sessionStore: hotStoreView,
+      sessionKey,
+      storePath: "/tmp/sessions.hot.json",
+      sessionId: "session-1",
+      isFirstTurnInSession: false,
+      workspaceDir: "/tmp/workspace",
+      cfg: {
+        agents: {
+          list: [{ id: "writer", default: true }],
+        },
+      },
+    });
+
+    expect(buildWorkspaceSkillSnapshotMock).not.toHaveBeenCalled();
+    expect(updateSessionStoreMock).not.toHaveBeenCalled();
   });
 });

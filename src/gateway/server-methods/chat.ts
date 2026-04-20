@@ -11,7 +11,7 @@ import type { ReplyPayload } from "../../auto-reply/reply-payload.js";
 import { createReplyDispatcher } from "../../auto-reply/reply/reply-dispatcher.js";
 import type { MsgContext } from "../../auto-reply/templating.js";
 import { extractCanvasFromText } from "../../chat/canvas-render.js";
-import { resolveSessionFilePath, updateSessionStoreEntry } from "../../config/sessions.js";
+import { resolveSessionFilePath } from "../../config/sessions.js";
 import { jsonUtf8Bytes } from "../../infra/json-utf8-bytes.js";
 import { isAudioFileName } from "../../media/mime.js";
 import type { PromptImageOrderEntry } from "../../media/prompt-image-order.js";
@@ -1835,7 +1835,7 @@ export const chatHandlers: GatewayRequestHandlers = {
       return;
     }
     const rawSessionKey = p.sessionKey;
-    const { cfg, storePath, entry, canonicalKey: sessionKey } = loadSessionEntry(rawSessionKey);
+    const { cfg, entry, canonicalKey: sessionKey } = loadSessionEntry(rawSessionKey);
     const agentId = resolveSessionAgentId({
       sessionKey,
       config: cfg,
@@ -2138,16 +2138,6 @@ export const chatHandlers: GatewayRequestHandlers = {
           `webchat eager user transcript update failed: ${formatForLog(transcriptErr)}`,
         );
       });
-
-      if (storePath && entry?.sessionId) {
-        try {
-          await updateSessionStoreEntry({
-            storePath,
-            sessionKey,
-            update: async () => ({ updatedAt: Date.now() }),
-          });
-        } catch {}
-      }
 
       let agentRunStarted = false;
       void dispatchInboundMessage({

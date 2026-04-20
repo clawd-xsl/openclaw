@@ -132,4 +132,31 @@ describe("recordInboundSession", () => {
       senderRecipient: "9999",
     });
   });
+
+  it("does not await last-route updates before returning", async () => {
+    let resolveRouteUpdate: (() => void) | undefined;
+    updateLastRouteMock.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveRouteUpdate = resolve;
+        }),
+    );
+
+    const recordPromise = recordInboundSession({
+      storePath: "/tmp/openclaw-session-store.json",
+      sessionKey: "agent:main:demo-channel:1234:thread:42",
+      ctx,
+      updateLastRoute: {
+        sessionKey: "agent:main:demo-channel:1234:thread:42",
+        channel: "demo-channel",
+        to: "demo-channel:1234",
+      },
+      onRecordError: vi.fn(),
+    });
+
+    await expect(recordPromise).resolves.toBeUndefined();
+    expect(updateLastRouteMock).toHaveBeenCalledTimes(1);
+
+    resolveRouteUpdate?.();
+  });
 });

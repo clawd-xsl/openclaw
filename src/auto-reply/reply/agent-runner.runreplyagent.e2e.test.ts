@@ -236,16 +236,27 @@ describe("runReplyAgent heartbeat followup guard", () => {
     expect(state.runEmbeddedPiAgentMock).not.toHaveBeenCalled();
   });
 
-  it("does not block a successful reply on persistRunSessionUsage", async () => {
+  it("does not block a successful reply on deferred session persistence", async () => {
     const accounting = await import("./session-run-accounting.js");
-    let resolvePersist: (() => void) | undefined;
+    let resolveContinuityPersist: (() => void) | undefined;
+    let resolveAccountingPersist: (() => void) | undefined;
     let runPromise: ReturnType<ReturnType<typeof createMinimalRun>["run"]> | undefined;
-    const persistSpy = vi.spyOn(accounting, "persistRunSessionUsage").mockImplementationOnce(
-      async () =>
-        await new Promise<void>((resolve) => {
-          resolvePersist = resolve;
-        }),
-    );
+    const continuitySpy = vi
+      .spyOn(accounting, "persistRunSessionContinuity")
+      .mockImplementationOnce(
+        async () =>
+          await new Promise<void>((resolve) => {
+            resolveContinuityPersist = resolve;
+          }),
+      );
+    const accountingSpy = vi
+      .spyOn(accounting, "persistRunSessionAccounting")
+      .mockImplementationOnce(
+        async () =>
+          await new Promise<void>((resolve) => {
+            resolveAccountingPersist = resolve;
+          }),
+      );
 
     try {
       const { run } = createMinimalRun();
@@ -260,11 +271,14 @@ describe("runReplyAgent heartbeat followup guard", () => {
         kind: "resolved",
         value: { text: "final" },
       });
-      expect(persistSpy).toHaveBeenCalledTimes(1);
+      expect(continuitySpy).toHaveBeenCalledTimes(1);
+      expect(accountingSpy).toHaveBeenCalledTimes(1);
     } finally {
-      resolvePersist?.();
+      resolveContinuityPersist?.();
+      resolveAccountingPersist?.();
       await runPromise?.catch(() => undefined);
-      persistSpy.mockRestore();
+      continuitySpy.mockRestore();
+      accountingSpy.mockRestore();
     }
   });
 });
@@ -285,6 +299,31 @@ describe("runReplyAgent typing (heartbeat)", () => {
     expect(onPartialReply).toHaveBeenCalled();
     expect(typing.startTypingOnText).toHaveBeenCalledWith("hi");
     expect(typing.startTypingLoop).toHaveBeenCalled();
+  });
+
+  it("does not wait for instant typing startup before running the agent", async () => {
+    let resolveTypingStart!: () => void;
+    const typingStartPromise = new Promise<void>((resolve) => {
+      resolveTypingStart = resolve;
+    });
+    state.runEmbeddedPiAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "final" }],
+      meta: {},
+    });
+
+    const { run, typing } = createMinimalRun({
+      typingMode: "instant",
+    });
+    typing.startTypingLoop = vi.fn(async () => await typingStartPromise);
+
+    const runPromise = run();
+
+    await vi.waitFor(() => {
+      expect(state.runEmbeddedPiAgentMock).toHaveBeenCalledTimes(1);
+    });
+
+    resolveTypingStart();
+    await expect(runPromise).resolves.toMatchObject({ text: "final" });
   });
 
   it("never signals typing for heartbeat runs", async () => {

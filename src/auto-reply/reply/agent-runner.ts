@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import { hasConfiguredModelFallbacks } from "../../agents/agent-scope.js";
+import { setCliSessionBinding, setCliSessionId } from "../../agents/cli-session.js";
 import { resolveContextTokensForModel } from "../../agents/context.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../../agents/defaults.js";
 import { resolveModelAuthMode } from "../../agents/model-auth.js";
@@ -19,6 +20,7 @@ import { logVerbose } from "../../globals.js";
 import { emitAgentEvent } from "../../infra/agent-events.js";
 import { emitDiagnosticEvent, isDiagnosticsEnabled } from "../../infra/diagnostic-events.js";
 import { enqueueSystemEvent } from "../../infra/system-events.js";
+import { createTimingTrace } from "../../infra/timing-trace.js";
 import { CommandLaneClearedError, GatewayDrainingError } from "../../process/command-queue.js";
 import { normalizeOptionalString } from "../../shared/string-coerce.js";
 import {
@@ -73,7 +75,11 @@ import {
   type ReplyOperation,
 } from "./reply-run-registry.js";
 import { createReplyToModeFilterForChannel, resolveReplyToMode } from "./reply-threading.js";
-import { incrementRunCompactionCount, persistRunSessionUsage } from "./session-run-accounting.js";
+import {
+  incrementRunCompactionCount,
+  persistRunSessionAccounting,
+  persistRunSessionContinuity,
+} from "./session-run-accounting.js";
 import { createTypingSignaler } from "./typing-mode.js";
 import type { TypingController } from "./typing.js";
 
@@ -106,6 +112,45 @@ function formatRawTraceBlock(title: string, value: string | undefined): string {
 
 function escapeTraceFence(value: string): string {
   return value.replace(/^~~~/gm, "\\~~~");
+}
+
+function applyRunSessionContinuityToActiveEntry(params: {
+  entry?: SessionEntry;
+  sessionStore?: Record<string, SessionEntry>;
+  sessionKey?: string;
+  providerUsed?: string;
+  modelUsed?: string;
+  contextTokensUsed?: number;
+  cliSessionId?: string;
+  cliSessionBinding?: import("../../config/sessions.js").CliSessionBinding;
+}): SessionEntry | undefined {
+  const activeEntry =
+    params.entry ?? (params.sessionKey ? params.sessionStore?.[params.sessionKey] : undefined);
+  if (!activeEntry) {
+    return undefined;
+  }
+
+  if (params.providerUsed !== undefined) {
+    activeEntry.modelProvider = params.providerUsed;
+  }
+  if (params.modelUsed !== undefined) {
+    activeEntry.model = params.modelUsed;
+  }
+  if (params.contextTokensUsed !== undefined) {
+    activeEntry.contextTokens = params.contextTokensUsed;
+  }
+  if (params.providerUsed) {
+    if (params.cliSessionBinding) {
+      setCliSessionBinding(activeEntry, params.providerUsed, params.cliSessionBinding);
+    } else if (params.cliSessionId) {
+      setCliSessionId(activeEntry, params.providerUsed, params.cliSessionId);
+    }
+  }
+  activeEntry.updatedAt = Date.now();
+  if (params.sessionKey && params.sessionStore) {
+    params.sessionStore[params.sessionKey] = activeEntry;
+  }
+  return activeEntry;
 }
 
 function hasTraceUsageFields(
@@ -926,13 +971,11 @@ export async function runReplyAgent(params: {
         sessionKey ??
         followupRun.run.sessionId,
     ) ?? "unknown";
-  const traceStartedAt = Date.now();
-  const trace = (stage: string, details?: string) => {
-    const suffix = details ? ` ${details}` : "";
-    logVerbose(
-      `[reply-trace ${traceId}] runReplyAgent:${stage} +${Date.now() - traceStartedAt}ms${suffix}`,
-    );
-  };
+  const trace = createTimingTrace({
+    channel: "reply-trace",
+    label: traceId,
+    scope: "runReplyAgent",
+  });
   trace(
     "start",
     `session=${sessionKey ?? "none"} provider=${followupRun.run.provider} model=${followupRun.run.model}`,
@@ -1115,7 +1158,17 @@ export async function runReplyAgent(params: {
   };
 
   try {
-    await typingSignals.signalRunStart();
+    trace("typing-signal-start");
+    void typingSignals
+      .signalRunStart()
+      .then(() => {
+        trace("typing-signal-done");
+      })
+      .catch((error) => {
+        logVerbose(
+          `run start typing signal failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
 
     activeSessionEntry = await runPreflightCompactionIfNeeded({
       cfg,
@@ -1368,55 +1421,91 @@ export async function runReplyAgent(params: {
         allowAsyncLoad: false,
       }) ?? DEFAULT_CONTEXT_TOKENS;
 
-    let persistRunSessionUsagePromise: Promise<void> | null = null;
-    let persistRunSessionUsageAwaited = false;
-    const beginPersistRunSessionUsage = () => {
-      if (persistRunSessionUsagePromise) {
-        return persistRunSessionUsagePromise;
+    activeSessionEntry = applyRunSessionContinuityToActiveEntry({
+      entry: activeSessionEntry,
+      sessionStore: activeSessionStore,
+      sessionKey,
+      providerUsed,
+      modelUsed,
+      contextTokensUsed,
+      cliSessionId,
+      cliSessionBinding,
+    });
+
+    const persistParams = {
+      storePath,
+      sessionKey,
+      cfg,
+      usage,
+      lastCallUsage: runResult.meta?.agentMeta?.lastCallUsage,
+      promptTokens,
+      modelUsed,
+      providerUsed,
+      contextTokensUsed,
+      systemPromptReport: runResult.meta?.systemPromptReport,
+      cliSessionId,
+      cliSessionBinding,
+      usageIsContextSnapshot: isCliProvider(providerUsed, cfg),
+      logLabel: traceId,
+    };
+    let persistRunSessionContinuityPromise: Promise<void> | null = null;
+    let persistRunSessionAccountingPromise: Promise<void> | null = null;
+    let persistRunSessionContinuityAwaited = false;
+    let persistRunSessionAccountingAwaited = false;
+    const beginPersistRunSessionContinuity = () => {
+      if (persistRunSessionContinuityPromise) {
+        return persistRunSessionContinuityPromise;
       }
       trace(
-        "persistRunSessionUsage-start",
-        `provider=${providerUsed} model=${modelUsed} hasUsage=${usage ? "yes" : "no"}`,
+        "persistRunSessionContinuity-start",
+        `provider=${providerUsed} model=${modelUsed} cli=${cliSessionBinding?.sessionId ?? cliSessionId ?? "none"}`,
       );
-      persistRunSessionUsagePromise = persistRunSessionUsage({
-        storePath,
-        sessionKey,
-        cfg,
-        usage,
-        lastCallUsage: runResult.meta?.agentMeta?.lastCallUsage,
-        promptTokens,
-        modelUsed,
-        providerUsed,
-        contextTokensUsed,
-        systemPromptReport: runResult.meta?.systemPromptReport,
-        cliSessionId,
-        cliSessionBinding,
-        usageIsContextSnapshot: isCliProvider(providerUsed, cfg),
-        logLabel: traceId,
-      });
-      void persistRunSessionUsagePromise.catch((err) => {
-        if (!persistRunSessionUsageAwaited) {
-          logVerbose(`persistRunSessionUsage failed: ${String(err)}`);
+      persistRunSessionContinuityPromise = persistRunSessionContinuity(persistParams);
+      void persistRunSessionContinuityPromise.catch((err) => {
+        if (!persistRunSessionContinuityAwaited) {
+          logVerbose(`persistRunSessionContinuity failed: ${String(err)}`);
         }
       });
-      return persistRunSessionUsagePromise;
+      return persistRunSessionContinuityPromise;
     };
-    const awaitPersistRunSessionUsage = async (reason: string) => {
-      if (!persistRunSessionUsagePromise) {
-        return;
+    const beginPersistRunSessionAccounting = () => {
+      if (persistRunSessionAccountingPromise) {
+        return persistRunSessionAccountingPromise;
       }
-      persistRunSessionUsageAwaited = true;
-      trace("persistRunSessionUsage-await", reason);
-      await persistRunSessionUsagePromise;
-      trace("persistRunSessionUsage-done");
+      trace(
+        "persistRunSessionAccounting-start",
+        `provider=${providerUsed} model=${modelUsed} hasUsage=${usage ? "yes" : "no"}`,
+      );
+      persistRunSessionAccountingPromise = persistRunSessionAccounting(persistParams);
+      void persistRunSessionAccountingPromise.catch((err) => {
+        if (!persistRunSessionAccountingAwaited) {
+          logVerbose(`persistRunSessionAccounting failed: ${String(err)}`);
+        }
+      });
+      return persistRunSessionAccountingPromise;
     };
-    void beginPersistRunSessionUsage();
+    const awaitDeferredSessionPersists = async (reason: string) => {
+      if (persistRunSessionContinuityPromise) {
+        persistRunSessionContinuityAwaited = true;
+        trace("persistRunSessionContinuity-await", reason);
+        await persistRunSessionContinuityPromise;
+        trace("persistRunSessionContinuity-done");
+      }
+      if (persistRunSessionAccountingPromise) {
+        persistRunSessionAccountingAwaited = true;
+        trace("persistRunSessionAccounting-await", reason);
+        await persistRunSessionAccountingPromise;
+        trace("persistRunSessionAccounting-done");
+      }
+    };
+    void beginPersistRunSessionContinuity();
+    void beginPersistRunSessionAccounting();
 
     // Drain any late tool/block deliveries before deciding there's "nothing to send".
     // Otherwise, a late typing trigger (e.g. from a tool callback) can outlive the run and
     // keep the typing indicator stuck.
     if (payloadArray.length === 0) {
-      await awaitPersistRunSessionUsage("no-payload-array");
+      await awaitDeferredSessionPersists("no-payload-array");
       return finalizeWithFollowup(undefined, queueKey, runFollowupTurn);
     }
 
@@ -1450,7 +1539,7 @@ export async function runReplyAgent(params: {
     didLogHeartbeatStrip = payloadResult.didLogHeartbeatStrip;
 
     if (replyPayloads.length === 0) {
-      await awaitPersistRunSessionUsage("no-reply-payloads");
+      await awaitDeferredSessionPersists("no-reply-payloads");
       return finalizeWithFollowup(undefined, queueKey, runFollowupTurn);
     }
 
@@ -1544,7 +1633,7 @@ export async function runReplyAgent(params: {
     }
 
     if (verboseEnabled) {
-      await awaitPersistRunSessionUsage("verbose-refresh");
+      await awaitDeferredSessionPersists("verbose-refresh");
       activeSessionEntry = refreshSessionEntryFromStore({
         storePath,
         sessionKey,

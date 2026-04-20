@@ -8,10 +8,12 @@ import { loadConfig } from "../../config/config.js";
 import {
   type SessionSystemPromptReport,
   type SessionEntry,
-  updateSessionStoreEntry,
+  queueSessionStoreColdBackfill,
+  writeHotSessionEntry,
 } from "../../config/sessions.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { logVerbose } from "../../globals.js";
+import { createTimingTrace } from "../../infra/timing-trace.js";
 import { estimateUsageCost, resolveModelCostConfig } from "../../utils/usage-format.js";
 
 function applyCliSessionIdToSessionPatch(
@@ -68,7 +70,7 @@ function estimateSessionRunCostUsd(params: {
   return resolveNonNegativeNumber(estimateUsageCost({ usage: params.usage, cost }));
 }
 
-export async function persistSessionUsageUpdate(params: {
+export type PersistSessionUsageUpdateParams = {
   storePath?: string;
   sessionKey?: string;
   cfg?: OpenClawConfig;
@@ -89,102 +91,193 @@ export async function persistSessionUsageUpdate(params: {
   cliSessionId?: string;
   cliSessionBinding?: import("../../config/sessions.js").CliSessionBinding;
   logLabel?: string;
-}): Promise<void> {
+};
+
+function createPersistSessionUsageTrace(
+  params: Pick<PersistSessionUsageUpdateParams, "logLabel" | "sessionKey">,
+  scope: string,
+) {
+  return createTimingTrace({
+    channel: "reply-trace",
+    label: params.logLabel ?? params.sessionKey ?? "unknown",
+    scope,
+  });
+}
+
+function hasFreshContextSnapshot(params: PersistSessionUsageUpdateParams): boolean {
+  const hasPromptTokens =
+    typeof params.promptTokens === "number" &&
+    Number.isFinite(params.promptTokens) &&
+    params.promptTokens > 0;
+  return Boolean(params.lastCallUsage) || hasPromptTokens || params.usageIsContextSnapshot === true;
+}
+
+function buildSessionContinuityPatch(
+  params: PersistSessionUsageUpdateParams,
+  entry: SessionEntry,
+): Partial<SessionEntry> | null {
+  const patch: Partial<SessionEntry> = {};
+  const nextProvider = params.providerUsed ?? entry.modelProvider;
+  const nextModel = params.modelUsed ?? entry.model;
+  const nextContextTokens = params.contextTokensUsed ?? entry.contextTokens;
+  if (nextProvider !== entry.modelProvider) {
+    patch.modelProvider = nextProvider;
+  }
+  if (nextModel !== entry.model) {
+    patch.model = nextModel;
+  }
+  if (nextContextTokens !== entry.contextTokens) {
+    patch.contextTokens = nextContextTokens;
+  }
+
+  const cliProvider = params.providerUsed ?? entry.modelProvider;
+  if (params.cliSessionBinding && cliProvider) {
+    const existingBinding = entry.cliSessionBindings?.[cliProvider];
+    if (JSON.stringify(existingBinding) !== JSON.stringify(params.cliSessionBinding)) {
+      return applyCliSessionIdToSessionPatch(params, entry, {
+        ...patch,
+        updatedAt: Date.now(),
+      });
+    }
+  }
+  if (params.cliSessionId && cliProvider) {
+    const existingSessionId = entry.cliSessionIds?.[cliProvider];
+    if (existingSessionId !== params.cliSessionId) {
+      return applyCliSessionIdToSessionPatch(params, entry, {
+        ...patch,
+        updatedAt: Date.now(),
+      });
+    }
+  }
+
+  if (Object.keys(patch).length === 0) {
+    return null;
+  }
+  return { ...patch, updatedAt: Date.now() };
+}
+
+function buildSessionAccountingPatch(
+  params: PersistSessionUsageUpdateParams,
+  entry: SessionEntry,
+  cfg: OpenClawConfig,
+): Partial<SessionEntry> | null {
+  const hasUsage = hasNonzeroUsage(params.usage);
+  const freshContextSnapshot = hasFreshContextSnapshot(params);
+  if (!hasUsage && !freshContextSnapshot && !params.systemPromptReport) {
+    return null;
+  }
+
+  const patch: Partial<SessionEntry> = {};
+  if (params.systemPromptReport) {
+    patch.systemPromptReport = params.systemPromptReport;
+  }
+  if (hasUsage) {
+    patch.inputTokens = params.usage?.input ?? 0;
+    patch.outputTokens = params.usage?.output ?? 0;
+    const cacheUsage = params.lastCallUsage ?? params.usage;
+    patch.cacheRead = cacheUsage?.cacheRead ?? 0;
+    patch.cacheWrite = cacheUsage?.cacheWrite ?? 0;
+  }
+  const runEstimatedCostUsd = estimateSessionRunCostUsd({
+    cfg,
+    usage: params.usage,
+    providerUsed: params.providerUsed ?? entry.modelProvider,
+    modelUsed: params.modelUsed ?? entry.model,
+  });
+  if (runEstimatedCostUsd !== undefined) {
+    const existingEstimatedCostUsd = resolveNonNegativeNumber(entry.estimatedCostUsd) ?? 0;
+    patch.estimatedCostUsd = existingEstimatedCostUsd + runEstimatedCostUsd;
+  }
+
+  if (hasUsage || freshContextSnapshot) {
+    const resolvedContextTokens = params.contextTokensUsed ?? entry.contextTokens;
+    const usageForContext =
+      params.lastCallUsage ?? (params.usageIsContextSnapshot === true ? params.usage : undefined);
+    patch.totalTokens = freshContextSnapshot
+      ? deriveSessionTotalTokens({
+          usage: usageForContext,
+          contextTokens: resolvedContextTokens,
+          promptTokens: params.promptTokens,
+        })
+      : undefined;
+    patch.totalTokensFresh = typeof patch.totalTokens === "number";
+  }
+  return patch;
+}
+
+export async function persistSessionContinuityUpdate(
+  params: PersistSessionUsageUpdateParams,
+): Promise<void> {
   const { storePath, sessionKey } = params;
   if (!storePath || !sessionKey) {
     return;
   }
 
   const label = params.logLabel ? `${params.logLabel} ` : "";
-  const cfg = params.cfg ?? loadConfig();
-  const hasUsage = hasNonzeroUsage(params.usage);
-  const hasPromptTokens =
-    typeof params.promptTokens === "number" &&
-    Number.isFinite(params.promptTokens) &&
-    params.promptTokens > 0;
-  const hasFreshContextSnapshot =
-    Boolean(params.lastCallUsage) || hasPromptTokens || params.usageIsContextSnapshot === true;
-
-  if (hasUsage || hasFreshContextSnapshot) {
-    try {
-      await updateSessionStoreEntry({
-        storePath,
-        sessionKey,
-        update: async (entry) => {
-          const resolvedContextTokens = params.contextTokensUsed ?? entry.contextTokens;
-          // Use last-call usage for totalTokens when available. The accumulated
-          // `usage.input` sums input tokens from every API call in the run
-          // (tool-use loops, compaction retries), overstating actual context.
-          // `lastCallUsage` reflects only the final API call — the true context.
-          const usageForContext =
-            params.lastCallUsage ??
-            (params.usageIsContextSnapshot === true ? params.usage : undefined);
-          const totalTokens = hasFreshContextSnapshot
-            ? deriveSessionTotalTokens({
-                usage: usageForContext,
-                contextTokens: resolvedContextTokens,
-                promptTokens: params.promptTokens,
-              })
-            : undefined;
-          const runEstimatedCostUsd = estimateSessionRunCostUsd({
-            cfg,
-            usage: params.usage,
-            providerUsed: params.providerUsed ?? entry.modelProvider,
-            modelUsed: params.modelUsed ?? entry.model,
-          });
-          const existingEstimatedCostUsd = resolveNonNegativeNumber(entry.estimatedCostUsd) ?? 0;
-          const patch: Partial<SessionEntry> = {
-            modelProvider: params.providerUsed ?? entry.modelProvider,
-            model: params.modelUsed ?? entry.model,
-            contextTokens: resolvedContextTokens,
-            systemPromptReport: params.systemPromptReport ?? entry.systemPromptReport,
-            updatedAt: Date.now(),
-          };
-          if (hasUsage) {
-            patch.inputTokens = params.usage?.input ?? 0;
-            patch.outputTokens = params.usage?.output ?? 0;
-            // Cache counters should reflect the latest context snapshot when
-            // available, not accumulated per-call totals across a whole run.
-            const cacheUsage = params.lastCallUsage ?? params.usage;
-            patch.cacheRead = cacheUsage?.cacheRead ?? 0;
-            patch.cacheWrite = cacheUsage?.cacheWrite ?? 0;
-          }
-          if (runEstimatedCostUsd !== undefined) {
-            patch.estimatedCostUsd = existingEstimatedCostUsd + runEstimatedCostUsd;
-          } else if (entry.estimatedCostUsd !== undefined) {
-            patch.estimatedCostUsd = entry.estimatedCostUsd;
-          }
-          // Missing a last-call snapshot (and promptTokens fallback) means
-          // context utilization is stale/unknown.
-          patch.totalTokens = totalTokens;
-          patch.totalTokensFresh = typeof totalTokens === "number";
-          return applyCliSessionIdToSessionPatch(params, entry, patch);
-        },
-      });
-    } catch (err) {
-      logVerbose(`failed to persist ${label}usage update: ${String(err)}`);
+  const trace = createPersistSessionUsageTrace(params, "persistSessionContinuityUpdate");
+  try {
+    trace("update-start");
+    const next = await writeHotSessionEntry({
+      storePath,
+      sessionKey,
+      createIfMissing: false,
+      mutator: async (entry) => {
+        const patch = entry ? buildSessionContinuityPatch(params, entry) : null;
+        return entry && patch ? { ...entry, ...patch } : (entry ?? null);
+      },
+    });
+    if (next) {
+      queueSessionStoreColdBackfill({ storePath, sessionKey, entry: next });
     }
+    trace("update-done");
+  } catch (err) {
+    logVerbose(`failed to persist ${label}session continuity update: ${String(err)}`);
+  }
+}
+
+export async function persistSessionAccountingUpdate(
+  params: PersistSessionUsageUpdateParams,
+): Promise<void> {
+  const { storePath, sessionKey } = params;
+  if (!storePath || !sessionKey) {
     return;
   }
 
-  if (params.modelUsed || params.contextTokensUsed) {
+  const label = params.logLabel ? `${params.logLabel} ` : "";
+  const trace = createPersistSessionUsageTrace(params, "persistSessionAccountingUpdate");
+  const cfg = params.cfg ?? loadConfig();
+  const hasUsage = hasNonzeroUsage(params.usage);
+  const freshContextSnapshot = hasFreshContextSnapshot(params);
+
+  if (hasUsage || freshContextSnapshot || params.systemPromptReport) {
     try {
-      await updateSessionStoreEntry({
+      trace(
+        "update-start",
+        `hasUsage=${hasUsage ? "yes" : "no"} freshContext=${freshContextSnapshot ? "yes" : "no"}`,
+      );
+      const next = await writeHotSessionEntry({
         storePath,
         sessionKey,
-        update: async (entry) => {
-          const patch: Partial<SessionEntry> = {
-            modelProvider: params.providerUsed ?? entry.modelProvider,
-            model: params.modelUsed ?? entry.model,
-            contextTokens: params.contextTokensUsed ?? entry.contextTokens,
-            systemPromptReport: params.systemPromptReport ?? entry.systemPromptReport,
-            updatedAt: Date.now(),
-          };
-          return applyCliSessionIdToSessionPatch(params, entry, patch);
+        createIfMissing: false,
+        mutator: async (entry) => {
+          const patch = entry ? buildSessionAccountingPatch(params, entry, cfg) : null;
+          return entry && patch ? { ...entry, ...patch } : (entry ?? null);
         },
       });
+      if (next) {
+        queueSessionStoreColdBackfill({ storePath, sessionKey, entry: next });
+      }
+      trace("update-done");
     } catch (err) {
-      logVerbose(`failed to persist ${label}model/context update: ${String(err)}`);
+      logVerbose(`failed to persist ${label}session accounting update: ${String(err)}`);
     }
+    return;
   }
+}
+
+export async function persistSessionUsageUpdate(
+  params: PersistSessionUsageUpdateParams,
+): Promise<void> {
+  await persistSessionContinuityUpdate(params);
+  await persistSessionAccountingUpdate(params);
 }

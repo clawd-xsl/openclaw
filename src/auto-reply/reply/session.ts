@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
 import { clearBootstrapSnapshotOnSessionRollover } from "../../agents/bootstrap-cache.js";
 import { resetRegisteredAgentHarnessSessions } from "../../agents/harness/registry.js";
@@ -20,7 +21,11 @@ import {
 import { resolveAndPersistSessionFile } from "../../config/sessions/session-file.js";
 import { resolveSessionKey } from "../../config/sessions/session-key.js";
 import { resolveMaintenanceConfigFromInput } from "../../config/sessions/store-maintenance.js";
-import { loadSessionStore, updateSessionStore } from "../../config/sessions/store.js";
+import {
+  ensureHotSessionStoreHydrated,
+  loadHotSessionStore,
+  updateSessionStore,
+} from "../../config/sessions/store.js";
 import { parseSessionThreadInfo } from "../../config/sessions/thread-info.js";
 import {
   DEFAULT_RESET_TRIGGERS,
@@ -32,6 +37,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { TtsAutoMode } from "../../config/types.tts.js";
 import { getSessionBindingService } from "../../infra/outbound/session-binding-service.js";
 import { deliverSessionMaintenanceWarning } from "../../infra/session-maintenance-warning.js";
+import { isTimingTraceEnabled } from "../../infra/timing-trace.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import type { PluginHookSessionEndReason } from "../../plugins/hook-types.js";
@@ -234,6 +240,16 @@ function resolveBoundConversationSessionKey(params: {
   return binding.targetSessionKey;
 }
 
+function stripSessionInitVolatileFields(
+  entry: SessionEntry | undefined,
+): Omit<SessionEntry, "updatedAt"> | undefined {
+  if (!entry) {
+    return undefined;
+  }
+  const { updatedAt: _updatedAt, ...stableFields } = entry;
+  return stableFields;
+}
+
 export async function initSessionState(params: {
   ctx: MsgContext;
   cfg: OpenClawConfig;
@@ -275,14 +291,13 @@ export async function initSessionState(params: {
   const parentForkMaxTokens = resolveParentForkMaxTokens(cfg);
   const sessionScope = sessionCfg?.scope ?? "per-sender";
   const storePath = resolveStorePath(sessionCfg?.store, { agentId });
-  const ingressTimingEnabled = process.env.OPENCLAW_DEBUG_INGRESS_TIMING === "1";
+  const ingressTimingEnabled = isTimingTraceEnabled();
 
-  // CRITICAL: Skip cache to ensure fresh data when resolving session identity.
-  // Stale cache (especially with multiple gateway processes or on Windows where
-  // mtime granularity may miss rapid writes) can cause incorrect sessionId
-  // generation, leading to orphaned transcript files. See #17971.
+  // Interactive turns only need continuity metadata here. Load the projected
+  // hot store and leave the cold store for slower background persistence.
   const sessionStoreLoadStartMs = ingressTimingEnabled ? Date.now() : 0;
-  const sessionStore: Record<string, SessionEntry> = loadSessionStore(storePath, {
+  await ensureHotSessionStoreHydrated(storePath);
+  const sessionStore: Record<string, SessionEntry> = loadHotSessionStore(storePath, {
     skipCache: true,
   });
   if (ingressTimingEnabled) {
@@ -701,6 +716,7 @@ export async function initSessionState(params: {
     maintenanceConfig,
   });
   sessionEntry = resolvedSessionFile.sessionEntry;
+  const persistedSessionEntryAfterResolve = sessionStore[sessionKey];
   if (isNewSession) {
     sessionEntry.compactionCount = 0;
     sessionEntry.previousSessionId = previousSessionEntry?.sessionId;
@@ -719,28 +735,39 @@ export async function initSessionState(params: {
     sessionEntry.contextTokens = undefined;
   }
   // Preserve per-session overrides while resetting compaction state on /new.
-  sessionStore[sessionKey] = { ...sessionStore[sessionKey], ...sessionEntry };
-  await updateSessionStore(
-    storePath,
-    (store) => {
-      // Preserve per-session overrides while resetting compaction state on /new.
-      store[sessionKey] = { ...store[sessionKey], ...sessionEntry };
-      if (retiredLegacyMainDelivery) {
-        store[retiredLegacyMainDelivery.key] = retiredLegacyMainDelivery.entry;
-      }
-    },
-    {
-      activeSessionKey: sessionKey,
-      maintenanceConfig,
-      onWarn: (warning) =>
-        deliverSessionMaintenanceWarning({
-          cfg,
-          sessionKey,
-          entry: sessionEntry,
-          warning,
-        }),
-    },
-  );
+  const mergedSessionEntry = { ...sessionStore[sessionKey], ...sessionEntry };
+  sessionStore[sessionKey] = mergedSessionEntry;
+  const shouldPersistSessionInit =
+    isNewSession ||
+    Boolean(retiredLegacyMainDelivery) ||
+    !isDeepStrictEqual(
+      stripSessionInitVolatileFields(persistedSessionEntryAfterResolve),
+      stripSessionInitVolatileFields(mergedSessionEntry),
+    );
+  sessionEntry = mergedSessionEntry;
+  if (shouldPersistSessionInit) {
+    await updateSessionStore(
+      storePath,
+      (store) => {
+        // Preserve per-session overrides while resetting compaction state on /new.
+        store[sessionKey] = { ...store[sessionKey], ...sessionEntry };
+        if (retiredLegacyMainDelivery) {
+          store[retiredLegacyMainDelivery.key] = retiredLegacyMainDelivery.entry;
+        }
+      },
+      {
+        activeSessionKey: sessionKey,
+        maintenanceConfig,
+        onWarn: (warning) =>
+          deliverSessionMaintenanceWarning({
+            cfg,
+            sessionKey,
+            entry: sessionEntry,
+            warning,
+          }),
+      },
+    );
+  }
 
   // Archive old transcript so it doesn't accumulate on disk (#14869).
   let previousSessionTranscript: {

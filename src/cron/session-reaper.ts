@@ -8,7 +8,11 @@
 
 import { parseDurationMs } from "../cli/parse-duration.js";
 import { loadSessionStore } from "../config/sessions/store-load.js";
-import { archiveRemovedSessionTranscripts, updateSessionStore } from "../config/sessions/store.js";
+import {
+  archiveRemovedSessionTranscripts,
+  isSessionStoreWriteBusy,
+  updateSessionStore,
+} from "../config/sessions/store.js";
 import type { CronConfig } from "../config/types.cron.js";
 import { cleanupArchivedSessionTranscripts } from "../gateway/session-utils.fs.js";
 import { isCronRunSessionKey } from "../sessions/session-key-utils.js";
@@ -72,6 +76,13 @@ export async function sweepCronRunSessions(params: {
   const retentionMs = resolveRetentionMs(params.cronConfig);
   if (retentionMs === null) {
     lastSweepAtMsByStore.set(storePath, now);
+    return { swept: false, pruned: 0 };
+  }
+
+  // Interactive turns share the same session-store lock. Cron cleanup is
+  // maintenance work, so yield when the store is already busy and try again on
+  // the next timer tick instead of contending with an active reply path.
+  if (isSessionStoreWriteBusy(storePath)) {
     return { swept: false, pruned: 0 };
   }
 

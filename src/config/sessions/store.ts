@@ -1,11 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import {
   acquireSessionWriteLock,
   resolveSessionLockMaxHoldFromTimeout,
 } from "../../agents/session-write-lock.js";
 import type { MsgContext } from "../../auto-reply/templating.js";
+import { logVerbose } from "../../globals.js";
 import { writeTextAtomic } from "../../infra/json-files.js";
+import { createTimingTrace } from "../../infra/timing-trace.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { normalizeLowercaseStringOrEmpty } from "../../shared/string-coerce.js";
 import {
@@ -25,7 +28,13 @@ import {
   setSerializedSessionStore,
   writeSessionStoreCache,
 } from "./store-cache.js";
-import { loadSessionStore, normalizeSessionStore } from "./store-load.js";
+import {
+  isHotSessionStorePath,
+  projectSessionEntryToHot,
+  projectSessionStoreToHot,
+  resolveHotSessionStorePath,
+} from "./store-hot.js";
+import { loadHotSessionStore, loadSessionStore, normalizeSessionStore } from "./store-load.js";
 import {
   clearSessionStoreCacheForTest,
   drainSessionStoreLockQueuesForTest,
@@ -54,13 +63,48 @@ export {
   drainSessionStoreLockQueuesForTest,
   getSessionStoreLockQueueSizeForTest,
 } from "./store-lock-state.js";
-export { loadSessionStore } from "./store-load.js";
+export { loadHotSessionStore, loadSessionStore } from "./store-load.js";
+
+export function isSessionStoreWriteBusy(storePath: string): boolean {
+  const queue = LOCK_QUEUES.get(storePath);
+  const backfill = SESSION_STORE_BACKFILL_QUEUES.get(storePath);
+  const queueBusy = Boolean(queue && (queue.running || queue.pending.length > 0));
+  const backfillBusy = Boolean(
+    backfill && (backfill.flushing || backfill.entries.size > 0 || backfill.timer),
+  );
+  return queueBusy || backfillBusy;
+}
+
+function getOrCreateSessionStoreBackfillQueue(storePath: string): SessionStoreBackfillQueue {
+  const existing = SESSION_STORE_BACKFILL_QUEUES.get(storePath);
+  if (existing) {
+    return existing;
+  }
+  const created: SessionStoreBackfillQueue = {
+    timer: null,
+    flushing: false,
+    entries: new Map<string, SessionEntry>(),
+  };
+  SESSION_STORE_BACKFILL_QUEUES.set(storePath, created);
+  return created;
+}
 
 const log = createSubsystemLogger("sessions/store");
 let sessionArchiveRuntimePromise: Promise<
   typeof import("../../gateway/session-archive.runtime.js")
 > | null = null;
 let sessionWriteLockAcquirerForTests: typeof acquireSessionWriteLock | null = null;
+
+const SESSION_STORE_BACKFILL_DELAY_MS = 15_000;
+
+type SessionStoreBackfillQueue = {
+  timer: NodeJS.Timeout | null;
+  flushing: boolean;
+  entries: Map<string, SessionEntry>;
+};
+
+const SESSION_STORE_BACKFILL_QUEUES = new Map<string, SessionStoreBackfillQueue>();
+const HOT_STORE_BOOTSTRAP_PROMISES = new Map<string, Promise<void>>();
 
 function loadSessionArchiveRuntime() {
   sessionArchiveRuntimePromise ??= import("../../gateway/session-archive.runtime.js");
@@ -74,6 +118,16 @@ function removeThreadFromDeliveryContext(context?: DeliveryContext): DeliveryCon
   const next: DeliveryContext = { ...context };
   delete next.threadId;
   return next;
+}
+
+function areProjectedHotEntriesEqual(
+  left: SessionEntry | undefined,
+  right: SessionEntry | undefined,
+): boolean {
+  return isDeepStrictEqual(
+    left ? projectSessionEntryToHot(left) : undefined,
+    right ? projectSessionEntryToHot(right) : undefined,
+  );
 }
 
 export function normalizeStoreSessionKey(sessionKey: string): string {
@@ -139,6 +193,44 @@ export async function withSessionStoreLockForTest<T>(
   return await withSessionStoreLock(storePath, fn, opts);
 }
 
+function resolveSessionStoreTraceCaller(): string {
+  const stack = new Error().stack ?? "";
+  for (const line of stack.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("at ")) {
+      continue;
+    }
+    if (trimmed.includes("resolveSessionStoreTraceCaller")) {
+      continue;
+    }
+    if (trimmed.includes("src/config/sessions/store.ts")) {
+      continue;
+    }
+    if (trimmed.includes("/dist/config/sessions/store-")) {
+      continue;
+    }
+    if (trimmed.includes("/dist/config/sessions/store.js")) {
+      continue;
+    }
+    if (trimmed.includes("/dist/store-")) {
+      continue;
+    }
+    if (trimmed.includes("/dist/store.js")) {
+      continue;
+    }
+    const match = trimmed.match(/(?:\(|\s)(src\/[^():]+:\d+:\d+)\)?$/);
+    if (match?.[1]) {
+      return match[1];
+    }
+    const distMatch = trimmed.match(/(?:\(|\s)(dist\/[^():]+(?:-[^():/]+)?\.js:\d+:\d+)\)?$/);
+    if (distMatch?.[1]) {
+      return distMatch[1];
+    }
+    return trimmed.replace(/^at\s+/, "");
+  }
+  return "unknown";
+}
+
 export function readSessionUpdatedAt(params: {
   storePath: string;
   sessionKey: string;
@@ -193,6 +285,8 @@ type SaveSessionStoreOptions = {
   maintenanceOverride?: Partial<ResolvedSessionMaintenanceConfig>;
   /** Fully resolved maintenance settings when the caller already has config loaded. */
   maintenanceConfig?: ResolvedSessionMaintenanceConfig;
+  /** Internal: hot store writes must not recursively rewrite their own projection. */
+  skipHotProjectionSync?: boolean;
 };
 
 function updateSessionStoreWriteCaches(params: {
@@ -213,6 +307,187 @@ function updateSessionStoreWriteCaches(params: {
     sizeBytes: fileStat?.sizeBytes,
     serialized: params.serialized,
   });
+}
+
+async function syncHotSessionStoreProjection(params: {
+  storePath: string;
+  store: Record<string, SessionEntry>;
+}): Promise<void> {
+  if (isHotSessionStorePath(params.storePath)) {
+    return;
+  }
+  const hotStorePath = resolveHotSessionStorePath(params.storePath);
+  const hotStore = projectSessionStoreToHot(params.store);
+  await fs.promises.mkdir(path.dirname(hotStorePath), { recursive: true });
+  const serialized = JSON.stringify(hotStore, null, 2);
+  if (getSerializedSessionStore(hotStorePath) === serialized) {
+    updateSessionStoreWriteCaches({ storePath: hotStorePath, store: hotStore, serialized });
+    return;
+  }
+  await writeTextAtomic(hotStorePath, serialized, { mode: 0o600 });
+  updateSessionStoreWriteCaches({ storePath: hotStorePath, store: hotStore, serialized });
+}
+
+export async function ensureHotSessionStoreHydrated(storePath: string): Promise<void> {
+  if (isHotSessionStorePath(storePath)) {
+    return;
+  }
+  const hotStorePath = resolveHotSessionStorePath(storePath);
+  if (fs.existsSync(hotStorePath)) {
+    return;
+  }
+  const existing = HOT_STORE_BOOTSTRAP_PROMISES.get(storePath);
+  if (existing) {
+    await existing;
+    return;
+  }
+  const bootstrapPromise = (async () => {
+    const coldStore = loadSessionStore(storePath, { skipCache: true });
+    await syncHotSessionStoreProjection({ storePath, store: coldStore });
+  })().finally(() => {
+    HOT_STORE_BOOTSTRAP_PROMISES.delete(storePath);
+  });
+  HOT_STORE_BOOTSTRAP_PROMISES.set(storePath, bootstrapPromise);
+  await bootstrapPromise;
+}
+
+function rememberBackfillEntry(params: {
+  storePath: string;
+  sessionKey: string;
+  entry: SessionEntry;
+}): void {
+  const queue = getOrCreateSessionStoreBackfillQueue(params.storePath);
+  const existing = queue.entries.get(params.sessionKey);
+  queue.entries.set(params.sessionKey, existing ? { ...existing, ...params.entry } : params.entry);
+}
+
+async function flushSessionStoreBackfillQueue(storePath: string): Promise<void> {
+  const queue = SESSION_STORE_BACKFILL_QUEUES.get(storePath);
+  if (!queue || queue.flushing || queue.entries.size === 0) {
+    if (queue && !queue.flushing && queue.entries.size === 0 && !queue.timer) {
+      SESSION_STORE_BACKFILL_QUEUES.delete(storePath);
+    }
+    return;
+  }
+  if (queue.timer) {
+    clearTimeout(queue.timer);
+    queue.timer = null;
+  }
+  const entries = [...queue.entries.entries()];
+  queue.entries.clear();
+  queue.flushing = true;
+  try {
+    await updateSessionStore(
+      storePath,
+      (store) => {
+        for (const [sessionKey, entry] of entries) {
+          const resolved = resolveSessionStoreEntry({ store, sessionKey });
+          store[resolved.normalizedKey] = {
+            ...store[resolved.normalizedKey],
+            ...entry,
+          };
+          for (const legacyKey of resolved.legacyKeys) {
+            delete store[legacyKey];
+          }
+        }
+      },
+      { activeSessionKey: entries[0]?.[0] },
+    );
+  } catch (error) {
+    logVerbose(`session store cold backfill failed: ${String(error)}`);
+    for (const [sessionKey, entry] of entries) {
+      rememberBackfillEntry({ storePath, sessionKey, entry });
+    }
+  } finally {
+    queue.flushing = false;
+    if (queue.entries.size === 0) {
+      if (!queue.timer) {
+        SESSION_STORE_BACKFILL_QUEUES.delete(storePath);
+      }
+    } else {
+      queue.timer = setTimeout(() => {
+        void flushSessionStoreBackfillQueue(storePath);
+      }, SESSION_STORE_BACKFILL_DELAY_MS);
+      queue.timer.unref?.();
+    }
+  }
+}
+
+function scheduleSessionStoreBackfillFlush(storePath: string): void {
+  const queue = getOrCreateSessionStoreBackfillQueue(storePath);
+  if (queue.timer) {
+    clearTimeout(queue.timer);
+  }
+  queue.timer = setTimeout(() => {
+    void flushSessionStoreBackfillQueue(storePath);
+  }, SESSION_STORE_BACKFILL_DELAY_MS);
+  queue.timer.unref?.();
+}
+
+export async function writeHotSessionEntry(params: {
+  storePath: string;
+  sessionKey: string;
+  createIfMissing?: boolean;
+  mutator: (
+    existing: SessionEntry | undefined,
+    resolved: ReturnType<typeof resolveSessionStoreEntry>,
+  ) => Promise<SessionEntry | null> | SessionEntry | null;
+}): Promise<SessionEntry | null> {
+  await ensureHotSessionStoreHydrated(params.storePath);
+  const hotStorePath = resolveHotSessionStorePath(params.storePath);
+  return await withSessionStoreLock(hotStorePath, async () => {
+    const store = loadSessionStore(hotStorePath, { skipCache: true });
+    const resolved = resolveSessionStoreEntry({ store, sessionKey: params.sessionKey });
+    const existing = resolved.existing;
+    if (!existing && params.createIfMissing === false) {
+      return null;
+    }
+    const next = await params.mutator(existing, resolved);
+    if (!next) {
+      return existing ?? null;
+    }
+    const nextHot = projectSessionEntryToHot(next);
+    const canSkipPersist =
+      resolved.legacyKeys.length === 0 &&
+      Object.prototype.hasOwnProperty.call(store, resolved.normalizedKey) &&
+      areProjectedHotEntriesEqual(existing, next);
+    if (canSkipPersist) {
+      return existing ?? next;
+    }
+    store[resolved.normalizedKey] = nextHot;
+    for (const legacyKey of resolved.legacyKeys) {
+      delete store[legacyKey];
+    }
+    await saveSessionStoreUnlocked(hotStorePath, store, {
+      activeSessionKey: normalizeStoreSessionKey(params.sessionKey),
+      skipMaintenance: true,
+      skipHotProjectionSync: true,
+    });
+    return next;
+  });
+}
+
+export function queueSessionStoreColdBackfill(params: {
+  storePath: string;
+  sessionKey: string;
+  entry: SessionEntry;
+}): void {
+  rememberBackfillEntry(params);
+  scheduleSessionStoreBackfillFlush(params.storePath);
+}
+
+export async function flushSessionStoreBackfillForTest(storePath: string): Promise<void> {
+  await flushSessionStoreBackfillQueue(storePath);
+}
+
+export function resetSessionStoreBackfillRuntimeForTest(): void {
+  for (const queue of SESSION_STORE_BACKFILL_QUEUES.values()) {
+    if (queue.timer) {
+      clearTimeout(queue.timer);
+    }
+  }
+  SESSION_STORE_BACKFILL_QUEUES.clear();
+  HOT_STORE_BOOTSTRAP_PROMISES.clear();
 }
 
 function resolveMutableSessionStoreKey(
@@ -278,13 +553,20 @@ async function saveSessionStoreUnlocked(
   store: Record<string, SessionEntry>,
   opts?: SaveSessionStoreOptions,
 ): Promise<void> {
+  const trace = createTimingTrace({
+    channel: "session-store-trace",
+    label: opts?.activeSessionKey ?? "store",
+    scope: "saveSessionStoreUnlocked",
+  });
   normalizeSessionStore(store);
+  trace("normalize-done", `entries=${Object.keys(store).length}`);
 
-  if (!opts?.skipMaintenance) {
+  if (!opts?.skipMaintenance && !isHotSessionStorePath(storePath)) {
     // Resolve maintenance config once (avoids repeated loadConfig() calls).
     const maintenance = opts?.maintenanceConfig
       ? { ...opts.maintenanceConfig, ...opts?.maintenanceOverride }
       : { ...resolveMaintenanceConfig(), ...opts?.maintenanceOverride };
+    trace("maintenance-resolved", `mode=${maintenance.mode}`);
     const shouldWarnOnly = maintenance.mode === "warn";
     const beforeCount = Object.keys(store).length;
 
@@ -324,6 +606,7 @@ async function saveSessionStoreUnlocked(
         capped: 0,
         diskBudget,
       });
+      trace("maintenance-warn-done", `entries=${Object.keys(store).length}`);
     } else {
       // Prune stale entries and cap total count before serializing.
       const removedSessionFiles = new Map<string, string | undefined>();
@@ -373,6 +656,10 @@ async function saveSessionStoreUnlocked(
 
       // Rotate the on-disk file if it exceeds the size threshold.
       await rotateSessionFile(storePath, maintenance.rotateBytes);
+      trace(
+        "maintenance-prune-done",
+        `entries=${Object.keys(store).length} archivedDirs=${archivedDirs.size}`,
+      );
 
       const diskBudget = await enforceSessionDiskBudget({
         store,
@@ -390,13 +677,23 @@ async function saveSessionStoreUnlocked(
         capped,
         diskBudget,
       });
+      trace(
+        "maintenance-disk-budget-done",
+        `entries=${Object.keys(store).length} pruned=${pruned} capped=${capped}`,
+      );
     }
   }
 
   await fs.promises.mkdir(path.dirname(storePath), { recursive: true });
+  trace("mkdir-done");
   const json = JSON.stringify(store, null, 2);
+  trace("json-serialized", `bytes=${Buffer.byteLength(json)}`);
   if (getSerializedSessionStore(storePath) === json) {
     updateSessionStoreWriteCaches({ storePath, store, serialized: json });
+    if (!opts?.skipHotProjectionSync) {
+      await syncHotSessionStoreProjection({ storePath, store });
+    }
+    trace("write-skipped-cache-hit");
     return;
   }
 
@@ -405,6 +702,10 @@ async function saveSessionStoreUnlocked(
     for (let i = 0; i < 5; i++) {
       try {
         await writeSessionStoreAtomic({ storePath, store, serialized: json });
+        if (!opts?.skipHotProjectionSync) {
+          await syncHotSessionStoreProjection({ storePath, store });
+        }
+        trace("write-atomic-done", "platform=win32");
         return;
       } catch (err) {
         const code = getErrorCode(err);
@@ -425,6 +726,10 @@ async function saveSessionStoreUnlocked(
 
   try {
     await writeSessionStoreAtomic({ storePath, store, serialized: json });
+    if (!opts?.skipHotProjectionSync) {
+      await syncHotSessionStoreProjection({ storePath, store });
+    }
+    trace("write-atomic-done");
   } catch (err) {
     const code = getErrorCode(err);
 
@@ -433,6 +738,9 @@ async function saveSessionStoreUnlocked(
       // Best-effort: try a direct write (recreating the parent dir), otherwise ignore.
       try {
         await writeSessionStoreAtomic({ storePath, store, serialized: json });
+        if (!opts?.skipHotProjectionSync) {
+          await syncHotSessionStoreProjection({ storePath, store });
+        }
       } catch (err2) {
         const code2 = getErrorCode(err2);
         if (code2 === "ENOENT") {
@@ -462,17 +770,28 @@ export async function updateSessionStore<T>(
   mutator: (store: Record<string, SessionEntry>) => Promise<T> | T,
   opts?: SaveSessionStoreOptions,
 ): Promise<T> {
+  const traceCaller = resolveSessionStoreTraceCaller();
+  const trace = createTimingTrace({
+    channel: "session-store-trace",
+    label: "store",
+    scope: "updateSessionStore",
+  });
   return await withSessionStoreLock(storePath, async () => {
+    trace("lock-acquired", `caller=${traceCaller}`);
     // Always re-read inside the lock to avoid clobbering concurrent writers.
     const store = loadSessionStore(storePath, { skipCache: true });
+    trace("store-loaded", `caller=${traceCaller} entries=${Object.keys(store).length}`);
     const previousAcpByKey = collectAcpMetadataSnapshot(store);
     const result = await mutator(store);
+    trace("mutator-done", `caller=${traceCaller}`);
     preserveExistingAcpMetadata({
       previousAcpByKey,
       nextStore: store,
       allowDropSessionKeys: opts?.allowDropAcpMetaSessionKeys,
     });
+    const persistStartedAt = Date.now();
     await saveSessionStoreUnlocked(storePath, store, opts);
+    trace("persisted", `caller=${traceCaller} persistMs=${Date.now() - persistStartedAt}`);
     return result;
   });
 }
@@ -686,23 +1005,38 @@ export async function updateSessionStoreEntry(params: {
   update: (entry: SessionEntry) => Promise<Partial<SessionEntry> | null>;
 }): Promise<SessionEntry | null> {
   const { storePath, sessionKey, update } = params;
+  const traceCaller = resolveSessionStoreTraceCaller();
+  const trace = createTimingTrace({
+    channel: "session-store-trace",
+    label: sessionKey,
+    scope: "updateSessionStoreEntry",
+  });
   return await withSessionStoreLock(storePath, async () => {
+    trace("lock-acquired", `caller=${traceCaller}`);
     const store = loadSessionStore(storePath, { skipCache: true });
+    trace("store-loaded", `caller=${traceCaller} entries=${Object.keys(store).length}`);
     const resolved = resolveSessionStoreEntry({ store, sessionKey });
     const existing = resolved.existing;
     if (!existing) {
+      trace("missing-entry", `caller=${traceCaller}`);
       return null;
     }
     const patch = await update(existing);
+    trace("patch-computed", `caller=${traceCaller} hasPatch=${patch ? "yes" : "no"}`);
     if (!patch) {
       return existing;
     }
     const next = mergeSessionEntry(existing, patch);
+    trace("entry-merged", `caller=${traceCaller}`);
+    const persistStartedAt = Date.now();
     return await persistResolvedSessionEntry({
       storePath,
       store,
       resolved,
       next,
+    }).then((result) => {
+      trace("persisted", `caller=${traceCaller} persistMs=${Date.now() - persistStartedAt}`);
+      return result;
     });
   });
 }
@@ -716,11 +1050,11 @@ export async function recordSessionMetaFromInbound(params: {
 }): Promise<SessionEntry | null> {
   const { storePath, sessionKey, ctx } = params;
   const createIfMissing = params.createIfMissing ?? true;
-  return await updateSessionStore(
+  const next = await writeHotSessionEntry({
     storePath,
-    (store) => {
-      const resolved = resolveSessionStoreEntry({ store, sessionKey });
-      const existing = resolved.existing;
+    sessionKey,
+    createIfMissing,
+    mutator: async (existing, resolved) => {
       const patch = deriveSessionMetaPatch({
         ctx,
         sessionKey: resolved.normalizedKey,
@@ -728,30 +1062,23 @@ export async function recordSessionMetaFromInbound(params: {
         groupResolution: params.groupResolution,
       });
       if (!patch) {
-        if (existing && resolved.legacyKeys.length > 0) {
-          store[resolved.normalizedKey] = existing;
-          for (const legacyKey of resolved.legacyKeys) {
-            delete store[legacyKey];
-          }
-        }
         return existing ?? null;
       }
-      if (!existing && !createIfMissing) {
-        return null;
-      }
-      const next = existing
+      return existing
         ? // Inbound metadata updates must not refresh activity timestamps;
           // idle reset evaluation relies on updatedAt from actual session turns.
           mergeSessionEntryPreserveActivity(existing, patch)
         : mergeSessionEntry(existing, patch);
-      store[resolved.normalizedKey] = next;
-      for (const legacyKey of resolved.legacyKeys) {
-        delete store[legacyKey];
-      }
-      return next;
     },
-    { activeSessionKey: normalizeStoreSessionKey(sessionKey) },
-  );
+  });
+  if (next) {
+    queueSessionStoreColdBackfill({
+      storePath,
+      sessionKey: normalizeStoreSessionKey(sessionKey),
+      entry: next,
+    });
+  }
+  return next;
 }
 
 export async function updateLastRoute(params: {
@@ -764,74 +1091,91 @@ export async function updateLastRoute(params: {
   deliveryContext?: DeliveryContext;
   ctx?: MsgContext;
   groupResolution?: import("./types.js").GroupKeyResolution | null;
-}) {
+}): Promise<SessionEntry> {
   const { storePath, sessionKey, channel, to, accountId, threadId, ctx } = params;
-  return await withSessionStoreLock(storePath, async () => {
-    const store = loadSessionStore(storePath);
-    const resolved = resolveSessionStoreEntry({ store, sessionKey });
-    const existing = resolved.existing;
-    const now = Date.now();
-    const explicitContext = normalizeDeliveryContext(params.deliveryContext);
-    const inlineContext = normalizeDeliveryContext({
-      channel,
-      to,
-      accountId,
-      threadId,
-    });
-    const mergedInput = mergeDeliveryContext(explicitContext, inlineContext);
-    const explicitDeliveryContext = params.deliveryContext;
-    const explicitThreadFromDeliveryContext =
-      explicitDeliveryContext != null &&
-      Object.prototype.hasOwnProperty.call(explicitDeliveryContext, "threadId")
-        ? explicitDeliveryContext.threadId
-        : undefined;
-    const explicitThreadValue =
-      explicitThreadFromDeliveryContext ??
-      (threadId != null && threadId !== "" ? threadId : undefined);
-    const explicitRouteProvided = Boolean(
-      explicitContext?.channel ||
-      explicitContext?.to ||
-      inlineContext?.channel ||
-      inlineContext?.to,
-    );
-    const clearThreadFromFallback = explicitRouteProvided && explicitThreadValue == null;
-    const fallbackContext = clearThreadFromFallback
-      ? removeThreadFromDeliveryContext(deliveryContextFromSession(existing))
-      : deliveryContextFromSession(existing);
-    const merged = mergeDeliveryContext(mergedInput, fallbackContext);
-    const normalized = normalizeSessionDeliveryFields({
-      deliveryContext: {
-        channel: merged?.channel,
-        to: merged?.to,
-        accountId: merged?.accountId,
-        threadId: merged?.threadId,
-      },
-    });
-    const metaPatch = ctx
-      ? deriveSessionMetaPatch({
-          ctx,
-          sessionKey: resolved.normalizedKey,
-          existing,
-          groupResolution: params.groupResolution,
-        })
-      : null;
-    const basePatch: Partial<SessionEntry> = {
-      updatedAt: Math.max(existing?.updatedAt ?? 0, now),
-      deliveryContext: normalized.deliveryContext,
-      lastChannel: normalized.lastChannel,
-      lastTo: normalized.lastTo,
-      lastAccountId: normalized.lastAccountId,
-      lastThreadId: normalized.lastThreadId,
-    };
-    const next = mergeSessionEntry(
-      existing,
-      metaPatch ? { ...basePatch, ...metaPatch } : basePatch,
-    );
-    return await persistResolvedSessionEntry({
-      storePath,
-      store,
-      resolved,
-      next,
-    });
+  const trace = createTimingTrace({
+    channel: "session-store-trace",
+    label: sessionKey,
+    scope: "updateLastRoute",
   });
+  let shouldQueueColdBackfill = false;
+  const next = await writeHotSessionEntry({
+    storePath,
+    sessionKey,
+    mutator: async (existing) => {
+      const explicitContext = normalizeDeliveryContext(params.deliveryContext);
+      const inlineContext = normalizeDeliveryContext({
+        channel,
+        to,
+        accountId,
+        threadId,
+      });
+      const mergedInput = mergeDeliveryContext(explicitContext, inlineContext);
+      const explicitDeliveryContext = params.deliveryContext;
+      const explicitThreadFromDeliveryContext =
+        explicitDeliveryContext != null &&
+        Object.prototype.hasOwnProperty.call(explicitDeliveryContext, "threadId")
+          ? explicitDeliveryContext.threadId
+          : undefined;
+      const explicitThreadValue =
+        explicitThreadFromDeliveryContext ??
+        (threadId != null && threadId !== "" ? threadId : undefined);
+      const explicitRouteProvided = Boolean(
+        explicitContext?.channel ||
+        explicitContext?.to ||
+        inlineContext?.channel ||
+        inlineContext?.to,
+      );
+      const clearThreadFromFallback = explicitRouteProvided && explicitThreadValue == null;
+      const fallbackContext = clearThreadFromFallback
+        ? removeThreadFromDeliveryContext(deliveryContextFromSession(existing))
+        : deliveryContextFromSession(existing);
+      const merged = mergeDeliveryContext(mergedInput, fallbackContext);
+      const normalized = normalizeSessionDeliveryFields({
+        deliveryContext: {
+          channel: merged?.channel,
+          to: merged?.to,
+          accountId: merged?.accountId,
+          threadId: merged?.threadId,
+        },
+      });
+      const metaPatch = ctx
+        ? deriveSessionMetaPatch({
+            ctx,
+            sessionKey: normalizeStoreSessionKey(sessionKey),
+            existing,
+            groupResolution: params.groupResolution,
+          })
+        : null;
+      const basePatch: Partial<SessionEntry> = {
+        deliveryContext: normalized.deliveryContext,
+        lastChannel: normalized.lastChannel,
+        lastTo: normalized.lastTo,
+        lastAccountId: normalized.lastAccountId,
+        lastThreadId: normalized.lastThreadId,
+      };
+      const nextPatch = metaPatch ? { ...basePatch, ...metaPatch } : basePatch;
+      const nextEntry = mergeSessionEntryPreserveActivity(existing, nextPatch);
+      if (existing && areProjectedHotEntriesEqual(existing, nextEntry)) {
+        return existing;
+      }
+      shouldQueueColdBackfill = true;
+      return nextEntry;
+    },
+  });
+  trace("hot-write-done");
+  if (!next) {
+    throw new Error(`updateLastRoute: failed to persist route for ${sessionKey}`);
+  }
+  if (shouldQueueColdBackfill) {
+    queueSessionStoreColdBackfill({
+      storePath,
+      sessionKey: normalizeStoreSessionKey(sessionKey),
+      entry: next,
+    });
+    trace("cold-backfill-queued");
+  } else {
+    trace("cold-backfill-skipped");
+  }
+  return next;
 }

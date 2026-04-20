@@ -1,4 +1,8 @@
-import { updateSessionStoreEntry, type SessionEntry } from "../config/sessions.js";
+import {
+  queueSessionStoreColdBackfill,
+  type SessionEntry,
+  writeHotSessionEntry,
+} from "../config/sessions.js";
 import type { AgentEventPayload } from "../infra/agent-events.js";
 import { loadSessionEntry } from "./session-utils.js";
 import type { GatewaySessionRow, SessionRunStatus } from "./session-utils.types.js";
@@ -158,13 +162,30 @@ export async function persistGatewaySessionLifecycleEvent(params: {
     return;
   }
 
-  await updateSessionStoreEntry({
+  await new Promise<void>((resolve) => {
+    const immediate = setImmediate(resolve);
+    immediate.unref?.();
+  });
+
+  const next = await writeHotSessionEntry({
     storePath: sessionEntry.storePath,
     sessionKey: sessionEntry.canonicalKey,
-    update: async (entry) =>
-      derivePersistedSessionLifecyclePatch({
-        entry,
-        event: params.event,
-      }),
+    createIfMissing: false,
+    mutator: async (entry) => {
+      const patch = entry
+        ? derivePersistedSessionLifecyclePatch({
+            entry,
+            event: params.event,
+          })
+        : null;
+      return entry && patch ? { ...entry, ...patch } : (entry ?? null);
+    },
   });
+  if (next) {
+    queueSessionStoreColdBackfill({
+      storePath: sessionEntry.storePath,
+      sessionKey: sessionEntry.canonicalKey,
+      entry: next,
+    });
+  }
 }

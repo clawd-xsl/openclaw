@@ -4,6 +4,7 @@ import path from "node:path";
 import { CURRENT_SESSION_VERSION } from "@mariozechner/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MsgContext } from "../../auto-reply/templating.js";
+import { updateSessionStoreEntry } from "../../config/sessions.js";
 import type { GatewayRequestContext } from "./types.js";
 
 const mockState = vi.hoisted(() => ({
@@ -11,6 +12,8 @@ const mockState = vi.hoisted(() => ({
   transcriptPath: "",
   eventOrder: [] as string[],
   lastDispatchCtx: undefined as MsgContext | undefined,
+  deferTouch: false,
+  releaseTouch: undefined as (() => void) | undefined,
 }));
 
 vi.mock("../session-utils.js", async () => {
@@ -32,8 +35,9 @@ vi.mock("../session-utils.js", async () => {
 });
 
 vi.mock("../../config/sessions.js", async () => {
-  const original =
-    await vi.importActual<typeof import("../../config/sessions.js")>("../../config/sessions.js");
+  const original = await vi.importActual<typeof import("../../config/sessions.js")>(
+    "../../config/sessions.js",
+  );
   return {
     ...original,
     resolveSessionFilePath: vi.fn((sessionId: string) =>
@@ -43,12 +47,22 @@ vi.mock("../../config/sessions.js", async () => {
       async ({
         update,
       }: {
-        update: (entry: { sessionId: string; updatedAt: number }) => Promise<
-          { updatedAt?: number } | null
-        >;
+        update: (entry: {
+          sessionId: string;
+          updatedAt: number;
+        }) => Promise<{ updatedAt?: number } | null>;
       }) => {
         const patch = await update({ sessionId: mockState.sessionId, updatedAt: 1 });
-        mockState.eventOrder.push("touch");
+        if (mockState.deferTouch) {
+          await new Promise<void>((resolve) => {
+            mockState.releaseTouch = () => {
+              mockState.eventOrder.push("touch");
+              resolve();
+            };
+          });
+        } else {
+          mockState.eventOrder.push("touch");
+        }
         return patch ? { sessionId: mockState.sessionId, updatedAt: patch.updatedAt ?? 1 } : null;
       },
     ),
@@ -158,18 +172,20 @@ async function waitForAssertion(assertion: () => void, timeoutMs = 1000, stepMs 
 describe("chat.send session touch", () => {
   afterEach(() => {
     if (mockState.transcriptPath) {
-      void fs.rmSync(path.dirname(mockState.transcriptPath), { recursive: true, force: true });
+      fs.rmSync(path.dirname(mockState.transcriptPath), { recursive: true, force: true });
     }
     mockState.transcriptPath = "";
     mockState.eventOrder = [];
     mockState.lastDispatchCtx = undefined;
+    mockState.deferTouch = false;
+    mockState.releaseTouch = undefined;
   });
 
-  it("touches the session store before dispatching an idle-session send", async () => {
+  it("dispatches without scheduling a session touch", async () => {
     createTranscriptFixture();
     const context = createChatContext();
 
-    await chatHandlers["chat.send"]({
+    const sendPromise = chatHandlers["chat.send"]({
       params: {
         sessionKey: "main",
         message: "hello",
@@ -182,9 +198,12 @@ describe("chat.send session touch", () => {
       context: context as GatewayRequestContext,
     });
 
+    await expect(sendPromise).resolves.toBeUndefined();
+
     await waitForAssertion(() => {
-      expect(mockState.eventOrder).toEqual(["touch", "dispatch"]);
+      expect(mockState.eventOrder).toEqual(["dispatch"]);
       expect(mockState.lastDispatchCtx?.Body).toBe("hello");
     });
+    expect(vi.mocked(updateSessionStoreEntry)).not.toHaveBeenCalled();
   });
 });

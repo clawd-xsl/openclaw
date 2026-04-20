@@ -7,6 +7,11 @@ import {
   setSerializedSessionStore,
   writeSessionStoreCache,
 } from "./store-cache.js";
+import {
+  isHotSessionStorePath,
+  overlayHotSessionStore,
+  resolveHotSessionStorePath,
+} from "./store-hot.js";
 import { applySessionStoreMigrations } from "./store-migrations.js";
 import { normalizeSessionRuntimeModelFields, type SessionEntry } from "./types.js";
 
@@ -63,7 +68,7 @@ export function normalizeSessionStore(store: Record<string, SessionEntry>): void
   }
 }
 
-export function loadSessionStore(
+function loadSessionStoreFile(
   storePath: string,
   opts: LoadSessionStoreOptions = {},
 ): Record<string, SessionEntry> {
@@ -130,4 +135,29 @@ export function loadSessionStore(
   }
 
   return structuredClone(store);
+}
+
+export function loadHotSessionStore(
+  storePath: string,
+  opts: LoadSessionStoreOptions = {},
+): Record<string, SessionEntry> {
+  const hotStorePath = isHotSessionStorePath(storePath)
+    ? storePath
+    : resolveHotSessionStorePath(storePath);
+  return loadSessionStoreFile(hotStorePath, opts);
+}
+
+export function loadSessionStore(
+  storePath: string,
+  opts: LoadSessionStoreOptions = {},
+): Record<string, SessionEntry> {
+  const coldStore = loadSessionStoreFile(storePath, opts);
+  if (isHotSessionStorePath(storePath)) {
+    return coldStore;
+  }
+  const hotStore = loadHotSessionStore(storePath, opts);
+  if (Object.keys(hotStore).length === 0) {
+    return coldStore;
+  }
+  return overlayHotSessionStore({ coldStore, hotStore });
 }
