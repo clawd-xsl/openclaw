@@ -30,20 +30,43 @@ describe("resolveCliAuthEpoch", () => {
     ).resolves.toBeUndefined();
   });
 
-  it("changes when claude cli credentials change", async () => {
+  it("stays stable when claude cli only rotates access token and expiry", async () => {
     let access = "access-a";
+    let expires = 1;
     setCliAuthEpochTestDeps({
       readClaudeCliCredentialsCached: () => ({
         type: "oauth",
         provider: "anthropic",
         access,
         refresh: "refresh",
-        expires: 1,
+        expires,
       }),
     });
 
     const first = await resolveCliAuthEpoch({ provider: "claude-cli" });
     access = "access-b";
+    expires = 2;
+    const second = await resolveCliAuthEpoch({ provider: "claude-cli" });
+
+    expect(first).toBeDefined();
+    expect(second).toBeDefined();
+    expect(second).toBe(first);
+  });
+
+  it("changes when the claude cli refresh token changes", async () => {
+    let refresh = "refresh-a";
+    setCliAuthEpochTestDeps({
+      readClaudeCliCredentialsCached: () => ({
+        type: "oauth",
+        provider: "anthropic",
+        access: "access",
+        refresh,
+        expires: 1,
+      }),
+    });
+
+    const first = await resolveCliAuthEpoch({ provider: "claude-cli" });
+    refresh = "refresh-b";
     const second = await resolveCliAuthEpoch({ provider: "claude-cli" });
 
     expect(first).toBeDefined();
@@ -65,7 +88,7 @@ describe("resolveCliAuthEpoch", () => {
     await expect(resolveCliAuthEpoch({ provider: "claude-cli-streaming" })).resolves.toBeDefined();
   });
 
-  it("changes when auth profile credentials change", async () => {
+  it("stays stable when auth profile oauth only rotates access token and expiry", async () => {
     let store: AuthProfileStore = {
       version: 1,
       profiles: {
@@ -94,10 +117,42 @@ describe("resolveCliAuthEpoch", () => {
           provider: "anthropic",
           access: "access-b",
           refresh: "refresh",
-          expires: 1,
+          expires: 2,
         },
       },
     };
+    const second = await resolveCliAuthEpoch({
+      provider: "google-gemini-cli",
+      authProfileId: "anthropic:work",
+    });
+
+    expect(first).toBeDefined();
+    expect(second).toBeDefined();
+    expect(second).toBe(first);
+  });
+
+  it("changes when auth profile oauth refresh token changes", async () => {
+    let refresh = "refresh-a";
+    setCliAuthEpochTestDeps({
+      loadAuthProfileStoreForRuntime: () => ({
+        version: 1,
+        profiles: {
+          "anthropic:work": {
+            type: "oauth",
+            provider: "anthropic",
+            access: "access",
+            refresh,
+            expires: 1,
+          },
+        },
+      }),
+    });
+
+    const first = await resolveCliAuthEpoch({
+      provider: "google-gemini-cli",
+      authProfileId: "anthropic:work",
+    });
+    refresh = "refresh-b";
     const second = await resolveCliAuthEpoch({
       provider: "google-gemini-cli",
       authProfileId: "anthropic:work",
@@ -111,12 +166,13 @@ describe("resolveCliAuthEpoch", () => {
   it("mixes local codex and auth-profile state", async () => {
     let access = "local-access-a";
     let refresh = "profile-refresh-a";
+    let localRefresh = "local-refresh-a";
     setCliAuthEpochTestDeps({
       readCodexCliCredentialsCached: () => ({
         type: "oauth",
         provider: "openai-codex",
         access,
-        refresh: "local-refresh",
+        refresh: localRefresh,
         expires: 1,
         accountId: "acct-1",
       }),
@@ -143,8 +199,13 @@ describe("resolveCliAuthEpoch", () => {
       provider: "codex-cli",
       authProfileId: "openai:work",
     });
-    refresh = "profile-refresh-b";
+    localRefresh = "local-refresh-b";
     const third = await resolveCliAuthEpoch({
+      provider: "codex-cli",
+      authProfileId: "openai:work",
+    });
+    refresh = "profile-refresh-b";
+    const fourth = await resolveCliAuthEpoch({
       provider: "codex-cli",
       authProfileId: "openai:work",
     });
@@ -152,7 +213,9 @@ describe("resolveCliAuthEpoch", () => {
     expect(first).toBeDefined();
     expect(second).toBeDefined();
     expect(third).toBeDefined();
-    expect(second).not.toBe(first);
+    expect(fourth).toBeDefined();
+    expect(second).toBe(first);
     expect(third).not.toBe(second);
+    expect(fourth).not.toBe(third);
   });
 });

@@ -41,24 +41,19 @@ function encodeUnknown(value: unknown): string {
 
 function encodeClaudeCredential(credential: ClaudeCliCredential): string {
   if (credential.type === "oauth") {
-    return JSON.stringify([
-      "oauth",
-      credential.provider,
-      credential.access,
-      credential.refresh,
-      credential.expires,
-    ]);
+    // OAuth access tokens and expiry routinely rotate during healthy refreshes.
+    // Keep continuity stable across those refreshes and only invalidate when the
+    // underlying grant identity changes.
+    return JSON.stringify(["oauth", credential.provider, credential.refresh]);
   }
-  return JSON.stringify(["token", credential.provider, credential.token, credential.expires]);
+  return JSON.stringify(["token", credential.provider, credential.token]);
 }
 
 function encodeCodexCredential(credential: CodexCliCredential): string {
   return JSON.stringify([
     credential.type,
     credential.provider,
-    credential.access,
     credential.refresh,
-    credential.expires,
     credential.accountId ?? null,
   ]);
 }
@@ -71,9 +66,6 @@ function encodeAuthProfileCredential(credential: AuthProfileCredential): string 
         credential.provider,
         credential.key ?? null,
         encodeUnknown(credential.keyRef),
-        credential.email ?? null,
-        credential.displayName ?? null,
-        encodeUnknown(credential.metadata),
       ]);
     case "token":
       return JSON.stringify([
@@ -81,20 +73,13 @@ function encodeAuthProfileCredential(credential: AuthProfileCredential): string 
         credential.provider,
         credential.token ?? null,
         encodeUnknown(credential.tokenRef),
-        credential.expires ?? null,
-        credential.email ?? null,
-        credential.displayName ?? null,
       ]);
     case "oauth":
       return JSON.stringify([
         "oauth",
         credential.provider,
-        credential.access,
         credential.refresh,
-        credential.expires,
         credential.clientId ?? null,
-        credential.email ?? null,
-        credential.displayName ?? null,
         credential.enterpriseUrl ?? null,
         credential.projectId ?? null,
         credential.accountId ?? null,
