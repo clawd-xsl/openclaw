@@ -741,6 +741,16 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
       groupId,
       senderPeerId,
     });
+    const attachmentTraceLabel =
+      typeof envelope.timestamp === "number"
+        ? `msg:${String(envelope.timestamp)}`
+        : `sender:${senderPeerId}:${groupId ?? "direct"}`;
+    const attachmentTrace = createTimingTrace({
+      channel: "signal-trace",
+      label: attachmentTraceLabel,
+      scope: "attachments",
+      sink: "stderr",
+    });
     const mentionRegexes = buildMentionRegexes(deps.cfg, route.agentId);
     const wasMentioned = isGroup && matchesMentionPatterns(messageText, mentionRegexes);
     const requireMention =
@@ -866,11 +876,22 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
     const mediaTypes: string[] = [];
     let placeholder = "";
     const attachments = dataMessage.attachments ?? [];
+    attachmentTrace(
+      "scan-start",
+      `count=${attachments.length} ignore=${deps.ignoreAttachments ? "yes" : "no"}`,
+    );
     if (!deps.ignoreAttachments) {
-      for (const attachment of attachments) {
+      for (const [index, attachment] of attachments.entries()) {
         if (!attachment?.id) {
+          attachmentTrace("skip-missing-id", `index=${index}`);
           continue;
         }
+        attachmentTrace(
+          "fetch-start",
+          `index=${index} id=${attachment.id} type=${attachment.contentType ?? "unknown"} size=${
+            typeof attachment.size === "number" ? String(attachment.size) : "unknown"
+          }`,
+        );
         try {
           const fetched = await deps.fetchAttachment({
             baseUrl: deps.baseUrl,
@@ -885,12 +906,26 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
             mediaTypes.push(
               fetched.contentType ?? attachment.contentType ?? "application/octet-stream",
             );
+            attachmentTrace(
+              "fetch-done",
+              `index=${index} path=${fetched.path} type=${
+                fetched.contentType ?? attachment.contentType ?? "unknown"
+              }`,
+            );
             if (!mediaPath) {
               mediaPath = fetched.path;
               mediaType = fetched.contentType ?? attachment.contentType ?? undefined;
             }
+          } else {
+            attachmentTrace("fetch-empty", `index=${index} id=${attachment.id}`);
           }
         } catch (err) {
+          attachmentTrace(
+            "fetch-failed",
+            `index=${index} id=${attachment.id} error=${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
           deps.runtime.error?.(danger(`attachment fetch failed: ${String(err)}`));
         }
       }
@@ -915,6 +950,10 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
       quoteText: visibleQuoteText,
       fallbackText: placeholder,
     });
+    attachmentTrace(
+      "scan-done",
+      `paths=${mediaPaths.length} firstType=${mediaType ?? "none"} bodyChars=${bodyText.length}`,
+    );
     if (!bodyText) {
       return;
     }
