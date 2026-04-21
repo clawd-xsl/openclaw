@@ -59,6 +59,9 @@ export async function runPreparedCliAgent(
               ...(rawText ? { finalAssistantRawText: rawText } : {}),
             }
           : {}),
+        ...(resultParams.output.streamedAssistantTexts?.length
+          ? { streamedAssistantTexts: [...resultParams.output.streamedAssistantTexts] }
+          : {}),
         systemPromptReport: context.systemPromptReport,
         executionTrace: {
           winnerProvider: params.provider,

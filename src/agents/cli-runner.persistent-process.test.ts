@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReplyOperation } from "../auto-reply/reply/reply-run-registry.js";
+import { onAgentEvent, resetAgentEventsForTest } from "../infra/agent-events.js";
 import { restoreCliRunnerPrepareTestDeps, supervisorSpawnMock } from "./cli-runner.test-support.js";
 import { executePreparedCliRun } from "./cli-runner/execute.js";
 import {
@@ -305,11 +306,13 @@ function installPersistentSpawnMock(params?: { scenarios?: SpawnScenario[] }) {
 }
 
 beforeEach(() => {
+  resetAgentEventsForTest();
   restoreCliRunnerPrepareTestDeps();
   supervisorSpawnMock.mockReset();
 });
 
 afterEach(async () => {
+  resetAgentEventsForTest();
   await resetPersistentCliRuntimesForTest();
 });
 
@@ -341,6 +344,89 @@ describe("claude-cli-streaming persistent process runner", () => {
 
     expect(second.text).toBe("turn-1-2");
     expect(controller.getSpawnCount()).toBe(1);
+  });
+
+  it("streams assistant snapshot growth after tool work on the persistent path", async () => {
+    const agentEvents: Array<{ stream: string; text?: string; delta?: string }> = [];
+    const stop = onAgentEvent((evt) => {
+      agentEvents.push({
+        stream: evt.stream,
+        text: typeof evt.data.text === "string" ? evt.data.text : undefined,
+        delta: typeof evt.data.delta === "string" ? evt.data.delta : undefined,
+      });
+    });
+    const controller = installPersistentSpawnMock({
+      scenarios: [
+        {
+          onWrite: ({ spawnInput, claudeSessionId, callback }) => {
+            spawnInput.onStdout?.(
+              `${JSON.stringify({
+                type: "system",
+                subtype: "init",
+                session_id: claudeSessionId,
+              })}\n`,
+            );
+            spawnInput.onStdout?.(
+              `${JSON.stringify({
+                type: "stream_event",
+                session_id: claudeSessionId,
+                event: {
+                  type: "content_block_delta",
+                  delta: { type: "text_delta", text: "Let me check." },
+                },
+              })}\n`,
+            );
+            spawnInput.onStdout?.(
+              `${JSON.stringify({
+                type: "assistant",
+                session_id: claudeSessionId,
+                message: {
+                  role: "assistant",
+                  content: [
+                    { type: "text", text: "Let me check." },
+                    { type: "tool_use", id: "toolu_1", name: "read", input: { path: "README.md" } },
+                  ],
+                },
+              })}\n`,
+            );
+            spawnInput.onStdout?.(
+              `${JSON.stringify({
+                type: "assistant",
+                session_id: claudeSessionId,
+                message: {
+                  role: "assistant",
+                  content: [{ type: "text", text: "Let me check. It is 42." }],
+                },
+              })}\n`,
+            );
+            spawnInput.onStdout?.(
+              `${JSON.stringify({
+                type: "result",
+                subtype: "success",
+                session_id: claudeSessionId,
+                result: "Let me check. It is 42.",
+                is_error: false,
+              })}\n`,
+            );
+            callback?.(null);
+          },
+        },
+      ],
+    });
+
+    try {
+      const result = await executePreparedCliRun(buildPersistentContext({ prompt: "tool turn" }));
+
+      expect(result.text).toBe("Let me check. It is 42.");
+      expect(result.streamedAssistantTexts).toEqual(["Let me check.", "Let me check. It is 42."]);
+      expect(agentEvents).toEqual([
+        { stream: "assistant", text: "Let me check.", delta: "Let me check." },
+        { stream: "assistant", text: "Let me check. It is 42.", delta: " It is 42." },
+      ]);
+      expect(controller.getSpawnCount()).toBe(1);
+    } finally {
+      stop();
+    }
   });
 
   it("relaunches with --resume when the effective system prompt changes", async () => {

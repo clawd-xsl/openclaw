@@ -504,6 +504,116 @@ describe("createCliJsonlStreamingParser", () => {
       { text: "hello", delta: "hello", sessionId: "session-stream", usage: undefined },
     ]);
   });
+
+  it("streams assistant snapshot growth after tool records within the same turn", () => {
+    const deltas: Array<{ text: string; delta: string; sessionId?: string }> = [];
+    const parser = createCliJsonlStreamingParser({
+      backend: {
+        command: "claude",
+        output: "jsonl",
+        sessionIdFields: ["session_id"],
+      },
+      providerId: "claude-cli",
+      onAssistantDelta: (delta) => deltas.push(delta),
+    });
+
+    parser.push(
+      [
+        JSON.stringify({ type: "init", session_id: "session-tool-turn" }),
+        JSON.stringify({
+          type: "stream_event",
+          session_id: "session-tool-turn",
+          event: {
+            type: "content_block_delta",
+            delta: { type: "text_delta", text: "Let me check." },
+          },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          session_id: "session-tool-turn",
+          message: {
+            role: "assistant",
+            content: [
+              { type: "text", text: "Let me check." },
+              { type: "tool_use", id: "toolu_1", name: "read", input: { path: "README.md" } },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          session_id: "session-tool-turn",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Let me check. It is 42." }],
+          },
+        }),
+      ].join("\n"),
+    );
+    parser.finish();
+
+    expect(deltas).toEqual([
+      {
+        text: "Let me check.",
+        delta: "Let me check.",
+        sessionId: "session-tool-turn",
+        usage: undefined,
+      },
+      {
+        text: "Let me check. It is 42.",
+        delta: " It is 42.",
+        sessionId: "session-tool-turn",
+        usage: undefined,
+      },
+    ]);
+  });
+
+  it("ignores stale assistant snapshots that do not extend streamed text", () => {
+    const deltas: Array<{ text: string; delta: string; sessionId?: string }> = [];
+    const parser = createCliJsonlStreamingParser({
+      backend: {
+        command: "claude",
+        output: "jsonl",
+        sessionIdFields: ["session_id"],
+      },
+      providerId: "claude-cli",
+      onAssistantDelta: (delta) => deltas.push(delta),
+    });
+
+    parser.push(
+      [
+        JSON.stringify({ type: "init", session_id: "session-stale" }),
+        JSON.stringify({
+          type: "assistant",
+          session_id: "session-stale",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Hello world" }],
+          },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          session_id: "session-stale",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Hello world" }],
+          },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          session_id: "session-stale",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Hello" }],
+          },
+        }),
+      ].join("\n"),
+    );
+    parser.finish();
+
+    expect(deltas).toEqual([
+      { text: "Hello world", delta: "Hello world", sessionId: "session-stale", usage: undefined },
+    ]);
+  });
 });
 
 describe("summarizeCliOutputForLog", () => {

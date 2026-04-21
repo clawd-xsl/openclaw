@@ -103,6 +103,7 @@ export type EmbeddedPiRunMeta = {
   finalPromptText?: string;
   finalAssistantVisibleText?: string;
   finalAssistantRawText?: string;
+  streamedAssistantTexts?: string[];
   replayInvalid?: boolean;
   livenessState?: EmbeddedRunLivenessState;
   error?: {

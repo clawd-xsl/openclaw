@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CliSessionContinuityError } from "../../agents/cli-session.js";
 import { LiveSessionModelSwitchError } from "../../agents/live-model-switch-error.js";
 import type { SessionEntry } from "../../config/sessions.js";
+import { emitAgentEvent } from "../../infra/agent-events.js";
 import { CommandLaneClearedError, GatewayDrainingError } from "../../process/command-queue.js";
 import type { TemplateContext } from "../templating.js";
 import type { GetReplyOptions } from "../types.js";
@@ -1702,6 +1703,70 @@ describe("runAgentTurnWithFallback", () => {
       recentSessionHistory: "## Recent Session History\nsummary",
       continuityBreakMode: "throw",
     });
+  });
+
+  it("only replays CLI payload texts that were not already streamed live", async () => {
+    state.isCliProviderMock.mockImplementation((provider: string) => provider === "claude-cli");
+    state.runWithModelFallbackMock.mockImplementation(
+      async (params: { run: (provider: string, model: string) => Promise<unknown> }) => ({
+        result: await params.run("claude-cli", "claude-sonnet-4-6"),
+        provider: "claude-cli",
+        model: "claude-sonnet-4-6",
+        attempts: [],
+      }),
+    );
+    state.runCliAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "First reply" }, { text: "Second reply" }],
+      meta: {
+        streamedAssistantTexts: ["First reply"],
+        agentMeta: {
+          sessionId: "cli-session-1",
+          provider: "claude-cli",
+          model: "claude-sonnet-4-6",
+        },
+      },
+    });
+
+    const runAgentTurnWithFallback = await getRunAgentTurnWithFallback();
+    await runAgentTurnWithFallback({
+      commandBody: "hello",
+      followupRun: createFollowupRun(),
+      sessionCtx: {
+        Provider: "signal",
+        MessageSid: "msg",
+      } as unknown as TemplateContext,
+      opts: {},
+      typingSignals: createMockTypingSignaler(),
+      blockReplyPipeline: null,
+      blockStreamingEnabled: false,
+      resolvedBlockStreamingBreak: "message_end",
+      applyReplyToMode: (payload) => payload,
+      shouldEmitToolResult: () => true,
+      shouldEmitToolOutput: () => false,
+      pendingToolTasks: new Set(),
+      resetSessionAfterCompactionFailure: async () => false,
+      resetSessionAfterRoleOrderingConflict: async () => false,
+      isHeartbeat: false,
+      sessionKey: "main",
+      getActiveSessionEntry: () => undefined,
+      resolvedVerboseLevel: "off",
+    });
+
+    const assistantEvents = vi
+      .mocked(emitAgentEvent)
+      .mock.calls.map(([event]) => event)
+      .filter(
+        (event): event is { stream: string; data: { text?: string } } =>
+          typeof event?.stream === "string" && event.stream === "assistant",
+      );
+
+    expect(assistantEvents).toEqual([
+      {
+        runId: expect.any(String),
+        stream: "assistant",
+        data: { text: "Second reply" },
+      },
+    ]);
   });
 
   it("drops authProfileId when fallback switches providers", async () => {

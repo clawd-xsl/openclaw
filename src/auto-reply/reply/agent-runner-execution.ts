@@ -96,6 +96,27 @@ export type RuntimeFallbackAttempt = {
   code?: string;
 };
 
+function resolveCliFinalAssistantPayloadTexts(params: {
+  payloads?: Array<{ text?: string }>;
+  streamedAssistantTexts?: string[];
+}): string[] {
+  const cliPayloadTexts = (params.payloads ?? [])
+    .map((payload) => normalizeOptionalString(payload.text))
+    .filter((text): text is string => Boolean(text));
+  if (cliPayloadTexts.length === 0) {
+    return [];
+  }
+  const streamedAssistantTexts = new Set(
+    (params.streamedAssistantTexts ?? [])
+      .map((text) => normalizeOptionalString(text))
+      .filter((text): text is string => Boolean(text)),
+  );
+  if (streamedAssistantTexts.size === 0) {
+    return cliPayloadTexts;
+  }
+  return cliPayloadTexts.filter((text) => !streamedAssistantTexts.has(text));
+}
+
 export type AgentRunLoopResult =
   | {
       kind: "success";
@@ -926,9 +947,10 @@ export async function runAgentTurnWithFallback(params: {
                 // CLI backends do not flow assistant payloads through the
                 // embedded onAgentEvent path, so emit the resolved final
                 // payloads here for server-chat/TUI/WebSocket consumers.
-                const cliPayloadTexts = (result.payloads ?? [])
-                  .map((payload) => normalizeOptionalString(payload.text))
-                  .filter((text): text is string => Boolean(text));
+                const cliPayloadTexts = resolveCliFinalAssistantPayloadTexts({
+                  payloads: result.payloads,
+                  streamedAssistantTexts: result.meta?.streamedAssistantTexts,
+                });
                 for (const cliText of cliPayloadTexts) {
                   emitAgentEvent({
                     runId,

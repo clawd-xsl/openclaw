@@ -21,6 +21,7 @@ export type CliOutput = {
   sessionId?: string;
   usage?: CliUsage;
   finalPromptText?: string;
+  streamedAssistantTexts?: string[];
 };
 
 export type CliStreamingDelta = {
@@ -358,6 +359,34 @@ function readCliAssistantMessageText(parsed: Record<string, unknown>): string | 
   return normalizeOptionalString(extractAssistantText(parsed.message));
 }
 
+function buildCliStreamingDeltaFromNextText(params: {
+  nextText: string | undefined;
+  textSoFar: string;
+  sessionId?: string;
+  usage?: CliUsage;
+}): CliStreamingDelta | null {
+  const nextText = normalizeOptionalString(params.nextText);
+  if (!nextText) {
+    return null;
+  }
+  if (nextText === params.textSoFar) {
+    return null;
+  }
+  if (!nextText.startsWith(params.textSoFar)) {
+    return null;
+  }
+  const delta = nextText.slice(params.textSoFar.length);
+  if (!delta) {
+    return null;
+  }
+  return {
+    text: nextText,
+    delta,
+    sessionId: params.sessionId,
+    usage: params.usage,
+  };
+}
+
 function appendCliPayloadText(texts: string[], nextText: string | undefined): void {
   const trimmed = normalizeOptionalString(nextText);
   if (!trimmed) {
@@ -393,6 +422,15 @@ function parseClaudeCliStreamingDelta(params: {
   if (!usesClaudeStreamJsonDialect(params)) {
     return null;
   }
+  const snapshotDelta = buildCliStreamingDeltaFromNextText({
+    nextText: readCliAssistantMessageText(params.parsed),
+    textSoFar: params.textSoFar,
+    sessionId: params.sessionId,
+    usage: params.usage,
+  });
+  if (snapshotDelta) {
+    return snapshotDelta;
+  }
   if (params.parsed.type !== "stream_event" || !isRecord(params.parsed.event)) {
     return null;
   }
@@ -407,12 +445,12 @@ function parseClaudeCliStreamingDelta(params: {
   if (!delta.text) {
     return null;
   }
-  return {
-    text: `${params.textSoFar}${delta.text}`,
-    delta: delta.text,
+  return buildCliStreamingDeltaFromNextText({
+    nextText: `${params.textSoFar}${delta.text}`,
+    textSoFar: params.textSoFar,
     sessionId: params.sessionId,
     usage: params.usage,
-  };
+  });
 }
 
 export function createCliJsonlStreamingParser(params: {

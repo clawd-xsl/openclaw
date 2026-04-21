@@ -876,6 +876,114 @@ describe("runCliAgent spawn path", () => {
     }
   });
 
+  it("streams Claude assistant snapshots that grow after tool work", async () => {
+    const agentEvents: Array<{ stream: string; text?: string; delta?: string }> = [];
+    const stop = onAgentEvent((evt) => {
+      agentEvents.push({
+        stream: evt.stream,
+        text: typeof evt.data.text === "string" ? evt.data.text : undefined,
+        delta: typeof evt.data.delta === "string" ? evt.data.delta : undefined,
+      });
+    });
+    supervisorSpawnMock.mockImplementationOnce(async (...args: unknown[]) => {
+      const input = (args[0] ?? {}) as { onStdout?: (chunk: string) => void };
+      input.onStdout?.(
+        [
+          JSON.stringify({ type: "init", session_id: "session-tool-stream" }),
+          JSON.stringify({
+            type: "stream_event",
+            event: {
+              type: "content_block_delta",
+              delta: { type: "text_delta", text: "Let me check." },
+            },
+          }),
+          JSON.stringify({
+            type: "assistant",
+            session_id: "session-tool-stream",
+            message: {
+              role: "assistant",
+              content: [
+                { type: "text", text: "Let me check." },
+                { type: "tool_use", id: "toolu_1", name: "read", input: { path: "README.md" } },
+              ],
+            },
+          }),
+          JSON.stringify({
+            type: "assistant",
+            session_id: "session-tool-stream",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "Let me check. It is 42." }],
+            },
+          }),
+        ].join("\n") + "\n",
+      );
+      return createManagedRun({
+        reason: "exit",
+        exitCode: 0,
+        exitSignal: null,
+        durationMs: 50,
+        stdout: [
+          JSON.stringify({ type: "init", session_id: "session-tool-stream" }),
+          JSON.stringify({
+            type: "stream_event",
+            event: {
+              type: "content_block_delta",
+              delta: { type: "text_delta", text: "Let me check." },
+            },
+          }),
+          JSON.stringify({
+            type: "assistant",
+            session_id: "session-tool-stream",
+            message: {
+              role: "assistant",
+              content: [
+                { type: "text", text: "Let me check." },
+                { type: "tool_use", id: "toolu_1", name: "read", input: { path: "README.md" } },
+              ],
+            },
+          }),
+          JSON.stringify({
+            type: "assistant",
+            session_id: "session-tool-stream",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "Let me check. It is 42." }],
+            },
+          }),
+          JSON.stringify({
+            type: "result",
+            session_id: "session-tool-stream",
+            result: "Let me check. It is 42.",
+          }),
+        ].join("\n"),
+        stderr: "",
+        timedOut: false,
+        noOutputTimedOut: false,
+      });
+    });
+
+    try {
+      const result = await executePreparedCliRun(
+        buildPreparedCliRunContext({
+          provider: "claude-cli",
+          model: "sonnet",
+          runId: "run-claude-tool-stream",
+        }),
+      );
+
+      expect(result.text).toBe("Let me check. It is 42.");
+      expect(result.payloads).toEqual([{ text: "Let me check. It is 42." }]);
+      expect(result.streamedAssistantTexts).toEqual(["Let me check.", "Let me check. It is 42."]);
+      expect(agentEvents).toEqual([
+        { stream: "assistant", text: "Let me check.", delta: "Let me check." },
+        { stream: "assistant", text: "Let me check. It is 42.", delta: " It is 42." },
+      ]);
+    } finally {
+      stop();
+    }
+  });
+
   it("surfaces nested Claude stream-json API errors instead of raw event output", async () => {
     const message =
       "Third-party apps now draw from your extra usage, not your plan limits. We've added a $200 credit to get you started. Claim it at claude.ai/settings/usage and keep going.";

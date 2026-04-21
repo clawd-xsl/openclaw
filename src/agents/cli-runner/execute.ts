@@ -338,19 +338,25 @@ export async function executePreparedCliRun(
           timeoutMs: params.timeoutMs,
           useResume,
         });
+        const streamedAssistantTexts: string[] = [];
         const onAssistantDelta = ({ text, delta }: { text: string; delta: string }) => {
+          const transformedText = applyPluginTextReplacements(
+            text,
+            context.backendResolved.textTransforms?.output,
+          );
+          const transformedDelta = applyPluginTextReplacements(
+            delta,
+            context.backendResolved.textTransforms?.output,
+          );
+          if (streamedAssistantTexts[streamedAssistantTexts.length - 1] !== transformedText) {
+            streamedAssistantTexts.push(transformedText);
+          }
           emitAgentEvent({
             runId: params.runId,
             stream: "assistant",
             data: {
-              text: applyPluginTextReplacements(
-                text,
-                context.backendResolved.textTransforms?.output,
-              ),
-              delta: applyPluginTextReplacements(
-                delta,
-                context.backendResolved.textTransforms?.output,
-              ),
+              text: transformedText,
+              delta: transformedDelta,
             },
           });
         };
@@ -554,6 +560,9 @@ export async function executePreparedCliRun(
           payloads: transformedPayloads,
           rawText,
           finalPromptText: prompt,
+          ...(streamedAssistantTexts.length > 0
+            ? { streamedAssistantTexts: [...streamedAssistantTexts] }
+            : {}),
           text: applyPluginTextReplacements(
             rawText,
             context.backendResolved.textTransforms?.output,
