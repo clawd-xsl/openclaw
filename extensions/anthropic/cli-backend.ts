@@ -80,6 +80,7 @@ export function buildAnthropicCliBackend(): CliBackendPlugin {
       sessionMode: "always",
       sessionIdFields: [...CLAUDE_CLI_SESSION_ID_FIELDS],
       systemPromptArg: "--system-prompt",
+      systemPromptFileConfigArg: "--system-prompt-file",
       systemPromptMode: "replace",
       systemPromptWhen: "always",
       env: {
@@ -149,6 +150,7 @@ export function buildAnthropicStreamingCliBackend(): CliBackendPlugin {
       sessionMode: "always",
       sessionIdFields: [...CLAUDE_CLI_SESSION_ID_FIELDS],
       systemPromptArg: "--system-prompt",
+      systemPromptFileConfigArg: "--system-prompt-file",
       systemPromptMode: "replace",
       systemPromptWhen: "always",
       env: {

@@ -353,6 +353,7 @@ export function resolveSystemPromptUsage(params: {
   }
   if (
     !params.backend.systemPromptArg?.trim() &&
+    !params.backend.systemPromptFileConfigArg?.trim() &&
     !params.backend.systemPromptFileConfigKey?.trim()
   ) {
     return null;
@@ -485,7 +486,10 @@ export async function writeCliSystemPromptFile(params: {
   backend: CliBackendConfig;
   systemPrompt: string;
 }): Promise<{ filePath?: string; cleanup: () => Promise<void> }> {
-  if (!params.backend.systemPromptFileConfigKey?.trim()) {
+  if (
+    !params.backend.systemPromptFileConfigArg?.trim() &&
+    !params.backend.systemPromptFileConfigKey?.trim()
+  ) {
     return { cleanup: async () => {} };
   }
   const tempDir = await fs.mkdtemp(
@@ -567,15 +571,19 @@ export function buildCliArgs(params: {
     includeSystemPrompt &&
     params.systemPrompt &&
     params.systemPromptFilePath &&
-    params.backend.systemPromptFileConfigKey
+    params.backend.systemPromptFileConfigArg
   ) {
-    args.push(
-      params.backend.systemPromptFileConfigArg ?? "-c",
-      formatTomlConfigOverride(
-        params.backend.systemPromptFileConfigKey,
-        params.systemPromptFilePath,
-      ),
-    );
+    if (params.backend.systemPromptFileConfigKey?.trim()) {
+      args.push(
+        params.backend.systemPromptFileConfigArg,
+        formatTomlConfigOverride(
+          params.backend.systemPromptFileConfigKey,
+          params.systemPromptFilePath,
+        ),
+      );
+    } else {
+      args.push(params.backend.systemPromptFileConfigArg, params.systemPromptFilePath);
+    }
   } else if (includeSystemPrompt && params.systemPrompt && params.backend.systemPromptArg) {
     args.push(params.backend.systemPromptArg, stripSystemPromptCacheBoundary(params.systemPrompt));
   }

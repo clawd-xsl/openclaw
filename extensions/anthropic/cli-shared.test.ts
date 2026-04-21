@@ -181,6 +181,7 @@ describe("normalizeClaudeBackendConfig", () => {
       CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1",
     });
     expect(normalized.systemPromptArg).toBe("--system-prompt");
+    expect(normalized.systemPromptFileConfigArg).toBe("--system-prompt-file");
     expect(normalized.systemPromptMode).toBe("replace");
     expect(normalized.systemPromptWhen).toBe("always");
   });

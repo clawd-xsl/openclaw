@@ -181,6 +181,28 @@ describe("buildCliArgs", () => {
     ).toEqual(["exec", "--json", "-c", 'model_instructions_file="/tmp/openclaw/system-prompt.md"']);
   });
 
+  it("passes Claude system prompts via a direct system prompt file arg", () => {
+    expect(
+      buildCliArgs({
+        backend: {
+          command: "claude",
+          systemPromptArg: "--system-prompt",
+          systemPromptFileConfigArg: "--system-prompt-file",
+        },
+        baseArgs: ["--output-format", "stream-json"],
+        modelId: "opus",
+        systemPrompt: "Stable prefix",
+        systemPromptFilePath: "/tmp/openclaw/system-prompt.md",
+        useResume: false,
+      }),
+    ).toEqual([
+      "--output-format",
+      "stream-json",
+      "--system-prompt-file",
+      "/tmp/openclaw/system-prompt.md",
+    ]);
+  });
+
   it("replaces prompt placeholders before falling back to a trailing positional prompt", () => {
     expect(
       buildCliArgs({

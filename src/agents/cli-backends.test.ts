@@ -371,6 +371,7 @@ beforeEach(() => {
               sessionArg: "--session-id",
               sessionMode: "always",
               systemPromptArg: "--system-prompt",
+              systemPromptFileConfigArg: "--system-prompt-file",
               systemPromptMode: "replace",
               systemPromptWhen: "first",
             },
@@ -883,6 +884,7 @@ describe("resolveCliBackendConfig claude-cli defaults", () => {
       "bypassPermissions",
     ]);
     expect(resolved?.config.systemPromptArg).toBe("--system-prompt");
+    expect(resolved?.config.systemPromptFileConfigArg).toBe("--system-prompt-file");
     expect(resolved?.config.systemPromptMode).toBe("replace");
     expect(resolved?.config.systemPromptWhen).toBe("always");
     expect(resolved?.config.sessionArg).toBe("--session-id");

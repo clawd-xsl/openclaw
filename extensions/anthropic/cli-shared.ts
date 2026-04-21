@@ -117,6 +117,7 @@ const CLAUDE_DISABLE_BUILTINS_VALUE = "";
 const CLAUDE_SETTINGS_ARG = "--settings";
 const CLAUDE_DISABLE_ALL_HOOKS_SETTINGS = JSON.stringify({ disableAllHooks: true });
 const CLAUDE_SYSTEM_PROMPT_ARG = "--system-prompt";
+const CLAUDE_SYSTEM_PROMPT_FILE_ARG = "--system-prompt-file";
 const CLAUDE_DISABLE_CLAUDE_MDS_ENV = "CLAUDE_CODE_DISABLE_CLAUDE_MDS";
 const CLAUDE_DISABLE_SLASH_COMMANDS_ARG = "--disable-slash-commands";
 
@@ -341,6 +342,7 @@ export function normalizeClaudeBackendConfig(config: CliBackendConfig): CliBacke
     ),
     env: normalizeClaudeEnv(config.env),
     systemPromptArg: CLAUDE_SYSTEM_PROMPT_ARG,
+    systemPromptFileConfigArg: CLAUDE_SYSTEM_PROMPT_FILE_ARG,
     systemPromptMode: "replace",
     systemPromptWhen: normalizeClaudeSystemPromptWhen(config.systemPromptWhen),
   };
