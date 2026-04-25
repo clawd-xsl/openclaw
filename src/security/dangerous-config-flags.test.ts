@@ -78,4 +78,18 @@ describe("collectEnabledInsecureOrDangerousFlags", () => {
       ),
     ).toEqual([]);
   });
+
+  it("collects dangerous host attachment config flags", () => {
+    expect(
+      collectEnabledInsecureOrDangerousFlags(
+        asConfig({
+          tools: {
+            fs: {
+              allowAllHostSendFileTypes: true,
+            },
+          },
+        }),
+      ),
+    ).toContain("tools.fs.allowAllHostSendFileTypes=true");
+  });
 });

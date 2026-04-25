@@ -34,6 +34,9 @@ export function collectEnabledInsecureOrDangerousFlags(cfg: OpenClawConfig): str
   if (cfg.tools?.exec?.applyPatch?.workspaceOnly === false) {
     enabledFlags.push("tools.exec.applyPatch.workspaceOnly=false");
   }
+  if (cfg.tools?.fs?.allowAllHostSendFileTypes === true) {
+    enabledFlags.push("tools.fs.allowAllHostSendFileTypes=true");
+  }
 
   const pluginEntries = cfg.plugins?.entries;
   if (!isRecord(pluginEntries)) {

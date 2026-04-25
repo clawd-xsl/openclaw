@@ -405,6 +405,38 @@ describe("runMessageAction media behavior", () => {
       }
     });
 
+    it("allows host-local text attachments when allowAllHostSendFileTypes is enabled", async () => {
+      await restoreRealMediaLoader();
+
+      const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "msg-attachment-text-allow-"));
+      try {
+        const outsidePath = path.join(tempDir, "question.md");
+        await fs.writeFile(outsidePath, "# question\n", "utf8");
+
+        const result = await runMessageAction({
+          cfg: {
+            ...cfg,
+            tools: { fs: { workspaceOnly: false, allowAllHostSendFileTypes: true } },
+          },
+          action: "sendAttachment",
+          params: {
+            channel: "bluebubbles",
+            target: "+15551234567",
+            media: outsidePath,
+            message: "caption",
+          },
+        });
+
+        expect(result.kind).toBe("action");
+        expect(result.payload).toMatchObject({
+          ok: true,
+          filename: "question.md",
+        });
+      } finally {
+        await fs.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("hydrates buffer and filename from media for bluebubbles upload-file", async () => {
       const result = await runMessageAction({
         cfg,

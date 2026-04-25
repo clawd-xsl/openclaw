@@ -50,6 +50,8 @@ type WebMediaOptions = {
   readFile?: (filePath: string) => Promise<Buffer>;
   /** Host-local fs-policy read piggyback; rejects plaintext-like document sends. */
   hostReadCapability?: boolean;
+  /** Explicitly allow any host-local file type for outbound attachment sends. */
+  hostReadAllowAllFileTypes?: boolean;
   remoteTimeoutMs?: number;
   signal?: AbortSignal;
 };
@@ -232,6 +234,7 @@ async function loadWebMediaInternal(
     sandboxValidated = false,
     readFile: readFileOverride,
     hostReadCapability = false,
+    hostReadAllowAllFileTypes = false,
     remoteTimeoutMs,
     signal,
   } = options;
@@ -402,7 +405,7 @@ async function loadWebMediaInternal(
   const sniffedMime = await detectMime({ buffer: data });
   const mime = await detectMime({ buffer: data, filePath: mediaUrl });
   const kind = kindFromMime(mime);
-  if (hostReadCapability) {
+  if (hostReadCapability && !hostReadAllowAllFileTypes) {
     assertHostReadMediaAllowed({
       sniffedContentType: sniffedMime,
       contentType: mime,

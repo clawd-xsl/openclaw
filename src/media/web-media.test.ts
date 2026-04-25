@@ -185,6 +185,21 @@ describe("loadWebMedia", () => {
     });
   });
 
+  it("allows host-read text files when hostReadAllowAllFileTypes is enabled", async () => {
+    const noteFile = path.join(fixtureRoot, "note.md");
+    await fs.writeFile(noteFile, "# note\n", "utf8");
+    const result = await loadWebMedia(noteFile, {
+      maxBytes: 1024 * 1024,
+      localRoots: "any",
+      readFile: async (filePath) => await fs.readFile(filePath),
+      hostReadCapability: true,
+      hostReadAllowAllFileTypes: true,
+    });
+
+    expect(result.buffer.toString("utf8")).toContain("# note");
+    expect(result.fileName).toBe("note.md");
+  });
+
   it("rejects traversal-style canvas media paths before filesystem access", async () => {
     await expect(
       loadWebMedia(`${CANVAS_HOST_PATH}/documents/../collection.media/tiny.png`),

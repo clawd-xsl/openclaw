@@ -3080,6 +3080,7 @@ Related: [/concepts/oauth](/concepts/oauth) (OAuth flows, token storage, multi-a
     - The file is within the provider's size limits (images are resized to max 2048px).
     - `tools.fs.workspaceOnly=true` keeps local-path sends limited to workspace, temp/media-store, and sandbox-validated files.
     - `tools.fs.workspaceOnly=false` lets `MEDIA:` send host-local files the agent can already read, but only for media plus safe document types (images, audio, video, PDF, and Office docs). Plain text and secret-like files are still blocked.
+    - `tools.fs.allowAllHostSendFileTypes=true` removes that file-type restriction for host-local outbound attachment sends. This is intentionally broad and can expose arbitrary local files the agent can read.
 
     See [Images](/nodes/images).
 

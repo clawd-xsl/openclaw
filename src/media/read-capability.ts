@@ -1,7 +1,10 @@
 import { resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
 import { resolvePathFromInput } from "../agents/path-policy.js";
 import { resolveGroupToolPolicy } from "../agents/pi-tools.policy.js";
-import { resolveEffectiveToolFsRootExpansionAllowed } from "../agents/tool-fs-policy.js";
+import {
+  resolveEffectiveToolFsAllowAllHostSendFileTypes,
+  resolveEffectiveToolFsRootExpansionAllowed,
+} from "../agents/tool-fs-policy.js";
 import { isToolAllowedByPolicies } from "../agents/tool-policy-match.js";
 import { resolveWorkspaceRoot } from "../agents/workspace-dir.js";
 import type { OpenClawConfig } from "../config/types.js";
@@ -120,5 +123,11 @@ export function resolveAgentScopedOutboundMediaAccess(
     ...(localRoots?.length ? { localRoots } : {}),
     ...(readFile ? { readFile } : {}),
     ...(resolvedWorkspaceDir ? { workspaceDir: resolvedWorkspaceDir } : {}),
+    ...(resolveEffectiveToolFsAllowAllHostSendFileTypes({
+      cfg: params.cfg,
+      agentId: params.agentId,
+    })
+      ? { allowAllHostSendFileTypes: true }
+      : {}),
   };
 }

@@ -126,4 +126,19 @@ describe("resolveAgentScopedOutboundMediaAccess", () => {
 
     expect(result.readFile).toBeTypeOf("function");
   });
+
+  it("propagates tools.fs.allowAllHostSendFileTypes into outbound media access", () => {
+    const result = resolveAgentScopedOutboundMediaAccess({
+      cfg: {
+        tools: {
+          allow: ["read"],
+          fs: { allowAllHostSendFileTypes: true },
+        },
+      } as OpenClawConfig,
+      messageProvider: "whatsapp",
+      requesterSenderId: "trusted-user",
+    });
+
+    expect(result.allowAllHostSendFileTypes).toBe(true);
+  });
 });

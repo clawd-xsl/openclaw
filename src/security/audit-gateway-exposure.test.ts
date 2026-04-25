@@ -61,6 +61,17 @@ describe("security audit gateway exposure findings", () => {
         ],
       },
       {
+        name: "host attachment file type allow-all flag",
+        cfg: {
+          tools: {
+            fs: {
+              allowAllHostSendFileTypes: true,
+            },
+          },
+        } satisfies OpenClawConfig,
+        expectedDangerousDetails: ["tools.fs.allowAllHostSendFileTypes=true"],
+      },
+      {
         name: "acpx approve-all is treated as a dangerous break-glass flag",
         cfg: {
           plugins: {

@@ -5,6 +5,8 @@ export type OutboundMediaAccess = {
   readFile?: OutboundMediaReadFile;
   /** Agent workspace directory for resolving relative MEDIA: paths. */
   workspaceDir?: string;
+  /** Allow host-local outbound attachment sends for any file type. */
+  allowAllHostSendFileTypes?: boolean;
 };
 
 export type OutboundMediaLoadParams = {
@@ -22,6 +24,7 @@ export type OutboundMediaLoadOptions = {
   localRoots?: readonly string[] | "any";
   readFile?: (filePath: string) => Promise<Buffer>;
   hostReadCapability?: boolean;
+  hostReadAllowAllFileTypes?: boolean;
   optimizeImages?: boolean;
   /** Agent workspace directory for resolving relative MEDIA: paths. */
   workspaceDir?: string;
@@ -45,13 +48,15 @@ export function resolveOutboundMediaAccess(
   );
   const readFile = params.mediaAccess?.readFile ?? params.mediaReadFile;
   const workspaceDir = params.mediaAccess?.workspaceDir;
-  if (!localRoots && !readFile && !workspaceDir) {
+  const allowAllHostSendFileTypes = params.mediaAccess?.allowAllHostSendFileTypes;
+  if (!localRoots && !readFile && !workspaceDir && !allowAllHostSendFileTypes) {
     return undefined;
   }
   return {
     ...(localRoots ? { localRoots } : {}),
     ...(readFile ? { readFile } : {}),
     ...(workspaceDir ? { workspaceDir } : {}),
+    ...(allowAllHostSendFileTypes ? { allowAllHostSendFileTypes } : {}),
   };
 }
 
@@ -66,6 +71,7 @@ export function buildOutboundMediaLoadOptions(
       localRoots: "any",
       readFile: mediaAccess.readFile,
       hostReadCapability: true,
+      ...(mediaAccess.allowAllHostSendFileTypes ? { hostReadAllowAllFileTypes: true } : {}),
       ...(params.optimizeImages !== undefined ? { optimizeImages: params.optimizeImages } : {}),
       ...(workspaceDir ? { workspaceDir } : {}),
     };
@@ -74,6 +80,7 @@ export function buildOutboundMediaLoadOptions(
   return {
     ...(params.maxBytes !== undefined ? { maxBytes: params.maxBytes } : {}),
     ...(localRoots ? { localRoots } : {}),
+    ...(mediaAccess?.allowAllHostSendFileTypes ? { hostReadAllowAllFileTypes: true } : {}),
     ...(params.optimizeImages !== undefined ? { optimizeImages: params.optimizeImages } : {}),
     ...(workspaceDir ? { workspaceDir } : {}),
   };
