@@ -7,10 +7,18 @@ import {
   resolveTimezone,
 } from "../../infra/format-time/format-datetime.ts";
 import { drainSystemEventEntries } from "../../infra/system-events.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
 } from "../../shared/string-coerce.js";
+
+const log = createSubsystemLogger("system-events/drain");
+
+function previewSystemEventText(value: string, maxChars = 140): string {
+  const singleLine = value.replace(/\s+/g, " ").trim();
+  return singleLine.length > maxChars ? `${singleLine.slice(0, maxChars - 1)}…` : singleLine;
+}
 
 /** Drain queued system events, format as `System:` lines, return the block (or undefined). */
 export async function drainFormattedSystemEvents(params: {
@@ -84,12 +92,14 @@ export async function drainFormattedSystemEvents(params: {
 
   const systemLines: string[] = [];
   const queued = drainSystemEventEntries(params.sessionKey);
+  const compactedCountByEvent = new Map<number, number>();
   systemLines.push(
     ...queued.flatMap((event) => {
       const compacted = compactSystemEvent(event.text);
       if (!compacted) {
         return [];
       }
+      compactedCountByEvent.set(event.ts, compacted.split("\n").length);
       const prefix = event.trusted === false ? "System (untrusted)" : "System";
       const timestamp = `[${formatSystemEventTimestamp(event.ts, params.cfg)}]`;
       return compacted
@@ -97,6 +107,21 @@ export async function drainFormattedSystemEvents(params: {
         .map((subline, index) => `${prefix}: ${index === 0 ? `${timestamp} ` : ""}${subline}`);
     }),
   );
+  if (queued.length > 0) {
+    log.info("hook trace: drained system events for prompt injection", {
+      sessionKey: params.sessionKey,
+      isMainSession: params.isMainSession,
+      isNewSession: params.isNewSession,
+      drainedEvents: queued.length,
+      renderedLines: systemLines.length,
+      drainedEventPreviews: queued.map((event) => ({
+        trusted: event.trusted !== false,
+        contextKey: event.contextKey ?? undefined,
+        renderedLines: compactedCountByEvent.get(event.ts) ?? 0,
+        textPreview: previewSystemEventText(event.text),
+      })),
+    });
+  }
   if (params.isMainSession && params.isNewSession) {
     const summary = await buildChannelSummary(params.cfg);
     if (summary.length > 0) {

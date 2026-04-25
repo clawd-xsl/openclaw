@@ -144,6 +144,24 @@ describe("hooks mapping", () => {
     }
   });
 
+  it("passes deleteAfterRun override from mapping", async () => {
+    const result = await applyGmailMappings({
+      mappings: [
+        {
+          id: "persist-hook-session",
+          match: { path: "gmail" },
+          action: "agent",
+          messageTemplate: "Subject: {{messages[0].subject}}",
+          deleteAfterRun: false,
+        },
+      ],
+    });
+    expect(result?.ok).toBe(true);
+    if (result?.ok && result.action?.kind === "agent") {
+      expect(result.action.deleteAfterRun).toBe(false);
+    }
+  });
+
   it("runs transform module", async () => {
     const configDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-config-"));
     const transformsRoot = path.join(configDir, "hooks", "transforms");

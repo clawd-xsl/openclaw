@@ -10,6 +10,8 @@ import {
   normalizeHookDispatchSessionKey,
   resolveHookSessionKey,
   resolveHookTargetAgentId,
+  resolveHookIdempotencyKey,
+  resolvePersistentMappedHookSessionKey,
   normalizeAgentPayload,
   normalizeWakePayload,
   resolveHooksConfig,
@@ -172,6 +174,65 @@ describe("gateway hooks helpers", () => {
     if (noAgent.ok) {
       expect(noAgent.value.agentId).toBeUndefined();
     }
+  });
+
+  test("resolveHookIdempotencyKey infers a stable key from webhook message ids", () => {
+    const first = resolveHookIdempotencyKey({
+      payload: {
+        messages: [{ id: "msg-2" }, { id: "msg-1" }, { id: "msg-2" }],
+      },
+    });
+    const second = resolveHookIdempotencyKey({
+      payload: {
+        messages: [{ id: "msg-1" }, { id: "msg-2" }],
+      },
+    });
+    expect(first).toBeTruthy();
+    expect(second).toBe(first);
+  });
+
+  test("resolveHookIdempotencyKey prefers explicit values over inferred message ids", () => {
+    const resolved = resolveHookIdempotencyKey({
+      headers: { "idempotency-key": "caller-key" },
+      payload: {
+        messages: [{ id: "msg-1" }],
+        idempotencyKey: "payload-key",
+      },
+    });
+    expect(resolved).toBe("caller-key");
+  });
+
+  test("resolvePersistentMappedHookSessionKey derives a stable session key for persistent hooks", () => {
+    const first = resolvePersistentMappedHookSessionKey({
+      path: "gmail",
+      idempotencyKey: "messages:abc123",
+      deleteAfterRun: false,
+    });
+    const second = resolvePersistentMappedHookSessionKey({
+      path: "gmail",
+      idempotencyKey: "messages:abc123",
+      deleteAfterRun: false,
+    });
+    expect(first).toBe("hook:gmail:82b016fd49a94e2d59732a66");
+    expect(second).toBe(first);
+  });
+
+  test("resolvePersistentMappedHookSessionKey preserves explicit sessionKey and ignores non-persistent hooks", () => {
+    expect(
+      resolvePersistentMappedHookSessionKey({
+        path: "gmail",
+        idempotencyKey: "messages:abc123",
+        sessionKey: "hook:gmail:msg-1",
+        deleteAfterRun: false,
+      }),
+    ).toBe("hook:gmail:msg-1");
+    expect(
+      resolvePersistentMappedHookSessionKey({
+        path: "gmail",
+        idempotencyKey: "messages:abc123",
+        deleteAfterRun: true,
+      }),
+    ).toBeUndefined();
   });
 
   test("resolveHookTargetAgentId falls back to default for unknown agent ids", () => {

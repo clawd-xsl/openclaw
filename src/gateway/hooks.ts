@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import { listAgentIds, resolveDefaultAgentId } from "../agents/agent-scope.js";
 import { listChannelPlugins } from "../channels/plugins/index.js";
@@ -216,6 +216,7 @@ export type HookAgentPayload = {
 
 export type HookAgentDispatchPayload = Omit<HookAgentPayload, "sessionKey"> & {
   sessionKey: string;
+  deleteAfterRun?: boolean;
   allowUnsafeExternalContent?: boolean;
   externalContentSource?: HookExternalContentSource;
 };
@@ -256,6 +257,27 @@ function resolveOptionalHookIdempotencyKey(raw: unknown): string | undefined {
   return trimmed;
 }
 
+function resolveHookPayloadMessageIds(payload: Record<string, unknown>): string[] {
+  const messages = Array.isArray(payload.messages) ? payload.messages : [];
+  const ids = messages
+    .map((entry) =>
+      entry && typeof entry === "object"
+        ? resolveOptionalHookIdempotencyKey((entry as Record<string, unknown>).id)
+        : undefined,
+    )
+    .filter((value): value is string => Boolean(value));
+  return Array.from(new Set(ids)).toSorted();
+}
+
+function resolveInferredHookIdempotencyKey(payload: Record<string, unknown>): string | undefined {
+  const messageIds = resolveHookPayloadMessageIds(payload);
+  if (messageIds.length === 0) {
+    return undefined;
+  }
+  const digest = createHash("sha256").update(JSON.stringify(messageIds), "utf8").digest("hex");
+  return `messages:${digest}`;
+}
+
 export function resolveHookIdempotencyKey(params: {
   payload: Record<string, unknown>;
   headers?: Record<string, string>;
@@ -263,8 +285,36 @@ export function resolveHookIdempotencyKey(params: {
   return (
     resolveOptionalHookIdempotencyKey(params.headers?.["idempotency-key"]) ||
     resolveOptionalHookIdempotencyKey(params.headers?.["x-openclaw-idempotency-key"]) ||
-    resolveOptionalHookIdempotencyKey(params.payload.idempotencyKey)
+    resolveOptionalHookIdempotencyKey(params.payload.idempotencyKey) ||
+    resolveInferredHookIdempotencyKey(params.payload)
   );
+}
+
+function normalizeHookSessionScopeSegment(raw: string): string {
+  const normalized = normalizeLowercaseStringOrEmpty(raw).replace(/[^a-z0-9:-]+/g, "-");
+  return normalized.replace(/^-+|-+$/g, "") || "mapping";
+}
+
+export function resolvePersistentMappedHookSessionKey(params: {
+  path: string;
+  idempotencyKey?: string;
+  sessionKey?: string;
+  deleteAfterRun?: boolean;
+}): string | undefined {
+  const explicit = resolveSessionKey(params.sessionKey);
+  if (explicit) {
+    return explicit;
+  }
+  if (params.deleteAfterRun !== false) {
+    return undefined;
+  }
+  const idempotencyKey = resolveOptionalHookIdempotencyKey(params.idempotencyKey);
+  if (!idempotencyKey) {
+    return undefined;
+  }
+  const scope = normalizeHookSessionScopeSegment(params.path);
+  const digest = createHash("sha256").update(idempotencyKey, "utf8").digest("hex").slice(0, 24);
+  return `hook:${scope}:${digest}`;
 }
 
 export function resolveHookTargetAgentId(

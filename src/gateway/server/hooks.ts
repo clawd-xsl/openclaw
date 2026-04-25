@@ -3,8 +3,10 @@ import { sanitizeInboundSystemTags } from "../../auto-reply/reply/inbound-text.j
 import type { CliDeps } from "../../cli/deps.types.js";
 import { loadConfig } from "../../config/config.js";
 import { resolveMainSessionKeyFromConfig } from "../../config/sessions.js";
+import { extractDeliveryInfo } from "../../config/sessions/delivery-info.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { runCronIsolatedAgentTurn } from "../../cron/isolated-agent.js";
+import { assertSafeCronSessionTargetId } from "../../cron/session-target.js";
 import type { CronJob } from "../../cron/types.js";
 import { requestHookAgentTurn } from "../../infra/hook-agent-turn.js";
 import { enqueueSystemEvent } from "../../infra/system-events.js";
@@ -14,6 +16,15 @@ import { type HookAgentDispatchPayload, type HooksConfigResolved } from "../hook
 import { createHooksRequestHandler, type HookClientIpConfig } from "../server-http.js";
 
 type SubsystemLogger = ReturnType<typeof createSubsystemLogger>;
+
+function previewHookTraceText(value: string | undefined, maxChars = 160): string | undefined {
+  const trimmed = normalizeOptionalString(value);
+  if (!trimmed) {
+    return undefined;
+  }
+  const singleLine = trimmed.replace(/\s+/g, " ").trim();
+  return singleLine.length > maxChars ? `${singleLine.slice(0, maxChars - 1)}…` : singleLine;
+}
 
 export function resolveHookClientIpConfig(cfg: OpenClawConfig): HookClientIpConfig {
   return {
@@ -34,8 +45,22 @@ export function createGatewayHooksRequestHandler(params: {
 
   const dispatchWakeHook = (value: { text: string; mode: "now" | "next-heartbeat" }) => {
     const sessionKey = resolveMainSessionKeyFromConfig();
-    enqueueSystemEvent(value.text, { sessionKey, trusted: false });
+    const deliveryContext = extractDeliveryInfo(sessionKey).deliveryContext;
+    const enqueued = enqueueSystemEvent(value.text, {
+      sessionKey,
+      trusted: false,
+      deliveryContext,
+    });
+    logHooks.info("hook trace: wake event queued", {
+      sessionKey,
+      wakeMode: value.mode,
+      enqueued,
+      textPreview: previewHookTraceText(value.text),
+    });
     if (value.mode === "now") {
+      logHooks.info("hook trace: wake requested for direct wake hook", {
+        sessionKey,
+      });
       requestHookAgentTurn({ reason: "hook:wake" });
     }
   };
@@ -43,9 +68,14 @@ export function createGatewayHooksRequestHandler(params: {
   const dispatchAgentHook = (value: HookAgentDispatchPayload) => {
     const sessionKey = value.sessionKey;
     const mainSessionKey = resolveMainSessionKeyFromConfig();
+    const mainDeliveryContext = extractDeliveryInfo(mainSessionKey).deliveryContext;
     const safeName = sanitizeInboundSystemTags(value.name);
     const jobId = randomUUID();
     const now = Date.now();
+    const persistentSessionTarget =
+      value.deleteAfterRun === false
+        ? (`session:${assertSafeCronSessionTargetId(sessionKey)}` as const)
+        : "isolated";
     const delivery = value.deliver
       ? {
           mode: "announce" as const,
@@ -61,8 +91,8 @@ export function createGatewayHooksRequestHandler(params: {
       createdAtMs: now,
       updatedAtMs: now,
       schedule: { kind: "at", at: new Date(now).toISOString() },
-      deleteAfterRun: true,
-      sessionTarget: "isolated",
+      deleteAfterRun: value.deleteAfterRun ?? true,
+      sessionTarget: persistentSessionTarget,
       wakeMode: value.wakeMode,
       payload: {
         kind: "agentTurn",
@@ -79,6 +109,20 @@ export function createGatewayHooksRequestHandler(params: {
 
     const runId = randomUUID();
     void (async () => {
+      logHooks.info("hook trace: agent dispatch start", {
+        jobId,
+        runId,
+        hookName: safeName,
+        hookSessionKey: sessionKey,
+        mainSessionKey,
+        wakeMode: value.wakeMode,
+        deliver: value.deliver,
+        deleteAfterRun: value.deleteAfterRun ?? true,
+        deliveryMode: delivery.mode,
+        deliveryChannel: value.channel,
+        deliveryTo: value.to,
+        messagePreview: previewHookTraceText(value.message),
+      });
       try {
         const cfg = loadConfig();
         const result = await runCronIsolatedAgentTurn({
@@ -96,22 +140,75 @@ export function createGatewayHooksRequestHandler(params: {
           result.status;
         const prefix =
           result.status === "ok" ? `Hook ${safeName}` : `Hook ${safeName} (${result.status})`;
+        logHooks.info("hook trace: isolated run finished", {
+          jobId,
+          runId,
+          hookName: safeName,
+          status: result.status,
+          delivered: result.delivered ?? false,
+          deliveryAttempted: result.deliveryAttempted ?? false,
+          isolatedSessionId: result.sessionId,
+          isolatedSessionKey: result.sessionKey,
+          summaryPreview: previewHookTraceText(summary),
+          errorPreview: previewHookTraceText(result.error),
+        });
         if (!result.delivered) {
-          enqueueSystemEvent(`${prefix}: ${summary}`.trim(), {
+          const fallbackText = `${prefix}: ${summary}`.trim();
+          const enqueued = enqueueSystemEvent(fallbackText, {
             sessionKey: mainSessionKey,
             trusted: false,
+            deliveryContext: mainDeliveryContext,
+          });
+          logHooks.info("hook trace: fallback system event queued", {
+            jobId,
+            runId,
+            hookName: safeName,
+            mainSessionKey,
+            enqueued,
+            wakeMode: value.wakeMode,
+            eventPreview: previewHookTraceText(fallbackText),
           });
           if (value.wakeMode === "now") {
+            logHooks.info("hook trace: wake requested for fallback system event", {
+              jobId,
+              runId,
+              hookName: safeName,
+              mainSessionKey,
+            });
             requestHookAgentTurn({ reason: `hook:${jobId}` });
           }
+        } else {
+          logHooks.info("hook trace: isolated run handled delivery directly", {
+            jobId,
+            runId,
+            hookName: safeName,
+          });
         }
       } catch (err) {
-        logHooks.warn(`hook agent failed: ${String(err)}`);
-        enqueueSystemEvent(`Hook ${safeName} (error): ${String(err)}`, {
+        const errorText = String(err);
+        logHooks.warn(`hook agent failed: ${errorText}`);
+        const fallbackText = `Hook ${safeName} (error): ${errorText}`;
+        const enqueued = enqueueSystemEvent(fallbackText, {
           sessionKey: mainSessionKey,
           trusted: false,
+          deliveryContext: mainDeliveryContext,
+        });
+        logHooks.info("hook trace: error fallback system event queued", {
+          jobId,
+          runId,
+          hookName: safeName,
+          mainSessionKey,
+          enqueued,
+          wakeMode: value.wakeMode,
+          eventPreview: previewHookTraceText(fallbackText),
         });
         if (value.wakeMode === "now") {
+          logHooks.info("hook trace: wake requested for hook error", {
+            jobId,
+            runId,
+            hookName: safeName,
+            mainSessionKey,
+          });
           requestHookAgentTurn({ reason: `hook:${jobId}:error` });
         }
       }

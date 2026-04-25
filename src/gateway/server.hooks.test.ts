@@ -295,6 +295,82 @@ describe("gateway server hooks", () => {
     });
   });
 
+  test("dedupes repeated mapped gmail deliveries by inferred message ids", async () => {
+    testState.hooksConfig = {
+      enabled: true,
+      token: HOOK_TOKEN,
+      mappings: [
+        {
+          match: { path: "gmail" },
+          action: "agent",
+          messageTemplate: "New email from {{messages[0].from}}",
+        },
+      ],
+    };
+
+    await withGatewayServer(async ({ port }) => {
+      mockIsolatedRunOk();
+      const payload = {
+        source: "gmail",
+        messages: [{ id: "msg-1", from: "Ada", subject: "Hello", snippet: "Hi", body: "Body" }],
+      };
+      const first = await postHook(port, "/hooks/gmail", payload);
+      expect(first.status).toBe(200);
+      const firstBody = (await first.json()) as { runId?: string };
+      expect(firstBody.runId).toBeTruthy();
+      await waitForSystemEvent();
+      drainSystemEvents(resolveMainKey());
+      expect(cronIsolatedRun).toHaveBeenCalledTimes(1);
+
+      const second = await postHook(port, "/hooks/gmail", {
+        source: "gmail",
+        messages: [{ id: "msg-1", from: "Ada", subject: "Hello", snippet: "Hi", body: "Body" }],
+      });
+      expect(second.status).toBe(200);
+      const secondBody = (await second.json()) as { runId?: string };
+      expect(secondBody.runId).toBe(firstBody.runId);
+      expect(cronIsolatedRun).toHaveBeenCalledTimes(1);
+      expect(peekSystemEvents(resolveMainKey())).toHaveLength(0);
+    });
+  });
+
+  test("respects mapped hook deleteAfterRun override", async () => {
+    testState.hooksConfig = {
+      enabled: true,
+      token: HOOK_TOKEN,
+      mappings: [
+        {
+          match: { path: "outlook" },
+          action: "agent",
+          messageTemplate: "New email from {{payload.from}}",
+          deleteAfterRun: false,
+        },
+      ],
+    };
+
+    await withGatewayServer(async ({ port }) => {
+      mockIsolatedRunOkOnce();
+      const response = await postHook(
+        port,
+        "/hooks/outlook",
+        {
+          from: "Ada",
+        },
+        { headers: { "Idempotency-Key": "outlook-msg-1" } },
+      );
+      expect(response.status).toBe(200);
+      await waitForSystemEvent();
+
+      const call = (cronIsolatedRun.mock.calls[0] as unknown[] | undefined)?.[0] as
+        | { sessionKey?: string; job?: { deleteAfterRun?: boolean; sessionTarget?: string } }
+        | undefined;
+      expect(call?.job?.deleteAfterRun).toBe(false);
+      expect(call?.job?.sessionTarget).toBe("session:hook:outlook:69de0c74c40cb323717c782e");
+      expect(call?.sessionKey).toBe("hook:outlook:69de0c74c40cb323717c782e");
+      drainSystemEvents(resolveMainKey());
+    });
+  });
+
   test("queues direct and mapped wake payloads as untrusted system events", async () => {
     testState.hooksConfig = {
       enabled: true,

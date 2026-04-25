@@ -50,6 +50,7 @@ import {
   resolveHookTargetAgentId,
   resolveHookChannel,
   resolveHookDeliver,
+  resolvePersistentMappedHookSessionKey,
 } from "./hooks.js";
 import { sendGatewayAuthFailure, setDefaultSecurityHeaders } from "./http-common.js";
 import {
@@ -739,10 +740,16 @@ export function createHooksRequestHandler(
             sendJson(res, 400, { ok: false, error: getHookAgentPolicyError() });
             return true;
           }
+          const mappedSessionKey = resolvePersistentMappedHookSessionKey({
+            path: subPath || "mapping",
+            idempotencyKey,
+            sessionKey: mapped.action.sessionKey,
+            deleteAfterRun: mapped.action.deleteAfterRun,
+          });
           const sessionKey = resolveHookSessionKey({
             hooksConfig,
             source: "mapping",
-            sessionKey: mapped.action.sessionKey,
+            sessionKey: mappedSessionKey,
           });
           if (!sessionKey.ok) {
             sendJson(res, 400, { ok: false, error: sessionKey.error });
@@ -767,12 +774,12 @@ export function createHooksRequestHandler(
             idempotencyKey,
             dispatchScope: {
               agentId: targetAgentId ?? null,
-              sessionKey:
-                mapped.action.sessionKey ?? hooksConfig.sessionPolicy.defaultSessionKey ?? null,
+              sessionKey: mappedSessionKey ?? hooksConfig.sessionPolicy.defaultSessionKey ?? null,
               message: mapped.action.message,
               name: mapped.action.name ?? "Hook",
               wakeMode: mapped.action.wakeMode,
               deliver: resolveHookDeliver(mapped.action.deliver),
+              deleteAfterRun: mapped.action.deleteAfterRun ?? null,
               channel,
               to: mapped.action.to ?? null,
               model: mapped.action.model ?? null,
@@ -798,6 +805,7 @@ export function createHooksRequestHandler(
             model: mapped.action.model,
             thinking: mapped.action.thinking,
             timeoutSeconds: mapped.action.timeoutSeconds,
+            deleteAfterRun: mapped.action.deleteAfterRun,
             allowUnsafeExternalContent: mapped.action.allowUnsafeExternalContent,
             externalContentSource: resolveMappedHookExternalContentSource({
               subPath,
