@@ -281,6 +281,67 @@ describe("openai codex provider", () => {
     expect(model).not.toHaveProperty("contextTokens");
   });
 
+  it("keeps Codex runtime context metadata for gpt-5.5", () => {
+    const provider = buildOpenAICodexProviderPlugin();
+
+    const model = provider.resolveDynamicModel?.({
+      provider: "openai-codex",
+      modelId: "gpt-5.5",
+      modelRegistry: {
+        find: (providerId: string, modelId: string) => {
+          if (providerId === "openai-codex" && modelId === "gpt-5.5") {
+            return {
+              id: "gpt-5.5",
+              name: "gpt-5.5",
+              provider: "openai-codex",
+              api: "openai-codex-responses",
+              baseUrl: "https://chatgpt.com/backend-api",
+              reasoning: true,
+              input: ["text", "image"] as const,
+              cost: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 },
+              contextWindow: 272_000,
+              maxTokens: 128_000,
+            };
+          }
+          return undefined;
+        },
+      } as never,
+    });
+
+    expect(model).toMatchObject({
+      id: "gpt-5.5",
+      api: "openai-codex-responses",
+      baseUrl: "https://chatgpt.com/backend-api",
+      contextWindow: 400_000,
+      contextTokens: 272_000,
+      maxTokens: 128_000,
+      cost: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 },
+    });
+  });
+
+  it("synthesizes gpt-5.5 when the Codex catalog omits the OAuth row", () => {
+    const provider = buildOpenAICodexProviderPlugin();
+
+    const model = provider.resolveDynamicModel?.({
+      provider: "openai-codex",
+      modelId: "gpt-5.5",
+      modelRegistry: {
+        find: () => undefined,
+      } as never,
+    });
+
+    expect(model).toMatchObject({
+      id: "gpt-5.5",
+      api: "openai-codex-responses",
+      baseUrl: "https://chatgpt.com/backend-api",
+      reasoning: true,
+      input: ["text", "image"],
+      contextWindow: 400_000,
+      contextTokens: 272_000,
+      maxTokens: 128_000,
+    });
+  });
+
   it("augments catalog with gpt-5.4 native contextWindow and runtime cap", () => {
     const provider = buildOpenAICodexProviderPlugin();
 
@@ -298,6 +359,13 @@ describe("openai codex provider", () => {
       ],
     } as never);
 
+    expect(entries).toContainEqual(
+      expect.objectContaining({
+        id: "gpt-5.5",
+        contextWindow: 400_000,
+        contextTokens: 272_000,
+      }),
+    );
     expect(entries).toContainEqual(
       expect.objectContaining({
         id: "gpt-5.4",
