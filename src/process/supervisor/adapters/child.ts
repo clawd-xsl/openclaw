@@ -17,6 +17,17 @@ function resolveCommand(command: string): string {
 
 export type ChildAdapter = SpawnProcessAdapter<NodeJS.Signals | null>;
 
+function createStdinUnavailableError(): Error {
+  return new Error("Child process stdin is unavailable");
+}
+
+function normalizeStdinWriteError(error: unknown): Error {
+  if (error instanceof Error) {
+    return error;
+  }
+  return createStdinUnavailableError();
+}
+
 function isServiceManagedRuntime(): boolean {
   return Boolean(process.env.OPENCLAW_SERVICE_MARKER?.trim());
 }
@@ -67,6 +78,27 @@ export async function createChildAdapter(params: {
   });
 
   const child = spawned.child as ChildProcessWithoutNullStreams;
+  let stdinClosed = child.stdin == null;
+  const markStdinClosed = () => {
+    stdinClosed = true;
+  };
+  const isStdinUnavailable = () =>
+    stdinClosed ||
+    child.stdin == null ||
+    child.stdin.destroyed ||
+    child.stdin.writableEnded ||
+    child.stdin.writableFinished ||
+    child.stdin.writableAborted;
+  child.stdin?.on("error", () => {
+    // A child may exit between cancellation and the next turn write. Keep the
+    // pipe error from becoming a process-level uncaught exception and let the
+    // caller observe the failure through the write callback instead.
+    markStdinClosed();
+  });
+  child.stdin?.once("close", markStdinClosed);
+  child.stdin?.once("finish", markStdinClosed);
+  child.once("exit", markStdinClosed);
+  child.once("close", markStdinClosed);
   if (child.stdin) {
     if (params.input !== undefined) {
       child.stdin.write(params.input);
@@ -78,15 +110,51 @@ export async function createChildAdapter(params: {
 
   const stdin: ManagedRunStdin | undefined = child.stdin
     ? {
-        destroyed: false,
+        get destroyed() {
+          return isStdinUnavailable();
+        },
         write: (data: string, cb?: (err?: Error | null) => void) => {
+          if (isStdinUnavailable()) {
+            cb?.(createStdinUnavailableError());
+            return;
+          }
+          let settled = false;
+          const settle = (error?: Error | null) => {
+            if (settled) {
+              return;
+            }
+            settled = true;
+            child.stdin?.off("error", handleError);
+            child.stdin?.off("close", handleClose);
+            child.stdin?.off("finish", handleClose);
+            child.off("exit", handleClose);
+            child.off("close", handleClose);
+            if (error) {
+              markStdinClosed();
+            }
+            cb?.(error ?? null);
+          };
+          const handleError = (error: Error) => {
+            settle(normalizeStdinWriteError(error));
+          };
+          const handleClose = () => {
+            settle(createStdinUnavailableError());
+          };
+          child.stdin.on("error", handleError);
+          child.stdin.once("close", handleClose);
+          child.stdin.once("finish", handleClose);
+          child.once("exit", handleClose);
+          child.once("close", handleClose);
           try {
-            child.stdin.write(data, cb);
+            child.stdin.write(data, (error) => {
+              settle(error ? normalizeStdinWriteError(error) : null);
+            });
           } catch (err) {
-            cb?.(err as Error);
+            settle(normalizeStdinWriteError(err));
           }
         },
         end: () => {
+          markStdinClosed();
           try {
             child.stdin.end();
           } catch {
@@ -94,6 +162,7 @@ export async function createChildAdapter(params: {
           }
         },
         destroy: () => {
+          markStdinClosed();
           try {
             child.stdin.destroy();
           } catch {

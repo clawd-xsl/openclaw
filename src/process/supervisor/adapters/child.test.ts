@@ -239,4 +239,96 @@ describe("createChildAdapter", () => {
     };
     expect(spawnArgs.options?.env).toEqual({ FOO: "bar", COUNT: "12" });
   });
+
+  it("tracks child stdin closure through the exposed destroyed flag", async () => {
+    const stub = createStubChild(5555);
+    spawnWithFallbackMock.mockResolvedValue({
+      child: stub.child,
+      usedFallback: false,
+    });
+    const adapter = await createChildAdapter({
+      argv: ["node", "-e", "setTimeout(() => {}, 1000)"],
+      stdinMode: "pipe-open",
+    });
+
+    expect(adapter.stdin?.destroyed).toBe(false);
+
+    stub.child.stdin?.end();
+
+    expect(adapter.stdin?.destroyed).toBe(true);
+  });
+
+  it("surfaces async stdin EPIPE through the write callback without crashing", async () => {
+    const child = new EventEmitter() as ChildProcess;
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const stdin = new EventEmitter() as ChildProcess["stdin"] & EventEmitter;
+    let stdinDestroyed = false;
+    let stdinEnded = false;
+    Object.defineProperty(stdin, "destroyed", {
+      configurable: true,
+      get: () => stdinDestroyed,
+    });
+    Object.defineProperty(stdin, "writableEnded", {
+      configurable: true,
+      get: () => stdinEnded,
+    });
+    Object.defineProperty(stdin, "writableFinished", {
+      configurable: true,
+      get: () => stdinEnded,
+    });
+    Object.defineProperty(stdin, "writableAborted", {
+      configurable: true,
+      get: () => stdinDestroyed,
+    });
+    stdin.write = vi.fn((_data: string, cb?: (err?: Error | null) => void) => {
+      queueMicrotask(() => {
+        const err = new Error("write EPIPE") as NodeJS.ErrnoException;
+        err.code = "EPIPE";
+        stdin.emit("error", err);
+        cb?.(err);
+      });
+      return true;
+    }) as typeof stdin.write;
+    stdin.end = vi.fn(() => {
+      stdinEnded = true;
+      stdin.emit("finish");
+      stdin.emit("close");
+      return stdin;
+    }) as typeof stdin.end;
+    stdin.destroy = vi.fn(() => {
+      stdinDestroyed = true;
+      stdin.emit("close");
+      return stdin;
+    }) as typeof stdin.destroy;
+
+    child.stdin = stdin;
+    child.stdout = stdout as ChildProcess["stdout"];
+    child.stderr = stderr as ChildProcess["stderr"];
+    Object.defineProperty(child, "pid", { value: 6666, configurable: true });
+    Object.defineProperty(child, "killed", { value: false, configurable: true, writable: true });
+    Object.defineProperty(child, "exitCode", { value: null, configurable: true, writable: true });
+    Object.defineProperty(child, "signalCode", { value: null, configurable: true, writable: true });
+    child.kill = vi.fn(() => true) as ChildProcess["kill"];
+
+    spawnWithFallbackMock.mockResolvedValue({
+      child,
+      usedFallback: false,
+    });
+    const adapter = await createChildAdapter({
+      argv: ["node", "-e", "setTimeout(() => {}, 1000)"],
+      stdinMode: "pipe-open",
+    });
+
+    const callback = vi.fn();
+    adapter.stdin?.write("hello", callback);
+    await new Promise((resolve) => {
+      setImmediate(resolve);
+    });
+
+    expect(callback).toHaveBeenCalledTimes(1);
+    const error = callback.mock.calls[0]?.[0] as NodeJS.ErrnoException | undefined;
+    expect(error?.code).toBe("EPIPE");
+    expect(adapter.stdin?.destroyed).toBe(true);
+  });
 });
