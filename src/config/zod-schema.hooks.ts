@@ -48,6 +48,7 @@ export const HookMappingSchema = z
     messageTemplate: z.string().optional(),
     textTemplate: z.string().optional(),
     deliver: z.boolean().optional(),
+    deleteAfterRun: z.boolean().optional(),
     allowUnsafeExternalContent: z.boolean().optional(),
     // Keep this open-ended so runtime channel plugins (for example feishu) can be
     // referenced without hard-coding every channel id in the config schema.

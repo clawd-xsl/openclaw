@@ -20,6 +20,8 @@ export type HookMappingConfig = {
   messageTemplate?: string;
   textTemplate?: string;
   deliver?: boolean;
+  /** Keep the isolated hook session after the run instead of auto-cleaning it. */
+  deleteAfterRun?: boolean;
   /** DANGEROUS: Disable external content safety wrapping for this hook. */
   allowUnsafeExternalContent?: boolean;
   /**

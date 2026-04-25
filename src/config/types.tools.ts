@@ -299,6 +299,11 @@ export type FsToolsConfig = {
    * Default: false (unrestricted, matches legacy behavior).
    */
   workspaceOnly?: boolean;
+  /**
+   * Allow host-local outbound attachment sends for any file type when the agent is already
+   * permitted to read the file. Default: false (only media, PDF, and Office docs).
+   */
+  allowAllHostSendFileTypes?: boolean;
 };
 
 export type AgentToolsConfig = {

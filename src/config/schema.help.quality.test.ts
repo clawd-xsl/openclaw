@@ -462,6 +462,7 @@ const TOOLS_HOOKS_TARGET_KEYS = [
   "hooks.internal.installs",
   "hooks.internal.load",
   "hooks.mappings[].allowUnsafeExternalContent",
+  "hooks.mappings[].deleteAfterRun",
   "hooks.mappings[].deliver",
   "hooks.mappings[].id",
   "hooks.mappings[].match",

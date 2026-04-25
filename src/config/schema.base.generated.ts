@@ -3402,6 +3402,18 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
                         type: "string",
                       },
                     },
+                    executionMode: {
+                      anyOf: [
+                        {
+                          type: "string",
+                          const: "spawn-per-turn",
+                        },
+                        {
+                          type: "string",
+                          const: "persistent-process",
+                        },
+                      ],
+                    },
                     output: {
                       anyOf: [
                         {
@@ -7070,6 +7082,9 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
                       type: "object",
                       properties: {
                         workspaceOnly: {
+                          type: "boolean",
+                        },
+                        allowAllHostSendFileTypes: {
                           type: "boolean",
                         },
                       },
@@ -17328,6 +17343,12 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
                 description:
                   "Restrict filesystem tools (read/write/edit/apply_patch) to the workspace directory (default: false).",
               },
+              allowAllHostSendFileTypes: {
+                type: "boolean",
+                title: "Allow All Host Attachment File Types",
+                description:
+                  "Allow host-local outbound attachment sends for any file type when the agent is already allowed to read the file (default: false).",
+              },
             },
             additionalProperties: false,
           },
@@ -19933,6 +19954,12 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
                   description:
                     "Controls whether mapping execution results are delivered back to a channel destination versus being processed silently. Disable delivery for background automations that should not post user-facing output.",
                 },
+                deleteAfterRun: {
+                  type: "boolean",
+                  title: "Hook Mapping Delete After Run",
+                  description:
+                    "Controls whether the isolated hook session is deleted after the run completes. Set false when you need to inspect hook transcripts or preserve per-hook context across repeated runs.",
+                },
                 allowUnsafeExternalContent: {
                   type: "boolean",
                   title: "Hook Mapping Allow Unsafe External Content",
@@ -21022,6 +21049,30 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
             title: "Gateway Tool Exposure Policy",
             description:
               "Gateway-level tool exposure allow/deny policy that can restrict runtime tool availability independent of agent/tool profiles. Use this for coarse emergency controls and production hardening.",
+          },
+          cliMcp: {
+            type: "object",
+            properties: {
+              toolSurface: {
+                anyOf: [
+                  {
+                    type: "string",
+                    const: "filtered",
+                  },
+                  {
+                    type: "string",
+                    const: "full",
+                  },
+                ],
+                title: "Gateway CLI MCP Tool Surface",
+                description:
+                  'Controls which OpenClaw tool surface is exposed through the CLI loopback MCP bridge: "filtered" keeps the current gateway-tool subset and excludes local coding tools, while "full" exposes the full OpenClaw coding toolset.',
+              },
+            },
+            additionalProperties: false,
+            title: "Gateway CLI MCP",
+            description:
+              "Loopback MCP bridge settings for CLI backends that opt into bundleMcp. Use this to choose whether CLI backends see the current filtered gateway-tool subset or the full OpenClaw coding tool surface.",
           },
           webchat: {
             type: "object",
@@ -23257,6 +23308,16 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
       help: "Explicit gateway-level tool denylist to block risky tools even if lower-level policies allow them. Use deny rules for emergency response and defense-in-depth hardening.",
       tags: ["access", "network"],
     },
+    "gateway.cliMcp": {
+      label: "Gateway CLI MCP",
+      help: "Loopback MCP bridge settings for CLI backends that opt into bundleMcp. Use this to choose whether CLI backends see the current filtered gateway-tool subset or the full OpenClaw coding tool surface.",
+      tags: ["network"],
+    },
+    "gateway.cliMcp.toolSurface": {
+      label: "Gateway CLI MCP Tool Surface",
+      help: 'Controls which OpenClaw tool surface is exposed through the CLI loopback MCP bridge: "filtered" keeps the current gateway-tool subset and excludes local coding tools, while "full" exposes the full OpenClaw coding toolset.',
+      tags: ["network"],
+    },
     "gateway.channelHealthCheckMinutes": {
       label: "Gateway Channel Health Check Interval (min)",
       help: "Interval in minutes for automatic channel health probing and status updates. Use lower intervals for faster detection, or higher intervals to reduce periodic probe noise.",
@@ -23835,6 +23896,11 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
       label: "Workspace-only FS tools",
       help: "Restrict filesystem tools (read/write/edit/apply_patch) to the workspace directory (default: false).",
       tags: ["tools"],
+    },
+    "tools.fs.allowAllHostSendFileTypes": {
+      label: "Allow All Host Attachment File Types",
+      help: "Allow host-local outbound attachment sends for any file type when the agent is already allowed to read the file (default: false).",
+      tags: ["security", "access", "tools", "advanced"],
     },
     "tools.sessions.visibility": {
       label: "Session Tools Visibility",
@@ -26247,6 +26313,11 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
     "hooks.mappings[].deliver": {
       label: "Hook Mapping Deliver Reply",
       help: "Controls whether mapping execution results are delivered back to a channel destination versus being processed silently. Disable delivery for background automations that should not post user-facing output.",
+      tags: ["advanced"],
+    },
+    "hooks.mappings[].deleteAfterRun": {
+      label: "Hook Mapping Delete After Run",
+      help: "Controls whether the isolated hook session is deleted after the run completes. Set false when you need to inspect hook transcripts or preserve per-hook context across repeated runs.",
       tags: ["advanced"],
     },
     "hooks.mappings[].allowUnsafeExternalContent": {
