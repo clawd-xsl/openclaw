@@ -1,5 +1,3 @@
-import fs from "node:fs/promises";
-import { SessionManager } from "@mariozechner/pi-coding-agent";
 import { normalizeReplyPayload } from "../../auto-reply/reply/normalize-reply.js";
 import type { ThinkLevel, VerboseLevel } from "../../auto-reply/thinking.js";
 import { resolveSessionTranscriptFile } from "../../config/sessions/transcript.js";
@@ -7,7 +5,6 @@ import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { emitAgentEvent } from "../../infra/agent-events.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
-import { emitSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
 import { sanitizeForLog } from "../../terminal/ansi.js";
 import { resolveMessageChannel } from "../../utils/message-channel.js";
 import { resolveBootstrapWarningSignaturesSeen } from "../bootstrap-budget.js";
@@ -15,8 +12,8 @@ import { runCliAgent } from "../cli-runner.js";
 import { clearCliSession, getCliSessionBinding, setCliSessionBinding } from "../cli-session.js";
 import { FailoverError } from "../failover-error.js";
 import { isCliProvider } from "../model-selection.js";
-import { prepareSessionManagerForRun } from "../pi-embedded-runner/session-manager-init.js";
 import { runEmbeddedPiAgent } from "../pi-embedded.js";
+import { persistSessionTurnTranscript } from "../session-transcript-persistence.js";
 import { buildWorkspaceSkillSnapshot } from "../skills.js";
 import { resolveFallbackRetryPrompt } from "./attempt-execution.helpers.js";
 import { persistSessionEntry } from "./attempt-execution.shared.js";
@@ -73,41 +70,17 @@ export async function persistAcpTurnTranscript(params: {
     agentId: params.sessionAgentId,
     threadId: params.threadId,
   });
-  const hadSessionFile = await fs
-    .access(sessionFile)
-    .then(() => true)
-    .catch(() => false);
-  const sessionManager = SessionManager.open(sessionFile);
-  await prepareSessionManagerForRun({
-    sessionManager,
-    sessionFile,
-    hadSessionFile,
+  await persistSessionTurnTranscript({
+    promptText,
+    replyText,
     sessionId: params.sessionId,
-    cwd: params.sessionCwd,
+    sessionFile,
+    sessionCwd: params.sessionCwd,
+    api: "openai-responses",
+    provider: "openclaw",
+    model: "acp-runtime",
+    usage: ACP_TRANSCRIPT_USAGE,
   });
-
-  if (promptText) {
-    sessionManager.appendMessage({
-      role: "user",
-      content: promptText,
-      timestamp: Date.now(),
-    });
-  }
-
-  if (replyText) {
-    sessionManager.appendMessage({
-      role: "assistant",
-      content: [{ type: "text", text: replyText }],
-      api: "openai-responses",
-      provider: "openclaw",
-      model: "acp-runtime",
-      usage: ACP_TRANSCRIPT_USAGE,
-      stopReason: "stop",
-      timestamp: Date.now(),
-    });
-  }
-
-  emitSessionTranscriptUpdate(sessionFile);
   return sessionEntry;
 }
 

@@ -1,7 +1,9 @@
+import { persistSessionTurnTranscript } from "../../agents/session-transcript-persistence.js";
 import type { SkillSnapshot } from "../../agents/skills.js";
 import type { ThinkLevel, VerboseLevel } from "../../auto-reply/thinking.js";
 import type { AgentDefaultsConfig } from "../../config/types.agent-defaults.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { normalizeOptionalString } from "../../shared/string-coerce.js";
 import type { CronJob } from "../types.js";
 import { resolveCronPayloadOutcome } from "./helpers.js";
 import {
@@ -32,6 +34,22 @@ type CronSubagentRegistryRuntime = typeof import("./run-subagent-registry.runtim
 
 let cronEmbeddedRuntimePromise: Promise<CronEmbeddedRuntime> | undefined;
 let cronSubagentRegistryRuntimePromise: Promise<CronSubagentRegistryRuntime> | undefined;
+
+function resolveTranscriptReplyText(result: CronPromptRunResult): string | undefined {
+  const finalText =
+    normalizeOptionalString(result.meta?.finalAssistantRawText) ??
+    normalizeOptionalString(result.meta?.finalAssistantVisibleText);
+  if (finalText) {
+    return finalText;
+  }
+  for (let index = (result.payloads?.length ?? 0) - 1; index >= 0; index -= 1) {
+    const text = normalizeOptionalString(result.payloads?.[index]?.text);
+    if (text) {
+      return text;
+    }
+  }
+  return undefined;
+}
 
 async function loadCronEmbeddedRuntime() {
   cronEmbeddedRuntimePromise ??= import("./run-embedded.runtime.js");
@@ -133,6 +151,27 @@ export function createCronPromptExecutor(params: {
             bootstrapPromptWarningSignaturesSeen,
             bootstrapPromptWarningSignature,
             senderIsOwner: true,
+          });
+          await persistSessionTurnTranscript({
+            promptText,
+            replyText: resolveTranscriptReplyText(result),
+            errorMessage: result.meta?.error?.message,
+            sessionId: params.cronSession.sessionEntry.sessionId,
+            sessionFile,
+            sessionCwd: params.workspaceDir,
+            api: "openclaw-cli",
+            provider: providerOverride,
+            model: modelOverride,
+            usage: result.meta?.agentMeta?.usage
+              ? {
+                  input: result.meta.agentMeta.usage.input,
+                  output: result.meta.agentMeta.usage.output,
+                  cacheRead: result.meta.agentMeta.usage.cacheRead,
+                  cacheWrite: result.meta.agentMeta.usage.cacheWrite,
+                  totalTokens: result.meta.agentMeta.usage.total,
+                }
+              : undefined,
+            stopReason: result.meta?.stopReason,
           });
           bootstrapPromptWarningSignaturesSeen = resolveBootstrapWarningSignaturesSeen(
             result.meta?.systemPromptReport,
