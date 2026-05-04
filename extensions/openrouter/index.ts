@@ -1,5 +1,7 @@
+import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import {
   definePluginEntry,
+  type ProviderSanitizeReplayHistoryContext,
   type ProviderResolveDynamicModelContext,
   type ProviderRuntimeModel,
 } from "openclaw/plugin-sdk/plugin-entry";
@@ -27,6 +29,32 @@ const OPENROUTER_CACHE_TTL_MODEL_PREFIXES = [
   "moonshotai/",
   "zai/",
 ] as const;
+
+function isOpenClawReplayMirrorAssistant(message: AgentMessage): boolean {
+  if (message.role !== "assistant") {
+    return false;
+  }
+  const provider = (message as { provider?: unknown }).provider;
+  const model = (message as { model?: unknown }).model;
+  return provider === "openclaw" && (model === "delivery-mirror" || model === "gateway-injected");
+}
+
+function sanitizeOpenRouterReplayHistory(
+  ctx: ProviderSanitizeReplayHistoryContext,
+): AgentMessage[] | undefined {
+  if (!ctx.modelId.startsWith("deepseek/")) {
+    return undefined;
+  }
+  let changed = false;
+  const filtered = ctx.messages.filter((message) => {
+    if (isOpenClawReplayMirrorAssistant(message)) {
+      changed = true;
+      return false;
+    }
+    return true;
+  });
+  return changed ? filtered : ctx.messages;
+}
 
 export default definePluginEntry({
   id: "openrouter",
@@ -106,6 +134,7 @@ export default definePluginEntry({
         await loadOpenRouterModelCapabilities(ctx.modelId);
       },
       ...PASSTHROUGH_GEMINI_REPLAY_HOOKS,
+      sanitizeReplayHistory: (ctx) => sanitizeOpenRouterReplayHistory(ctx),
       resolveReasoningOutputMode: () => "native",
       isModernModelRef: () => true,
       wrapStreamFn: wrapOpenRouterProviderStream,

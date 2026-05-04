@@ -1,9 +1,33 @@
+import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import { readConfiguredProviderCatalogEntries } from "openclaw/plugin-sdk/provider-catalog-shared";
 import { defineSingleProviderPluginEntry } from "openclaw/plugin-sdk/provider-entry";
+import { buildProviderReplayFamilyHooks } from "openclaw/plugin-sdk/provider-model-shared";
 import { applyDeepSeekConfig, DEEPSEEK_DEFAULT_MODEL_REF } from "./onboard.js";
 import { buildDeepSeekProvider } from "./provider-catalog.js";
+import { createDeepSeekV4ThinkingWrapper } from "./stream.js";
 
 const PROVIDER_ID = "deepseek";
+
+function isOpenClawReplayMirrorAssistant(message: AgentMessage): boolean {
+  if (message.role !== "assistant") {
+    return false;
+  }
+  const provider = (message as { provider?: unknown }).provider;
+  const model = (message as { model?: unknown }).model;
+  return provider === "openclaw" && (model === "delivery-mirror" || model === "gateway-injected");
+}
+
+function sanitizeDeepSeekReplayHistory(messages: AgentMessage[]): AgentMessage[] {
+  let changed = false;
+  const filtered = messages.filter((message) => {
+    if (isOpenClawReplayMirrorAssistant(message)) {
+      changed = true;
+      return false;
+    }
+    return true;
+  });
+  return changed ? filtered : messages;
+}
 
 export default defineSingleProviderPluginEntry({
   id: PROVIDER_ID,
@@ -42,5 +66,8 @@ export default defineSingleProviderPluginEntry({
       }),
     matchesContextOverflowError: ({ errorMessage }) =>
       /\bdeepseek\b.*(?:input.*too long|context.*exceed)/i.test(errorMessage),
+    ...buildProviderReplayFamilyHooks({ family: "openai-compatible" }),
+    sanitizeReplayHistory: ({ messages }) => sanitizeDeepSeekReplayHistory(messages),
+    wrapStreamFn: (ctx) => createDeepSeekV4ThinkingWrapper(ctx.streamFn, ctx.thinkingLevel),
   },
 });

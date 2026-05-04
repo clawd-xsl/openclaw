@@ -30,6 +30,61 @@ describe("openrouter provider hooks", () => {
     ).toBe("native");
   });
 
+  it("drops OpenClaw delivery-mirror assistant messages for DeepSeek routes only", async () => {
+    const provider = await registerSingleProviderPlugin(openrouterPlugin);
+
+    const messages = [
+      { role: "user", content: [{ type: "text", text: "hi" }], timestamp: 1 },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "⚠️ API rate limit reached. Please try again later." }],
+        provider: "openclaw",
+        model: "delivery-mirror",
+        api: "openai-responses",
+        stopReason: "stop",
+        timestamp: 2,
+      },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "normal assistant turn" }],
+        provider: "openrouter",
+        model: "deepseek/deepseek-v4-pro",
+        api: "openai-completions",
+        stopReason: "stop",
+        timestamp: 3,
+      },
+    ];
+
+    const deepseekSanitized = provider.sanitizeReplayHistory?.({
+      provider: "openrouter",
+      modelApi: "openai-completions",
+      modelId: "deepseek/deepseek-v4-pro",
+      sessionId: "session-1",
+      messages,
+    } as never);
+    expect(deepseekSanitized).toEqual([
+      { role: "user", content: [{ type: "text", text: "hi" }], timestamp: 1 },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "normal assistant turn" }],
+        provider: "openrouter",
+        model: "deepseek/deepseek-v4-pro",
+        api: "openai-completions",
+        stopReason: "stop",
+        timestamp: 3,
+      },
+    ]);
+
+    const openaiSanitized = provider.sanitizeReplayHistory?.({
+      provider: "openrouter",
+      modelApi: "openai-completions",
+      modelId: "openai/gpt-5.5",
+      sessionId: "session-2",
+      messages,
+    } as never);
+    expect(openaiSanitized).toBeUndefined();
+  });
+
   it("injects provider routing into compat before applying stream wrappers", async () => {
     const provider = await registerSingleProviderPlugin(openrouterPlugin);
     const baseStreamFn = vi.fn(

@@ -43,6 +43,24 @@ export function buildXiaomiProvider(): ModelProviderConfig {
         contextWindow: XIAOMI_DEFAULT_CONTEXT_WINDOW,
         maxTokens: 32000,
       },
+      {
+        id: "mimo-v2.5-pro",
+        name: "Xiaomi MiMo V2.5 Pro",
+        reasoning: true,
+        input: ["text"],
+        cost: XIAOMI_DEFAULT_COST,
+        contextWindow: 1048576,
+        maxTokens: 32000,
+      },
+      {
+        id: "mimo-v2.5",
+        name: "Xiaomi MiMo V2.5 Omni",
+        reasoning: true,
+        input: ["text", "image"],
+        cost: XIAOMI_DEFAULT_COST,
+        contextWindow: XIAOMI_DEFAULT_CONTEXT_WINDOW,
+        maxTokens: 32000,
+      },
     ],
   };
 }
