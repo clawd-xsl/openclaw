@@ -292,6 +292,40 @@ describe("shouldRunMemoryFlush", () => {
     ).toBe(true);
   });
 
+  it("reruns for CLI sessions after prompt growth exceeds the retrigger window", () => {
+    expect(
+      shouldRunMemoryFlush({
+        entry: {
+          totalTokens: 110_000,
+          compactionCount: 1,
+          memoryFlushCompactionCount: 1,
+          memoryFlushPromptTokens: 88_000,
+        },
+        contextWindowTokens: 120_000,
+        reserveTokensFloor: 20_000,
+        softThresholdTokens: 10_000,
+        retriggerTokens: 20_000,
+      }),
+    ).toBe(true);
+  });
+
+  it("skips for CLI sessions when prompt growth stays inside the retrigger window", () => {
+    expect(
+      shouldRunMemoryFlush({
+        entry: {
+          totalTokens: 102_000,
+          compactionCount: 1,
+          memoryFlushCompactionCount: 1,
+          memoryFlushPromptTokens: 88_000,
+        },
+        contextWindowTokens: 120_000,
+        reserveTokensFloor: 20_000,
+        softThresholdTokens: 10_000,
+        retriggerTokens: 20_000,
+      }),
+    ).toBe(false);
+  });
+
   it("ignores stale cached totals", () => {
     expect(
       shouldRunMemoryFlush({

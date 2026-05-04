@@ -235,6 +235,7 @@ export type SessionEntry = {
   compactionCheckpoints?: SessionCompactionCheckpoint[];
   memoryFlushAt?: number;
   memoryFlushCompactionCount?: number;
+  memoryFlushPromptTokens?: number;
   memoryFlushContextHash?: string;
   cliSessionIds?: Record<string, string>;
   cliSessionBindings?: Record<string, CliSessionBinding>;

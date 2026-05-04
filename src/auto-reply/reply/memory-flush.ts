@@ -60,7 +60,11 @@ function resolveMemoryFlushGateState<
 export function shouldRunMemoryFlush(params: {
   entry?: Pick<
     SessionEntry,
-    "totalTokens" | "totalTokensFresh" | "compactionCount" | "memoryFlushCompactionCount"
+    | "totalTokens"
+    | "totalTokensFresh"
+    | "compactionCount"
+    | "memoryFlushCompactionCount"
+    | "memoryFlushPromptTokens"
   >;
   /**
    * Optional token count override for flush gating. When provided, this value is
@@ -71,10 +75,20 @@ export function shouldRunMemoryFlush(params: {
   contextWindowTokens: number;
   reserveTokensFloor: number;
   softThresholdTokens: number;
+  retriggerTokens?: number;
 }): boolean {
   const state = resolveMemoryFlushGateState(params);
   if (!state || state.totalTokens < state.threshold) {
     return false;
+  }
+
+  const retriggerTokens = resolvePositiveTokenCount(params.retriggerTokens);
+  if (retriggerTokens !== undefined) {
+    const lastFlushPromptTokens = resolvePositiveTokenCount(state.entry.memoryFlushPromptTokens);
+    if (lastFlushPromptTokens === undefined) {
+      return true;
+    }
+    return state.totalTokens >= lastFlushPromptTokens + retriggerTokens;
   }
 
   if (hasAlreadyFlushedForCurrentCompaction(state.entry)) {

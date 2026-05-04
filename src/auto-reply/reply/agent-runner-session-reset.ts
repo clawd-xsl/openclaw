@@ -170,6 +170,7 @@ export async function resetReplyRunSession(params: {
     nextEntry.createdAt = now;
     nextEntry.memoryFlushCompactionCount = undefined;
     nextEntry.memoryFlushAt = undefined;
+    nextEntry.memoryFlushPromptTokens = undefined;
     nextEntry.memoryFlushContextHash = undefined;
     clearAllCliSessions(nextEntry);
   }

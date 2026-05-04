@@ -128,6 +128,7 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionId: "session",
       updatedAt: Date.now(),
       totalTokens: 80_000,
+      totalTokensFresh: true,
       compactionCount: 1,
     };
     const sessionStore = { [sessionKey]: sessionEntry };
@@ -194,9 +195,10 @@ describe("runMemoryFlushIfNeeded", () => {
     expect(persisted.main.compactionCount).toBe(2);
     expect(persisted.main.memoryFlushCompactionCount).toBe(2);
     expect(persisted.main.memoryFlushAt).toBe(1_700_000_000_000);
+    expect(persisted.main.memoryFlushPromptTokens).toBeGreaterThanOrEqual(80_000);
   });
 
-  it("skips memory flush for CLI providers", async () => {
+  it("runs memory flush for CLI providers", async () => {
     const sessionEntry: SessionEntry = {
       sessionId: "session",
       updatedAt: Date.now(),
@@ -206,7 +208,7 @@ describe("runMemoryFlushIfNeeded", () => {
 
     const entry = await runMemoryFlushIfNeeded({
       cfg: { agents: { defaults: { cliBackends: { "codex-cli": { command: "codex" } } } } },
-      followupRun: createFollowupRun({ provider: "codex-cli" }),
+      followupRun: createFollowupRun({ provider: "codex-cli", model: "gpt-5.4" }),
       sessionCtx: { Provider: "whatsapp" } as unknown as TemplateContext,
       defaultModel: "codex-cli/gpt-5.4",
       agentCfgContextTokens: 100_000,
@@ -219,7 +221,17 @@ describe("runMemoryFlushIfNeeded", () => {
     });
 
     expect(entry).toBe(sessionEntry);
-    expect(runEmbeddedPiAgentMock).not.toHaveBeenCalled();
+    expect(runEmbeddedPiAgentMock).toHaveBeenCalledTimes(1);
+    const flushCall = runEmbeddedPiAgentMock.mock.calls[0]?.[0] as {
+      provider?: string;
+      model?: string;
+      prompt?: string;
+      silentExpected?: boolean;
+    };
+    expect(flushCall.provider).toBe("codex-cli");
+    expect(flushCall.model).toBe("gpt-5.4");
+    expect(flushCall.prompt).toContain("Pre-compaction memory flush.");
+    expect(flushCall.silentExpected).toBe(true);
   });
 
   it("uses configured prompts and stored bootstrap warning signatures", async () => {
