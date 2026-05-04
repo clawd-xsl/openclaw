@@ -11,6 +11,7 @@ import {
 import { registerBuiltInMemoryEmbeddingProviders } from "./src/memory/provider-adapters.js";
 import { buildPromptSection } from "./src/prompt-section.js";
 import { listMemoryCorePublicArtifacts } from "./src/public-artifacts.js";
+import { registerSessionRolloverMemoryFlush } from "./src/rollover-memory-flush.js";
 import { memoryRuntime } from "./src/runtime-provider.js";
 import { createMemoryGetTool, createMemorySearchTool } from "./src/tools.js";
 export {
@@ -29,6 +30,7 @@ export default definePluginEntry({
   register(api) {
     registerBuiltInMemoryEmbeddingProviders(api);
     registerShortTermPromotionDreaming(api);
+    registerSessionRolloverMemoryFlush(api);
     registerDreamingCommand(api);
     api.registerMemoryCapability({
       promptBuilder: buildPromptSection,
