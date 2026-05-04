@@ -29,8 +29,10 @@ import {
   buildAllowedModelSet,
   buildModelAliasIndex,
   modelKey,
+  normalizeStoredOverrideModel,
   resolveDefaultModelForAgent,
   resolveModelRefFromString,
+  resolvePersistedSelectedModelRef,
 } from "../model-selection.js";
 import {
   describeSessionStatusTool,
@@ -485,23 +487,38 @@ export function createSessionStatusTool(opts?: {
         agentId,
         `${configured.provider}/${configured.model}`,
       );
+      const normalizedSelection = normalizeStoredOverrideModel({
+        providerOverride: resolved.entry.providerOverride,
+        modelOverride: resolved.entry.modelOverride,
+      });
       const hasExplicitModelOverride = Boolean(
-        resolved.entry.providerOverride?.trim() || resolved.entry.modelOverride?.trim(),
+        normalizedSelection.providerOverride?.trim() || normalizedSelection.modelOverride?.trim(),
       );
       const runtimeProviderForCard = runtimeModelIdentity.provider?.trim();
       const runtimeModelForCard = runtimeModelIdentity.model.trim();
-      const defaultProviderForCard = hasExplicitModelOverride
-        ? configured.provider
-        : (runtimeProviderForCard ?? "");
-      const defaultModelForCard = hasExplicitModelOverride
-        ? configured.model
-        : runtimeModelForCard || configured.model;
+      const ignoreRuntimeSelection = resolved.entry.liveModelSwitchPending === true;
+      const selectedModelIdentity = hasExplicitModelOverride
+        ? resolvePersistedSelectedModelRef({
+            defaultProvider: configured.provider,
+            overrideProvider: normalizedSelection.providerOverride,
+            overrideModel: normalizedSelection.modelOverride,
+          })
+        : null;
+      const providerForCard =
+        selectedModelIdentity?.provider ??
+        (!ignoreRuntimeSelection && runtimeModelForCard
+          ? (runtimeProviderForCard ?? "")
+          : configured.provider);
+      const defaultModelForCard =
+        selectedModelIdentity?.model ??
+        (!ignoreRuntimeSelection && runtimeModelForCard ? runtimeModelForCard : configured.model);
       const statusSessionEntry =
-        !hasExplicitModelOverride && !runtimeProviderForCard && runtimeModelForCard
+        !ignoreRuntimeSelection &&
+        !hasExplicitModelOverride &&
+        !runtimeProviderForCard &&
+        runtimeModelForCard
           ? { ...resolved.entry, providerOverride: "" }
           : resolved.entry;
-      const providerOverrideForCard = statusSessionEntry.providerOverride?.trim();
-      const providerForCard = providerOverrideForCard ?? defaultProviderForCard;
       const primaryModelLabel =
         providerForCard && defaultModelForCard
           ? `${providerForCard}/${defaultModelForCard}`

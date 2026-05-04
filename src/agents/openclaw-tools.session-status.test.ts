@@ -768,6 +768,51 @@ describe("session_status tool", () => {
     );
   });
 
+  it("uses the selected override model for the status card when runtime fields are stale", async () => {
+    resetSessionStore({
+      main: {
+        sessionId: "runtime-stale-override",
+        updatedAt: 10,
+        providerOverride: "xiaomi-coding",
+        modelOverride: "mimo-v2.5-pro",
+        modelProvider: "deepseek",
+        model: "deepseek-v4-pro",
+      },
+    });
+    mockConfig = {
+      session: { mainKey: "main", scope: "per-sender" },
+      agents: {
+        defaults: {
+          model: { primary: "deepseek/deepseek-v4-pro" },
+          models: {},
+        },
+      },
+      tools: {
+        agentToAgent: { enabled: false },
+      },
+    };
+
+    const tool = getSessionStatusTool();
+
+    await tool.execute("call-runtime-stale-override", {});
+
+    expect(buildStatusMessageMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent: expect.objectContaining({
+          model: expect.objectContaining({
+            primary: "xiaomi-coding/mimo-v2.5-pro",
+          }),
+        }),
+        sessionEntry: expect.objectContaining({
+          providerOverride: "xiaomi-coding",
+          modelOverride: "mimo-v2.5-pro",
+          modelProvider: "deepseek",
+          model: "deepseek-v4-pro",
+        }),
+      }),
+    );
+  });
+
   it("infers configured custom providers for runtime-only models in session_status", async () => {
     resetSessionStore({
       main: {

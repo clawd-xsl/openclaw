@@ -2221,13 +2221,18 @@ describe("persistSessionUsageUpdate", () => {
     expect(stored[sessionKey].totalTokensFresh).toBe(true);
   });
 
-  it("treats CLI usage as a fresh context snapshot when requested", async () => {
+  it("does not treat Claude CLI usage as a fresh context snapshot when requested", async () => {
     const storePath = await createStorePath("openclaw-usage-cli-");
     const sessionKey = "main";
     await seedSessionStore({
       storePath,
       sessionKey,
-      entry: { sessionId: "s1", updatedAt: Date.now() },
+      entry: {
+        sessionId: "s1",
+        updatedAt: Date.now(),
+        totalTokens: 32_000,
+        totalTokensFresh: true,
+      },
     });
 
     await persistSessionUsageUpdate({
@@ -2245,9 +2250,10 @@ describe("persistSessionUsageUpdate", () => {
       contextTokensUsed: 200_000,
     });
 
+    await flushSessionStoreBackfillForTest(storePath);
     const stored = JSON.parse(await fs.readFile(storePath, "utf-8"));
-    expect(stored[sessionKey].totalTokens).toBe(32_000);
-    expect(stored[sessionKey].totalTokensFresh).toBe(true);
+    expect(stored[sessionKey].totalTokens).toBeUndefined();
+    expect(stored[sessionKey].totalTokensFresh).toBe(false);
     expect(stored[sessionKey].cliSessionIds?.["claude-cli"]).toBe("cli-session-1");
     expect(stored[sessionKey].cliSessionBindings?.["claude-cli"]).toEqual({
       sessionId: "cli-session-1",
@@ -2257,13 +2263,18 @@ describe("persistSessionUsageUpdate", () => {
     });
   });
 
-  it("persists streaming CLI bindings under the streaming backend key", async () => {
+  it("persists streaming Claude CLI bindings without promoting usage to a fresh snapshot", async () => {
     const storePath = await createStorePath("openclaw-usage-cli-streaming-");
     const sessionKey = "main";
     await seedSessionStore({
       storePath,
       sessionKey,
-      entry: { sessionId: "s1", updatedAt: Date.now() },
+      entry: {
+        sessionId: "s1",
+        updatedAt: Date.now(),
+        totalTokens: 32_000,
+        totalTokensFresh: true,
+      },
     });
 
     await persistSessionUsageUpdate({
@@ -2281,9 +2292,10 @@ describe("persistSessionUsageUpdate", () => {
       contextTokensUsed: 200_000,
     });
 
+    await flushSessionStoreBackfillForTest(storePath);
     const stored = JSON.parse(await fs.readFile(storePath, "utf-8"));
-    expect(stored[sessionKey].totalTokens).toBe(32_000);
-    expect(stored[sessionKey].totalTokensFresh).toBe(true);
+    expect(stored[sessionKey].totalTokens).toBeUndefined();
+    expect(stored[sessionKey].totalTokensFresh).toBe(false);
     expect(stored[sessionKey].cliSessionIds?.["claude-cli-streaming"]).toBe("stream-session-1");
     expect(stored[sessionKey].cliSessionBindings?.["claude-cli-streaming"]).toEqual({
       sessionId: "stream-session-1",
@@ -2292,6 +2304,34 @@ describe("persistSessionUsageUpdate", () => {
       mcpConfigHash: "mcp-hash",
     });
     expect(stored[sessionKey].claudeCliSessionId).toBeUndefined();
+  });
+
+  it("persists explicit prompt snapshots for streaming Claude CLI sessions", async () => {
+    const storePath = await createStorePath("openclaw-usage-cli-streaming-prompt-");
+    const sessionKey = "main";
+    await seedSessionStore({
+      storePath,
+      sessionKey,
+      entry: {
+        sessionId: "s1",
+        updatedAt: Date.now(),
+      },
+    });
+
+    await persistSessionUsageUpdate({
+      storePath,
+      sessionKey,
+      usage: { input: 24_000, output: 2_000, cacheRead: 8_000 },
+      usageIsContextSnapshot: true,
+      providerUsed: "claude-cli-streaming",
+      promptTokens: 39_000,
+      contextTokensUsed: 200_000,
+    });
+
+    await flushSessionStoreBackfillForTest(storePath);
+    const stored = JSON.parse(await fs.readFile(storePath, "utf-8"));
+    expect(stored[sessionKey].totalTokens).toBe(39_000);
+    expect(stored[sessionKey].totalTokensFresh).toBe(true);
   });
 
   it("persists continuity fields without touching accounting fields", async () => {
@@ -2346,6 +2386,48 @@ describe("persistSessionUsageUpdate", () => {
     expect(stored[sessionKey].outputTokens).toBe(22);
     expect(stored[sessionKey].totalTokens).toBe(333);
     expect(stored[sessionKey].systemPromptReport).toBeUndefined();
+  });
+
+  it("preserves a pending live model switch when an older run finishes", async () => {
+    const storePath = await createStorePath("openclaw-usage-pending-switch-");
+    const sessionKey = "agent:main:main";
+    await seedSessionStore({
+      storePath,
+      sessionKey,
+      entry: {
+        sessionId: "s1",
+        updatedAt: Date.now(),
+        providerOverride: "xiaomi-coding",
+        modelOverride: "mimo-v2.5-pro",
+        liveModelSwitchPending: true,
+      },
+    });
+
+    await persistSessionContinuityUpdate({
+      storePath,
+      sessionKey,
+      cfg: {
+        session: { store: storePath },
+        agents: {
+          defaults: {
+            model: { primary: "deepseek/deepseek-v4-pro" },
+            models: {},
+          },
+        },
+      } as OpenClawConfig,
+      providerUsed: "deepseek",
+      modelUsed: "deepseek-v4-pro",
+      contextTokensUsed: 128_000,
+    });
+
+    await flushSessionStoreBackfillForTest(storePath);
+    const stored = JSON.parse(await fs.readFile(storePath, "utf-8"));
+    expect(stored[sessionKey].providerOverride).toBe("xiaomi-coding");
+    expect(stored[sessionKey].modelOverride).toBe("mimo-v2.5-pro");
+    expect(stored[sessionKey].liveModelSwitchPending).toBe(true);
+    expect(stored[sessionKey].modelProvider).toBeUndefined();
+    expect(stored[sessionKey].model).toBeUndefined();
+    expect(stored[sessionKey].contextTokens).toBeUndefined();
   });
 
   it("persists accounting fields without touching continuity fields", async () => {

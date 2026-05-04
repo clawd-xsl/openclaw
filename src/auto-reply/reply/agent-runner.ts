@@ -1498,6 +1498,15 @@ export async function runReplyAgent(params: {
         trace("persistRunSessionAccounting-done");
       }
     };
+    const awaitDeferredSessionContinuity = async (reason: string) => {
+      if (!persistRunSessionContinuityPromise) {
+        return;
+      }
+      persistRunSessionContinuityAwaited = true;
+      trace("persistRunSessionContinuity-await", reason);
+      await persistRunSessionContinuityPromise;
+      trace("persistRunSessionContinuity-done");
+    };
     void beginPersistRunSessionContinuity();
     void beginPersistRunSessionAccounting();
 
@@ -1886,6 +1895,11 @@ export async function runReplyAgent(params: {
     if (responseUsageLine) {
       finalPayloads = appendUsageLine(finalPayloads, responseUsageLine);
     }
+
+    // Session continuity must be durable before we hand the reply back to the
+    // dispatcher. Otherwise a gateway restart can resume a stale CLI binding
+    // even though the user already saw the newer Claude turn.
+    await awaitDeferredSessionContinuity("before-return");
 
     return finalizeWithFollowup(
       finalPayloads.length === 1 ? finalPayloads[0] : finalPayloads,

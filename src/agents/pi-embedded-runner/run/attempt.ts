@@ -185,6 +185,7 @@ import {
   buildAfterTurnRuntimeContext,
   mergeOrphanedTrailingUserPrompt,
   prependSystemPromptAddition,
+  pruneSyntheticTrailingUserLeaf,
   resolveAttemptFsWorkspaceOnly,
   resolveAttemptPrependSystemContext,
   resolvePromptBuildHookResult,
@@ -247,6 +248,7 @@ export {
   buildAfterTurnRuntimeContext,
   mergeOrphanedTrailingUserPrompt,
   prependSystemPromptAddition,
+  pruneSyntheticTrailingUserLeaf,
   resolveAttemptFsWorkspaceOnly,
   resolveAttemptPrependSystemContext,
   resolvePromptBuildHookResult,
@@ -1568,6 +1570,7 @@ export async function runEmbeddedAttempt(
       let attemptUsage: NormalizedUsage | undefined;
       let cacheBreak: ReturnType<typeof completePromptCacheObservation> = null;
       let promptCache: EmbeddedRunAttemptResult["promptCache"];
+      let estimatedPromptTokens: number | undefined;
       let finalPromptText: string | undefined;
       if (params.replyOperation) {
         params.replyOperation.attachBackend(queueHandle);
@@ -1795,7 +1798,23 @@ export async function runEmbeddedAttempt(
         });
 
         // Repair orphaned trailing user messages so new prompts don't violate role ordering.
-        const leafEntry = sessionManager.getLeafEntry();
+        let leafEntry = sessionManager.getLeafEntry();
+        if (
+          leafEntry?.type === "message" &&
+          leafEntry.message.role === "user" &&
+          pruneSyntheticTrailingUserLeaf({
+            sessionManager: sessionManager as unknown,
+            leafEntry,
+          })
+        ) {
+          const sessionContext = sessionManager.buildSessionContext();
+          activeSession.agent.state.messages = sessionContext.messages;
+          leafEntry = sessionManager.getLeafEntry();
+          log.debug(
+            `pruned synthetic metadata-only user leaf before prompt: ` +
+              `runId=${params.runId} sessionId=${params.sessionId} trigger=${params.trigger}`,
+          );
+        }
         if (leafEntry?.type === "message" && leafEntry.message.role === "user") {
           const orphanPromptMerge = mergeOrphanedTrailingUserPrompt({
             prompt: effectivePrompt,
@@ -1937,6 +1956,10 @@ export async function runEmbeddedAttempt(
                   contextTokenBudget,
                   reserveTokens,
                 });
+          estimatedPromptTokens =
+            preemptiveCompaction.estimatedPromptTokens > 0
+              ? preemptiveCompaction.estimatedPromptTokens
+              : undefined;
           if (preemptiveCompaction.route === "truncate_tool_results_only") {
             const truncationResult = truncateOversizedToolResultsInSessionManager({
               sessionManager,
@@ -2420,6 +2443,7 @@ export async function runEmbeddedAttempt(
         bootstrapPromptWarningSignaturesSeen: bootstrapPromptWarning.warningSignaturesSeen,
         bootstrapPromptWarningSignature: bootstrapPromptWarning.signature,
         systemPromptReport,
+        estimatedPromptTokens,
         finalPromptText,
         messagesSnapshot,
         assistantTexts,

@@ -43,10 +43,12 @@ export function resolveLiveSessionModelSelection(params: {
     providerOverride: entry?.providerOverride,
     modelOverride: entry?.modelOverride,
   });
+  const runtimeProvider = entry?.liveModelSwitchPending ? undefined : entry?.modelProvider;
+  const runtimeModel = entry?.liveModelSwitchPending ? undefined : entry?.model;
   const persisted = resolvePersistedSelectedModelRef({
     defaultProvider: defaultModelRef.provider,
-    runtimeProvider: entry?.modelProvider,
-    runtimeModel: entry?.model,
+    runtimeProvider,
+    runtimeModel,
     overrideProvider: normalizedSelection.providerOverride,
     overrideModel: normalizedSelection.modelOverride,
   });

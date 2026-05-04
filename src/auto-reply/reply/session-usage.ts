@@ -1,5 +1,10 @@
 import { setCliSessionBinding, setCliSessionId } from "../../agents/cli-session.js";
 import {
+  normalizeStoredOverrideModel,
+  resolveDefaultModelForAgent,
+  resolvePersistedSelectedModelRef,
+} from "../../agents/model-selection.js";
+import {
   deriveSessionTotalTokens,
   hasNonzeroUsage,
   type NormalizedUsage,
@@ -14,6 +19,8 @@ import {
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { logVerbose } from "../../globals.js";
 import { createTimingTrace } from "../../infra/timing-trace.js";
+import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
+import { normalizeOptionalLowercaseString } from "../../shared/string-coerce.js";
 import { estimateUsageCost, resolveModelCostConfig } from "../../utils/usage-format.js";
 
 function applyCliSessionIdToSessionPatch(
@@ -109,7 +116,41 @@ function hasFreshContextSnapshot(params: PersistSessionUsageUpdateParams): boole
     typeof params.promptTokens === "number" &&
     Number.isFinite(params.promptTokens) &&
     params.promptTokens > 0;
-  return Boolean(params.lastCallUsage) || hasPromptTokens || params.usageIsContextSnapshot === true;
+  const providerId = normalizeOptionalLowercaseString(params.providerUsed);
+  // Claude CLI usage reflects provider-owned hidden session continuity, which
+  // can drift from OpenClaw's transcript-based session model. Do not promote
+  // those usage numbers to a "fresh" OpenClaw context snapshot.
+  const claudeCliSessionContinuity = providerId?.startsWith("claude-cli") === true;
+  const usageSnapshotAllowed =
+    params.usageIsContextSnapshot === true && !claudeCliSessionContinuity;
+  return Boolean(params.lastCallUsage) || hasPromptTokens || usageSnapshotAllowed;
+}
+
+function resolvePendingLiveSwitchSelection(
+  params: PersistSessionUsageUpdateParams,
+  entry: SessionEntry,
+): { provider: string; model: string } | null {
+  if (!entry.liveModelSwitchPending) {
+    return null;
+  }
+
+  const normalizedSelection = normalizeStoredOverrideModel({
+    providerOverride: entry.providerOverride,
+    modelOverride: entry.modelOverride,
+  });
+  const cfg = params.cfg ?? loadConfig();
+  const agentId = resolveAgentIdFromSessionKey(params.sessionKey);
+  const defaultModelRef = resolveDefaultModelForAgent({
+    cfg,
+    agentId,
+  });
+  return (
+    resolvePersistedSelectedModelRef({
+      defaultProvider: defaultModelRef.provider,
+      overrideProvider: normalizedSelection.providerOverride,
+      overrideModel: normalizedSelection.modelOverride,
+    }) ?? defaultModelRef
+  );
 }
 
 function buildSessionContinuityPatch(
@@ -120,14 +161,24 @@ function buildSessionContinuityPatch(
   const nextProvider = params.providerUsed ?? entry.modelProvider;
   const nextModel = params.modelUsed ?? entry.model;
   const nextContextTokens = params.contextTokensUsed ?? entry.contextTokens;
-  if (nextProvider !== entry.modelProvider) {
-    patch.modelProvider = nextProvider;
-  }
-  if (nextModel !== entry.model) {
-    patch.model = nextModel;
-  }
-  if (nextContextTokens !== entry.contextTokens) {
-    patch.contextTokens = nextContextTokens;
+  const pendingLiveSwitchSelection = resolvePendingLiveSwitchSelection(params, entry);
+  const preservePendingSelection =
+    pendingLiveSwitchSelection != null &&
+    (normalizeOptionalLowercaseString(nextProvider) !==
+      normalizeOptionalLowercaseString(pendingLiveSwitchSelection.provider) ||
+      normalizeOptionalLowercaseString(nextModel) !==
+        normalizeOptionalLowercaseString(pendingLiveSwitchSelection.model));
+
+  if (!preservePendingSelection) {
+    if (nextProvider !== entry.modelProvider) {
+      patch.modelProvider = nextProvider;
+    }
+    if (nextModel !== entry.model) {
+      patch.model = nextModel;
+    }
+    if (nextContextTokens !== entry.contextTokens) {
+      patch.contextTokens = nextContextTokens;
+    }
   }
 
   const cliProvider = params.providerUsed ?? entry.modelProvider;

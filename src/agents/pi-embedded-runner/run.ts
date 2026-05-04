@@ -47,6 +47,7 @@ import {
   shouldPreferExplicitConfigApiKeyAuth,
 } from "../model-auth.js";
 import { normalizeProviderId } from "../model-selection.js";
+import { isCliProvider } from "../model-selection.js";
 import { ensureOpenClawModelsJson } from "../models-config.js";
 import { disposeSessionMcpRuntime } from "../pi-bundle-mcp-tools.js";
 import {
@@ -477,6 +478,7 @@ export async function runEmbeddedPiAgent(
       });
       let rateLimitProfileRotations = 0;
       let timeoutCompactionAttempts = 0;
+      let lastEstimatedPromptTokens: number | undefined;
       const overloadFailoverBackoffMs = resolveOverloadFailoverBackoffMs(params.config);
       const overloadProfileRotationLimit = resolveOverloadProfileRotationLimit(params.config);
       const rateLimitProfileRotationLimit = resolveRateLimitProfileRotationLimit(params.config);
@@ -637,6 +639,10 @@ export async function runEmbeddedPiAgent(
                 usageAccumulator,
                 lastRunPromptUsage,
                 lastTurnTotal,
+                promptTokensOverride: isCliProvider(provider, params.config)
+                  ? lastEstimatedPromptTokens
+                  : undefined,
+                promptTokensFallback: lastEstimatedPromptTokens,
               }),
               replayInvalid: accumulatedReplayState.replayInvalid ? true : undefined,
               livenessState: "blocked",
@@ -788,6 +794,7 @@ export async function runEmbeddedPiAgent(
           // Keep prompt size from the latest model call so session totalTokens
           // reflects current context usage, not accumulated tool-loop usage.
           lastRunPromptUsage = lastAssistantUsage ?? attemptUsage;
+          lastEstimatedPromptTokens = attempt.estimatedPromptTokens ?? lastEstimatedPromptTokens;
           lastTurnTotal = lastAssistantUsage?.total ?? attemptUsage?.total;
           const attemptCompactionCount = Math.max(0, attempt.compactionCount ?? 0);
           autoCompactionCount += attemptCompactionCount;
@@ -1186,6 +1193,10 @@ export async function runEmbeddedPiAgent(
                   lastRunPromptUsage,
                   lastAssistant: sessionLastAssistant,
                   lastTurnTotal,
+                  promptTokensOverride: isCliProvider(provider, params.config)
+                    ? lastEstimatedPromptTokens
+                    : undefined,
+                  promptTokensFallback: lastEstimatedPromptTokens,
                 }),
                 systemPromptReport: attempt.systemPromptReport,
                 finalPromptText: attempt.finalPromptText,
@@ -1241,6 +1252,10 @@ export async function runEmbeddedPiAgent(
                     lastRunPromptUsage,
                     lastAssistant: sessionLastAssistant,
                     lastTurnTotal,
+                    promptTokensOverride: isCliProvider(provider, params.config)
+                      ? lastEstimatedPromptTokens
+                      : undefined,
+                    promptTokensFallback: lastEstimatedPromptTokens,
                   }),
                   systemPromptReport: attempt.systemPromptReport,
                   finalPromptText: attempt.finalPromptText,
@@ -1280,6 +1295,10 @@ export async function runEmbeddedPiAgent(
                     lastRunPromptUsage,
                     lastAssistant: sessionLastAssistant,
                     lastTurnTotal,
+                    promptTokensOverride: isCliProvider(provider, params.config)
+                      ? lastEstimatedPromptTokens
+                      : undefined,
+                    promptTokensFallback: lastEstimatedPromptTokens,
                   }),
                   systemPromptReport: attempt.systemPromptReport,
                   finalPromptText: attempt.finalPromptText,
@@ -1582,6 +1601,13 @@ export async function runEmbeddedPiAgent(
             lastAssistantUsage: sessionLastAssistant?.usage as UsageLike | undefined,
             lastRunPromptUsage,
             lastTurnTotal,
+            promptTokensOverride: isCliProvider(
+              sessionLastAssistant?.provider ?? provider,
+              params.config,
+            )
+              ? lastEstimatedPromptTokens
+              : undefined,
+            promptTokensFallback: lastEstimatedPromptTokens,
           });
           const agentMeta: EmbeddedPiAgentMeta = {
             sessionId: sessionIdUsed,

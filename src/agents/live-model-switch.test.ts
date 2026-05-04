@@ -419,6 +419,38 @@ describe("live model switch", () => {
       });
     });
 
+    it("ignores stale runtime model fields when resetting back to the default model", async () => {
+      state.resolveDefaultModelForAgentMock
+        .mockReset()
+        .mockReturnValue({ provider: "xiaomi-coding", model: "mimo-v2.5-pro" });
+      state.loadSessionStoreMock.mockReturnValue({
+        main: {
+          liveModelSwitchPending: true,
+          modelProvider: "deepseek",
+          model: "deepseek-v4-pro",
+        },
+      });
+
+      const { shouldSwitchToLiveModel } = await loadModule();
+
+      const result = shouldSwitchToLiveModel({
+        cfg: { session: { store: "/tmp/custom-store.json" } },
+        sessionKey: "main",
+        agentId: "reply",
+        defaultProvider: "anthropic",
+        defaultModel: "claude-opus-4-6",
+        currentProvider: "deepseek",
+        currentModel: "deepseek-v4-pro",
+      });
+
+      expect(result).toEqual({
+        provider: "xiaomi-coding",
+        model: "mimo-v2.5-pro",
+        authProfileId: undefined,
+        authProfileIdSource: undefined,
+      });
+    });
+
     it("returns undefined when liveModelSwitchPending is false", async () => {
       state.loadSessionStoreMock.mockReturnValue({
         main: {

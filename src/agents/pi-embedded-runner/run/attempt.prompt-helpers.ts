@@ -1,3 +1,4 @@
+import { isSyntheticInboundMetadataOnlyText } from "../../../auto-reply/reply/strip-inbound-meta.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import type {
   ContextEnginePromptCacheInfo,
@@ -138,6 +139,73 @@ function extractUserMessagePlainText(content: unknown): string | undefined {
     .join("\n")
     .trim();
   return text || undefined;
+}
+
+type PromptRepairSessionManager = {
+  fileEntries: Array<{
+    type?: string;
+    id?: string;
+    parentId?: string | null;
+    message?: { role?: string };
+  }>;
+  byId: Map<string, unknown>;
+  leafId?: string | null;
+  _rewriteFile?: unknown;
+};
+
+function extractMessageContent(message: unknown): unknown {
+  if (!message || typeof message !== "object") {
+    return undefined;
+  }
+  return (message as { content?: unknown }).content;
+}
+
+function getPromptRepairSessionManager(value: unknown): PromptRepairSessionManager | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const candidate = value as Partial<PromptRepairSessionManager>;
+  if (!Array.isArray(candidate.fileEntries) || !(candidate.byId instanceof Map)) {
+    return null;
+  }
+  return candidate as PromptRepairSessionManager;
+}
+
+export function pruneSyntheticTrailingUserLeaf(params: {
+  sessionManager: unknown;
+  leafEntry: {
+    id?: string;
+    parentId?: string | null;
+    message?: unknown;
+  };
+}): boolean {
+  const orphanText = extractUserMessagePlainText(extractMessageContent(params.leafEntry.message));
+  if (!orphanText || !isSyntheticInboundMetadataOnlyText(orphanText)) {
+    return false;
+  }
+
+  const sessionManager = getPromptRepairSessionManager(params.sessionManager);
+  if (!sessionManager) {
+    return false;
+  }
+  const { fileEntries, byId } = sessionManager;
+  const leafId = params.leafEntry.id;
+  if (!leafId) {
+    return false;
+  }
+
+  const last = fileEntries.at(-1);
+  if (!last || last.type !== "message" || last.id !== leafId || last.message?.role !== "user") {
+    return false;
+  }
+
+  fileEntries.pop();
+  byId.delete(leafId);
+  sessionManager.leafId = params.leafEntry.parentId ?? null;
+  if (typeof sessionManager._rewriteFile === "function") {
+    sessionManager._rewriteFile();
+  }
+  return true;
 }
 
 export function mergeOrphanedTrailingUserPrompt(params: {

@@ -3,6 +3,7 @@ import type { TemplateContext } from "../templating.js";
 import { buildInboundUserContextPrefix } from "./inbound-meta.js";
 import {
   extractInboundSenderLabel,
+  isSyntheticInboundMetadataOnlyText,
   stripInboundMetadata,
   stripLeadingInboundMetadata,
 } from "./strip-inbound-meta.js";
@@ -121,7 +122,9 @@ This is plain user text`;
 
   it("strips an active-memory prompt prefix block even when earlier text precedes it", () => {
     const input = `Queued earlier user turn\n\n${ACTIVE_MEMORY_PREFIX_BLOCK}\n\nWhat should I grab on the way?`;
-    expect(stripInboundMetadata(input)).toBe("Queued earlier user turn\n\nWhat should I grab on the way?");
+    expect(stripInboundMetadata(input)).toBe(
+      "Queued earlier user turn\n\nWhat should I grab on the way?",
+    );
   });
 
   it("does not strip active-memory lookalike user text without exact tag lines", () => {
@@ -229,6 +232,28 @@ describe("extractInboundSenderLabel", () => {
     } as TemplateContext)}\n\nHello from user`;
 
     expect(extractInboundSenderLabel(input)).toBe("Ali```ce (sender-1)");
+  });
+});
+
+describe("isSyntheticInboundMetadataOnlyText", () => {
+  it("returns true for pure conversation metadata blocks", () => {
+    expect(isSyntheticInboundMetadataOnlyText(CONV_BLOCK)).toBe(true);
+  });
+
+  it("returns true for synthetic prompt prefixes that only wrap metadata", () => {
+    const input = `System: Merge this queued message into the next user turn.
+[Queued user message that arrived while the previous turn was still active]
+
+${CONV_BLOCK}`;
+    expect(isSyntheticInboundMetadataOnlyText(input)).toBe(true);
+  });
+
+  it("returns false when real user text remains after metadata stripping", () => {
+    const input = `[Queued user message that arrived while the previous turn was still active]
+hello there
+
+${CONV_BLOCK}`;
+    expect(isSyntheticInboundMetadataOnlyText(input)).toBe(false);
   });
 });
 

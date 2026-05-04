@@ -33,6 +33,43 @@ describe("message-normalizer", () => {
       });
     });
 
+    it("hides synthetic metadata-only user messages", () => {
+      const result = normalizeMessage({
+        role: "user",
+        content: 'Conversation info (untrusted metadata):\n```json\n{"message_id":"msg-1"}\n```',
+        id: "msg-hidden",
+      });
+
+      expect(result).toEqual({
+        role: "user",
+        content: [],
+        timestamp: Date.now(),
+        id: "msg-hidden",
+        senderLabel: null,
+        hidden: true,
+      });
+    });
+
+    it("keeps real user text when metadata stripping leaves content behind", () => {
+      const result = normalizeMessage({
+        role: "user",
+        content:
+          '[Queued user message that arrived while the previous turn was still active]\nhello there\n\nConversation info (untrusted metadata):\n```json\n{"message_id":"msg-1"}\n```',
+      });
+
+      expect(result).toEqual({
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: "[Queued user message that arrived while the previous turn was still active]\nhello there",
+          },
+        ],
+        timestamp: Date.now(),
+        senderLabel: null,
+      });
+    });
+
     it("does not reinterpret directive-like user string content", () => {
       const result = normalizeMessage({
         role: "user",

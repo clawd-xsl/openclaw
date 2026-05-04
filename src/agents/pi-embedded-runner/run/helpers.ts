@@ -99,6 +99,8 @@ export function buildUsageAgentMetaFields(params: {
   lastAssistantUsage?: UsageSnapshot | null;
   lastRunPromptUsage: UsageSnapshot | undefined;
   lastTurnTotal?: number;
+  promptTokensOverride?: number;
+  promptTokensFallback?: number;
 }): Pick<EmbeddedPiAgentMeta, "usage" | "lastCallUsage" | "promptTokens"> {
   const usage = toNormalizedUsage(params.usageAccumulator);
   if (usage && params.lastTurnTotal && params.lastTurnTotal > 0) {
@@ -106,7 +108,10 @@ export function buildUsageAgentMetaFields(params: {
   }
   const lastCallUsage =
     normalizeUsage(params.lastAssistantUsage as never) ?? toLastCallUsage(params.usageAccumulator);
-  const promptTokens = derivePromptTokens(params.lastRunPromptUsage);
+  const promptTokens =
+    params.promptTokensOverride ??
+    derivePromptTokens(params.lastRunPromptUsage) ??
+    params.promptTokensFallback;
   return {
     usage,
     lastCallUsage,
@@ -128,12 +133,16 @@ export function buildErrorAgentMeta(params: {
   lastRunPromptUsage: UsageSnapshot | undefined;
   lastAssistant?: { usage?: unknown } | null;
   lastTurnTotal?: number;
+  promptTokensOverride?: number;
+  promptTokensFallback?: number;
 }): EmbeddedPiAgentMeta {
   const usageMeta = buildUsageAgentMetaFields({
     usageAccumulator: params.usageAccumulator,
     lastAssistantUsage: params.lastAssistant?.usage as UsageSnapshot | undefined,
     lastRunPromptUsage: params.lastRunPromptUsage,
     lastTurnTotal: params.lastTurnTotal,
+    promptTokensOverride: params.promptTokensOverride,
+    promptTokensFallback: params.promptTokensFallback,
   });
   return {
     sessionId: params.sessionId,

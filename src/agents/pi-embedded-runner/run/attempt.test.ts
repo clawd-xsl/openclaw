@@ -9,6 +9,7 @@ import {
   composeSystemPromptWithHookContext,
   decodeHtmlEntitiesInObject,
   mergeOrphanedTrailingUserPrompt,
+  pruneSyntheticTrailingUserLeaf,
   prependSystemPromptAddition,
   resetEmbeddedAgentBaseStreamFnCacheForTest,
   resolveEmbeddedAgentBaseStreamFn,
@@ -278,6 +279,82 @@ describe("mergeOrphanedTrailingUserPrompt", () => {
       merged: false,
       prompt: "HEARTBEAT_OK",
     });
+  });
+});
+
+describe("pruneSyntheticTrailingUserLeaf", () => {
+  it("rewrites away trailing metadata-only user leaves", () => {
+    const rewriteFile = vi.fn();
+    const leafId = "user-2";
+    const parentId = "assistant-1";
+    const sessionManager = {
+      fileEntries: [
+        { type: "session", id: "session-1" },
+        {
+          type: "message",
+          id: leafId,
+          parentId,
+          message: { role: "user" },
+        },
+      ],
+      byId: new Map([[leafId, { id: leafId }]]),
+      leafId,
+      _rewriteFile: rewriteFile,
+    };
+
+    expect(
+      pruneSyntheticTrailingUserLeaf({
+        sessionManager,
+        leafEntry: {
+          id: leafId,
+          parentId,
+          message: {
+            content: 'Conversation info (untrusted metadata):\n```json\n{"message_id":"123"}\n```',
+          },
+        },
+      }),
+    ).toBe(true);
+    expect(sessionManager.fileEntries).toHaveLength(1);
+    expect(sessionManager.byId.has(leafId)).toBe(false);
+    expect(sessionManager.leafId).toBe(parentId);
+    expect(rewriteFile).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps queued user text that still contains real content", () => {
+    const rewriteFile = vi.fn();
+    const leafId = "user-2";
+    const sessionManager = {
+      fileEntries: [
+        { type: "session", id: "session-1" },
+        {
+          type: "message",
+          id: leafId,
+          parentId: "assistant-1",
+          message: { role: "user" },
+        },
+      ],
+      byId: new Map([[leafId, { id: leafId }]]),
+      leafId,
+      _rewriteFile: rewriteFile,
+    };
+
+    expect(
+      pruneSyntheticTrailingUserLeaf({
+        sessionManager,
+        leafEntry: {
+          id: leafId,
+          parentId: "assistant-1",
+          message: {
+            content:
+              "[Queued user message that arrived while the previous turn was still active]\n" +
+              "hello there\n\n" +
+              'Conversation info (untrusted metadata):\n```json\n{"message_id":"123"}\n```',
+          },
+        },
+      }),
+    ).toBe(false);
+    expect(sessionManager.fileEntries).toHaveLength(2);
+    expect(rewriteFile).not.toHaveBeenCalled();
   });
 });
 
@@ -1725,9 +1802,11 @@ describe("wrapStreamFnSanitizeMalformedToolCalls", () => {
     );
 
     const wrapped = wrapStreamFnSanitizeMalformedToolCalls(baseFn as never, new Set(["read"]));
-    const stream = wrapped({ api: "google-gemini" } as never, { messages } as never, {} as never) as
-      | FakeWrappedStream
-      | Promise<FakeWrappedStream>;
+    const stream = wrapped(
+      { api: "google-gemini" } as never,
+      { messages } as never,
+      {} as never,
+    ) as FakeWrappedStream | Promise<FakeWrappedStream>;
     await Promise.resolve(stream);
 
     expect(baseFn).toHaveBeenCalledTimes(1);
