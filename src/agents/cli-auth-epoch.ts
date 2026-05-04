@@ -41,10 +41,14 @@ function encodeUnknown(value: unknown): string {
 
 function encodeClaudeCredential(credential: ClaudeCliCredential): string {
   if (credential.type === "oauth") {
-    // OAuth access tokens and expiry routinely rotate during healthy refreshes.
-    // Keep continuity stable across those refreshes and only invalidate when the
-    // underlying grant identity changes.
-    return JSON.stringify(["oauth", credential.provider, credential.refresh]);
+    // Claude Code credentials do not expose a stable account/grant identifier.
+    // In practice both access and refresh tokens can rotate during healthy auth
+    // maintenance, and treating those rotations as continuity breaks causes
+    // parent OpenClaw sessions to lose their backend conversation too eagerly.
+    // Keep Claude continuity stable across token churn; explicit auth-profile
+    // changes, system-prompt changes, MCP changes, and /new still rotate the
+    // backend session when needed.
+    return JSON.stringify(["oauth", credential.provider]);
   }
   return JSON.stringify(["token", credential.provider, credential.token]);
 }

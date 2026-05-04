@@ -53,7 +53,7 @@ describe("resolveCliAuthEpoch", () => {
     expect(second).toBe(first);
   });
 
-  it("changes when the claude cli refresh token changes", async () => {
+  it("stays stable when the claude cli refresh token changes", async () => {
     let refresh = "refresh-a";
     setCliAuthEpochTestDeps({
       readClaudeCliCredentialsCached: () => ({
@@ -71,7 +71,7 @@ describe("resolveCliAuthEpoch", () => {
 
     expect(first).toBeDefined();
     expect(second).toBeDefined();
-    expect(second).not.toBe(first);
+    expect(second).toBe(first);
   });
 
   it("treats claude-cli-streaming as the same local Claude credential source", async () => {

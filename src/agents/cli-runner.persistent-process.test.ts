@@ -65,6 +65,7 @@ function buildPersistentContext(params?: {
   bundleMcpSerializedConfig?: string;
   bundleMcpEnv?: Record<string, string>;
   reusableCliSessionId?: string;
+  onAssistantDelta?: PreparedCliRunContext["params"]["onAssistantDelta"];
 }): PreparedCliRunContext {
   const backend = {
     command: "claude",
@@ -129,6 +130,7 @@ function buildPersistentContext(params?: {
       runId: crypto.randomUUID(),
       abortSignal: params?.abortSignal,
       replyOperation: params?.replyOperation,
+      onAssistantDelta: params?.onAssistantDelta,
     },
     started: Date.now(),
     workspaceDir: "/tmp",
@@ -317,23 +319,10 @@ afterEach(async () => {
 });
 
 describe("claude-cli-streaming persistent process runner", () => {
-  it("reuses the same Claude process across turns when the launch context is stable", async () => {
+  it("reuses the same Claude process across turns when the launch context is stable and OpenClaw passes the reusable Claude session id", async () => {
     const controller = installPersistentSpawnMock();
 
     const first = await executePreparedCliRun(buildPersistentContext({ prompt: "first prompt" }));
-    const second = await executePreparedCliRun(buildPersistentContext({ prompt: "second prompt" }));
-
-    expect(first.text).toBe("turn-1-1");
-    expect(first.sessionId).toBe("claude-session-1");
-    expect(second.text).toBe("turn-1-2");
-    expect(second.sessionId).toBe("claude-session-1");
-    expect(controller.getSpawnCount()).toBe(1);
-  });
-
-  it("does not relaunch on turn two when the runner starts passing the matching reusable Claude session id", async () => {
-    const controller = installPersistentSpawnMock();
-
-    await executePreparedCliRun(buildPersistentContext({ prompt: "first prompt" }));
     const second = await executePreparedCliRun(
       buildPersistentContext({
         prompt: "second prompt",
@@ -342,8 +331,23 @@ describe("claude-cli-streaming persistent process runner", () => {
       "claude-session-1",
     );
 
+    expect(first.text).toBe("turn-1-1");
+    expect(first.sessionId).toBe("claude-session-1");
     expect(second.text).toBe("turn-1-2");
+    expect(second.sessionId).toBe("claude-session-1");
     expect(controller.getSpawnCount()).toBe(1);
+  });
+
+  it("relaunches fresh on turn two when OpenClaw does not pass a reusable Claude session id", async () => {
+    const controller = installPersistentSpawnMock();
+
+    await executePreparedCliRun(buildPersistentContext({ prompt: "first prompt" }));
+    const second = await executePreparedCliRun(buildPersistentContext({ prompt: "second prompt" }));
+
+    expect(second.text).toBe("turn-2-1");
+    expect(controller.getSpawnCount()).toBe(2);
+    expect(controller.spawnInputs[1]?.argv).toContain("--session-id");
+    expect(controller.spawnInputs[1]?.argv).not.toContain("--resume");
   });
 
   it("streams assistant snapshot growth after tool work on the persistent path", async () => {
@@ -415,10 +419,22 @@ describe("claude-cli-streaming persistent process runner", () => {
     });
 
     try {
-      const result = await executePreparedCliRun(buildPersistentContext({ prompt: "tool turn" }));
+      const liveDeltas: Array<{ text: string; delta: string }> = [];
+      const result = await executePreparedCliRun(
+        buildPersistentContext({
+          prompt: "tool turn",
+          onAssistantDelta: (delta) => {
+            liveDeltas.push({ text: delta.text, delta: delta.delta });
+          },
+        }),
+      );
 
       expect(result.text).toBe("Let me check. It is 42.");
       expect(result.streamedAssistantTexts).toEqual(["Let me check.", "Let me check. It is 42."]);
+      expect(liveDeltas).toEqual([
+        { text: "Let me check.", delta: "Let me check." },
+        { text: "Let me check. It is 42.", delta: " It is 42." },
+      ]);
       expect(agentEvents).toEqual([
         { stream: "assistant", text: "Let me check.", delta: "Let me check." },
         { stream: "assistant", text: "Let me check. It is 42.", delta: " It is 42." },
@@ -433,7 +449,13 @@ describe("claude-cli-streaming persistent process runner", () => {
     const controller = installPersistentSpawnMock();
 
     await executePreparedCliRun(buildPersistentContext({ systemPrompt: "system prompt A" }));
-    await executePreparedCliRun(buildPersistentContext({ systemPrompt: "system prompt B" }));
+    await executePreparedCliRun(
+      buildPersistentContext({
+        systemPrompt: "system prompt B",
+        reusableCliSessionId: "claude-session-1",
+      }),
+      "claude-session-1",
+    );
 
     expect(controller.getSpawnCount()).toBe(2);
     expect(controller.spawnInputs[0]?.argv).toContain("--session-id");
@@ -445,7 +467,13 @@ describe("claude-cli-streaming persistent process runner", () => {
     const controller = installPersistentSpawnMock();
 
     await executePreparedCliRun(buildPersistentContext({ mcpConfigHash: "mcp-a" }));
-    await executePreparedCliRun(buildPersistentContext({ mcpConfigHash: "mcp-b" }));
+    await executePreparedCliRun(
+      buildPersistentContext({
+        mcpConfigHash: "mcp-b",
+        reusableCliSessionId: "claude-session-1",
+      }),
+      "claude-session-1",
+    );
 
     expect(controller.getSpawnCount()).toBe(2);
     expect(controller.spawnInputs[1]?.argv).toContain("--resume");
@@ -467,7 +495,9 @@ describe("claude-cli-streaming persistent process runner", () => {
         mcpConfigHash: "mcp-stable",
         bundleMcpSerializedConfig: '{"mcpServers":{"openclaw":{"url":"http://127.0.0.1:2/mcp"}}}\n',
         bundleMcpEnv: { OPENCLAW_MCP_TEMP_FILE: "/tmp/mcp-b.json" },
+        reusableCliSessionId: "claude-session-1",
       }),
+      "claude-session-1",
     );
 
     expect(controller.getSpawnCount()).toBe(1);
@@ -477,7 +507,13 @@ describe("claude-cli-streaming persistent process runner", () => {
     const controller = installPersistentSpawnMock();
 
     await executePreparedCliRun(buildPersistentContext({ skillsSignature: "skills-a" }));
-    await executePreparedCliRun(buildPersistentContext({ skillsSignature: "skills-b" }));
+    await executePreparedCliRun(
+      buildPersistentContext({
+        skillsSignature: "skills-b",
+        reusableCliSessionId: "claude-session-1",
+      }),
+      "claude-session-1",
+    );
 
     expect(controller.getSpawnCount()).toBe(2);
     expect(controller.spawnInputs[1]?.argv).toContain("--resume");
@@ -497,7 +533,9 @@ describe("claude-cli-streaming persistent process runner", () => {
       buildPersistentContext({
         backendEnv: { CLAUDE_FOO: "beta" },
         clearEnv: ["CLAUDE_BAZ"],
+        reusableCliSessionId: "claude-session-1",
       }),
+      "claude-session-1",
     );
 
     expect(controller.getSpawnCount()).toBe(2);
@@ -648,7 +686,7 @@ describe("claude-cli-streaming persistent process runner", () => {
     expect(replyOperation.detachBackend).not.toHaveBeenCalled();
   });
 
-  it("captures the pre-turn init session id so an aborted first turn can resume on the next launch", async () => {
+  it("does not implicitly resume a cached Claude session id after an aborted first turn when OpenClaw does not provide a reusable session id", async () => {
     const abortController = new AbortController();
     const controller = installPersistentSpawnMock({
       scenarios: [
@@ -691,8 +729,8 @@ describe("claude-cli-streaming persistent process runner", () => {
 
     expect(second.text).toBe("turn-2-1");
     expect(controller.getSpawnCount()).toBe(2);
-    expect(controller.spawnInputs[1]?.argv).toContain("--resume");
-    expect(controller.spawnInputs[1]?.argv).toContain("claude-session-1");
+    expect(controller.spawnInputs[1]?.argv).toContain("--session-id");
+    expect(controller.spawnInputs[1]?.argv).not.toContain("--resume");
   });
 
   it("surfaces a mid-turn process exit through the same failover path as one-shot runs", async () => {

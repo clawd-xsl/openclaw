@@ -7,6 +7,7 @@ import type { CliBackendConfig } from "../../config/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { PromptImageOrderEntry } from "../../media/prompt-image-order.js";
 import type { ResolvedCliBackend } from "../cli-backends.js";
+import type { CliStreamingDelta } from "../cli-output.js";
 import type { CliSessionInvalidationReason } from "../cli-session.js";
 import type { SkillSnapshot } from "../skills.js";
 import type { CliBundleMcpSpec } from "./bundle-mcp.js";
@@ -46,6 +47,7 @@ export type RunCliAgentParams = {
   abortSignal?: AbortSignal;
   replyOperation?: ReplyOperation;
   continuityBreakMode?: "internal-retry" | "throw";
+  onAssistantDelta?: (delta: CliStreamingDelta) => void | Promise<void>;
 };
 
 export type CliPreparedBackend = {

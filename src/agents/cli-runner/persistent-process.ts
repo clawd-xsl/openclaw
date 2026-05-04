@@ -896,10 +896,32 @@ export async function executePersistentCliTurn(
     context: params.context,
     backend: params.backend,
   });
+  const explicitResumeSessionId = normalizeOptionalString(params.resumeSessionId);
   let runtime = RUNTIMES.get(runtimeKey);
-  const previousRuntimeSessionId = runtime?.sessionId;
   if (runtime) {
     noteRuntimeActivity(runtime);
+  }
+
+  if (runtime && !explicitResumeSessionId) {
+    cliBackendLog.info(
+      `cli persistent relaunch: provider=${params.context.params.provider} reason=openclaw-cold-start session=${runtimeKey}`,
+    );
+    clearPersistentRuntimeSessionId(runtimeKey);
+    await closePersistentRuntime(runtime, "manual-cancel");
+    runtime = undefined;
+  }
+
+  if (
+    runtime &&
+    explicitResumeSessionId &&
+    runtime.sessionId &&
+    runtime.sessionId !== explicitResumeSessionId
+  ) {
+    cliBackendLog.info(
+      `cli persistent relaunch: provider=${params.context.params.provider} reason=session-binding-drift session=${runtimeKey}`,
+    );
+    await closePersistentRuntime(runtime, "manual-cancel");
+    runtime = undefined;
   }
 
   if (runtime && runtime.signature !== signature) {
@@ -911,6 +933,9 @@ export async function executePersistentCliTurn(
   }
 
   if (!runtime) {
+    if (!explicitResumeSessionId) {
+      clearPersistentRuntimeSessionId(runtimeKey);
+    }
     runtime = await launchPersistentRuntime({
       context: params.context,
       backend: params.backend,
@@ -918,10 +943,7 @@ export async function executePersistentCliTurn(
       supervisor: params.supervisor,
       runtimeKey,
       signature,
-      resumeSessionId:
-        previousRuntimeSessionId ??
-        PERSISTENT_RUNTIME_SESSION_IDS.get(runtimeKey) ??
-        params.resumeSessionId,
+      resumeSessionId: explicitResumeSessionId,
       initialSessionId: params.resolvedSessionId,
       logOutputText: params.logOutputText,
     });

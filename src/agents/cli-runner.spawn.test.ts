@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { clearRuntimeConfigSnapshot } from "../config/config.js";
 import { onAgentEvent, resetAgentEventsForTest } from "../infra/agent-events.js";
 import {
   makeBootstrapWarn as realMakeBootstrapWarn,
@@ -23,6 +24,7 @@ beforeEach(() => {
   resetAgentEventsForTest();
   restoreCliRunnerPrepareTestDeps();
   supervisorSpawnMock.mockClear();
+  clearRuntimeConfigSnapshot();
 });
 
 function buildPreparedCliRunContext(params: {
@@ -34,6 +36,7 @@ function buildPreparedCliRunContext(params: {
   config?: PreparedCliRunContext["params"]["config"];
   skillsSnapshot?: PreparedCliRunContext["params"]["skillsSnapshot"];
   workspaceDir?: string;
+  onAssistantDelta?: PreparedCliRunContext["params"]["onAssistantDelta"];
 }): PreparedCliRunContext {
   const workspaceDir = params.workspaceDir ?? "/tmp";
   const baseBackend =
@@ -87,6 +90,7 @@ function buildPreparedCliRunContext(params: {
       timeoutMs: 1_000,
       runId: params.runId,
       skillsSnapshot: params.skillsSnapshot,
+      onAssistantDelta: params.onAssistantDelta,
     },
     started: Date.now(),
     workspaceDir,
@@ -964,17 +968,25 @@ describe("runCliAgent spawn path", () => {
     });
 
     try {
+      const liveDeltas: Array<{ text: string; delta: string }> = [];
       const result = await executePreparedCliRun(
         buildPreparedCliRunContext({
           provider: "claude-cli",
           model: "sonnet",
           runId: "run-claude-tool-stream",
+          onAssistantDelta: (delta) => {
+            liveDeltas.push({ text: delta.text, delta: delta.delta });
+          },
         }),
       );
 
       expect(result.text).toBe("Let me check. It is 42.");
       expect(result.payloads).toEqual([{ text: "Let me check. It is 42." }]);
       expect(result.streamedAssistantTexts).toEqual(["Let me check.", "Let me check. It is 42."]);
+      expect(liveDeltas).toEqual([
+        { text: "Let me check.", delta: "Let me check." },
+        { text: "Let me check. It is 42.", delta: " It is 42." },
+      ]);
       expect(agentEvents).toEqual([
         { stream: "assistant", text: "Let me check.", delta: "Let me check." },
         { stream: "assistant", text: "Let me check. It is 42.", delta: " It is 42." },
@@ -1325,6 +1337,152 @@ describe("runCliAgent spawn path", () => {
     expect(promptCarrier).toContain("[Bootstrap truncation warning]");
     expect(promptCarrier).toContain("- AGENTS.md: 200 raw -> 20 injected");
     expect(promptCarrier).toContain("hi");
+  });
+
+  it("bootstraps fresh Claude runs from the full current session transcript", async () => {
+    const sessionDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-cli-transcript-tail-"));
+    const sessionFile = path.join(sessionDir, "session.jsonl");
+    await fs.writeFile(
+      sessionFile,
+      [
+        JSON.stringify({
+          id: "m1",
+          message: { role: "user", content: [{ type: "text", text: "older question" }] },
+        }),
+        JSON.stringify({
+          id: "m2",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "older answer [[reply_to_current]]" }],
+          },
+        }),
+        JSON.stringify({
+          id: "m3",
+          message: { role: "user", content: [{ type: "text", text: "middle ask" }] },
+        }),
+        JSON.stringify({
+          id: "m4",
+          message: { role: "assistant", content: [{ type: "text", text: "middle answer" }] },
+        }),
+        JSON.stringify({
+          id: "m5",
+          message: { role: "user", content: [{ type: "text", text: "current ask" }] },
+        }),
+      ].join("\n") + "\n",
+      "utf-8",
+    );
+
+    mockSuccessfulCliRun();
+    const context = buildPreparedCliRunContext({
+      provider: "claude-cli",
+      model: "sonnet",
+      runId: "run-transcript-bootstrap-fresh",
+      prompt: "current ask",
+    });
+    context.params.sessionId = "session-existing";
+    context.params.sessionFile = sessionFile;
+
+    await executePreparedCliRun(context);
+
+    const input = supervisorSpawnMock.mock.calls[0]?.[0] as {
+      argv?: string[];
+      input?: string;
+    };
+    const promptCarrier = [input.input ?? "", ...(input.argv ?? [])].join("\n");
+    expect(promptCarrier).toContain("[OpenClaw session continuity bootstrap]");
+    expect(promptCarrier).toContain("User: older question");
+    expect(promptCarrier).toContain("Assistant: older answer");
+    expect(promptCarrier).toContain("User: middle ask");
+    expect(promptCarrier).toContain("Assistant: middle answer");
+    expect(promptCarrier).not.toContain("Assistant: older answer [[reply_to_current]]");
+    expect(promptCarrier).not.toContain("User: current ask");
+    expect(promptCarrier).toContain("[Current user message]");
+    expect(promptCarrier).toContain("current ask");
+  });
+
+  it("does not inject transcript bootstrap when resuming an existing CLI session", async () => {
+    const sessionDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-cli-transcript-resume-"));
+    const sessionFile = path.join(sessionDir, "session.jsonl");
+    await fs.writeFile(
+      sessionFile,
+      [
+        JSON.stringify({
+          id: "m1",
+          message: { role: "user", content: [{ type: "text", text: "older question" }] },
+        }),
+        JSON.stringify({
+          id: "m2",
+          message: { role: "assistant", content: [{ type: "text", text: "older answer" }] },
+        }),
+      ].join("\n") + "\n",
+      "utf-8",
+    );
+
+    mockSuccessfulCliRun();
+    const context = buildPreparedCliRunContext({
+      provider: "claude-cli",
+      model: "sonnet",
+      runId: "run-transcript-bootstrap-resume",
+      prompt: "current ask",
+      backend: {
+        resumeArgs: ["-p", "--output-format", "stream-json", "--resume", "{sessionId}"],
+      },
+    });
+    context.params.sessionId = "session-existing";
+    context.params.sessionFile = sessionFile;
+
+    await executePreparedCliRun(context, "thread-123");
+
+    const input = supervisorSpawnMock.mock.calls[0]?.[0] as {
+      argv?: string[];
+      input?: string;
+    };
+    const promptCarrier = [input.input ?? "", ...(input.argv ?? [])].join("\n");
+    expect(promptCarrier).not.toContain("[OpenClaw session continuity bootstrap]");
+    expect(promptCarrier).not.toContain("User: older question");
+    expect(promptCarrier).not.toContain("Assistant: older answer");
+    expect(promptCarrier).toContain("current ask");
+  });
+
+  it("does not inject transcript bootstrap for non-Claude fresh CLI runs", async () => {
+    const sessionDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-cli-transcript-codex-"));
+    const sessionFile = path.join(sessionDir, "session.jsonl");
+    await fs.writeFile(
+      sessionFile,
+      [
+        JSON.stringify({
+          id: "m1",
+          message: { role: "user", content: [{ type: "text", text: "older question" }] },
+        }),
+        JSON.stringify({
+          id: "m2",
+          message: { role: "assistant", content: [{ type: "text", text: "older answer" }] },
+        }),
+      ].join("\n") + "\n",
+      "utf-8",
+    );
+
+    mockSuccessfulCliRun();
+    const context = buildPreparedCliRunContext({
+      provider: "codex-cli",
+      model: "gpt-5.4",
+      runId: "run-transcript-bootstrap-codex",
+      prompt: "current ask",
+    });
+    context.params.sessionId = "session-existing";
+    context.params.sessionFile = sessionFile;
+
+    await executePreparedCliRun(context);
+
+    const input = supervisorSpawnMock.mock.calls[0]?.[0] as {
+      argv?: string[];
+      input?: string;
+    };
+    const promptCarrier = [input.input ?? "", ...(input.argv ?? [])].join("\n");
+    expect(promptCarrier).not.toContain("[OpenClaw session continuity bootstrap]");
+    expect(promptCarrier).not.toContain("User: older question");
+    expect(promptCarrier).not.toContain("Assistant: older answer");
+    expect(promptCarrier).toContain("current ask");
   });
 
   it("loads workspace bootstrap files into the Claude CLI system prompt", async () => {
