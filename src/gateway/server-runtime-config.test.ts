@@ -148,6 +148,19 @@ describe("resolveGatewayRuntimeConfig", () => {
         expectedAuthMode: "none",
         expectedBindHost: "127.0.0.1",
       },
+      {
+        name: "custom binding with explicit none auth",
+        cfg: {
+          gateway: {
+            bind: "custom" as const,
+            customBindHost: "0.0.0.0",
+            auth: { mode: "none" as const },
+            controlUi: { dangerouslyAllowHostHeaderOriginFallback: true },
+          },
+        },
+        expectedAuthMode: "none",
+        expectedBindHost: "0.0.0.0",
+      },
     ])("allows $name", async ({ cfg, expectedAuthMode, expectedBindHost }) => {
       const result = await resolveGatewayRuntimeConfig({ cfg, port: 18789 });
       expect(result.authMode).toBe(expectedAuthMode);
