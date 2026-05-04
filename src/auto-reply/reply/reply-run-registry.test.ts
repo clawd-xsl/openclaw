@@ -65,6 +65,120 @@ describe("reply run registry", () => {
     expect(replyRunRegistry.isActive("agent:main:main")).toBe(false);
   });
 
+  it("allows a new operation to take over after a running abort", () => {
+    const cancel = vi.fn();
+    const oldOperation = createReplyOperation({
+      sessionKey: "agent:main:main",
+      sessionId: "session-running",
+      resetTriggered: false,
+    });
+    oldOperation.attachBackend({
+      kind: "embedded",
+      cancel,
+      isStreaming: () => false,
+    });
+    oldOperation.setPhase("running");
+
+    oldOperation.abortByUser();
+    expect(oldOperation.result).toEqual({ kind: "aborted", code: "aborted_by_user" });
+    expect(cancel).toHaveBeenCalledWith("user_abort");
+
+    const nextOperation = createReplyOperation({
+      sessionKey: "agent:main:main",
+      sessionId: "session-running",
+      resetTriggered: false,
+    });
+
+    expect(replyRunRegistry.get("agent:main:main")).toBe(nextOperation);
+
+    oldOperation.complete();
+
+    expect(replyRunRegistry.get("agent:main:main")).toBe(nextOperation);
+    expect(replyRunRegistry.isActive("agent:main:main")).toBe(true);
+
+    nextOperation.complete();
+
+    expect(replyRunRegistry.isActive("agent:main:main")).toBe(false);
+  });
+
+  it("stops reporting a running abort as active before cleanup finishes", async () => {
+    vi.useFakeTimers();
+    try {
+      const oldOperation = createReplyOperation({
+        sessionKey: "agent:main:main",
+        sessionId: "session-running",
+        resetTriggered: false,
+      });
+      oldOperation.attachBackend({
+        kind: "embedded",
+        cancel: vi.fn(),
+        isStreaming: () => false,
+      });
+      oldOperation.setPhase("running");
+
+      const idlePromise = waitForReplyRunEndBySessionId("session-running", 1_000);
+
+      oldOperation.abortByUser();
+
+      expect(replyRunRegistry.isActive("agent:main:main")).toBe(false);
+      expect(resolveActiveReplyRunSessionId("agent:main:main")).toBeUndefined();
+      expect(isReplyRunActiveForSessionId("session-running")).toBe(false);
+
+      let settled = false;
+      void idlePromise.then(() => {
+        settled = true;
+      });
+      await vi.advanceTimersByTimeAsync(100);
+      expect(settled).toBe(false);
+
+      oldOperation.complete();
+      await expect(idlePromise).resolves.toBe(true);
+    } finally {
+      await vi.runOnlyPendingTimersAsync();
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not resolve idle waiters when an aborted run is replaced", async () => {
+    vi.useFakeTimers();
+    try {
+      const oldOperation = createReplyOperation({
+        sessionKey: "agent:main:main",
+        sessionId: "session-running",
+        resetTriggered: false,
+      });
+      oldOperation.attachBackend({
+        kind: "embedded",
+        cancel: vi.fn(),
+        isStreaming: () => false,
+      });
+      oldOperation.setPhase("running");
+
+      const idlePromise = replyRunRegistry.waitForIdle("agent:main:main", 1_000);
+      let idleResolved = false;
+      void idlePromise.then(() => {
+        idleResolved = true;
+      });
+
+      oldOperation.abortByUser();
+      const nextOperation = createReplyOperation({
+        sessionKey: "agent:main:main",
+        sessionId: "session-running",
+        resetTriggered: false,
+      });
+
+      oldOperation.complete();
+      await vi.advanceTimersByTimeAsync(100);
+      expect(idleResolved).toBe(false);
+
+      nextOperation.complete();
+      await expect(idlePromise).resolves.toBe(true);
+    } finally {
+      await vi.runOnlyPendingTimersAsync();
+      vi.useRealTimers();
+    }
+  });
+
   it("queues messages only through the active running backend", async () => {
     const queueMessage = vi.fn(async () => {});
     const operation = createReplyOperation({

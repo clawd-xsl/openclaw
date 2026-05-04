@@ -120,6 +120,7 @@ export type SignalEventHandlerDeps = {
     runtime: RuntimeEnv;
     maxBytes: number;
     textLimit: number;
+    abortSignal?: AbortSignal;
     mirror?: {
       sessionKey: string;
       agentId?: string;

@@ -82,6 +82,7 @@ async function sendSignalOutbound(params: {
   accountId?: string;
   deps?: { [channelId: string]: unknown };
   replyToId?: string | null;
+  abortSignal?: AbortSignal;
 }) {
   const { send, maxBytes } = await resolveSignalSendContext(params);
   return await send(params.to, params.text, {
@@ -92,6 +93,7 @@ async function sendSignalOutbound(params: {
     maxBytes,
     accountId: params.accountId ?? undefined,
     replyToId: params.replyToId ?? undefined,
+    abortSignal: params.abortSignal,
   });
 }
 
@@ -198,6 +200,7 @@ async function sendFormattedSignalText(ctx: {
       textMode: "plain",
       textStyles: chunk.styles,
       replyToId: index === 0 ? (ctx.replyToId ?? undefined) : undefined,
+      abortSignal: ctx.abortSignal,
     });
     results.push(result);
   }
@@ -243,6 +246,7 @@ async function sendFormattedSignalMedia(ctx: {
     textMode: "plain",
     textStyles: formatted.styles,
     replyToId: ctx.replyToId ?? undefined,
+    abortSignal: ctx.abortSignal,
   });
   return attachChannelToResult("signal", result);
 }
@@ -391,7 +395,7 @@ export const signalPlugin: ChannelPlugin<ResolvedSignalAccount, SignalProbe> =
       },
       attachedResults: {
         channel: "signal",
-        sendText: async ({ cfg, to, text, accountId, deps, replyToId }) =>
+        sendText: async ({ cfg, to, text, accountId, deps, replyToId, abortSignal }) =>
           await sendSignalOutbound({
             cfg,
             to,
@@ -399,6 +403,7 @@ export const signalPlugin: ChannelPlugin<ResolvedSignalAccount, SignalProbe> =
             accountId: accountId ?? undefined,
             deps,
             replyToId,
+            abortSignal,
           }),
         sendMedia: async ({
           cfg,
@@ -410,6 +415,7 @@ export const signalPlugin: ChannelPlugin<ResolvedSignalAccount, SignalProbe> =
           accountId,
           deps,
           replyToId,
+          abortSignal,
         }) =>
           await sendSignalOutbound({
             cfg,
@@ -421,6 +427,7 @@ export const signalPlugin: ChannelPlugin<ResolvedSignalAccount, SignalProbe> =
             accountId: accountId ?? undefined,
             deps,
             replyToId,
+            abortSignal,
           }),
       },
     },

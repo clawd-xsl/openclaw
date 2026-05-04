@@ -44,6 +44,7 @@ function getHumanDelay(config: HumanDelayConfig | undefined): number {
 
 export type ReplyDispatcherOptions = {
   deliver: ReplyDispatchDeliverer;
+  abortSignal?: AbortSignal;
   responsePrefix?: string;
   transformReplyPayload?: (payload: ReplyPayload) => ReplyPayload | null;
   /** Static context for response prefix template interpolation. */
@@ -112,6 +113,7 @@ export function createReplyDispatcher(options: ReplyDispatcherOptions): ReplyDis
   let completeCalled = false;
   // Track whether we've sent a block reply (for human delay - skip delay on first block).
   let sentFirstBlock = false;
+  let aborted = options.abortSignal?.aborted === true;
   // Serialize outbound replies to preserve tool/block/final order.
   const queuedCounts: Record<ReplyDispatchKind, number> = {
     tool: 0,
@@ -123,14 +125,26 @@ export function createReplyDispatcher(options: ReplyDispatcherOptions): ReplyDis
     block: 0,
     final: 0,
   };
+  const handleAbort = () => {
+    aborted = true;
+  };
+
+  options.abortSignal?.addEventListener("abort", handleAbort, { once: true });
 
   // Register this dispatcher globally for gateway restart coordination.
   const { unregister } = registerDispatcher({
     pending: () => pending,
     waitForIdle: () => sendChain,
   });
+  const finalizeDispatcher = () => {
+    options.abortSignal?.removeEventListener("abort", handleAbort);
+    unregister();
+  };
 
   const enqueue = (kind: ReplyDispatchKind, payload: ReplyPayload) => {
+    if (aborted) {
+      return false;
+    }
     const normalized = normalizeReplyPayloadInternal(payload, {
       responsePrefix: options.responsePrefix,
       responsePrefixContext: options.responsePrefixContext,
@@ -139,7 +153,7 @@ export function createReplyDispatcher(options: ReplyDispatcherOptions): ReplyDis
       onHeartbeatStrip: options.onHeartbeatStrip,
       onSkip: (reason) => options.onSkip?.(payload, { kind, reason }),
     });
-    if (!normalized) {
+    if (!normalized || aborted) {
       return false;
     }
     queuedCounts[kind] += 1;
@@ -153,12 +167,18 @@ export function createReplyDispatcher(options: ReplyDispatcherOptions): ReplyDis
 
     sendChain = sendChain
       .then(async () => {
+        if (aborted) {
+          return;
+        }
         // Add human-like delay between block replies for natural rhythm.
         if (shouldDelay) {
           const delayMs = getHumanDelay(options.humanDelay);
           if (delayMs > 0) {
             await sleep(delayMs);
           }
+        }
+        if (aborted) {
+          return;
         }
         // Safe: deliver is called inside an async .then() callback, so even a synchronous
         // throw becomes a rejection that flows through .catch()/.finally(), ensuring cleanup.
@@ -179,7 +199,7 @@ export function createReplyDispatcher(options: ReplyDispatcherOptions): ReplyDis
         }
         if (pending === 0) {
           // Unregister from global tracking when idle.
-          unregister();
+          finalizeDispatcher();
           options.onIdle?.();
         }
       });
@@ -199,7 +219,7 @@ export function createReplyDispatcher(options: ReplyDispatcherOptions): ReplyDis
         // Still just the reservation, no replies were enqueued
         pending -= 1;
         if (pending === 0) {
-          unregister();
+          finalizeDispatcher();
           options.onIdle?.();
         }
       }

@@ -46,7 +46,10 @@ export async function dispatchInboundMessageWithBufferedDispatcher(params: {
   replyResolver?: GetReplyFromConfig;
 }): Promise<DispatchInboundResult> {
   const { dispatcher, replyOptions, markDispatchIdle, markRunComplete } =
-    createReplyDispatcherWithTyping(params.dispatcherOptions);
+    createReplyDispatcherWithTyping({
+      ...params.dispatcherOptions,
+      abortSignal: params.dispatcherOptions.abortSignal ?? params.replyOptions?.abortSignal,
+    });
   try {
     return await dispatchInboundMessage({
       ctx: params.ctx,
@@ -71,7 +74,10 @@ export async function dispatchInboundMessageWithDispatcher(params: {
   replyOptions?: Omit<GetReplyOptions, "onToolResult" | "onBlockReply">;
   replyResolver?: GetReplyFromConfig;
 }): Promise<DispatchInboundResult> {
-  const dispatcher = createReplyDispatcher(params.dispatcherOptions);
+  const dispatcher = createReplyDispatcher({
+    ...params.dispatcherOptions,
+    abortSignal: params.dispatcherOptions.abortSignal ?? params.replyOptions?.abortSignal,
+  });
   return await dispatchInboundMessage({
     ctx: params.ctx,
     cfg: params.cfg,

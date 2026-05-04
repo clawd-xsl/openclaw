@@ -6,6 +6,7 @@ import { fetchWithTimeout } from "openclaw/plugin-sdk/text-runtime";
 export type SignalRpcOptions = {
   baseUrl: string;
   timeoutMs?: number;
+  abortSignal?: AbortSignal;
 };
 
 export type SignalRpcError = {
@@ -87,6 +88,7 @@ export async function signalRpcRequest<T = unknown>(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body,
+      signal: opts.abortSignal,
     },
     opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     getRequiredFetch(),

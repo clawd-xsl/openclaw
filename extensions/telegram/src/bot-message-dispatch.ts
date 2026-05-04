@@ -18,6 +18,7 @@ import { resolveSendableOutboundReplyParts } from "openclaw/plugin-sdk/reply-pay
 import type { ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { danger, logVerbose } from "openclaw/plugin-sdk/runtime-env";
+import { parseInlineDirectives } from "openclaw/plugin-sdk/text-runtime";
 import { defaultTelegramBotDeps, type TelegramBotDeps } from "./bot-deps.js";
 import type { TelegramMessageContext } from "./bot-message-context.js";
 import {
@@ -66,9 +67,58 @@ import { editMessageTelegram } from "./send.js";
 import { cacheSticker, describeStickerImage } from "./sticker-cache.js";
 
 const EMPTY_RESPONSE_FALLBACK = "No response generated. Please try again.";
+const TELEGRAM_PREVIEW_DIRECTIVE_PREFIXES = [
+  "audio_as_voice",
+  "reply_to",
+  "reply_to:",
+  "reply_to_current",
+] as const;
 
 /** Minimum chars before sending first streaming message (improves push notification UX) */
 const DRAFT_MIN_INITIAL_CHARS = 30;
+
+function stripTrailingPartialInlineDirectiveForPreview(text: string): string {
+  const openIndex = text.lastIndexOf("[[");
+  if (openIndex < 0) {
+    return text;
+  }
+  const closeIndex = text.indexOf("]]", openIndex + 2);
+  if (closeIndex >= 0) {
+    return text;
+  }
+  const suffix = text
+    .slice(openIndex + 2)
+    .trimStart()
+    .toLowerCase()
+    .replace(/\s*:\s*/g, ":");
+  const looksLikeKnownDirective =
+    suffix.length === 0 ||
+    TELEGRAM_PREVIEW_DIRECTIVE_PREFIXES.some(
+      (known) => known.startsWith(suffix) || suffix.startsWith(known),
+    );
+  if (!looksLikeKnownDirective) {
+    return text;
+  }
+  return text.slice(0, openIndex);
+}
+
+function sanitizeDraftPreviewText(text: string | undefined): string | undefined {
+  if (!text || !text.includes("[[")) {
+    return text;
+  }
+  const withoutTrailingDirectiveTail = stripTrailingPartialInlineDirectiveForPreview(text);
+  if (!withoutTrailingDirectiveTail.includes("[[")) {
+    return withoutTrailingDirectiveTail;
+  }
+  const parsed = parseInlineDirectives(withoutTrailingDirectiveTail, {
+    stripAudioTag: true,
+    stripReplyTags: true,
+  });
+  if (!parsed.hasAudioTag && !parsed.hasReplyTag) {
+    return withoutTrailingDirectiveTail;
+  }
+  return parsed.text;
+}
 
 async function resolveStickerVisionSupport(cfg: OpenClawConfig, agentId: string) {
   try {
@@ -367,14 +417,20 @@ export const dispatchTelegramMessage = async ({
   };
   const ingestDraftLaneSegments = async (text: string | undefined) => {
     const split = splitTextIntoLaneSegments(text);
-    const hasAnswerSegment = split.segments.some((segment) => segment.lane === "answer");
+    const sanitizedSegments = split.segments
+      .map((segment) => ({
+        ...segment,
+        text: sanitizeDraftPreviewText(segment.text),
+      }))
+      .filter((segment): segment is SplitLaneSegment => Boolean(segment.text));
+    const hasAnswerSegment = sanitizedSegments.some((segment) => segment.lane === "answer");
     if (hasAnswerSegment && activePreviewLifecycleByLane.answer !== "transient") {
       // Some providers can emit the first partial of a new assistant message before
       // onAssistantMessageStart() arrives. Rotate preemptively so we do not edit
       // the previously finalized preview message with the next message's text.
       skipNextAnswerMessageStartRotation = await rotateAnswerLaneForNewAssistantMessage();
     }
-    for (const segment of split.segments) {
+    for (const segment of sanitizedSegments) {
       if (segment.lane === "reasoning") {
         reasoningStepState.noteReasoningHint();
         reasoningStepState.noteReasoningDelivered();

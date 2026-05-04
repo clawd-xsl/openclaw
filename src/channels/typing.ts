@@ -16,7 +16,10 @@ export type CreateTypingCallbacksParams = {
   keepaliveIntervalMs?: number;
   /** Stop keepalive after this many consecutive start() failures. Default: 2 */
   maxConsecutiveFailures?: number;
-  /** Maximum duration for typing indicator before auto-cleanup (safety TTL). Default: 60s */
+  /**
+   * Maximum inactivity window for typing keepalive before auto-cleanup.
+   * Each successful typing keepalive refreshes this TTL. Default: 60s.
+   */
   maxDurationMs?: number;
 };
 
@@ -39,7 +42,10 @@ export function createTypingCallbacks(params: CreateTypingCallbacksParams): Typi
   });
 
   const fireStart = async (): Promise<void> => {
-    await startGuard.run(() => params.start());
+    const result = await startGuard.run(() => params.start());
+    if (!closed && result === "started") {
+      startTtlTimer();
+    }
   };
 
   const keepaliveLoop = createTypingKeepaliveLoop({
@@ -47,7 +53,7 @@ export function createTypingCallbacks(params: CreateTypingCallbacksParams): Typi
     onTick: fireStart,
   });
 
-  // TTL safety: auto-stop typing after maxDurationMs
+  // TTL safety: auto-stop typing after maxDurationMs of keepalive inactivity.
   const startTtlTimer = () => {
     if (maxDurationMs <= 0) {
       return;
@@ -81,7 +87,6 @@ export function createTypingCallbacks(params: CreateTypingCallbacksParams): Typi
       return;
     }
     keepaliveLoop.start();
-    startTtlTimer(); // Start TTL safety timer
   };
 
   const fireStop = () => {

@@ -98,4 +98,27 @@ describe("signalPlugin outbound", () => {
     );
     expect(result).toMatchObject({ channel: "signal", messageId: "m2" });
   });
+
+  it("forwards abortSignal through attached text sends", async () => {
+    const sendMessageSignal = vi.fn(async () => ({ messageId: "m3" }));
+    const abortController = new AbortController();
+
+    await signalPlugin.outbound!.sendText!({
+      cfg: {} as OpenClawConfig,
+      to: "signal:+15550002222",
+      text: "caption",
+      abortSignal: abortController.signal,
+      deps: {
+        signal: sendMessageSignal,
+      },
+    });
+
+    expect(sendMessageSignal).toHaveBeenCalledWith(
+      "signal:+15550002222",
+      "caption",
+      expect.objectContaining({
+        abortSignal: abortController.signal,
+      }),
+    );
+  });
 });

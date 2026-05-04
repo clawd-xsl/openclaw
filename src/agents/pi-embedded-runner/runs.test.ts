@@ -1,15 +1,21 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { importFreshModule } from "../../../test/helpers/import-fresh.js";
 import {
+  __testing as replyRunTesting,
+  replyRunRegistry,
+} from "../../auto-reply/reply/reply-run-registry.js";
+import {
   __testing,
   abortEmbeddedPiRun,
   clearActiveEmbeddedRun,
   consumeEmbeddedRunModelSwitch,
   getActiveEmbeddedRunSnapshot,
+  isEmbeddedPiRunActive,
   requestEmbeddedRunModelSwitch,
   setActiveEmbeddedRun,
   updateActiveEmbeddedRunSnapshot,
   waitForActiveEmbeddedRuns,
+  waitForEmbeddedPiRunEnd,
 } from "./runs.js";
 
 type RunHandle = Parameters<typeof setActiveEmbeddedRun>[1];
@@ -29,6 +35,7 @@ function createRunHandle(
 describe("pi-embedded runner run registry", () => {
   afterEach(() => {
     __testing.resetActiveEmbeddedRuns();
+    replyRunTesting.resetReplyRunRegistry();
     vi.restoreAllMocks();
   });
 
@@ -63,6 +70,35 @@ describe("pi-embedded runner run registry", () => {
     expect(abortB).toHaveBeenCalledTimes(1);
   });
 
+  it("aborts the attached reply operation for a live embedded run", () => {
+    const abort = vi.fn();
+    const cancel = vi.fn();
+    const handle: RunHandle = {
+      queueMessage: async () => {},
+      isStreaming: () => true,
+      isCompacting: () => false,
+      abort,
+      cancel,
+    };
+
+    setActiveEmbeddedRun("session-live", handle, "session-key");
+    const operation = replyRunRegistry.begin({
+      sessionKey: "session-key",
+      sessionId: "session-live",
+      resetTriggered: false,
+    });
+    operation.attachBackend(handle);
+
+    expect(abortEmbeddedPiRun("session-live")).toBe(true);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(abort).not.toHaveBeenCalled();
+
+    clearActiveEmbeddedRun("session-live", handle, "session-key");
+
+    expect(replyRunRegistry.isActive("session-key")).toBe(false);
+    expect(isEmbeddedPiRunActive("session-live")).toBe(false);
+  });
+
   it("waits for active runs to drain", async () => {
     vi.useFakeTimers();
     try {
@@ -77,6 +113,48 @@ describe("pi-embedded runner run registry", () => {
       const result = await waitPromise;
 
       expect(result.drained).toBe(true);
+    } finally {
+      await vi.runOnlyPendingTimersAsync();
+      vi.useRealTimers();
+    }
+  });
+
+  it("waits for reply cleanup after the embedded handle clears", async () => {
+    vi.useFakeTimers();
+    try {
+      const abort = vi.fn();
+      const cancel = vi.fn();
+      const handle: RunHandle = {
+        queueMessage: async () => {},
+        isStreaming: () => true,
+        isCompacting: () => false,
+        abort,
+        cancel,
+      };
+
+      setActiveEmbeddedRun("session-wait", handle, "session-key");
+      const operation = replyRunRegistry.begin({
+        sessionKey: "session-key",
+        sessionId: "session-wait",
+        resetTriggered: false,
+      });
+      operation.setPhase("running");
+      operation.attachBackend(handle);
+
+      expect(abortEmbeddedPiRun("session-wait")).toBe(true);
+
+      let resolved = false;
+      const waitPromise = waitForEmbeddedPiRunEnd("session-wait", 1_000).then((value) => {
+        resolved = true;
+        return value;
+      });
+
+      clearActiveEmbeddedRun("session-wait", handle, "session-key");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(resolved).toBe(false);
+
+      operation.complete();
+      await expect(waitPromise).resolves.toBe(true);
     } finally {
       await vi.runOnlyPendingTimersAsync();
       vi.useRealTimers();

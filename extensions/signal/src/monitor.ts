@@ -322,6 +322,7 @@ function createSingleUseSignalReplySender(params: {
   maxBytes: number;
   replyToId?: string;
   traceLabel?: string;
+  abortSignal?: AbortSignal;
   sendMessage?: typeof sendMessageSignal;
 }) {
   const sendMessage = params.sendMessage ?? sendMessageSignal;
@@ -337,6 +338,7 @@ function createSingleUseSignalReplySender(params: {
     account: params.account,
     maxBytes: params.maxBytes,
     accountId: params.accountId,
+    abortSignal: params.abortSignal,
   };
   return {
     sendText: async (text: string) => {
@@ -401,6 +403,7 @@ async function deliverReplies(params: {
   maxBytes: number;
   textLimit: number;
   chunkMode: "length" | "newline";
+  abortSignal?: AbortSignal;
   mirror?: {
     sessionKey: string;
     agentId?: string;
@@ -435,6 +438,7 @@ async function deliverReplies(params: {
       maxBytes,
       replyToId: payload.replyToId ?? undefined,
       traceLabel: params.traceLabel,
+      abortSignal: params.abortSignal,
     });
     const delivered = await deliverTextOrMediaReply({
       payload,

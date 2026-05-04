@@ -587,6 +587,37 @@ describe("dispatchTelegramMessage draft streaming", () => {
     expect(answerDraftStream.update).toHaveBeenCalledWith("Visible answer");
   });
 
+  it("strips reply_to_current tags from answer draft previews", async () => {
+    const answerDraftStream = createDraftStream(999);
+    createTelegramDraftStream.mockImplementationOnce(() => answerDraftStream);
+    dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ replyOptions }) => {
+      await replyOptions?.onPartialReply?.({ text: "[[reply_to_current]]Visible answer" });
+      return { queuedFinal: false };
+    });
+
+    await dispatchWithContext({ context: createContext(), streamMode: "partial" });
+
+    expect(answerDraftStream.update).toHaveBeenCalledWith("Visible answer");
+    expect(answerDraftStream.update.mock.calls.some((call) => (call[0] ?? "").includes("[["))).toBe(
+      false,
+    );
+  });
+
+  it("hides split reply_to_current tag prefixes until visible answer text arrives", async () => {
+    const answerDraftStream = createDraftStream(999);
+    createTelegramDraftStream.mockImplementationOnce(() => answerDraftStream);
+    dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ replyOptions }) => {
+      await replyOptions?.onPartialReply?.({ text: "[[reply_to_cur" });
+      await replyOptions?.onPartialReply?.({ text: "[[reply_to_current]]Visible answer" });
+      return { queuedFinal: false };
+    });
+
+    await dispatchWithContext({ context: createContext(), streamMode: "partial" });
+
+    expect(answerDraftStream.update).toHaveBeenCalledTimes(1);
+    expect(answerDraftStream.update).toHaveBeenCalledWith("Visible answer");
+  });
+
   it("does not overwrite finalized preview when additional final payloads are sent", async () => {
     const draftStream = createDraftStream(999);
     createTelegramDraftStream.mockReturnValue(draftStream);

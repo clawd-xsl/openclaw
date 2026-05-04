@@ -19,6 +19,17 @@ function createBlockReplyHarness(blockReplyBreak: "message_end" | "text_end") {
   return { emit, onBlockReply };
 }
 
+function createTypingHarness() {
+  const { session, emit } = createStubSessionHarness();
+  const onAssistantMessageStart = vi.fn();
+  subscribeEmbeddedPiSession({
+    session,
+    runId: "run",
+    onAssistantMessageStart,
+  });
+  return { emit, onAssistantMessageStart };
+}
+
 async function emitMessageToolLifecycle(params: {
   emit: (evt: unknown) => void;
   toolCallId: string;
@@ -62,6 +73,38 @@ function emitAssistantTextEndBlock(emit: (evt: unknown) => void, text: string) {
 }
 
 describe("subscribeEmbeddedPiSession", () => {
+  it("does not restart typing for a suppressed assistant follow-up after message tool delivery", async () => {
+    const { emit, onAssistantMessageStart } = createTypingHarness();
+
+    await emitMessageToolLifecycle({
+      emit,
+      toolCallId: "tool-message-typing",
+      message: "This is the answer.",
+      result: "ok",
+    });
+
+    emit({ type: "message_start", message: { role: "assistant" } });
+    await Promise.resolve();
+
+    expect(onAssistantMessageStart).not.toHaveBeenCalled();
+  });
+
+  it("still starts typing when the message tool send fails", async () => {
+    const { emit, onAssistantMessageStart } = createTypingHarness();
+
+    await emitMessageToolLifecycle({
+      emit,
+      toolCallId: "tool-message-typing-err",
+      message: "Please retry the send.",
+      result: { details: { status: "error" } },
+    });
+
+    emit({ type: "message_start", message: { role: "assistant" } });
+    await Promise.resolve();
+
+    expect(onAssistantMessageStart).toHaveBeenCalledTimes(1);
+  });
+
   it("suppresses message_end block replies when the message tool already sent", async () => {
     const { emit, onBlockReply } = createBlockReplyHarness("message_end");
 

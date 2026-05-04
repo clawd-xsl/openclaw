@@ -286,6 +286,90 @@ describe("handleChatEvent", () => {
     expect(state.chatStreamStartedAt).toBe(null);
   });
 
+  it("does not append a duplicate final payload message from own run", () => {
+    const existingMessage = {
+      role: "assistant",
+      content: [{ type: "text", text: "Reply" }],
+      timestamp: 100,
+    };
+    const state = createState({
+      sessionKey: "main",
+      chatRunId: "run-1",
+      chatMessages: [existingMessage],
+    });
+    const payload: ChatEventPayload = {
+      runId: "run-1",
+      sessionKey: "main",
+      state: "final",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "Reply" }],
+        timestamp: 101,
+      },
+    };
+
+    expect(handleChatEvent(state, payload)).toBe("final");
+    expect(state.chatMessages).toEqual([existingMessage]);
+  });
+
+  it("does not append a duplicate final payload message from another run", () => {
+    const existingMessage = {
+      role: "assistant",
+      content: [{ type: "text", text: "Sub-agent findings" }],
+      timestamp: 100,
+    };
+    const state = createState({
+      sessionKey: "main",
+      chatRunId: "run-user",
+      chatMessages: [existingMessage],
+      chatStream: "Working...",
+      chatStreamStartedAt: 123,
+    });
+    const payload: ChatEventPayload = {
+      runId: "run-announce",
+      sessionKey: "main",
+      state: "final",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "Sub-agent findings" }],
+        timestamp: 101,
+      },
+    };
+
+    expect(handleChatEvent(state, payload)).toBe(null);
+    expect(state.chatMessages).toEqual([existingMessage]);
+    expect(state.chatRunId).toBe("run-user");
+    expect(state.chatStream).toBe("Working...");
+  });
+
+  it("does not append a duplicate assistant message when ids match", () => {
+    const existingMessage = {
+      id: "msg-1",
+      role: "assistant",
+      content: [{ type: "text", text: "First copy" }],
+      timestamp: 100,
+    };
+    const state = createState({
+      sessionKey: "main",
+      chatRunId: "run-1",
+      chatMessages: [existingMessage],
+    });
+    const payload: ChatEventPayload = {
+      runId: "run-1",
+      sessionKey: "main",
+      state: "final",
+      message: {
+        id: "msg-1",
+        role: "assistant",
+        content: [{ type: "text", text: "Second copy with same id" }],
+        timestamp: 101,
+      },
+    };
+
+    expect(handleChatEvent(state, payload)).toBe("final");
+    expect(state.chatMessages).toEqual([existingMessage]);
+  });
+
   it("processes aborted from own run and keeps partial assistant message", () => {
     const existingMessage = {
       role: "user",

@@ -236,7 +236,7 @@ describe("runReplyAgent heartbeat followup guard", () => {
     expect(state.runEmbeddedPiAgentMock).not.toHaveBeenCalled();
   });
 
-  it("does not block a successful reply on deferred session persistence", async () => {
+  it("waits for session continuity persistence before returning a successful reply", async () => {
     const accounting = await import("./session-run-accounting.js");
     let resolveContinuityPersist: (() => void) | undefined;
     let resolveAccountingPersist: (() => void) | undefined;
@@ -267,14 +267,22 @@ describe("runReplyAgent heartbeat followup guard", () => {
           setTimeout(() => resolve({ kind: "timeout" }), 500),
         ),
       ]);
-      expect(result).toMatchObject({
+      expect(result).toEqual({ kind: "timeout" });
+      expect(continuitySpy).toHaveBeenCalledTimes(1);
+      expect(accountingSpy).toHaveBeenCalledTimes(1);
+      resolveContinuityPersist?.();
+      resolveContinuityPersist = undefined;
+      const resumed = await Promise.race([
+        runPromise.then((value) => ({ kind: "resolved" as const, value })),
+        new Promise<{ kind: "timeout" }>((resolve) =>
+          setTimeout(() => resolve({ kind: "timeout" }), 500),
+        ),
+      ]);
+      expect(resumed).toMatchObject({
         kind: "resolved",
         value: { text: "final" },
       });
-      expect(continuitySpy).toHaveBeenCalledTimes(1);
-      expect(accountingSpy).toHaveBeenCalledTimes(1);
     } finally {
-      resolveContinuityPersist?.();
       resolveAccountingPersist?.();
       await runPromise?.catch(() => undefined);
       continuitySpy.mockRestore();

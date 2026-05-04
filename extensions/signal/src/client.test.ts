@@ -52,6 +52,27 @@ describe("signalRpcRequest", () => {
     expect(result).toEqual({ version: "0.13.22" });
   });
 
+  it("forwards abortSignal into the RPC fetch", async () => {
+    fetchWithTimeoutMock.mockResolvedValueOnce(
+      rpcResponse({ jsonrpc: "2.0", result: { ok: true }, id: "test-id" }),
+    );
+    const abortController = new AbortController();
+
+    await signalRpcRequest<{ ok: boolean }>("version", undefined, {
+      baseUrl: "http://127.0.0.1:8080",
+      abortSignal: abortController.signal,
+    });
+
+    expect(fetchWithTimeoutMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8080/api/v1/rpc",
+      expect.objectContaining({
+        signal: abortController.signal,
+      }),
+      10_000,
+      expect.any(Function),
+    );
+  });
+
   it("throws a wrapped error when RPC response JSON is malformed", async () => {
     fetchWithTimeoutMock.mockResolvedValueOnce(rpcResponse("not-json", 502));
 

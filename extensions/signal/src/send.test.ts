@@ -58,7 +58,30 @@ describe("signal send helpers", () => {
       {
         baseUrl: "http://signal.local",
         timeoutMs: undefined,
+        abortSignal: undefined,
       },
+    );
+  });
+
+  it("passes abortSignal through message sends", async () => {
+    const abortController = new AbortController();
+
+    await sendMessageSignal("signal:+15550002222", "reply", {
+      accountId: "work",
+      textMode: "plain",
+      abortSignal: abortController.signal,
+    });
+
+    expect(rpcMock).toHaveBeenCalledWith(
+      "send",
+      expect.objectContaining({
+        account: "+15550001111",
+        message: "reply",
+        recipient: ["+15550002222"],
+      }),
+      expect.objectContaining({
+        abortSignal: abortController.signal,
+      }),
     );
   });
 
@@ -78,6 +101,7 @@ describe("signal send helpers", () => {
       {
         baseUrl: "http://signal.local",
         timeoutMs: undefined,
+        abortSignal: undefined,
       },
     );
   });

@@ -108,6 +108,7 @@ export function createFollowupRunner(params: {
           requesterSenderE164: queued.run.senderE164,
           threadId: queued.originatingThreadId,
           cfg: runtimeConfig,
+          abortSignal: opts?.abortSignal,
         });
         if (!result.ok) {
           const errorMsg = result.error ?? "unknown error";

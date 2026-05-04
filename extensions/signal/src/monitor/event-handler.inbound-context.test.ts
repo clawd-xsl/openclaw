@@ -178,6 +178,73 @@ describe("signal createSignalEventHandler inbound context", () => {
     expect(sendTypingMock).toHaveBeenCalledTimes(1);
   });
 
+  it("aborts the previous inbound reply signal when a new DM arrives for the same session", async () => {
+    let firstAbortSignal: AbortSignal | undefined;
+    let firstDispatchStartedResolve: (() => void) | undefined;
+    const firstDispatchStarted = new Promise<void>((resolve) => {
+      firstDispatchStartedResolve = resolve;
+    });
+
+    dispatchInboundMessageMock
+      .mockImplementationOnce(
+        async (params: { ctx: MsgContext; replyOptions?: { abortSignal?: AbortSignal } }) => {
+          capture.ctx = params.ctx;
+          firstAbortSignal = params.replyOptions?.abortSignal;
+          firstDispatchStartedResolve?.();
+          await new Promise<void>((resolve) => {
+            params.replyOptions?.abortSignal?.addEventListener("abort", () => resolve(), {
+              once: true,
+            });
+          });
+          return { queuedFinal: false, counts: { tool: 0, block: 0, final: 0 } };
+        },
+      )
+      .mockResolvedValueOnce({ queuedFinal: false, counts: { tool: 0, block: 0, final: 0 } });
+
+    const handler = createSignalEventHandler(
+      createBaseSignalEventHandlerDeps({
+        cfg: {
+          messages: { inbound: { debounceMs: 0 } },
+          channels: { signal: { dmPolicy: "open", allowFrom: ["*"] } },
+        },
+        historyLimit: 0,
+      }),
+    );
+
+    const first = handler(
+      createSignalReceiveEvent({
+        dataMessage: {
+          message: "first",
+          attachments: [],
+        },
+      }),
+    );
+    await firstDispatchStarted;
+    expect(firstAbortSignal?.aborted).toBe(false);
+
+    await handler(
+      createSignalReceiveEvent({
+        dataMessage: {
+          message: "second",
+          attachments: [],
+        },
+      }),
+    );
+
+    expect(dispatchInboundMessageMock).toHaveBeenCalledTimes(2);
+    expect(firstAbortSignal?.aborted).toBe(true);
+    const secondAbortSignal = (
+      dispatchInboundMessageMock.mock.calls[1]?.[0] as
+        | { replyOptions?: { abortSignal?: AbortSignal } }
+        | undefined
+    )?.replyOptions?.abortSignal;
+    expect(secondAbortSignal).toBeDefined();
+    expect(secondAbortSignal).not.toBe(firstAbortSignal);
+    expect(secondAbortSignal?.aborted).toBe(false);
+
+    await first;
+  });
+
   it("does not auto-authorize DM commands in open mode without allowlists", async () => {
     const handler = createSignalEventHandler(
       createBaseSignalEventHandlerDeps({

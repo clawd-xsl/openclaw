@@ -144,6 +144,10 @@ export function abortEmbeddedPiRun(
       diag.debug(`abort failed: sessionId=${sessionId} reason=no_active_run`);
       return false;
     }
+    if (abortReplyRunBySessionId(sessionId)) {
+      diag.debug(`aborting run via reply operation: sessionId=${sessionId}`);
+      return true;
+    }
     diag.debug(`aborting run: sessionId=${sessionId}`);
     try {
       handle.abort();
@@ -226,6 +230,37 @@ export function getActiveEmbeddedRunCount(): number {
   return Math.max(activeCount, getActiveReplyRunCount());
 }
 
+function waitForEmbeddedHandleEnd(sessionId: string, timeoutMs: number): Promise<boolean> {
+  diag.debug(`waiting for run end: sessionId=${sessionId} timeoutMs=${timeoutMs}`);
+  return new Promise((resolve) => {
+    const waiters = EMBEDDED_RUN_WAITERS.get(sessionId) ?? new Set();
+    const waiter: EmbeddedRunWaiter = {
+      resolve,
+      timer: setTimeout(
+        () => {
+          waiters.delete(waiter);
+          if (waiters.size === 0) {
+            EMBEDDED_RUN_WAITERS.delete(sessionId);
+          }
+          diag.warn(`wait timeout: sessionId=${sessionId} timeoutMs=${timeoutMs}`);
+          resolve(false);
+        },
+        Math.max(100, timeoutMs),
+      ),
+    };
+    waiters.add(waiter);
+    EMBEDDED_RUN_WAITERS.set(sessionId, waiters);
+    if (!ACTIVE_EMBEDDED_RUNS.has(sessionId)) {
+      waiters.delete(waiter);
+      if (waiters.size === 0) {
+        EMBEDDED_RUN_WAITERS.delete(sessionId);
+      }
+      clearTimeout(waiter.timer);
+      resolve(true);
+    }
+  });
+}
+
 export function getActiveEmbeddedRunSnapshot(
   sessionId: string,
 ): ActiveEmbeddedRunSnapshot | undefined {
@@ -304,36 +339,20 @@ export function waitForEmbeddedPiRunEnd(sessionId: string, timeoutMs = 15_000): 
   if (!sessionId) {
     return Promise.resolve(true);
   }
+  const startedAt = Date.now();
+  const waitForReplyIdle = async () => {
+    const elapsedMs = Date.now() - startedAt;
+    const remainingMs = Math.max(0, timeoutMs - elapsedMs);
+    return waitForReplyRunEndBySessionId(sessionId, remainingMs);
+  };
   if (!ACTIVE_EMBEDDED_RUNS.has(sessionId)) {
-    return waitForReplyRunEndBySessionId(sessionId, timeoutMs);
+    return waitForReplyIdle();
   }
-  diag.debug(`waiting for run end: sessionId=${sessionId} timeoutMs=${timeoutMs}`);
-  return new Promise((resolve) => {
-    const waiters = EMBEDDED_RUN_WAITERS.get(sessionId) ?? new Set();
-    const waiter: EmbeddedRunWaiter = {
-      resolve,
-      timer: setTimeout(
-        () => {
-          waiters.delete(waiter);
-          if (waiters.size === 0) {
-            EMBEDDED_RUN_WAITERS.delete(sessionId);
-          }
-          diag.warn(`wait timeout: sessionId=${sessionId} timeoutMs=${timeoutMs}`);
-          resolve(false);
-        },
-        Math.max(100, timeoutMs),
-      ),
-    };
-    waiters.add(waiter);
-    EMBEDDED_RUN_WAITERS.set(sessionId, waiters);
-    if (!ACTIVE_EMBEDDED_RUNS.has(sessionId)) {
-      waiters.delete(waiter);
-      if (waiters.size === 0) {
-        EMBEDDED_RUN_WAITERS.delete(sessionId);
-      }
-      clearTimeout(waiter.timer);
-      resolve(true);
+  return waitForEmbeddedHandleEnd(sessionId, timeoutMs).then(async (ended) => {
+    if (!ended) {
+      return false;
     }
+    return waitForReplyIdle();
   });
 }
 

@@ -1,5 +1,7 @@
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import { isSilentReplyPayloadText, SILENT_REPLY_TOKEN } from "../../../auto-reply/tokens.js";
 import type { EmbeddedPiExecutionContract } from "../../../config/types.agent-defaults.js";
+import { extractAssistantVisibleText } from "../../../shared/chat-message-content.js";
 import { normalizeLowercaseStringOrEmpty } from "../../../shared/string-coerce.js";
 import { isStrictAgenticSupportedProviderModel } from "../../execution-contract.js";
 import { isLikelyMutatingToolName } from "../../tool-mutation.js";
@@ -259,6 +261,10 @@ function isEmptyResponseAssistantTurn(params: {
   const assistant = params.attempt.currentAttemptAssistant ?? params.attempt.lastAssistant;
   if (!assistant) {
     return true;
+  }
+  const assistantVisibleText = extractAssistantVisibleText(assistant);
+  if (isSilentReplyPayloadText(assistantVisibleText, SILENT_REPLY_TOKEN)) {
+    return false;
   }
   if (assistant.stopReason === "error") {
     return false;

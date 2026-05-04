@@ -128,6 +128,11 @@ function resolveSignalInboundRoute(params: {
 const SIGNAL_TYPING_START_DEDUPE_WINDOW_MS = 2_500;
 
 export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
+  const activeReplyAbortControllers = new Map<
+    string,
+    { token: symbol; controller: AbortController }
+  >();
+
   type SignalInboundEntry = {
     senderName: string;
     senderDisplay: string;
@@ -180,241 +185,268 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
       groupId: entry.groupId,
       senderPeerId: entry.senderPeerId,
     });
-    const storePath = resolveStorePath(deps.cfg.session?.store, {
-      agentId: route.agentId,
-    });
-    const envelopeOptions = resolveEnvelopeFormatOptions(deps.cfg);
-    const previousTimestamp = readSessionUpdatedAt({
-      storePath,
-      sessionKey: route.sessionKey,
-    });
-    const body = formatInboundEnvelope({
-      channel: "Signal",
-      from: fromLabel,
-      timestamp: entry.timestamp ?? undefined,
-      body: entry.bodyText,
-      chatType: entry.isGroup ? "group" : "direct",
-      sender: { name: entry.senderName, id: entry.senderDisplay },
-      previousTimestamp,
-      envelope: envelopeOptions,
-    });
-    let combinedBody = body;
-    const historyKey = entry.isGroup ? (entry.groupId ?? "unknown") : undefined;
-    if (entry.isGroup && historyKey) {
-      combinedBody = buildPendingHistoryContextFromMap({
-        historyMap: deps.groupHistories,
-        historyKey,
-        limit: deps.historyLimit,
-        currentMessage: combinedBody,
-        formatEntry: (historyEntry) =>
-          formatInboundEnvelope({
-            channel: "Signal",
-            from: fromLabel,
-            timestamp: historyEntry.timestamp,
-            body: `${historyEntry.body}${
-              historyEntry.messageId ? ` [id:${historyEntry.messageId}]` : ""
-            }`,
-            chatType: "group",
-            senderLabel: historyEntry.sender,
-            envelope: envelopeOptions,
-          }),
-      });
+    const replyAbortToken = Symbol(route.sessionKey);
+    const replyAbortController = new AbortController();
+    const previousReplyAbort = activeReplyAbortControllers.get(route.sessionKey);
+    if (previousReplyAbort) {
+      previousReplyAbort.controller.abort(
+        new Error(`Signal inbound reply superseded for ${route.sessionKey}`),
+      );
     }
-    const signalToRaw = entry.isGroup
-      ? `group:${entry.groupId}`
-      : `signal:${entry.senderRecipient}`;
-    const signalTo = normalizeSignalMessagingTarget(signalToRaw) ?? signalToRaw;
-    const inboundHistory =
-      entry.isGroup && historyKey && deps.historyLimit > 0
-        ? (deps.groupHistories.get(historyKey) ?? []).map((historyEntry) => ({
-            sender: historyEntry.sender,
-            body: historyEntry.body,
-            timestamp: historyEntry.timestamp,
-          }))
-        : undefined;
-    const ctxPayload = finalizeInboundContext({
-      Body: combinedBody,
-      BodyForAgent: entry.bodyText,
-      InboundHistory: inboundHistory,
-      RawBody: entry.bodyText,
-      CommandBody: entry.commandBody,
-      BodyForCommands: entry.commandBody,
-      From: entry.isGroup
-        ? `group:${entry.groupId ?? "unknown"}`
-        : `signal:${entry.senderRecipient}`,
-      To: signalTo,
-      SessionKey: route.sessionKey,
-      AccountId: route.accountId,
-      ChatType: entry.isGroup ? "group" : "direct",
-      ConversationLabel: fromLabel,
-      GroupSubject: entry.isGroup ? (entry.groupName ?? undefined) : undefined,
-      SenderName: entry.senderName,
-      SenderId: entry.senderDisplay,
-      Provider: "signal" as const,
-      Surface: "signal" as const,
-      MessageSid: entry.messageId,
-      ReplyToBody: entry.replyToBody,
-      ReplyToSender: entry.replyToSender,
-      ReplyToIsQuote: entry.replyToIsQuote,
-      Timestamp: entry.timestamp ?? undefined,
-      MediaPath: entry.mediaPath,
-      MediaType: entry.mediaType,
-      MediaUrl: entry.mediaPath,
-      MediaPaths: entry.mediaPaths,
-      MediaUrls: entry.mediaPaths,
-      MediaTypes: entry.mediaTypes,
-      WasMentioned: entry.isGroup ? entry.wasMentioned === true : undefined,
-      CommandAuthorized: entry.commandAuthorized,
-      OriginatingChannel: "signal" as const,
-      OriginatingTo: signalTo,
+    activeReplyAbortControllers.set(route.sessionKey, {
+      token: replyAbortToken,
+      controller: replyAbortController,
     });
-
-    let lastTypingSignalAt = 0;
-    const handleTypingStartError = (err: unknown) => {
-      logTypingFailure({
-        log: logVerbose,
-        channel: "signal",
-        target: ctxPayload.To ?? undefined,
-        error: err,
+    try {
+      const storePath = resolveStorePath(deps.cfg.session?.store, {
+        agentId: route.agentId,
       });
-    };
-    const startSignalTyping = async () => {
-      if (!ctxPayload.To) {
-        return;
-      }
-      const now = Date.now();
-      if (now - lastTypingSignalAt < SIGNAL_TYPING_START_DEDUPE_WINDOW_MS) {
-        return;
-      }
-      lastTypingSignalAt = now;
-      await sendTypingSignal(ctxPayload.To, {
-        baseUrl: deps.baseUrl,
-        account: deps.account,
-        accountId: deps.accountId,
-        traceLabel,
+      const envelopeOptions = resolveEnvelopeFormatOptions(deps.cfg);
+      const previousTimestamp = readSessionUpdatedAt({
+        storePath,
+        sessionKey: route.sessionKey,
       });
-    };
-    if (!entry.isGroup) {
-      trace("typing-ingress-start", `target=${ctxPayload.To ?? "unknown"}`);
-      void startSignalTyping()
-        .then(() => {
-          trace("typing-ingress-done");
-        })
-        .catch((err) => {
-          trace(
-            "typing-ingress-failed",
-            `error=${err instanceof Error ? err.message : String(err)}`,
-          );
-          handleTypingStartError(err);
+      const body = formatInboundEnvelope({
+        channel: "Signal",
+        from: fromLabel,
+        timestamp: entry.timestamp ?? undefined,
+        body: entry.bodyText,
+        chatType: entry.isGroup ? "group" : "direct",
+        sender: { name: entry.senderName, id: entry.senderDisplay },
+        previousTimestamp,
+        envelope: envelopeOptions,
+      });
+      let combinedBody = body;
+      const historyKey = entry.isGroup ? (entry.groupId ?? "unknown") : undefined;
+      if (entry.isGroup && historyKey) {
+        combinedBody = buildPendingHistoryContextFromMap({
+          historyMap: deps.groupHistories,
+          historyKey,
+          limit: deps.historyLimit,
+          currentMessage: combinedBody,
+          formatEntry: (historyEntry) =>
+            formatInboundEnvelope({
+              channel: "Signal",
+              from: fromLabel,
+              timestamp: historyEntry.timestamp,
+              body: `${historyEntry.body}${
+                historyEntry.messageId ? ` [id:${historyEntry.messageId}]` : ""
+              }`,
+              chatType: "group",
+              senderLabel: historyEntry.sender,
+              envelope: envelopeOptions,
+            }),
         });
-    }
+      }
+      const signalToRaw = entry.isGroup
+        ? `group:${entry.groupId}`
+        : `signal:${entry.senderRecipient}`;
+      const signalTo = normalizeSignalMessagingTarget(signalToRaw) ?? signalToRaw;
+      const inboundHistory =
+        entry.isGroup && historyKey && deps.historyLimit > 0
+          ? (deps.groupHistories.get(historyKey) ?? []).map((historyEntry) => ({
+              sender: historyEntry.sender,
+              body: historyEntry.body,
+              timestamp: historyEntry.timestamp,
+            }))
+          : undefined;
+      const ctxPayload = finalizeInboundContext({
+        Body: combinedBody,
+        BodyForAgent: entry.bodyText,
+        InboundHistory: inboundHistory,
+        RawBody: entry.bodyText,
+        CommandBody: entry.commandBody,
+        BodyForCommands: entry.commandBody,
+        From: entry.isGroup
+          ? `group:${entry.groupId ?? "unknown"}`
+          : `signal:${entry.senderRecipient}`,
+        To: signalTo,
+        SessionKey: route.sessionKey,
+        AccountId: route.accountId,
+        ChatType: entry.isGroup ? "group" : "direct",
+        ConversationLabel: fromLabel,
+        GroupSubject: entry.isGroup ? (entry.groupName ?? undefined) : undefined,
+        SenderName: entry.senderName,
+        SenderId: entry.senderDisplay,
+        Provider: "signal" as const,
+        Surface: "signal" as const,
+        MessageSid: entry.messageId,
+        ReplyToBody: entry.replyToBody,
+        ReplyToSender: entry.replyToSender,
+        ReplyToIsQuote: entry.replyToIsQuote,
+        Timestamp: entry.timestamp ?? undefined,
+        MediaPath: entry.mediaPath,
+        MediaType: entry.mediaType,
+        MediaUrl: entry.mediaPath,
+        MediaPaths: entry.mediaPaths,
+        MediaUrls: entry.mediaPaths,
+        MediaTypes: entry.mediaTypes,
+        WasMentioned: entry.isGroup ? entry.wasMentioned === true : undefined,
+        CommandAuthorized: entry.commandAuthorized,
+        OriginatingChannel: "signal" as const,
+        OriginatingTo: signalTo,
+      });
 
-    await recordInboundSession({
-      storePath,
-      sessionKey: ctxPayload.SessionKey ?? route.sessionKey,
-      ctx: ctxPayload,
-      updateLastRoute: !entry.isGroup
-        ? {
-            sessionKey: route.mainSessionKey,
-            channel: "signal",
-            to: entry.senderRecipient,
-            accountId: route.accountId,
-            mainDmOwnerPin: (() => {
-              const pinnedOwner = resolvePinnedMainDmOwnerFromAllowlist({
-                dmScope: deps.cfg.session?.dmScope,
-                allowFrom: deps.allowFrom,
-                normalizeEntry: normalizeSignalAllowRecipient,
-              });
-              if (!pinnedOwner) {
-                return undefined;
-              }
-              return {
-                ownerRecipient: pinnedOwner,
-                senderRecipient: entry.senderRecipient,
-                onSkip: ({ ownerRecipient, senderRecipient }) => {
-                  logVerbose(
-                    `signal: skip main-session last route for ${senderRecipient} (pinned owner ${ownerRecipient})`,
-                  );
-                },
-              };
-            })(),
-          }
-        : undefined,
-      onRecordError: (err) => {
-        logVerbose(`signal: failed updating session meta: ${String(err)}`);
-      },
-    });
-    trace(
-      "record-inbound-session",
-      `session=${ctxPayload.SessionKey ?? route.sessionKey} target=${ctxPayload.To ?? "unknown"}`,
-    );
-
-    if (shouldLogVerbose()) {
-      const preview = body.slice(0, 200).replace(/\\n/g, "\\\\n");
-      logVerbose(`signal inbound: from=${ctxPayload.From} len=${body.length} preview="${preview}"`);
-    }
-
-    const { onModelSelected, typingCallbacks, ...replyPipeline } = createChannelReplyPipeline({
-      cfg: deps.cfg,
-      agentId: route.agentId,
-      channel: "signal",
-      accountId: route.accountId,
-      typing: {
-        start: startSignalTyping,
-        onStartError: handleTypingStartError,
-      },
-    });
-
-    const { dispatcher, replyOptions, markDispatchIdle } = createReplyDispatcherWithTyping({
-      ...replyPipeline,
-      humanDelay: resolveHumanDelayConfig(deps.cfg, route.agentId),
-      typingCallbacks,
-      deliver: async (payload, info) => {
-        trace(
-          "deliver-start",
-          `kind=${info.kind} replyTo=${payload.replyToId ?? "none"} textChars=${payload.text?.length ?? 0}`,
-        );
-        await deps.deliverReplies({
-          replies: [payload],
-          traceLabel,
-          cfg: deps.cfg,
-          target: ctxPayload.To,
+      let lastTypingSignalAt = 0;
+      const handleTypingStartError = (err: unknown) => {
+        logTypingFailure({
+          log: logVerbose,
+          channel: "signal",
+          target: ctxPayload.To ?? undefined,
+          error: err,
+        });
+      };
+      const startSignalTyping = async () => {
+        if (!ctxPayload.To) {
+          return;
+        }
+        const now = Date.now();
+        if (now - lastTypingSignalAt < SIGNAL_TYPING_START_DEDUPE_WINDOW_MS) {
+          return;
+        }
+        lastTypingSignalAt = now;
+        await sendTypingSignal(ctxPayload.To, {
           baseUrl: deps.baseUrl,
           account: deps.account,
           accountId: deps.accountId,
-          runtime: deps.runtime,
-          maxBytes: deps.mediaMaxBytes,
-          textLimit: deps.textLimit,
-          mirror:
-            info.kind === "final"
-              ? {
-                  sessionKey: route.sessionKey,
-                  agentId: route.agentId,
-                }
-              : undefined,
+          traceLabel,
         });
-        trace("deliver-done", `kind=${info.kind}`);
-      },
-      onError: (err, info) => {
-        deps.runtime.error?.(danger(`signal ${info.kind} reply failed: ${String(err)}`));
-      },
-    });
+      };
+      if (!entry.isGroup) {
+        trace("typing-ingress-start", `target=${ctxPayload.To ?? "unknown"}`);
+        void startSignalTyping()
+          .then(() => {
+            trace("typing-ingress-done");
+          })
+          .catch((err) => {
+            trace(
+              "typing-ingress-failed",
+              `error=${err instanceof Error ? err.message : String(err)}`,
+            );
+            handleTypingStartError(err);
+          });
+      }
 
-    trace("dispatch-start", `session=${route.sessionKey} agent=${route.agentId}`);
-    const { queuedFinal } = await dispatchInboundMessage({
-      ctx: ctxPayload,
-      cfg: deps.cfg,
-      dispatcher,
-      replyOptions: {
-        ...replyOptions,
-        disableBlockStreaming:
-          typeof deps.blockStreaming === "boolean" ? !deps.blockStreaming : undefined,
-        onModelSelected,
-      },
-    });
-    trace("dispatch-done", `queuedFinal=${queuedFinal ? "yes" : "no"}`);
-    markDispatchIdle();
-    if (!queuedFinal) {
+      await recordInboundSession({
+        storePath,
+        sessionKey: ctxPayload.SessionKey ?? route.sessionKey,
+        ctx: ctxPayload,
+        updateLastRoute: !entry.isGroup
+          ? {
+              sessionKey: route.mainSessionKey,
+              channel: "signal",
+              to: entry.senderRecipient,
+              accountId: route.accountId,
+              mainDmOwnerPin: (() => {
+                const pinnedOwner = resolvePinnedMainDmOwnerFromAllowlist({
+                  dmScope: deps.cfg.session?.dmScope,
+                  allowFrom: deps.allowFrom,
+                  normalizeEntry: normalizeSignalAllowRecipient,
+                });
+                if (!pinnedOwner) {
+                  return undefined;
+                }
+                return {
+                  ownerRecipient: pinnedOwner,
+                  senderRecipient: entry.senderRecipient,
+                  onSkip: ({ ownerRecipient, senderRecipient }) => {
+                    logVerbose(
+                      `signal: skip main-session last route for ${senderRecipient} (pinned owner ${ownerRecipient})`,
+                    );
+                  },
+                };
+              })(),
+            }
+          : undefined,
+        onRecordError: (err) => {
+          logVerbose(`signal: failed updating session meta: ${String(err)}`);
+        },
+      });
+      trace(
+        "record-inbound-session",
+        `session=${ctxPayload.SessionKey ?? route.sessionKey} target=${ctxPayload.To ?? "unknown"}`,
+      );
+
+      if (shouldLogVerbose()) {
+        const preview = body.slice(0, 200).replace(/\\n/g, "\\\\n");
+        logVerbose(
+          `signal inbound: from=${ctxPayload.From} len=${body.length} preview="${preview}"`,
+        );
+      }
+
+      const { onModelSelected, typingCallbacks, ...replyPipeline } = createChannelReplyPipeline({
+        cfg: deps.cfg,
+        agentId: route.agentId,
+        channel: "signal",
+        accountId: route.accountId,
+        typing: {
+          start: startSignalTyping,
+          onStartError: handleTypingStartError,
+        },
+      });
+
+      const { dispatcher, replyOptions, markDispatchIdle } = createReplyDispatcherWithTyping({
+        ...replyPipeline,
+        abortSignal: replyAbortController.signal,
+        humanDelay: resolveHumanDelayConfig(deps.cfg, route.agentId),
+        typingCallbacks,
+        deliver: async (payload, info) => {
+          trace(
+            "deliver-start",
+            `kind=${info.kind} replyTo=${payload.replyToId ?? "none"} textChars=${payload.text?.length ?? 0}`,
+          );
+          await deps.deliverReplies({
+            replies: [payload],
+            traceLabel,
+            cfg: deps.cfg,
+            target: ctxPayload.To,
+            baseUrl: deps.baseUrl,
+            account: deps.account,
+            accountId: deps.accountId,
+            runtime: deps.runtime,
+            maxBytes: deps.mediaMaxBytes,
+            textLimit: deps.textLimit,
+            abortSignal: replyAbortController.signal,
+            mirror:
+              info.kind === "final"
+                ? {
+                    sessionKey: route.sessionKey,
+                    agentId: route.agentId,
+                  }
+                : undefined,
+          });
+          trace("deliver-done", `kind=${info.kind}`);
+        },
+        onError: (err, info) => {
+          deps.runtime.error?.(danger(`signal ${info.kind} reply failed: ${String(err)}`));
+        },
+      });
+
+      trace("dispatch-start", `session=${route.sessionKey} agent=${route.agentId}`);
+      const { queuedFinal } = await dispatchInboundMessage({
+        ctx: ctxPayload,
+        cfg: deps.cfg,
+        dispatcher,
+        replyOptions: {
+          ...replyOptions,
+          abortSignal: replyAbortController.signal,
+          disableBlockStreaming:
+            typeof deps.blockStreaming === "boolean" ? !deps.blockStreaming : undefined,
+          onModelSelected,
+        },
+      });
+      trace("dispatch-done", `queuedFinal=${queuedFinal ? "yes" : "no"}`);
+      markDispatchIdle();
+      if (!queuedFinal) {
+        if (entry.isGroup && historyKey) {
+          clearHistoryEntriesIfEnabled({
+            historyMap: deps.groupHistories,
+            historyKey,
+            limit: deps.historyLimit,
+          });
+        }
+        return;
+      }
       if (entry.isGroup && historyKey) {
         clearHistoryEntriesIfEnabled({
           historyMap: deps.groupHistories,
@@ -422,14 +454,10 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
           limit: deps.historyLimit,
         });
       }
-      return;
-    }
-    if (entry.isGroup && historyKey) {
-      clearHistoryEntriesIfEnabled({
-        historyMap: deps.groupHistories,
-        historyKey,
-        limit: deps.historyLimit,
-      });
+    } finally {
+      if (activeReplyAbortControllers.get(route.sessionKey)?.token === replyAbortToken) {
+        activeReplyAbortControllers.delete(route.sessionKey);
+      }
     }
   }
 

@@ -153,6 +153,23 @@ export function consumePendingToolMediaReply(
   return payload;
 }
 
+function hasDeliveredEmbeddedSideEffect(
+  state: Pick<
+    EmbeddedPiSubscribeState,
+    | "messagingToolSentTexts"
+    | "messagingToolSentMediaUrls"
+    | "messagingToolSentTargets"
+    | "deterministicApprovalPromptSent"
+  >,
+): boolean {
+  return (
+    state.messagingToolSentTexts.length > 0 ||
+    state.messagingToolSentMediaUrls.length > 0 ||
+    state.messagingToolSentTargets.length > 0 ||
+    state.deterministicApprovalPromptSent
+  );
+}
+
 export function hasAssistantVisibleReply(params: {
   text?: string;
   mediaUrls?: string[];
@@ -201,6 +218,11 @@ export function handleMessageStart(
   // may deliver late text_end updates after message_end, which would otherwise
   // re-trigger block replies.
   ctx.resetAssistantMessageState(ctx.state.assistantTexts.length);
+  // If a messaging tool or deterministic approval already delivered the
+  // user-facing action, suppress any later embedded "confirmation" typing.
+  if (hasDeliveredEmbeddedSideEffect(ctx.state)) {
+    return;
+  }
   // Use assistant message_start as the earliest "writing" signal for typing.
   void ctx.params.onAssistantMessageStart?.();
 }

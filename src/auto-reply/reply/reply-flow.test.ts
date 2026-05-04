@@ -105,6 +105,41 @@ describe("createReplyDispatcher", () => {
     expect(onIdle).toHaveBeenCalledTimes(1);
   });
 
+  it("drops queued replies after the run aborts", async () => {
+    let releaseFirst: (() => void) | undefined;
+    const firstDelivered = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const abortController = new AbortController();
+    const delivered: string[] = [];
+    const deliver = vi.fn(async (payload: { text?: string }) => {
+      delivered.push(payload.text ?? "");
+      if (payload.text === "first") {
+        await firstDelivered;
+      }
+    });
+    const dispatcher = createReplyDispatcher({
+      deliver,
+      abortSignal: abortController.signal,
+    });
+
+    expect(dispatcher.sendFinalReply({ text: "first" })).toBe(true);
+    expect(dispatcher.sendFinalReply({ text: "second" })).toBe(true);
+
+    await Promise.resolve();
+    expect(deliver).toHaveBeenCalledTimes(1);
+
+    abortController.abort();
+    expect(dispatcher.sendFinalReply({ text: "third" })).toBe(false);
+
+    dispatcher.markComplete();
+    releaseFirst?.();
+    await dispatcher.waitForIdle();
+
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(delivered).toEqual(["first"]);
+  });
+
   it("delays block replies after the first when humanDelay is natural", async () => {
     vi.useFakeTimers();
     const deliver = vi.fn().mockResolvedValue(undefined);

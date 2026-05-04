@@ -75,6 +75,43 @@ function shouldHideHistoryMessage(message: unknown): boolean {
   return isAssistantSilentReply(message) || isSyntheticTranscriptRepairToolResult(message);
 }
 
+function isAssistantMessage(message: unknown): message is Record<string, unknown> {
+  if (!message || typeof message !== "object") {
+    return false;
+  }
+  return normalizeLowercaseStringOrEmpty((message as { role?: unknown }).role) === "assistant";
+}
+
+function getMessageId(message: unknown): string | null {
+  if (!message || typeof message !== "object") {
+    return null;
+  }
+  const id = (message as { id?: unknown }).id;
+  return typeof id === "string" && id.trim() ? id : null;
+}
+
+function isEquivalentAssistantMessage(a: unknown, b: unknown): boolean {
+  if (!isAssistantMessage(a) || !isAssistantMessage(b)) {
+    return false;
+  }
+  const aId = getMessageId(a);
+  const bId = getMessageId(b);
+  if (aId && bId) {
+    return aId === bId;
+  }
+  const aText = extractText(a);
+  const bText = extractText(b);
+  return typeof aText === "string" && aText.length > 0 && aText === bText;
+}
+
+function appendAssistantMessage(state: ChatState, message: unknown) {
+  const lastMessage = state.chatMessages[state.chatMessages.length - 1];
+  if (isEquivalentAssistantMessage(lastMessage, message)) {
+    return;
+  }
+  state.chatMessages = [...state.chatMessages, message];
+}
+
 function isRetryableStartupUnavailable(err: unknown, method: string): err is GatewayRequestError {
   if (!(err instanceof GatewayRequestError)) {
     return false;
@@ -416,7 +453,7 @@ export function handleChatEvent(state: ChatState, payload?: ChatEventPayload) {
     if (payload.state === "final") {
       const finalMessage = normalizeFinalAssistantMessage(payload.message);
       if (finalMessage && !isAssistantSilentReply(finalMessage)) {
-        state.chatMessages = [...state.chatMessages, finalMessage];
+        appendAssistantMessage(state, finalMessage);
         return null;
       }
       return "final";
@@ -432,16 +469,13 @@ export function handleChatEvent(state: ChatState, payload?: ChatEventPayload) {
   } else if (payload.state === "final") {
     const finalMessage = normalizeFinalAssistantMessage(payload.message);
     if (finalMessage && !isAssistantSilentReply(finalMessage)) {
-      state.chatMessages = [...state.chatMessages, finalMessage];
+      appendAssistantMessage(state, finalMessage);
     } else if (state.chatStream?.trim() && !isSilentReplyStream(state.chatStream)) {
-      state.chatMessages = [
-        ...state.chatMessages,
-        {
-          role: "assistant",
-          content: [{ type: "text", text: state.chatStream }],
-          timestamp: Date.now(),
-        },
-      ];
+      appendAssistantMessage(state, {
+        role: "assistant",
+        content: [{ type: "text", text: state.chatStream }],
+        timestamp: Date.now(),
+      });
     }
     state.chatStream = null;
     state.chatRunId = null;
@@ -449,18 +483,15 @@ export function handleChatEvent(state: ChatState, payload?: ChatEventPayload) {
   } else if (payload.state === "aborted") {
     const normalizedMessage = normalizeAbortedAssistantMessage(payload.message);
     if (normalizedMessage && !isAssistantSilentReply(normalizedMessage)) {
-      state.chatMessages = [...state.chatMessages, normalizedMessage];
+      appendAssistantMessage(state, normalizedMessage);
     } else {
       const streamedText = state.chatStream ?? "";
       if (streamedText.trim() && !isSilentReplyStream(streamedText)) {
-        state.chatMessages = [
-          ...state.chatMessages,
-          {
-            role: "assistant",
-            content: [{ type: "text", text: streamedText }],
-            timestamp: Date.now(),
-          },
-        ];
+        appendAssistantMessage(state, {
+          role: "assistant",
+          content: [{ type: "text", text: streamedText }],
+          timestamp: Date.now(),
+        });
       }
     }
     state.chatStream = null;

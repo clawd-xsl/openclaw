@@ -63,6 +63,7 @@ export async function fetchWithTimeout(
 ): Promise<Response> {
   const { signal, cleanup } = buildTimeoutAbortSignal({
     timeoutMs: Math.max(1, timeoutMs),
+    signal: init.signal ?? undefined,
   });
   try {
     return await fetchFn(url, { ...init, signal });

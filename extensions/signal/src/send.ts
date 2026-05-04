@@ -23,6 +23,7 @@ export type SignalSendOpts = {
   mediaReadFile?: (filePath: string) => Promise<Buffer>;
   maxBytes?: number;
   timeoutMs?: number;
+  abortSignal?: AbortSignal;
   textMode?: "markdown" | "plain";
   textStyles?: SignalTextStyleRange[];
   replyToId?: string;
@@ -36,7 +37,7 @@ export type SignalSendResult = {
 
 export type SignalRpcOpts = Pick<
   SignalSendOpts,
-  "baseUrl" | "account" | "accountId" | "timeoutMs" | "traceLabel"
+  "baseUrl" | "account" | "accountId" | "timeoutMs" | "abortSignal" | "traceLabel"
 >;
 
 export type SignalReceiptType = "read" | "viewed";
@@ -240,6 +241,7 @@ export async function sendMessageSignal(
   const result = await signalRpcRequest<{ timestamp?: number }>("send", params, {
     baseUrl,
     timeoutMs: opts.timeoutMs,
+    abortSignal: opts.abortSignal,
   });
   trace("rpc-done", `timestamp=${result?.timestamp ?? "none"}`);
   const timestamp = result?.timestamp;
@@ -282,6 +284,7 @@ export async function sendTypingSignal(
   await signalRpcRequest("sendTyping", params, {
     baseUrl,
     timeoutMs: opts.timeoutMs,
+    abortSignal: opts.abortSignal,
   });
   trace("rpc-done");
   return true;
@@ -290,7 +293,10 @@ export async function sendTypingSignal(
 export async function sendStickerSignal(
   to: string,
   stickerSpec: string,
-  opts: Pick<SignalSendOpts, "cfg" | "baseUrl" | "account" | "accountId" | "timeoutMs"> = {},
+  opts: Pick<
+    SignalSendOpts,
+    "cfg" | "baseUrl" | "account" | "accountId" | "timeoutMs" | "abortSignal"
+  > = {},
 ): Promise<SignalSendResult> {
   const sticker = stickerSpec.trim();
   if (!sticker) {
@@ -318,6 +324,7 @@ export async function sendStickerSignal(
   const result = await signalRpcRequest<{ timestamp?: number }>("send", params, {
     baseUrl,
     timeoutMs: opts.timeoutMs,
+    abortSignal: opts.abortSignal,
   });
   const timestamp = result?.timestamp;
   return {
@@ -353,6 +360,7 @@ export async function sendReadReceiptSignal(
   await signalRpcRequest("sendReceipt", params, {
     baseUrl,
     timeoutMs: opts.timeoutMs,
+    abortSignal: opts.abortSignal,
   });
   return true;
 }

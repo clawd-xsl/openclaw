@@ -82,8 +82,8 @@ type ReplyRunWaiter = {
 type ReplyRunState = {
   activeRunsByKey: Map<string, ReplyOperation>;
   activeSessionIdsByKey: Map<string, string>;
-  activeKeysBySessionId: Map<string, string>;
-  waitKeysBySessionId: Map<string, string>;
+  activeOpsBySessionId: Map<string, ReplyOperation>;
+  waitOpsBySessionId: Map<string, ReplyOperation>;
   waitersByKey: Map<string, Set<ReplyRunWaiter>>;
 };
 
@@ -92,8 +92,8 @@ const REPLY_RUN_STATE_KEY = Symbol.for("openclaw.replyRunRegistry");
 const replyRunState = resolveGlobalSingleton<ReplyRunState>(REPLY_RUN_STATE_KEY, () => ({
   activeRunsByKey: new Map<string, ReplyOperation>(),
   activeSessionIdsByKey: new Map<string, string>(),
-  activeKeysBySessionId: new Map<string, string>(),
-  waitKeysBySessionId: new Map<string, string>(),
+  activeOpsBySessionId: new Map<string, ReplyOperation>(),
+  waitOpsBySessionId: new Map<string, ReplyOperation>(),
   waitersByKey: new Map<string, Set<ReplyRunWaiter>>(),
 }));
 
@@ -108,18 +108,6 @@ function createUserAbortError(): Error {
   const err = new Error("Reply operation aborted by user");
   err.name = "AbortError";
   return err;
-}
-
-function registerWaitSessionId(sessionKey: string, sessionId: string): void {
-  replyRunState.waitKeysBySessionId.set(sessionId, sessionKey);
-}
-
-function clearWaitSessionIds(sessionKey: string): void {
-  for (const [sessionId, mappedKey] of replyRunState.waitKeysBySessionId) {
-    if (mappedKey === sessionKey) {
-      replyRunState.waitKeysBySessionId.delete(sessionId);
-    }
-  }
 }
 
 function notifyReplyRunEnded(sessionKey: string): void {
@@ -139,11 +127,11 @@ function resolveReplyRunForCurrentSessionId(sessionId: string): ReplyOperation |
   if (!normalizedSessionId) {
     return undefined;
   }
-  const sessionKey = replyRunState.activeKeysBySessionId.get(normalizedSessionId);
-  if (!sessionKey) {
-    return undefined;
-  }
-  return replyRunState.activeRunsByKey.get(sessionKey);
+  return replyRunState.activeOpsBySessionId.get(normalizedSessionId);
+}
+
+function isReplyRunBlocking(operation: ReplyOperation | undefined): boolean {
+  return operation !== undefined && operation.result == null;
 }
 
 function resolveReplyRunWaitKey(sessionId: string): string | undefined {
@@ -152,8 +140,8 @@ function resolveReplyRunWaitKey(sessionId: string): string | undefined {
     return undefined;
   }
   return (
-    replyRunState.activeKeysBySessionId.get(normalizedSessionId) ??
-    replyRunState.waitKeysBySessionId.get(normalizedSessionId)
+    replyRunState.activeOpsBySessionId.get(normalizedSessionId)?.key ??
+    replyRunState.waitOpsBySessionId.get(normalizedSessionId)?.key
   );
 }
 
@@ -174,18 +162,29 @@ function getAttachedBackend(operation: ReplyOperation): ReplyBackendHandle | und
   return attachedBackendByOperation.get(operation);
 }
 
-function clearReplyRunState(params: { sessionKey: string; sessionId: string }): void {
-  replyRunState.activeRunsByKey.delete(params.sessionKey);
-  if (replyRunState.activeSessionIdsByKey.get(params.sessionKey) === params.sessionId) {
-    replyRunState.activeSessionIdsByKey.delete(params.sessionKey);
-  } else {
+function clearReplyRunState(params: {
+  sessionKey: string;
+  sessionId: string;
+  operation: ReplyOperation;
+  ownedSessionIds: Iterable<string>;
+}): void {
+  const isCurrentActiveOperation =
+    replyRunState.activeRunsByKey.get(params.sessionKey) === params.operation;
+  if (isCurrentActiveOperation) {
+    replyRunState.activeRunsByKey.delete(params.sessionKey);
     replyRunState.activeSessionIdsByKey.delete(params.sessionKey);
   }
-  if (replyRunState.activeKeysBySessionId.get(params.sessionId) === params.sessionKey) {
-    replyRunState.activeKeysBySessionId.delete(params.sessionId);
+  for (const ownedSessionId of params.ownedSessionIds) {
+    if (replyRunState.activeOpsBySessionId.get(ownedSessionId) === params.operation) {
+      replyRunState.activeOpsBySessionId.delete(ownedSessionId);
+    }
+    if (replyRunState.waitOpsBySessionId.get(ownedSessionId) === params.operation) {
+      replyRunState.waitOpsBySessionId.delete(ownedSessionId);
+    }
   }
-  clearWaitSessionIds(params.sessionKey);
-  notifyReplyRunEnded(params.sessionKey);
+  if (isCurrentActiveOperation) {
+    notifyReplyRunEnded(params.sessionKey);
+  }
 }
 
 export function createReplyOperation(params: {
@@ -202,7 +201,8 @@ export function createReplyOperation(params: {
   if (!sessionId) {
     throw new Error("Reply operations require a sessionId");
   }
-  if (replyRunState.activeRunsByKey.has(sessionKey)) {
+  const existingOperation = replyRunState.activeRunsByKey.get(sessionKey);
+  if (existingOperation && existingOperation.result?.kind !== "aborted") {
     throw new ReplyRunAlreadyActiveError(sessionKey);
   }
 
@@ -211,6 +211,7 @@ export function createReplyOperation(params: {
   let phase: ReplyOperationPhase = "queued";
   let result: ReplyOperationResult | null = null;
   let stateCleared = false;
+  const ownedSessionIds = new Set<string>([sessionId]);
 
   const clearState = () => {
     if (stateCleared) {
@@ -220,6 +221,8 @@ export function createReplyOperation(params: {
     clearReplyRunState({
       sessionKey,
       sessionId: currentSessionId,
+      operation,
+      ownedSessionIds,
     });
   };
 
@@ -290,19 +293,22 @@ export function createReplyOperation(params: {
         return;
       }
       if (
-        replyRunState.activeKeysBySessionId.has(normalizedNextSessionId) &&
-        replyRunState.activeKeysBySessionId.get(normalizedNextSessionId) !== sessionKey
+        replyRunState.activeOpsBySessionId.has(normalizedNextSessionId) &&
+        replyRunState.activeOpsBySessionId.get(normalizedNextSessionId) !== operation
       ) {
         throw new Error(
           `Cannot rebind reply operation ${sessionKey} to active session ${normalizedNextSessionId}`,
         );
       }
-      replyRunState.activeKeysBySessionId.delete(currentSessionId);
-      registerWaitSessionId(sessionKey, currentSessionId);
+      if (replyRunState.activeOpsBySessionId.get(currentSessionId) === operation) {
+        replyRunState.activeOpsBySessionId.delete(currentSessionId);
+      }
+      replyRunState.waitOpsBySessionId.set(currentSessionId, operation);
       currentSessionId = normalizedNextSessionId;
+      ownedSessionIds.add(currentSessionId);
       replyRunState.activeSessionIdsByKey.set(sessionKey, currentSessionId);
-      replyRunState.activeKeysBySessionId.set(currentSessionId, sessionKey);
-      registerWaitSessionId(sessionKey, currentSessionId);
+      replyRunState.activeOpsBySessionId.set(currentSessionId, operation);
+      replyRunState.waitOpsBySessionId.set(currentSessionId, operation);
     },
     attachBackend(handle) {
       if (result) {
@@ -361,8 +367,8 @@ export function createReplyOperation(params: {
 
   replyRunState.activeRunsByKey.set(sessionKey, operation);
   replyRunState.activeSessionIdsByKey.set(sessionKey, currentSessionId);
-  replyRunState.activeKeysBySessionId.set(currentSessionId, sessionKey);
-  registerWaitSessionId(sessionKey, currentSessionId);
+  replyRunState.activeOpsBySessionId.set(currentSessionId, operation);
+  replyRunState.waitOpsBySessionId.set(currentSessionId, operation);
 
   return operation;
 }
@@ -383,7 +389,7 @@ export const replyRunRegistry: ReplyRunRegistry = {
     if (!normalizedSessionKey) {
       return false;
     }
-    return replyRunState.activeRunsByKey.has(normalizedSessionKey);
+    return isReplyRunBlocking(replyRunState.activeRunsByKey.get(normalizedSessionKey));
   },
   isStreaming(sessionKey) {
     const operation = this.get(sessionKey);
@@ -442,11 +448,19 @@ export const replyRunRegistry: ReplyRunRegistry = {
 };
 
 export function resolveActiveReplyRunSessionId(sessionKey: string): string | undefined {
-  return replyRunRegistry.resolveSessionId(sessionKey);
+  const normalizedSessionKey = normalizeOptionalString(sessionKey);
+  if (!normalizedSessionKey) {
+    return undefined;
+  }
+  const operation = replyRunState.activeRunsByKey.get(normalizedSessionKey);
+  if (!isReplyRunBlocking(operation)) {
+    return undefined;
+  }
+  return replyRunState.activeSessionIdsByKey.get(normalizedSessionKey);
 }
 
 export function isReplyRunActiveForSessionId(sessionId: string): boolean {
-  return resolveReplyRunForCurrentSessionId(sessionId) !== undefined;
+  return isReplyRunBlocking(resolveReplyRunForCurrentSessionId(sessionId));
 }
 
 export function isReplyRunStreamingForSessionId(sessionId: string): boolean {
@@ -507,15 +521,18 @@ export function getActiveReplyRunCount(): number {
 }
 
 export function listActiveReplyRunSessionIds(): string[] {
-  return [...replyRunState.activeSessionIdsByKey.values()];
+  return [...replyRunState.activeRunsByKey.entries()]
+    .filter(([, operation]) => isReplyRunBlocking(operation))
+    .map(([sessionKey]) => replyRunState.activeSessionIdsByKey.get(sessionKey))
+    .filter((sessionId): sessionId is string => Boolean(sessionId));
 }
 
 export const __testing = {
   resetReplyRunRegistry(): void {
     replyRunState.activeRunsByKey.clear();
     replyRunState.activeSessionIdsByKey.clear();
-    replyRunState.activeKeysBySessionId.clear();
-    replyRunState.waitKeysBySessionId.clear();
+    replyRunState.activeOpsBySessionId.clear();
+    replyRunState.waitOpsBySessionId.clear();
     for (const waiters of replyRunState.waitersByKey.values()) {
       for (const waiter of waiters) {
         clearTimeout(waiter.timer);

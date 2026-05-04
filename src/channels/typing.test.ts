@@ -43,6 +43,9 @@ function createTypingHarness(overrides: TypingCallbackOverrides = {}) {
     stop,
     onStartError,
     onStopError,
+    ...(overrides.keepaliveIntervalMs !== undefined
+      ? { keepaliveIntervalMs: overrides.keepaliveIntervalMs }
+      : {}),
     ...(overrides.maxConsecutiveFailures !== undefined
       ? { maxConsecutiveFailures: overrides.maxConsecutiveFailures }
       : {}),
@@ -194,10 +197,13 @@ describe("createTypingCallbacks", () => {
 
   // ========== TTL Safety Tests ==========
   describe("TTL safety", () => {
-    it("auto-stops typing after maxDurationMs", async () => {
+    it("auto-stops typing after maxDurationMs of inactivity", async () => {
       await withFakeTimers(async () => {
         const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
-        const { start, stop, callbacks } = createTypingHarness({ maxDurationMs: 10_000 });
+        const { start, stop, callbacks } = createTypingHarness({
+          keepaliveIntervalMs: 20_000,
+          maxDurationMs: 10_000,
+        });
 
         await callbacks.onReplyStart();
         expect(start).toHaveBeenCalledTimes(1);
@@ -209,6 +215,27 @@ describe("createTypingCallbacks", () => {
         // Should auto-stop
         expect(stop).toHaveBeenCalledTimes(1);
         expect(consoleWarn).toHaveBeenCalledWith(expect.stringContaining("TTL exceeded"));
+
+        consoleWarn.mockRestore();
+      });
+    });
+
+    it("refreshes TTL on successful keepalive ticks during long runs", async () => {
+      await withFakeTimers(async () => {
+        const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+        const { start, stop, callbacks } = createTypingHarness({
+          keepaliveIntervalMs: 3_000,
+          maxDurationMs: 10_000,
+        });
+
+        await callbacks.onReplyStart();
+        expect(start).toHaveBeenCalledTimes(1);
+
+        await vi.advanceTimersByTimeAsync(30_000);
+
+        expect(start).toHaveBeenCalledTimes(11);
+        expect(stop).not.toHaveBeenCalled();
+        expect(consoleWarn).not.toHaveBeenCalled();
 
         consoleWarn.mockRestore();
       });
@@ -246,13 +273,10 @@ describe("createTypingCallbacks", () => {
 
         await callbacks.onReplyStart();
 
-        // Should not stop at 59s
-        await vi.advanceTimersByTimeAsync(59_000);
+        // With successful keepalives every 3s, the inactivity TTL should keep
+        // extending instead of hard-stopping at 60s.
+        await vi.advanceTimersByTimeAsync(120_000);
         expect(stop).not.toHaveBeenCalled();
-
-        // Should stop at 60s
-        await vi.advanceTimersByTimeAsync(1_000);
-        expect(stop).toHaveBeenCalledTimes(1);
       });
     });
 

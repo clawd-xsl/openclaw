@@ -6,12 +6,14 @@ import { buildTestCtx } from "./reply/test-ctx.js";
 type DispatchReplyFromConfigFn =
   typeof import("./reply/dispatch-from-config.js").dispatchReplyFromConfig;
 type FinalizeInboundContextFn = typeof import("./reply/inbound-context.js").finalizeInboundContext;
+type CreateReplyDispatcherFn = typeof import("./reply/reply-dispatcher.js").createReplyDispatcher;
 type CreateReplyDispatcherWithTypingFn =
   typeof import("./reply/reply-dispatcher.js").createReplyDispatcherWithTyping;
 
 const hoisted = vi.hoisted(() => ({
   dispatchReplyFromConfigMock: vi.fn(),
   finalizeInboundContextMock: vi.fn((ctx: unknown, _opts?: unknown) => ctx),
+  createReplyDispatcherMock: vi.fn(),
   createReplyDispatcherWithTypingMock: vi.fn(),
 }));
 
@@ -31,6 +33,8 @@ vi.mock("./reply/reply-dispatcher.js", async () => {
   );
   return {
     ...actual,
+    createReplyDispatcher: (...args: Parameters<CreateReplyDispatcherFn>) =>
+      hoisted.createReplyDispatcherMock(...args),
     createReplyDispatcherWithTyping: (...args: Parameters<CreateReplyDispatcherWithTypingFn>) =>
       hoisted.createReplyDispatcherWithTypingMock(...args),
   };
@@ -39,6 +43,7 @@ vi.mock("./reply/reply-dispatcher.js", async () => {
 const {
   dispatchInboundMessage,
   dispatchInboundMessageWithBufferedDispatcher,
+  dispatchInboundMessageWithDispatcher,
   withReplyDispatcher,
 } = await import("./dispatch.js");
 
@@ -166,5 +171,58 @@ describe("withReplyDispatcher", () => {
 
     expect(typing.markRunComplete).toHaveBeenCalledTimes(1);
     expect(typing.markDispatchIdle).toHaveBeenCalled();
+  });
+
+  it("passes reply abortSignal into the buffered dispatcher", async () => {
+    hoisted.createReplyDispatcherWithTypingMock.mockReturnValueOnce({
+      dispatcher: createDispatcher([]),
+      replyOptions: {},
+      markDispatchIdle: vi.fn(),
+      markRunComplete: vi.fn(),
+    });
+    hoisted.dispatchReplyFromConfigMock.mockResolvedValueOnce({ text: "ok" });
+    const abortController = new AbortController();
+
+    await dispatchInboundMessageWithBufferedDispatcher({
+      ctx: buildTestCtx(),
+      cfg: {} as OpenClawConfig,
+      dispatcherOptions: {
+        deliver: async () => undefined,
+      },
+      replyOptions: {
+        abortSignal: abortController.signal,
+      },
+      replyResolver: async () => ({ text: "ok" }),
+    });
+
+    expect(hoisted.createReplyDispatcherWithTypingMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        abortSignal: abortController.signal,
+      }),
+    );
+  });
+
+  it("passes reply abortSignal into the plain dispatcher", async () => {
+    hoisted.createReplyDispatcherMock.mockReturnValueOnce(createDispatcher([]));
+    hoisted.dispatchReplyFromConfigMock.mockResolvedValueOnce({ text: "ok" });
+    const abortController = new AbortController();
+
+    await dispatchInboundMessageWithDispatcher({
+      ctx: buildTestCtx(),
+      cfg: {} as OpenClawConfig,
+      dispatcherOptions: {
+        deliver: async () => undefined,
+      },
+      replyOptions: {
+        abortSignal: abortController.signal,
+      },
+      replyResolver: async () => ({ text: "ok" }),
+    });
+
+    expect(hoisted.createReplyDispatcherMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        abortSignal: abortController.signal,
+      }),
+    );
   });
 });

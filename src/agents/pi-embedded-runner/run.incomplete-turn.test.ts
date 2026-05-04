@@ -435,6 +435,39 @@ describe("runEmbeddedPiAgent incomplete-turn safety", () => {
     expect(mockedLog.warn).toHaveBeenCalledWith(expect.stringContaining("empty response detected"));
   });
 
+  it("does not retry silent NO_REPLY assistant turns as empty responses", async () => {
+    mockedClassifyFailoverReason.mockReturnValue(null);
+    mockedRunEmbeddedAttempt.mockResolvedValue(
+      makeAttemptResult({
+        assistantTexts: [],
+        lastAssistant: {
+          role: "assistant",
+          stopReason: "stop",
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          content: [{ type: "text", text: "NO_REPLY" }],
+        } as unknown as EmbeddedRunAttemptResult["lastAssistant"],
+      }),
+    );
+
+    const result = await runEmbeddedPiAgent({
+      ...overflowBaseRunParams,
+      provider: "openai-codex",
+      model: "gpt-5.5",
+      runId: "run-empty-response-silent-no-reply",
+    });
+
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(1);
+    expect(result.payloads).toBeUndefined();
+    expect(result.meta.error).toBeUndefined();
+    expect(mockedLog.warn).not.toHaveBeenCalledWith(
+      expect.stringContaining("empty response detected"),
+    );
+    expect(mockedLog.warn).not.toHaveBeenCalledWith(
+      expect.stringContaining("empty response retries exhausted"),
+    );
+  });
+
   it("surfaces an error after exhausting empty-response retries", async () => {
     mockedClassifyFailoverReason.mockReturnValue(null);
     mockedRunEmbeddedAttempt.mockResolvedValue(

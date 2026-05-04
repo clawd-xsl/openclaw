@@ -373,6 +373,14 @@ function buildMissingApiKeyFailureText(message: string): string | null {
   return "⚠️ Missing API key for the selected provider on the gateway. Configure provider auth, then try again.";
 }
 
+function prefixWarningCopy(message: string): string {
+  const trimmed = message.trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+  return trimmed.startsWith("⚠️") ? trimmed : `⚠️ ${trimmed}`;
+}
+
 function buildExternalRunFailureText(message: string): string {
   const normalizedMessage = collapseRepeatedFailureDetail(message);
   if (isToolResultTurnMismatchError(normalizedMessage)) {
@@ -389,6 +397,10 @@ function buildExternalRunFailureText(message: string): string {
       return `⚠️ Model login expired on the gateway${oauthRefreshFailure.provider ? ` for ${oauthRefreshFailure.provider}` : ""}. Re-auth with \`${loginCommand}\`, then try again.`;
     }
     return `⚠️ Model login failed on the gateway${oauthRefreshFailure.provider ? ` for ${oauthRefreshFailure.provider}` : ""}. Please try again. If this keeps happening, re-auth with \`${loginCommand}\`.`;
+  }
+  const sanitizedFailure = sanitizeUserFacingText(normalizedMessage, { errorContext: true }).trim();
+  if (sanitizedFailure) {
+    return prefixWarningCopy(sanitizedFailure);
   }
   return "⚠️ Something went wrong while processing your request. Please try again, or use /new to start a fresh session.";
 }
@@ -930,6 +942,15 @@ export async function runAgentTurnWithFallback(params: {
                   continuityBreakMode: "throw",
                   abortSignal: params.replyOperation?.abortSignal ?? params.opts?.abortSignal,
                   replyOperation: params.replyOperation,
+                  onAssistantDelta: async (payload) => {
+                    const textForTyping = await handlePartialForTyping({ text: payload.text });
+                    if (!params.opts?.onPartialReply || textForTyping === undefined) {
+                      return;
+                    }
+                    await params.opts.onPartialReply({
+                      text: textForTyping,
+                    });
+                  },
                 });
                 const resultTextChars = (result.payloads ?? []).reduce(
                   (total, payload) => total + (normalizeOptionalString(payload.text)?.length ?? 0),
