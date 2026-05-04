@@ -60,6 +60,16 @@ describe("applyDiscoveredContextWindows", () => {
 
     expect(cache.get("gpt-5.4")).toBe(272_000);
   });
+
+  it("forces 1M context for discovered claude-cli-streaming opus 4.7 entries", () => {
+    const cache = new Map<string, number>();
+    applyDiscoveredContextWindows({
+      cache,
+      models: [{ id: "claude-cli-streaming/claude-opus-4-7", contextWindow: 200_000 }],
+    });
+
+    expect(cache.get("claude-cli-streaming/claude-opus-4-7")).toBe(ANTHROPIC_CONTEXT_1M_TOKENS);
+  });
 });
 
 describe("applyConfiguredContextWindows", () => {
@@ -226,6 +236,26 @@ describe("resolveContextTokensForModel", () => {
     });
 
     expect(result).toBe(200_000);
+  });
+
+  it("returns 1M context for claude-cli-streaming opus 4.7 without requiring context1m", () => {
+    const result = resolveContextTokensForModel({
+      cfg: {
+        models: {
+          providers: {
+            "claude-cli-streaming": {
+              models: [testModelContextWindow("claude-opus-4-7", 200_000)],
+            },
+          },
+        },
+      },
+      provider: "claude-cli-streaming",
+      model: "claude-opus-4-7",
+      fallbackContextTokens: 200_000,
+      allowAsyncLoad: false,
+    });
+
+    expect(result).toBe(ANTHROPIC_CONTEXT_1M_TOKENS);
   });
 
   it("does not force 1M context for non-opus/sonnet Anthropic models", () => {

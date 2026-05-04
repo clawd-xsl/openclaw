@@ -57,8 +57,10 @@ type AnthropicTransportModel = Model<"anthropic-messages"> & {
   provider: string;
 };
 
-type AnthropicTransportOptions = AnthropicOptions &
-  Pick<SimpleStreamOptions, "reasoning" | "thinkingBudgets">;
+type AnthropicAdaptiveEffort = NonNullable<AnthropicOptions["effort"]> | "xhigh";
+type AnthropicTransportOptions = Omit<AnthropicOptions, "effort"> & {
+  effort?: AnthropicAdaptiveEffort;
+} & Pick<SimpleStreamOptions, "reasoning" | "thinkingBudgets">;
 
 type TransportContentBlock =
   | { type: "text"; text: string; index?: number }
@@ -100,6 +102,8 @@ type MutableAssistantOutput = {
 
 function supportsAdaptiveThinking(modelId: string): boolean {
   return (
+    modelId.includes("opus-4-7") ||
+    modelId.includes("opus-4.7") ||
     modelId.includes("opus-4-6") ||
     modelId.includes("opus-4.6") ||
     modelId.includes("sonnet-4-6") ||
@@ -107,10 +111,7 @@ function supportsAdaptiveThinking(modelId: string): boolean {
   );
 }
 
-function mapThinkingLevelToEffort(
-  level: ThinkingLevel,
-  modelId: string,
-): NonNullable<AnthropicOptions["effort"]> {
+function mapThinkingLevelToEffort(level: ThinkingLevel, modelId: string): AnthropicAdaptiveEffort {
   switch (level) {
     case "minimal":
     case "low":
@@ -118,6 +119,9 @@ function mapThinkingLevelToEffort(
     case "medium":
       return "medium";
     case "xhigh":
+      if (modelId.includes("opus-4-7") || modelId.includes("opus-4.7")) {
+        return "xhigh";
+      }
       return modelId.includes("opus-4-6") || modelId.includes("opus-4.6") ? "max" : "high";
     default:
       return "high";
@@ -527,7 +531,11 @@ function buildAnthropicParams(
       if (supportsAdaptiveThinking(model.id)) {
         params.thinking = { type: "adaptive" };
         if (options.effort) {
-          params.output_config = { effort: options.effort };
+          // pi-ai 0.58 still types Anthropic effort as low|medium|high|max, but
+          // Opus 4.7 accepts xhigh. Keep the wire payload forward-compatible.
+          params.output_config = {
+            effort: options.effort as NonNullable<AnthropicOptions["effort"]>,
+          };
         }
       } else {
         params.thinking = {

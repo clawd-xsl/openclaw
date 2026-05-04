@@ -4,6 +4,7 @@ import type {
   ProviderAuthContext,
   ProviderAuthMethodNonInteractiveContext,
   ProviderResolveDynamicModelContext,
+  ProviderNormalizeResolvedModelContext,
   ProviderRuntimeModel,
 } from "openclaw/plugin-sdk/plugin-entry";
 import {
@@ -41,14 +42,24 @@ import { wrapAnthropicProviderStream } from "./stream-wrappers.js";
 
 const PROVIDER_ID = "anthropic";
 const DEFAULT_ANTHROPIC_MODEL = "anthropic/claude-sonnet-4-6";
+const ANTHROPIC_OPUS_47_MODEL_ID = "claude-opus-4-7";
+const ANTHROPIC_OPUS_47_DOT_MODEL_ID = "claude-opus-4.7";
+const ANTHROPIC_OPUS_47_CONTEXT_TOKENS = 1_048_576;
 const ANTHROPIC_OPUS_46_MODEL_ID = "claude-opus-4-6";
 const ANTHROPIC_OPUS_46_DOT_MODEL_ID = "claude-opus-4.6";
+const ANTHROPIC_OPUS_47_TEMPLATE_MODEL_IDS = [
+  ANTHROPIC_OPUS_46_MODEL_ID,
+  ANTHROPIC_OPUS_46_DOT_MODEL_ID,
+  "claude-opus-4-5",
+  "claude-opus-4.5",
+] as const;
 const ANTHROPIC_OPUS_TEMPLATE_MODEL_IDS = ["claude-opus-4-5", "claude-opus-4.5"] as const;
 const ANTHROPIC_SONNET_46_MODEL_ID = "claude-sonnet-4-6";
 const ANTHROPIC_SONNET_46_DOT_MODEL_ID = "claude-sonnet-4.6";
 const ANTHROPIC_SONNET_TEMPLATE_MODEL_IDS = ["claude-sonnet-4-5", "claude-sonnet-4.5"] as const;
 const ANTHROPIC_HAIKU_TEMPLATE_MODEL_IDS = ["claude-haiku-4-5", "claude-haiku-4.5"] as const;
 const ANTHROPIC_MODERN_MODEL_PREFIXES = [
+  "claude-opus-4-7",
   "claude-opus-4-6",
   "claude-sonnet-4-6",
   "claude-opus-4-5",
@@ -56,6 +67,7 @@ const ANTHROPIC_MODERN_MODEL_PREFIXES = [
   "claude-haiku-4-5",
 ] as const;
 const _ANTHROPIC_OAUTH_ALLOWLIST = [
+  "anthropic/claude-opus-4-7",
   "anthropic/claude-sonnet-4-6",
   "anthropic/claude-opus-4-6",
   "anthropic/claude-opus-4-5",
@@ -194,6 +206,7 @@ function resolveAnthropic46ForwardCompatModel(params: {
   dashTemplateId: string;
   dotTemplateId: string;
   fallbackTemplateIds: readonly string[];
+  displayName?: string;
 }): ProviderRuntimeModel | undefined {
   const trimmedModelId = params.ctx.modelId.trim();
   const lower = normalizeLowercaseStringOrEmpty(trimmedModelId);
@@ -215,7 +228,7 @@ function resolveAnthropic46ForwardCompatModel(params: {
   }
   templateIds.push(...params.fallbackTemplateIds);
 
-  return cloneFirstTemplateModel({
+  const resolved = cloneFirstTemplateModel({
     providerId: PROVIDER_ID,
     modelId: trimmedModelId,
     templateIds,
@@ -224,12 +237,25 @@ function resolveAnthropic46ForwardCompatModel(params: {
       ? { provider: params.ctx.provider }
       : undefined,
   });
+  if (!resolved) {
+    return undefined;
+  }
+  return params.displayName ? { ...resolved, name: params.displayName } : resolved;
 }
 
 function resolveAnthropicForwardCompatModel(
   ctx: ProviderResolveDynamicModelContext,
 ): ProviderRuntimeModel | undefined {
   return (
+    resolveAnthropic46ForwardCompatModel({
+      ctx,
+      dashModelId: ANTHROPIC_OPUS_47_MODEL_ID,
+      dotModelId: ANTHROPIC_OPUS_47_DOT_MODEL_ID,
+      dashTemplateId: ANTHROPIC_OPUS_46_MODEL_ID,
+      dotTemplateId: ANTHROPIC_OPUS_46_DOT_MODEL_ID,
+      fallbackTemplateIds: ANTHROPIC_OPUS_47_TEMPLATE_MODEL_IDS,
+      displayName: "Claude Opus 4.7",
+    }) ??
     resolveAnthropic46ForwardCompatModel({
       ctx,
       dashModelId: ANTHROPIC_OPUS_46_MODEL_ID,
@@ -259,7 +285,93 @@ function shouldUseAnthropicAdaptiveThinkingDefault(modelId: string): boolean {
   );
 }
 
+function isAnthropicOpus47Model(modelId: string): boolean {
+  const lowerModelId = normalizeLowercaseStringOrEmpty(modelId);
+  return (
+    lowerModelId.startsWith(ANTHROPIC_OPUS_47_MODEL_ID) ||
+    lowerModelId.startsWith(ANTHROPIC_OPUS_47_DOT_MODEL_ID)
+  );
+}
+
+function hasConfiguredModelContextOverride(
+  config: ProviderNormalizeResolvedModelContext["config"],
+  provider: string,
+  modelId: string,
+): boolean {
+  const providers = config?.models?.providers;
+  if (!providers || typeof providers !== "object") {
+    return false;
+  }
+  const normalizedProvider = normalizeLowercaseStringOrEmpty(provider);
+  const normalizedModelId = normalizeLowercaseStringOrEmpty(modelId);
+  for (const [providerId, providerConfig] of Object.entries(providers)) {
+    if (normalizeLowercaseStringOrEmpty(providerId) !== normalizedProvider) {
+      continue;
+    }
+    if (!Array.isArray(providerConfig?.models)) {
+      continue;
+    }
+    for (const model of providerConfig.models) {
+      if (
+        normalizeLowercaseStringOrEmpty(typeof model?.id === "string" ? model.id : "") !==
+        normalizedModelId
+      ) {
+        continue;
+      }
+      if (
+        (typeof model?.contextTokens === "number" && model.contextTokens > 0) ||
+        (typeof model?.contextWindow === "number" && model.contextWindow > 0)
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function applyAnthropicOpus47ContextWindow(params: {
+  config?: ProviderNormalizeResolvedModelContext["config"];
+  provider: string;
+  modelId: string;
+  model: ProviderRuntimeModel;
+}): ProviderRuntimeModel | undefined {
+  if (!isAnthropicOpus47Model(params.modelId)) {
+    return undefined;
+  }
+  if (hasConfiguredModelContextOverride(params.config, params.provider, params.modelId)) {
+    return undefined;
+  }
+  const nextContextWindow = Math.max(
+    params.model.contextWindow ?? 0,
+    ANTHROPIC_OPUS_47_CONTEXT_TOKENS,
+  );
+  const nextContextTokens =
+    typeof params.model.contextTokens === "number"
+      ? Math.max(params.model.contextTokens, ANTHROPIC_OPUS_47_CONTEXT_TOKENS)
+      : ANTHROPIC_OPUS_47_CONTEXT_TOKENS;
+  if (
+    nextContextWindow === params.model.contextWindow &&
+    nextContextTokens === params.model.contextTokens
+  ) {
+    return undefined;
+  }
+  return {
+    ...params.model,
+    contextWindow: nextContextWindow,
+    contextTokens: nextContextTokens,
+  };
+}
+
 const ANTHROPIC_CLI_CATALOG_SPECS = [
+  {
+    id: ANTHROPIC_OPUS_47_MODEL_ID,
+    name: "Claude Opus 4.7",
+    templateIds: [
+      ANTHROPIC_OPUS_47_MODEL_ID,
+      ANTHROPIC_OPUS_47_DOT_MODEL_ID,
+      ...ANTHROPIC_OPUS_47_TEMPLATE_MODEL_IDS,
+    ] as const,
+  },
   {
     id: ANTHROPIC_SONNET_46_MODEL_ID,
     name: "Claude Sonnet 4.6",
@@ -449,6 +561,7 @@ export function registerAnthropicPlugin(api: OpenClawPluginApi): void {
   const providerId = "anthropic";
   const defaultAnthropicModel = "anthropic/claude-sonnet-4-6";
   const _anthropicOauthAllowlist = [
+    "anthropic/claude-opus-4-7",
     "anthropic/claude-sonnet-4-6",
     "anthropic/claude-opus-4-6",
     "anthropic/claude-opus-4-5",
@@ -538,7 +651,21 @@ export function registerAnthropicPlugin(api: OpenClawPluginApi): void {
     normalizeConfig: ({ providerConfig }) => normalizeAnthropicProviderConfig(providerConfig),
     applyConfigDefaults: ({ config, env }) => applyAnthropicConfigDefaults({ config, env }),
     augmentModelCatalog: (ctx) => buildAnthropicCliCatalogEntries(ctx),
-    resolveDynamicModel: (ctx) => resolveAnthropicForwardCompatModel(ctx),
+    resolveDynamicModel: (ctx) => {
+      const model = resolveAnthropicForwardCompatModel(ctx);
+      if (!model) {
+        return undefined;
+      }
+      return (
+        applyAnthropicOpus47ContextWindow({
+          config: ctx.config,
+          provider: ctx.provider,
+          modelId: ctx.modelId,
+          model,
+        }) ?? model
+      );
+    },
+    normalizeResolvedModel: (ctx) => applyAnthropicOpus47ContextWindow(ctx),
     resolveSyntheticAuth: ({ provider }) =>
       isClaudeCliFamilyProvider(provider) ? resolveClaudeCliSyntheticAuth() : undefined,
     buildReplayPolicy: buildAnthropicReplayPolicy,
@@ -546,9 +673,11 @@ export function registerAnthropicPlugin(api: OpenClawPluginApi): void {
     resolveReasoningOutputMode: () => "native",
     wrapStreamFn: wrapAnthropicProviderStream,
     resolveDefaultThinkingLevel: ({ modelId }) =>
-      matchesAnthropicModernModel(modelId) && shouldUseAnthropicAdaptiveThinkingDefault(modelId)
-        ? "adaptive"
-        : undefined,
+      isAnthropicOpus47Model(modelId)
+        ? "off"
+        : matchesAnthropicModernModel(modelId) && shouldUseAnthropicAdaptiveThinkingDefault(modelId)
+          ? "adaptive"
+          : undefined,
     resolveUsageAuth: async (ctx) => await ctx.resolveOAuthToken(),
     fetchUsageSnapshot: async (ctx) =>
       await fetchClaudeUsage(ctx.token, ctx.timeoutMs, ctx.fetchFn),
