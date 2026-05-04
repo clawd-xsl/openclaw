@@ -6,6 +6,7 @@ import { useTempSessionsFixture } from "./test-helpers.js";
 import {
   appendAssistantMessageToSessionTranscript,
   appendExactAssistantMessageToSessionTranscript,
+  appendUserMessageToSessionTranscript,
 } from "./transcript.js";
 
 describe("appendAssistantMessageToSessionTranscript", () => {
@@ -284,5 +285,78 @@ describe("appendAssistantMessageToSessionTranscript", () => {
       expect(emitSpy).toHaveBeenCalledWith(result.sessionFile);
     }
     emitSpy.mockRestore();
+  });
+});
+
+describe("appendUserMessageToSessionTranscript", () => {
+  const fixture = useTempSessionsFixture("transcript-user-test-");
+  const sessionId = "test-user-session-id";
+  const sessionKey = "test-user-session";
+
+  function writeTranscriptStore() {
+    fs.writeFileSync(
+      fixture.storePath(),
+      JSON.stringify({
+        [sessionKey]: {
+          sessionId,
+          chatType: "direct",
+          channel: "signal",
+        },
+      }),
+      "utf-8",
+    );
+  }
+
+  it("creates transcript file and appends user messages for valid sessions", async () => {
+    writeTranscriptStore();
+
+    const result = await appendUserMessageToSessionTranscript({
+      sessionKey,
+      text: "Hello from the user side",
+      storePath: fixture.storePath(),
+      timestamp: 123,
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const lines = fs.readFileSync(result.sessionFile, "utf-8").trim().split("\n");
+      expect(lines.length).toBe(2);
+
+      const messageLine = JSON.parse(lines[1]);
+      expect(messageLine.type).toBe("message");
+      expect(messageLine.message.role).toBe("user");
+      expect(messageLine.message.content).toEqual([
+        { type: "text", text: "Hello from the user side" },
+      ]);
+      expect(messageLine.message.timestamp).toBe(123);
+    }
+  });
+
+  it("does not append duplicate user messages for the same idempotency key", async () => {
+    writeTranscriptStore();
+
+    await appendUserMessageToSessionTranscript({
+      sessionKey,
+      text: "Hello from the user side",
+      idempotencyKey: "inbound:signal:default:msg-1",
+      storePath: fixture.storePath(),
+    });
+    await appendUserMessageToSessionTranscript({
+      sessionKey,
+      text: "Hello from the user side",
+      idempotencyKey: "inbound:signal:default:msg-1",
+      storePath: fixture.storePath(),
+    });
+
+    const sessionFile = resolveSessionTranscriptPathInDir(sessionId, fixture.sessionsDir());
+    const lines = fs.readFileSync(sessionFile, "utf-8").trim().split("\n");
+    expect(lines.length).toBe(2);
+
+    const messageLine = JSON.parse(lines[1]);
+    expect(messageLine.message.idempotencyKey).toBe("inbound:signal:default:msg-1");
+    expect(messageLine.message.role).toBe("user");
+    expect(messageLine.message.content).toEqual([
+      { type: "text", text: "Hello from the user side" },
+    ]);
   });
 });

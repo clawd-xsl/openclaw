@@ -3,10 +3,15 @@ import type { MsgContext } from "../auto-reply/templating.js";
 
 const recordSessionMetaFromInboundMock = vi.fn((_args?: unknown) => Promise.resolve(undefined));
 const updateLastRouteMock = vi.fn((_args?: unknown) => Promise.resolve(undefined));
+const appendUserMessageToSessionTranscriptMock = vi.fn((_args?: unknown) =>
+  Promise.resolve({ ok: true, sessionFile: "/tmp/test.jsonl", messageId: "msg-1" }),
+);
 
 vi.mock("../config/sessions/inbound.runtime.js", () => ({
   recordSessionMetaFromInbound: (args: unknown) => recordSessionMetaFromInboundMock(args),
   updateLastRoute: (args: unknown) => updateLastRouteMock(args),
+  appendUserMessageToSessionTranscript: (args: unknown) =>
+    appendUserMessageToSessionTranscriptMock(args),
 }));
 
 type SessionModule = typeof import("./session.js");
@@ -28,6 +33,8 @@ describe("recordInboundSession", () => {
   beforeEach(() => {
     recordSessionMetaFromInboundMock.mockClear();
     updateLastRouteMock.mockClear();
+    appendUserMessageToSessionTranscriptMock.mockClear();
+    recordSessionMetaFromInboundMock.mockResolvedValue(undefined);
   });
 
   it("does not pass ctx when updating a different session key", async () => {
@@ -158,5 +165,54 @@ describe("recordInboundSession", () => {
     expect(updateLastRouteMock).toHaveBeenCalledTimes(1);
 
     resolveRouteUpdate?.();
+  });
+
+  it("records inbound user transcript entries with a stable idempotency key", async () => {
+    recordSessionMetaFromInboundMock.mockResolvedValueOnce({ sessionId: "session-1" });
+
+    await recordInboundSession({
+      storePath: "/tmp/openclaw-session-store.json",
+      sessionKey: "Agent:Main:Demo-Channel:1234:Thread:42",
+      ctx: {
+        ...ctx,
+        BodyForCommands: "hello there",
+        Surface: "Signal",
+        AccountId: "personal",
+        MessageSidFull: "provider-message-id",
+        Timestamp: 123,
+      },
+      onRecordError: vi.fn(),
+    });
+
+    await Promise.resolve();
+
+    expect(appendUserMessageToSessionTranscriptMock).toHaveBeenCalledWith({
+      storePath: "/tmp/openclaw-session-store.json",
+      sessionKey: "agent:main:demo-channel:1234:thread:42",
+      text: "hello there",
+      idempotencyKey: "inbound:signal:personal:provider-message-id",
+      timestamp: 123,
+    });
+  });
+
+  it("skips inbound transcript appends when there is no clean user text", async () => {
+    recordSessionMetaFromInboundMock.mockResolvedValueOnce({ sessionId: "session-1" });
+
+    await recordInboundSession({
+      storePath: "/tmp/openclaw-session-store.json",
+      sessionKey: "agent:main:demo-channel:1234:thread:42",
+      ctx: {
+        ...ctx,
+        Body: "   ",
+        RawBody: undefined,
+        CommandBody: undefined,
+        BodyForCommands: undefined,
+      },
+      onRecordError: vi.fn(),
+    });
+
+    await Promise.resolve();
+
+    expect(appendUserMessageToSessionTranscriptMock).not.toHaveBeenCalled();
   });
 });

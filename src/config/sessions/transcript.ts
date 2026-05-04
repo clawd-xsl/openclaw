@@ -46,6 +46,10 @@ export type SessionTranscriptAssistantMessage = Parameters<SessionManager["appen
   role: "assistant";
 };
 
+export type SessionTranscriptUserMessage = Parameters<SessionManager["appendMessage"]>[0] & {
+  role: "user";
+};
+
 export async function resolveSessionTranscriptFile(params: {
   sessionId: string;
   sessionKey: string;
@@ -146,6 +150,39 @@ export async function appendAssistantMessageToSessionTranscript(params: {
   });
 }
 
+export async function appendUserMessageToSessionTranscript(params: {
+  agentId?: string;
+  sessionKey: string;
+  text?: string;
+  idempotencyKey?: string;
+  storePath?: string;
+  updateMode?: SessionTranscriptUpdateMode;
+  timestamp?: number;
+}): Promise<SessionTranscriptAppendResult> {
+  const sessionKey = params.sessionKey.trim();
+  if (!sessionKey) {
+    return { ok: false, reason: "missing sessionKey" };
+  }
+
+  const text = typeof params.text === "string" ? params.text.trim() : "";
+  if (!text) {
+    return { ok: false, reason: "empty text" };
+  }
+
+  return appendExactUserMessageToSessionTranscript({
+    agentId: params.agentId,
+    sessionKey,
+    storePath: params.storePath,
+    idempotencyKey: params.idempotencyKey,
+    updateMode: params.updateMode,
+    message: {
+      role: "user" as const,
+      content: [{ type: "text", text }],
+      timestamp: params.timestamp ?? Date.now(),
+    },
+  });
+}
+
 export async function appendExactAssistantMessageToSessionTranscript(params: {
   agentId?: string;
   sessionKey: string;
@@ -218,6 +255,95 @@ export async function appendExactAssistantMessageToSessionTranscript(params: {
     case "none":
       break;
   }
+  return { ok: true, sessionFile, messageId };
+}
+
+export async function appendExactUserMessageToSessionTranscript(params: {
+  agentId?: string;
+  sessionKey: string;
+  message: SessionTranscriptUserMessage;
+  idempotencyKey?: string;
+  storePath?: string;
+  updateMode?: SessionTranscriptUpdateMode;
+}): Promise<SessionTranscriptAppendResult> {
+  const sessionKey = params.sessionKey.trim();
+  if (!sessionKey) {
+    return { ok: false, reason: "missing sessionKey" };
+  }
+  if (params.message.role !== "user") {
+    return { ok: false, reason: "message role must be user" };
+  }
+
+  const storePath = params.storePath ?? resolveDefaultSessionStorePath(params.agentId);
+  const store = loadSessionStore(storePath, { skipCache: true });
+  const normalizedKey = normalizeStoreSessionKey(sessionKey);
+  const entry = (store[normalizedKey] ?? store[sessionKey]) as SessionEntry | undefined;
+  if (!entry?.sessionId) {
+    return { ok: false, reason: `unknown sessionKey: ${sessionKey}` };
+  }
+
+  let sessionFile: string;
+  try {
+    const resolvedSessionFile = await resolveAndPersistSessionFile({
+      sessionId: entry.sessionId,
+      sessionKey,
+      sessionStore: store,
+      storePath,
+      sessionEntry: entry,
+      agentId: params.agentId,
+      sessionsDir: path.dirname(storePath),
+    });
+    sessionFile = resolvedSessionFile.sessionFile;
+  } catch (err) {
+    return {
+      ok: false,
+      reason: formatErrorMessage(err),
+    };
+  }
+
+  await ensureSessionHeader({ sessionFile, sessionId: entry.sessionId });
+
+  const explicitIdempotencyKey =
+    params.idempotencyKey ??
+    ((params.message as { idempotencyKey?: unknown }).idempotencyKey as string | undefined);
+  const existingMessageId = explicitIdempotencyKey
+    ? await transcriptHasIdempotencyKey(sessionFile, explicitIdempotencyKey)
+    : undefined;
+  if (existingMessageId) {
+    return { ok: true, sessionFile, messageId: existingMessageId };
+  }
+
+  const message = {
+    ...params.message,
+    ...(explicitIdempotencyKey ? { idempotencyKey: explicitIdempotencyKey } : {}),
+  } as Parameters<SessionManager["appendMessage"]>[0];
+  const sessionManager = SessionManager.open(sessionFile);
+  const transcriptAlreadyHasAssistant = sessionManager
+    .getEntries()
+    .some((entry) => entry.type === "message" && entry.message.role === "assistant");
+  const messageId = sessionManager.appendMessage(message);
+  if (!transcriptAlreadyHasAssistant) {
+    const entry = sessionManager.getEntry(messageId);
+    if (!entry) {
+      return { ok: false, reason: `missing transcript entry: ${messageId}` };
+    }
+    await fs.promises.appendFile(sessionFile, `${JSON.stringify(entry)}\n`, {
+      encoding: "utf-8",
+      mode: 0o600,
+    });
+  }
+
+  switch (params.updateMode ?? "inline") {
+    case "inline":
+      emitSessionTranscriptUpdate({ sessionFile, sessionKey, message, messageId });
+      break;
+    case "file-only":
+      emitSessionTranscriptUpdate(sessionFile);
+      break;
+    case "none":
+      break;
+  }
+
   return { ok: true, sessionFile, messageId };
 }
 

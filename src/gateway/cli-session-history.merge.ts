@@ -1,5 +1,6 @@
 import { stripInboundMetadata } from "../auto-reply/reply/strip-inbound-meta.js";
 import { normalizeOptionalString, readStringValue } from "../shared/string-coerce.js";
+import { stripInlineDirectiveTagsForDisplay } from "../utils/directive-tags.js";
 
 const DEDUPE_TIMESTAMP_WINDOW_MS = 5 * 60 * 1000;
 
@@ -34,7 +35,12 @@ function extractComparableText(message: unknown): string | undefined {
   if (!joined) {
     return undefined;
   }
-  const visible = role === "user" ? stripInboundMetadata(joined) : joined;
+  const visible =
+    role === "user"
+      ? stripInboundMetadata(joined)
+      : role === "assistant"
+        ? stripInlineDirectiveTagsForDisplay(joined).text
+        : joined;
   const normalized = visible.replace(/\s+/g, " ").trim();
   return normalized || undefined;
 }

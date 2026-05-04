@@ -13,6 +13,41 @@ function loadInboundSessionRuntime() {
   return inboundSessionRuntimePromise;
 }
 
+function normalizeOptionalInboundText(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function resolveInboundTranscriptText(ctx: MsgContext): string | undefined {
+  return (
+    normalizeOptionalInboundText(ctx.BodyForCommands) ??
+    normalizeOptionalInboundText(ctx.CommandBody) ??
+    normalizeOptionalInboundText(ctx.RawBody) ??
+    normalizeOptionalInboundText(ctx.Body)
+  );
+}
+
+function resolveInboundTranscriptIdempotencyKey(ctx: MsgContext): string | undefined {
+  const messageId =
+    normalizeOptionalInboundText(ctx.MessageSidFull) ??
+    normalizeOptionalInboundText(ctx.MessageSid) ??
+    normalizeOptionalInboundText(ctx.MessageSidLast);
+  if (!messageId) {
+    return undefined;
+  }
+
+  const provider =
+    normalizeLowercaseStringOrEmpty(ctx.OriginatingChannel) ||
+    normalizeLowercaseStringOrEmpty(ctx.Surface) ||
+    normalizeLowercaseStringOrEmpty(ctx.Provider) ||
+    "unknown";
+  const accountId = normalizeLowercaseStringOrEmpty(ctx.AccountId) || "default";
+  return `inbound:${provider}:${accountId}:${messageId}`;
+}
+
 function shouldSkipPinnedMainDmRouteUpdate(
   pin: InboundLastRouteUpdate["mainDmOwnerPin"] | undefined,
 ): boolean {
@@ -47,6 +82,22 @@ export async function recordInboundSession(params: {
       ctx,
       groupResolution,
       createIfMissing,
+    })
+    .then(async (entry) => {
+      if (!entry) {
+        return;
+      }
+      const text = resolveInboundTranscriptText(ctx);
+      if (!text) {
+        return;
+      }
+      await runtime.appendUserMessageToSessionTranscript({
+        storePath,
+        sessionKey: canonicalSessionKey,
+        text,
+        idempotencyKey: resolveInboundTranscriptIdempotencyKey(ctx),
+        timestamp: ctx.Timestamp,
+      });
     })
     .catch(params.onRecordError);
 

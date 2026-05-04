@@ -231,6 +231,35 @@ describe("cli session history", () => {
     });
   });
 
+  it("deduplicates imported assistant messages after stripping display-only directive tags", () => {
+    const timestamp = Date.parse("2026-03-26T16:29:55.500Z");
+    const localMessages = [
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "hello from Claude" }],
+        timestamp,
+      },
+    ];
+    const importedMessages = [
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "[[reply_to_current]] hello from Claude [[audio_as_voice]]" },
+        ],
+        timestamp,
+        __openclaw: {
+          importedFrom: "claude-cli",
+          externalId: "assistant-1",
+          cliSessionId: "session-1",
+        },
+      },
+    ];
+
+    const merged = mergeImportedChatHistoryMessages({ localMessages, importedMessages });
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toEqual(localMessages[0]);
+  });
+
   it("augments chat history when a session has a claude-cli binding", async () => {
     await withClaudeProjectsDir(async ({ homeDir, sessionId }) => {
       const messages = augmentChatHistoryWithCliSessionImports({
