@@ -125,6 +125,7 @@
 - Node remains supported for running built output (`dist/*`) and production installs.
 - Mac packaging (dev): `scripts/package-mac-app.sh` defaults to current arch.
 - Type-check/build: `pnpm build`
+- Whenever you run `pnpm build`, also run `pnpm ui:build` in the same validation pass.
 - TypeScript checks: `pnpm tsgo`
 - Lint/format: `pnpm check`
 - Local agent/dev shells default to host-aware `OPENCLAW_LOCAL_CHECK=1` behavior for `pnpm tsgo` and `pnpm lint`; set `OPENCLAW_LOCAL_CHECK_MODE=throttled` to force the lower-memory profile, `OPENCLAW_LOCAL_CHECK_MODE=full` to keep lock-only behavior, or `OPENCLAW_LOCAL_CHECK=0` in CI/shared runs.
@@ -151,7 +152,7 @@
   - Fast-commit mode: `main` is moving fast and you intentionally optimize for shorter commit loops. Prefer explicit local verification close to the final landing point, and it is acceptable to use `--no-verify` for intermediate or catch-up commits after equivalent checks have already run locally.
 - Preferred landing bar for pushes to `main`: in Default mode, favor `pnpm check` and `pnpm test` near the final rebase/push point when feasible. In fast-commit mode, verify the touched surface locally near landing without insisting every intermediate commit replay the full hook.
 - Scoped tests prove the change itself. `pnpm test` remains the default `main` landing bar; scoped tests do not replace full-suite gates by default.
-- Hard gate: if the change can affect build output, packaging, lazy-loading/module boundaries, or published surfaces, `pnpm build` MUST be run and MUST pass before pushing `main`.
+- Hard gate: if the change can affect build output, packaging, lazy-loading/module boundaries, or published surfaces, `pnpm build` and `pnpm ui:build` MUST be run and MUST pass before pushing `main`.
 - Default rule: do not land changes with failing format, lint, type, build, or required test checks when those failures are caused by the change or plausibly related to the touched surface. Fast-commit mode changes how verification is sequenced; it does not lower the requirement to validate and clean up the touched surface before final landing.
 - For narrowly scoped changes, if unrelated failures already exist on latest `origin/main`, state that clearly, report the scoped tests you ran, and ask before broadening scope into unrelated fixes or landing despite those failures.
 - Do not use scoped tests as permission to ignore plausibly related failures.
@@ -237,7 +238,9 @@
 
 - `/landpr` lives in the global Codex prompts (`~/.codex/prompts/landpr.md`); when landing or merging any PR, always follow that `/landpr` process.
 - Create commits with `scripts/committer "<msg>" <file...>`; avoid manual `git add`/`git commit` so staging stays scoped.
-- Follow concise, action-oriented commit messages (e.g., `CLI: add verbose flag to send`).
+- For user-directed feature or bugfix work, do not commit or push ultra-incrementally. Wait until a concrete problem or complete functional block is implemented, relevant tests pass, any required runtime restart is done, and the user has verified the result before creating the grouped commit(s) and pushing.
+- Do not split one functional block into file-by-file commits. Keep commits grouped by completed behavior, not by edit location.
+- Follow concise, action-oriented commit messages that match the prevailing `origin/main` history style. Inspect recent main-branch subjects first and mirror that format; do not invent ad hoc prefixes or naming schemes.
 - Group related changes; avoid bundling unrelated refactors.
 - PR submission template (canonical): `.github/pull_request_template.md`
 - Issue submission templates (canonical): `.github/ISSUE_TEMPLATE/`
