@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
+import { clearAllCliCompactionOverlays } from "../../agents/cli-session.js";
 import { canExecRequestNode } from "../../agents/exec-defaults.js";
 import { buildWorkspaceSkillSnapshot } from "../../agents/skills.js";
 import { matchesSkillFilter } from "../../agents/skills/filter.js";
@@ -278,12 +279,14 @@ export async function incrementCompactionCount(params: {
     ...entry,
     ...updates,
   };
+  clearAllCliCompactionOverlays(sessionStore[sessionKey]);
   if (storePath) {
     await updateSessionStore(storePath, (store) => {
       store[sessionKey] = {
         ...store[sessionKey],
         ...updates,
       };
+      clearAllCliCompactionOverlays(store[sessionKey]);
     });
   }
   if (newSessionId && newSessionId !== entry.sessionId && cfg) {

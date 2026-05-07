@@ -74,6 +74,14 @@ describe("buildStatusMessage", () => {
         thinkingLevel: "low",
         verboseLevel: "on",
         compactionCount: 2,
+        cliCompactionOverlays: {
+          "claude-cli": {
+            provider: "claude-cli",
+            summary: "Compacted context",
+            createdAt: 0,
+            updatedAt: 0,
+          },
+        },
       },
       sessionKey: "agent:main:main",
       sessionScope: "per-sender",
@@ -92,6 +100,7 @@ describe("buildStatusMessage", () => {
     expect(normalized).toContain("Cost: $0.0020");
     expect(normalized).toContain("Context: 16k/32k (50%)");
     expect(normalized).toContain("Compactions: 2");
+    expect(normalized).toContain("CLI: claude-cli 10m ago");
     expect(normalized).toContain("Session: agent:main:main");
     expect(normalized).toContain("updated 10m ago");
     expect(normalized).toContain("Runtime: direct");

@@ -1,7 +1,7 @@
 import type { ImageContent } from "@mariozechner/pi-ai";
 import type { ReplyOperation } from "../../auto-reply/reply/reply-run-registry.js";
 import type { ReasoningLevel, ThinkLevel } from "../../auto-reply/thinking.js";
-import type { CliSessionBinding } from "../../config/sessions.js";
+import type { CliCompactionOverlay, CliSessionBinding } from "../../config/sessions.js";
 import type { SessionSystemPromptReport } from "../../config/sessions/types.js";
 import type { CliBackendConfig } from "../../config/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -32,6 +32,7 @@ export type RunCliAgentParams = {
   ownerNumbers?: string[];
   cliSessionId?: string;
   cliSessionBinding?: CliSessionBinding;
+  cliCompactionOverlay?: CliCompactionOverlay;
   authProfileId?: string;
   bootstrapPromptWarningSignaturesSeen?: string[];
   bootstrapPromptWarningSignature?: string;

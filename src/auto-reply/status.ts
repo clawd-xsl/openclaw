@@ -239,6 +239,33 @@ const formatQueueDetails = (queue?: QueueStatus) => {
   return detailParts.length ? ` (${detailParts.join(" · ")})` : "";
 };
 
+function formatCliCompactionStatus(
+  entry: Pick<SessionEntry, "cliCompactionOverlays"> | undefined,
+  now: number,
+): string | undefined {
+  const overlays = Object.entries(entry?.cliCompactionOverlays ?? {}).filter(([, overlay]) => {
+    return (
+      overlay &&
+      typeof overlay.summary === "string" &&
+      overlay.summary.trim().length > 0 &&
+      typeof overlay.updatedAt === "number" &&
+      Number.isFinite(overlay.updatedAt)
+    );
+  });
+  if (overlays.length === 0) {
+    return undefined;
+  }
+  const latest = overlays.toSorted((left, right) => right[1].updatedAt - left[1].updatedAt)[0];
+  const latestProvider = latest?.[0];
+  const latestUpdatedAt = latest?.[1]?.updatedAt;
+  const latestAge =
+    typeof latestUpdatedAt === "number" ? formatTimeAgo(now - latestUpdatedAt) : undefined;
+  if (overlays.length === 1 && latestProvider) {
+    return `🗜️ CLI: ${latestProvider}${latestAge ? ` ${latestAge} ago` : ""}`;
+  }
+  return `🗜️ CLI: ${overlays.length} overlays${latestProvider && latestAge ? `, latest ${latestProvider} ${latestAge} ago` : ""}`;
+}
+
 const readUsageFromSessionLog = (
   sessionId?: string,
   sessionEntry?: SessionEntry,
@@ -674,6 +701,7 @@ export function buildStatusMessage(args: StatusArgs): string {
   const contextLine = [
     `Context: ${formatTokens(totalTokens, contextTokens ?? null)}`,
     `🧹 Compactions: ${entry?.compactionCount ?? 0}`,
+    formatCliCompactionStatus(entry, now),
   ]
     .filter(Boolean)
     .join(" · ");
@@ -682,9 +710,9 @@ export function buildStatusMessage(args: StatusArgs): string {
   const queueDetails = formatQueueDetails(args.queue);
   const verboseLabel =
     verboseLevel === "full" ? "verbose:full" : verboseLevel === "on" ? "verbose" : null;
-  const traceLevel = entry?.traceLevel === "raw" ? "raw" : entry?.traceLevel === "on" ? "on" : "off";
-  const traceLabel =
-    traceLevel === "raw" ? "trace:raw" : traceLevel === "on" ? "trace" : null;
+  const traceLevel =
+    entry?.traceLevel === "raw" ? "raw" : entry?.traceLevel === "on" ? "on" : "off";
+  const traceLabel = traceLevel === "raw" ? "trace:raw" : traceLevel === "on" ? "trace" : null;
   const pluginStatusLines = verboseLevel !== "off" ? resolveSessionPluginStatusLines(entry) : [];
   const pluginTraceLines =
     traceLevel === "on" || traceLevel === "raw" ? resolveSessionPluginTraceLines(entry) : [];

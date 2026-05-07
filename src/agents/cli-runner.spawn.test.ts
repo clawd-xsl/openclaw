@@ -1400,6 +1400,71 @@ describe("runCliAgent spawn path", () => {
     expect(promptCarrier).toContain("current ask");
   });
 
+  it("bootstraps fresh CLI runs from provider compaction overlays when present", async () => {
+    const sessionDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-cli-overlay-tail-"));
+    const sessionFile = path.join(sessionDir, "session.jsonl");
+    await fs.writeFile(
+      sessionFile,
+      [
+        JSON.stringify({
+          id: "m1",
+          message: { role: "user", content: [{ type: "text", text: "older question" }] },
+        }),
+        JSON.stringify({
+          id: "m2",
+          message: { role: "assistant", content: [{ type: "text", text: "older answer" }] },
+        }),
+        JSON.stringify({
+          id: "m3",
+          message: { role: "user", content: [{ type: "text", text: "recent ask" }] },
+        }),
+        JSON.stringify({
+          id: "m4",
+          message: { role: "assistant", content: [{ type: "text", text: "recent answer" }] },
+        }),
+        JSON.stringify({
+          id: "m5",
+          message: { role: "user", content: [{ type: "text", text: "current ask" }] },
+        }),
+      ].join("\n") + "\n",
+      "utf-8",
+    );
+
+    mockSuccessfulCliRun();
+    const context = buildPreparedCliRunContext({
+      provider: "claude-cli",
+      model: "sonnet",
+      runId: "run-transcript-bootstrap-overlay",
+      prompt: "current ask",
+    });
+    context.params.sessionId = "session-existing";
+    context.params.sessionFile = sessionFile;
+    context.params.cliCompactionOverlay = {
+      provider: "claude-cli",
+      summary: "Condensed earlier context.",
+      firstKeptEntryId: "m3",
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    await executePreparedCliRun(context);
+
+    const input = supervisorSpawnMock.mock.calls[0]?.[0] as {
+      argv?: string[];
+      input?: string;
+    };
+    const promptCarrier = [input.input ?? "", ...(input.argv ?? [])].join("\n");
+    expect(promptCarrier).toContain("[Compaction summary]");
+    expect(promptCarrier).toContain("Condensed earlier context.");
+    expect(promptCarrier).not.toContain("User: older question");
+    expect(promptCarrier).not.toContain("Assistant: older answer");
+    expect(promptCarrier).toContain("User: recent ask");
+    expect(promptCarrier).toContain("Assistant: recent answer");
+    expect(promptCarrier).not.toContain("User: current ask");
+    expect(promptCarrier).toContain("[Current user message]");
+    expect(promptCarrier).toContain("current ask");
+  });
+
   it("does not inject transcript bootstrap when resuming an existing CLI session", async () => {
     const sessionDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-cli-transcript-resume-"));
     const sessionFile = path.join(sessionDir, "session.jsonl");

@@ -278,6 +278,15 @@ describe("resetReplyRunSession", () => {
           mcpConfigHash: "mcp-a",
         },
       },
+      cliCompactionOverlays: {
+        "claude-cli": {
+          provider: "claude-cli",
+          summary: "Compacted context",
+          firstKeptEntryId: "m2",
+          createdAt: 10,
+          updatedAt: 20,
+        },
+      },
       model: "claude-sonnet-4-6",
       modelOverride: "claude-sonnet-4-6",
     };
@@ -318,6 +327,7 @@ describe("resetReplyRunSession", () => {
     expect(activeSessionEntry?.claudeCliSessionId).toBeUndefined();
     expect(activeSessionEntry?.cliSessionIds).toBeUndefined();
     expect(activeSessionEntry?.cliSessionBindings).toBeUndefined();
+    expect(activeSessionEntry?.cliCompactionOverlays).toBeUndefined();
     expect(followupRun.run.sessionId).toBe("00000000-0000-0000-0000-000000000123");
     expect(followupRun.run.previousSessionId).toBe("old-session");
     expect(followupRun.run.sessionCreatedAt).toBe(1_713_000_000_000);

@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { clearBootstrapSnapshotOnSessionRollover } from "../../agents/bootstrap-cache.js";
-import { clearAllCliSessions } from "../../agents/cli-session.js";
+import { clearAllCliCompactionOverlays, clearAllCliSessions } from "../../agents/cli-session.js";
 import { resetRegisteredAgentHarnessSessions } from "../../agents/harness/registry.js";
 import { disposeSessionMcpRuntime } from "../../agents/pi-bundle-mcp-tools.js";
 import type { SessionEntry } from "../../config/sessions.js";
@@ -173,6 +173,7 @@ export async function resetReplyRunSession(params: {
     nextEntry.memoryFlushPromptTokens = undefined;
     nextEntry.memoryFlushContextHash = undefined;
     clearAllCliSessions(nextEntry);
+    clearAllCliCompactionOverlays(nextEntry);
   }
   const sessionPathOpts = resolveSessionFilePathOptions({
     agentId,

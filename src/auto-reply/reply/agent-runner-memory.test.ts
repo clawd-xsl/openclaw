@@ -8,13 +8,19 @@ import {
   registerMemoryFlushPlanResolver,
 } from "../../plugins/memory-state.js";
 import type { TemplateContext } from "../templating.js";
-import { runMemoryFlushIfNeeded, setAgentRunnerMemoryTestDeps } from "./agent-runner-memory.js";
+import {
+  runMemoryFlushIfNeeded,
+  runPreflightCompactionIfNeeded,
+  setAgentRunnerMemoryTestDeps,
+} from "./agent-runner-memory.js";
 import type { FollowupRun } from "./queue.js";
 
 const runWithModelFallbackMock = vi.fn();
 const runEmbeddedPiAgentMock = vi.fn();
+const compactEmbeddedPiSessionMock = vi.fn();
 const refreshQueuedFollowupSessionMock = vi.fn();
 const incrementCompactionCountMock = vi.fn();
+const updateSessionStoreEntryMock = vi.fn();
 
 function createReplyOperation() {
   return {
@@ -82,6 +88,7 @@ describe("runMemoryFlushIfNeeded", () => {
       attempts: [],
     }));
     runEmbeddedPiAgentMock.mockReset().mockResolvedValue({ payloads: [], meta: {} });
+    compactEmbeddedPiSessionMock.mockReset();
     refreshQueuedFollowupSessionMock.mockReset();
     incrementCompactionCountMock.mockReset().mockImplementation(async (params) => {
       const sessionKey = String(params.sessionKey ?? "");
@@ -104,11 +111,32 @@ describe("runMemoryFlushIfNeeded", () => {
       }
       return nextEntry.compactionCount;
     });
+    updateSessionStoreEntryMock.mockReset().mockImplementation(async (params) => {
+      const raw = await fs.readFile(params.storePath, "utf8");
+      const store = JSON.parse(raw) as Record<string, SessionEntry>;
+      const entry = store[params.sessionKey];
+      if (!entry) {
+        return null;
+      }
+      const patch = await params.update(entry);
+      if (!patch) {
+        return entry;
+      }
+      const nextEntry = {
+        ...entry,
+        ...patch,
+      };
+      store[params.sessionKey] = nextEntry;
+      await writeSessionStore(params.storePath, params.sessionKey, nextEntry);
+      return nextEntry;
+    });
     setAgentRunnerMemoryTestDeps({
       runWithModelFallback: runWithModelFallbackMock as never,
       runEmbeddedPiAgent: runEmbeddedPiAgentMock as never,
+      compactEmbeddedPiSession: compactEmbeddedPiSessionMock as never,
       refreshQueuedFollowupSession: refreshQueuedFollowupSessionMock as never,
       incrementCompactionCount: incrementCompactionCountMock as never,
+      updateSessionStoreEntry: updateSessionStoreEntryMock as never,
       registerAgentRunContext: vi.fn() as never,
       randomUUID: () => "00000000-0000-0000-0000-000000000001",
       now: () => 1_700_000_000_000,
@@ -232,6 +260,134 @@ describe("runMemoryFlushIfNeeded", () => {
     expect(flushCall.model).toBe("gpt-5.4");
     expect(flushCall.prompt).toContain("Pre-compaction memory flush.");
     expect(flushCall.silentExpected).toBe(true);
+  });
+
+  it("compacts CLI sessions into provider overlays and clears only the CLI binding", async () => {
+    registerMemoryFlushPlanResolver(() => ({
+      softThresholdTokens: 10,
+      forceFlushTranscriptBytes: 1_000_000_000,
+      reserveTokensFloor: 100,
+      prompt: "Pre-compaction memory flush.\nNO_REPLY",
+      systemPrompt: "Write memory to memory/YYYY-MM-DD.md.",
+      relativePath: "memory/2023-11-14.md",
+    }));
+    const sessionDir = await fs.mkdtemp(path.join(rootDir, "openclaw-cli-preflight-"));
+    const sessionFile = path.join(sessionDir, "session.jsonl");
+    await fs.writeFile(
+      sessionFile,
+      [
+        JSON.stringify({
+          id: "m1",
+          message: {
+            role: "user",
+            content: [{ type: "text", text: "older question ".repeat(80) }],
+          },
+        }),
+        JSON.stringify({
+          id: "m2",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "older answer ".repeat(80) }],
+          },
+        }),
+        JSON.stringify({
+          id: "m3",
+          message: {
+            role: "user",
+            content: [{ type: "text", text: "current ask ".repeat(40) }],
+          },
+        }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+
+    const storePath = path.join(rootDir, "sessions.json");
+    const sessionKey = "main";
+    const sessionEntry: SessionEntry = {
+      sessionId: "session",
+      updatedAt: Date.now(),
+      sessionFile,
+      cliSessionIds: { "claude-cli": "cli-session-1" },
+      cliSessionBindings: {
+        "claude-cli": {
+          sessionId: "cli-session-1",
+          mcpConfigHash: "mcp-a",
+        },
+      },
+    };
+    const sessionStore = { [sessionKey]: sessionEntry };
+    await writeSessionStore(storePath, sessionKey, sessionEntry);
+    compactEmbeddedPiSessionMock.mockResolvedValue({
+      ok: true,
+      compacted: true,
+      result: {
+        summary: "Condensed earlier context.",
+        firstKeptEntryId: "m2",
+        tokensBefore: 1_024,
+        tokensAfter: 256,
+      },
+    });
+
+    const entry = await runPreflightCompactionIfNeeded({
+      cfg: {
+        agents: {
+          defaults: {
+            cliBackends: {
+              "claude-cli": { command: "claude" },
+            },
+            compaction: {
+              reserveTokensFloor: 100,
+            },
+          },
+        },
+      },
+      followupRun: createFollowupRun({
+        provider: "claude-cli",
+        model: "sonnet",
+        sessionFile,
+      }),
+      promptForEstimate: "current ask ".repeat(40),
+      defaultModel: "claude-cli/sonnet",
+      agentCfgContextTokens: 400,
+      sessionEntry,
+      sessionStore,
+      sessionKey,
+      storePath,
+      isHeartbeat: false,
+      replyOperation: createReplyOperation(),
+    });
+
+    expect(compactEmbeddedPiSessionMock).toHaveBeenCalledTimes(1);
+    const compactionCall = compactEmbeddedPiSessionMock.mock.calls[0]?.[0] as {
+      sessionFile?: string;
+      sessionKey?: string;
+      currentTokenCount?: number;
+    };
+    expect(compactionCall.sessionFile).not.toBe(sessionFile);
+    expect(compactionCall.sessionKey).toBeUndefined();
+    expect(compactionCall.currentTokenCount).toBeGreaterThan(0);
+    expect(entry?.cliSessionBindings).toBeUndefined();
+    expect(entry?.cliSessionIds).toBeUndefined();
+    expect(entry?.cliCompactionOverlays?.["claude-cli"]).toMatchObject({
+      provider: "claude-cli",
+      summary: "Condensed earlier context.",
+      firstKeptEntryId: "m2",
+      tokensBefore: 1024,
+      tokensAfter: 256,
+      thresholdTokens: 290,
+    });
+    expect(entry?.cliCompactionOverlays?.["claude-cli"]?.compactedAtPromptTokens).toBeGreaterThan(
+      0,
+    );
+
+    const persisted = JSON.parse(await fs.readFile(storePath, "utf8")) as {
+      main: SessionEntry;
+    };
+    expect(persisted.main.cliSessionBindings).toBeUndefined();
+    expect(persisted.main.cliSessionIds).toBeUndefined();
+    expect(persisted.main.cliCompactionOverlays?.["claude-cli"]?.summary).toBe(
+      "Condensed earlier context.",
+    );
   });
 
   it("uses configured prompts and stored bootstrap warning signatures", async () => {

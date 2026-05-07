@@ -10,8 +10,11 @@ import {
 } from "../../agents/auth-profiles/oauth-refresh-failure.js";
 import { resolveBootstrapWarningSignaturesSeen } from "../../agents/bootstrap-budget.js";
 import { runCliAgent } from "../../agents/cli-runner.js";
-import { isCliSessionContinuityError } from "../../agents/cli-session.js";
-import { getCliSessionBinding } from "../../agents/cli-session.js";
+import {
+  getCliCompactionOverlay,
+  getCliSessionBinding,
+  isCliSessionContinuityError,
+} from "../../agents/cli-session.js";
 import { LiveSessionModelSwitchError } from "../../agents/live-model-switch-error.js";
 import { runWithModelFallback, isFallbackSummaryError } from "../../agents/model-fallback.js";
 import { isCliProvider } from "../../agents/model-selection.js";
@@ -894,9 +897,13 @@ export async function runAgentTurnWithFallback(params: {
               params.getActiveSessionEntry(),
               provider,
             );
+            const cliCompactionOverlay = getCliCompactionOverlay(
+              params.getActiveSessionEntry(),
+              provider,
+            );
             trace(
               "cli-session-binding-done",
-              `binding=${cliSessionBinding?.sessionId ? "yes" : "no"}`,
+              `binding=${cliSessionBinding?.sessionId ? "yes" : "no"} overlay=${cliCompactionOverlay ? "yes" : "no"}`,
             );
             const authProfileId =
               provider === params.followupRun.run.provider
@@ -924,6 +931,7 @@ export async function runAgentTurnWithFallback(params: {
                   ownerNumbers: params.followupRun.run.ownerNumbers,
                   cliSessionId: cliSessionBinding?.sessionId,
                   cliSessionBinding,
+                  cliCompactionOverlay,
                   authProfileId,
                   bootstrapPromptWarningSignaturesSeen,
                   bootstrapPromptWarningSignature:

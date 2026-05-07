@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import type { CliSessionBinding, SessionEntry } from "../config/sessions.js";
+import type { CliCompactionOverlay, CliSessionBinding, SessionEntry } from "../config/sessions.js";
 import { normalizeOptionalString } from "../shared/string-coerce.js";
 import { normalizeProviderId } from "./model-selection.js";
 
@@ -153,6 +153,132 @@ export function clearAllCliSessions(entry: SessionEntry): void {
   delete entry.cliSessionBindings;
   delete entry.cliSessionIds;
   delete entry.claudeCliSessionId;
+}
+
+export function getCliCompactionOverlay(
+  entry: SessionEntry | undefined,
+  provider: string,
+): CliCompactionOverlay | undefined {
+  if (!entry) {
+    return undefined;
+  }
+  const normalized = normalizeProviderId(provider);
+  const overlay = entry.cliCompactionOverlays?.[normalized];
+  if (!overlay) {
+    return undefined;
+  }
+  const summary = normalizeOptionalString(overlay.summary);
+  if (!summary) {
+    return undefined;
+  }
+  return {
+    provider: normalized,
+    summary,
+    ...(normalizeOptionalString(overlay.firstKeptEntryId)
+      ? { firstKeptEntryId: normalizeOptionalString(overlay.firstKeptEntryId) }
+      : {}),
+    ...(normalizeOptionalString(overlay.compactionModel)
+      ? { compactionModel: normalizeOptionalString(overlay.compactionModel) }
+      : {}),
+    ...(typeof overlay.compactedAtPromptTokens === "number" &&
+    Number.isFinite(overlay.compactedAtPromptTokens) &&
+    overlay.compactedAtPromptTokens > 0
+      ? { compactedAtPromptTokens: Math.floor(overlay.compactedAtPromptTokens) }
+      : {}),
+    ...(typeof overlay.tokensBefore === "number" &&
+    Number.isFinite(overlay.tokensBefore) &&
+    overlay.tokensBefore > 0
+      ? { tokensBefore: Math.floor(overlay.tokensBefore) }
+      : {}),
+    ...(typeof overlay.tokensAfter === "number" &&
+    Number.isFinite(overlay.tokensAfter) &&
+    overlay.tokensAfter > 0
+      ? { tokensAfter: Math.floor(overlay.tokensAfter) }
+      : {}),
+    ...(typeof overlay.contextWindowTokens === "number" &&
+    Number.isFinite(overlay.contextWindowTokens) &&
+    overlay.contextWindowTokens > 0
+      ? { contextWindowTokens: Math.floor(overlay.contextWindowTokens) }
+      : {}),
+    ...(typeof overlay.thresholdTokens === "number" &&
+    Number.isFinite(overlay.thresholdTokens) &&
+    overlay.thresholdTokens > 0
+      ? { thresholdTokens: Math.floor(overlay.thresholdTokens) }
+      : {}),
+    createdAt:
+      typeof overlay.createdAt === "number" && Number.isFinite(overlay.createdAt)
+        ? Math.floor(overlay.createdAt)
+        : Date.now(),
+    updatedAt:
+      typeof overlay.updatedAt === "number" && Number.isFinite(overlay.updatedAt)
+        ? Math.floor(overlay.updatedAt)
+        : Date.now(),
+  };
+}
+
+export function setCliCompactionOverlay(
+  entry: SessionEntry,
+  provider: string,
+  overlay: CliCompactionOverlay,
+): void {
+  const normalized = normalizeProviderId(provider);
+  const summary = overlay.summary.trim();
+  if (!summary) {
+    return;
+  }
+  entry.cliCompactionOverlays = {
+    ...entry.cliCompactionOverlays,
+    [normalized]: {
+      provider: normalized,
+      summary,
+      ...(normalizeOptionalString(overlay.firstKeptEntryId)
+        ? { firstKeptEntryId: normalizeOptionalString(overlay.firstKeptEntryId) }
+        : {}),
+      ...(normalizeOptionalString(overlay.compactionModel)
+        ? { compactionModel: normalizeOptionalString(overlay.compactionModel) }
+        : {}),
+      ...(typeof overlay.compactedAtPromptTokens === "number" &&
+      Number.isFinite(overlay.compactedAtPromptTokens) &&
+      overlay.compactedAtPromptTokens > 0
+        ? { compactedAtPromptTokens: Math.floor(overlay.compactedAtPromptTokens) }
+        : {}),
+      ...(typeof overlay.tokensBefore === "number" &&
+      Number.isFinite(overlay.tokensBefore) &&
+      overlay.tokensBefore > 0
+        ? { tokensBefore: Math.floor(overlay.tokensBefore) }
+        : {}),
+      ...(typeof overlay.tokensAfter === "number" &&
+      Number.isFinite(overlay.tokensAfter) &&
+      overlay.tokensAfter > 0
+        ? { tokensAfter: Math.floor(overlay.tokensAfter) }
+        : {}),
+      ...(typeof overlay.contextWindowTokens === "number" &&
+      Number.isFinite(overlay.contextWindowTokens) &&
+      overlay.contextWindowTokens > 0
+        ? { contextWindowTokens: Math.floor(overlay.contextWindowTokens) }
+        : {}),
+      ...(typeof overlay.thresholdTokens === "number" &&
+      Number.isFinite(overlay.thresholdTokens) &&
+      overlay.thresholdTokens > 0
+        ? { thresholdTokens: Math.floor(overlay.thresholdTokens) }
+        : {}),
+      createdAt: Math.floor(overlay.createdAt),
+      updatedAt: Math.floor(overlay.updatedAt),
+    },
+  };
+}
+
+export function clearCliCompactionOverlay(entry: SessionEntry, provider: string): void {
+  const normalized = normalizeProviderId(provider);
+  if (entry.cliCompactionOverlays?.[normalized] !== undefined) {
+    const next = { ...entry.cliCompactionOverlays };
+    delete next[normalized];
+    entry.cliCompactionOverlays = Object.keys(next).length > 0 ? next : undefined;
+  }
+}
+
+export function clearAllCliCompactionOverlays(entry: SessionEntry): void {
+  delete entry.cliCompactionOverlays;
 }
 
 export function resolveCliSessionReuse(params: {

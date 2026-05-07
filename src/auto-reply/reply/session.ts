@@ -603,6 +603,7 @@ export async function initSessionState(params: {
       persistedAuthProfileOverrideCompactionCount ?? baseEntry?.authProfileOverrideCompactionCount,
     cliSessionIds: isNewSession ? undefined : baseEntry?.cliSessionIds,
     cliSessionBindings: isNewSession ? undefined : baseEntry?.cliSessionBindings,
+    cliCompactionOverlays: isNewSession ? undefined : baseEntry?.cliCompactionOverlays,
     claudeCliSessionId: isNewSession ? undefined : baseEntry?.claudeCliSessionId,
     label: persistedLabel ?? baseEntry?.label,
     spawnedBy: persistedSpawnedBy ?? baseEntry?.spawnedBy,
@@ -727,6 +728,7 @@ export async function initSessionState(params: {
     // Clear stale context hash so the first flush in the new session is not
     // incorrectly skipped due to a hash match with the old transcript (#30115).
     sessionEntry.memoryFlushContextHash = undefined;
+    sessionEntry.cliCompactionOverlays = undefined;
     // Clear stale token metrics from previous session so /status doesn't
     // display the old session's context usage after /new or /reset.
     sessionEntry.totalTokens = undefined;

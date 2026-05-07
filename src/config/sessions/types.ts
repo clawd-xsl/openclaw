@@ -76,6 +76,20 @@ export type CliSessionBinding = {
   mcpConfigHash?: string;
 };
 
+export type CliCompactionOverlay = {
+  provider: string;
+  summary: string;
+  firstKeptEntryId?: string;
+  compactionModel?: string;
+  compactedAtPromptTokens?: number;
+  tokensBefore?: number;
+  tokensAfter?: number;
+  contextWindowTokens?: number;
+  thresholdTokens?: number;
+  createdAt: number;
+  updatedAt: number;
+};
+
 export type SessionCompactionCheckpointReason =
   | "manual"
   | "auto-threshold"
@@ -239,6 +253,7 @@ export type SessionEntry = {
   memoryFlushContextHash?: string;
   cliSessionIds?: Record<string, string>;
   cliSessionBindings?: Record<string, CliSessionBinding>;
+  cliCompactionOverlays?: Record<string, CliCompactionOverlay>;
   claudeCliSessionId?: string;
   label?: string;
   displayName?: string;

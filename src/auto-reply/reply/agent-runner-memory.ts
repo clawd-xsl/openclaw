@@ -1,7 +1,16 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import { resolveBootstrapWarningSignaturesSeen } from "../../agents/bootstrap-budget.js";
+import { buildCliColdStartPromptPrefix } from "../../agents/cli-session-context.js";
+import {
+  clearCliCompactionOverlay,
+  clearCliSession,
+  getCliCompactionOverlay,
+  setCliCompactionOverlay,
+} from "../../agents/cli-session.js";
 import { estimateMessagesTokens } from "../../agents/compaction.js";
 import { runWithModelFallback } from "../../agents/model-fallback.js";
 import { isCliProvider } from "../../agents/model-selection.js";
@@ -123,6 +132,7 @@ export type SessionTranscriptUsageSnapshot = {
 const TRANSCRIPT_OUTPUT_READ_BUFFER_TOKENS = 8192;
 const TRANSCRIPT_TAIL_CHUNK_BYTES = 64 * 1024;
 const CLI_MEMORY_FLUSH_RETRIGGER_TOKENS = 20_000;
+const CLI_PREFLIGHT_COMPACTION_RETRIGGER_TOKENS = 20_000;
 
 function parseUsageFromTranscriptLine(line: string): ReturnType<typeof normalizeUsage> | undefined {
   const trimmed = line.trim();
@@ -344,6 +354,267 @@ export async function readPromptTokensFromSessionLog(
   return snapshot.usage;
 }
 
+function shouldRunCliPreflightCompaction(params: {
+  tokenCount?: number;
+  threshold: number;
+  overlayPromptTokens?: number;
+}): boolean {
+  const tokenCount =
+    typeof params.tokenCount === "number" &&
+    Number.isFinite(params.tokenCount) &&
+    params.tokenCount > 0
+      ? Math.floor(params.tokenCount)
+      : undefined;
+  if (!tokenCount || tokenCount < params.threshold) {
+    return false;
+  }
+  const overlayPromptTokens =
+    typeof params.overlayPromptTokens === "number" &&
+    Number.isFinite(params.overlayPromptTokens) &&
+    params.overlayPromptTokens > 0
+      ? Math.floor(params.overlayPromptTokens)
+      : undefined;
+  if (overlayPromptTokens === undefined) {
+    return true;
+  }
+  return tokenCount >= overlayPromptTokens + CLI_PREFLIGHT_COMPACTION_RETRIGGER_TOKENS;
+}
+
+async function persistCliCompactionOverlayUpdate(params: {
+  entry: SessionEntry;
+  sessionStore?: Record<string, SessionEntry>;
+  sessionKey?: string;
+  storePath?: string;
+  mutate: (entry: SessionEntry) => void;
+}): Promise<SessionEntry> {
+  const nextEntry = { ...params.entry };
+  params.mutate(nextEntry);
+  if (params.sessionStore && params.sessionKey) {
+    params.sessionStore[params.sessionKey] = nextEntry;
+  }
+  if (params.storePath && params.sessionKey) {
+    try {
+      const updated = await memoryDeps.updateSessionStoreEntry({
+        storePath: params.storePath,
+        sessionKey: params.sessionKey,
+        update: async (existing) => {
+          const mutable = { ...existing };
+          params.mutate(mutable);
+          return mutable;
+        },
+      });
+      if (updated) {
+        if (params.sessionStore) {
+          params.sessionStore[params.sessionKey] = updated;
+        }
+        return updated;
+      }
+    } catch (err) {
+      logVerbose(`failed to persist CLI compaction overlay update: ${String(err)}`);
+    }
+  }
+  return nextEntry;
+}
+
+async function runCliPreflightCompactionIfNeeded(params: {
+  cfg: OpenClawConfig;
+  followupRun: FollowupRun;
+  promptForEstimate?: string;
+  defaultModel: string;
+  agentCfgContextTokens?: number;
+  sessionEntry?: SessionEntry;
+  sessionStore?: Record<string, SessionEntry>;
+  sessionKey?: string;
+  storePath?: string;
+  replyOperation: ReplyOperation;
+}): Promise<SessionEntry | undefined> {
+  if (!params.sessionKey) {
+    return params.sessionEntry;
+  }
+
+  let entry =
+    params.sessionEntry ??
+    (params.sessionKey ? params.sessionStore?.[params.sessionKey] : undefined);
+  if (!entry?.sessionId) {
+    return entry ?? params.sessionEntry;
+  }
+
+  const provider = params.followupRun.run.provider;
+  const promptText = params.promptForEstimate ?? params.followupRun.prompt;
+  let overlay = getCliCompactionOverlay(entry, provider);
+  const prefixResult = buildCliColdStartPromptPrefix({
+    providerId: provider,
+    sessionId: entry.sessionId,
+    sessionFile: entry.sessionFile ?? params.followupRun.run.sessionFile,
+    currentPrompt: promptText,
+    overlay,
+  });
+  if (overlay && prefixResult.overlayInvalidReason) {
+    entry = await persistCliCompactionOverlayUpdate({
+      entry,
+      sessionStore: params.sessionStore,
+      sessionKey: params.sessionKey,
+      storePath: params.storePath,
+      mutate: (mutable) => {
+        clearCliCompactionOverlay(mutable, provider);
+      },
+    });
+    overlay = undefined;
+  }
+
+  const promptPrefix = prefixResult.promptPrefix;
+  if (!promptPrefix) {
+    logVerbose(
+      `preflightCompaction check: sessionKey=${params.sessionKey} tokenCount=undefined ` +
+        `reason=no_cli_bootstrap provider=${provider}`,
+    );
+    return entry ?? params.sessionEntry;
+  }
+
+  const tokenCountForCompaction = estimatePromptTokensForMemoryFlush(
+    `${promptPrefix}${promptText}`,
+  );
+  const contextWindowTokens = resolveMemoryFlushContextWindowTokens({
+    cfg: params.cfg,
+    provider,
+    modelId: params.followupRun.run.model ?? params.defaultModel,
+    agentCfgContextTokens: params.agentCfgContextTokens,
+  });
+  const memoryFlushPlan = resolveMemoryFlushPlan({ cfg: params.cfg });
+  const reserveTokensFloor =
+    memoryFlushPlan?.reserveTokensFloor ??
+    params.cfg.agents?.defaults?.compaction?.reserveTokensFloor ??
+    20_000;
+  const softThresholdTokens = memoryFlushPlan?.softThresholdTokens ?? 4_000;
+  const threshold = contextWindowTokens - reserveTokensFloor - softThresholdTokens;
+  const overlayPromptTokens = overlay?.compactedAtPromptTokens;
+
+  logVerbose(
+    `preflightCompaction check: sessionKey=${params.sessionKey} ` +
+      `tokenCount=${tokenCountForCompaction ?? "undefined"} contextWindow=${contextWindowTokens} ` +
+      `threshold=${threshold} isHeartbeat=false isCli=true ` +
+      `overlay=${overlay ? "yes" : "no"} overlayInvalidReason=${prefixResult.overlayInvalidReason ?? "none"} ` +
+      `overlayPromptTokens=${overlayPromptTokens ?? "undefined"} promptPrefixChars=${promptPrefix.length}`,
+  );
+
+  const shouldCompact = shouldRunCliPreflightCompaction({
+    tokenCount: tokenCountForCompaction,
+    threshold,
+    overlayPromptTokens,
+  });
+  if (!shouldCompact) {
+    return entry ?? params.sessionEntry;
+  }
+
+  const sessionFile = resolveSessionLogPath(
+    entry.sessionId,
+    entry.sessionFile ? entry : { ...entry, sessionFile: params.followupRun.run.sessionFile },
+    params.sessionKey ?? params.followupRun.run.sessionKey,
+    { storePath: params.storePath },
+  );
+  if (!sessionFile) {
+    return entry ?? params.sessionEntry;
+  }
+
+  logVerbose(
+    `preflightCompaction triggered: sessionKey=${params.sessionKey} ` +
+      `tokenCount=${tokenCountForCompaction ?? "undefined"} threshold=${threshold} cli=true`,
+  );
+
+  params.replyOperation.setPhase("preflight_compacting");
+  const tempDir = await fs.promises.mkdtemp(
+    path.join(os.tmpdir(), "openclaw-cli-preflight-compaction-"),
+  );
+  const tempSessionFile = path.join(tempDir, path.basename(sessionFile));
+  try {
+    await fs.promises.copyFile(sessionFile, tempSessionFile);
+    const result = await memoryDeps.compactEmbeddedPiSession({
+      sessionId: entry.sessionId,
+      messageChannel: params.followupRun.run.messageProvider,
+      groupId: entry.groupId ?? params.followupRun.run.groupId,
+      groupChannel: entry.groupChannel ?? params.followupRun.run.groupChannel,
+      groupSpace: entry.space ?? params.followupRun.run.groupSpace,
+      senderId: params.followupRun.run.senderId,
+      senderName: params.followupRun.run.senderName,
+      senderUsername: params.followupRun.run.senderUsername,
+      senderE164: params.followupRun.run.senderE164,
+      authProfileId: params.followupRun.run.authProfileId,
+      sessionFile: tempSessionFile,
+      workspaceDir: params.followupRun.run.workspaceDir,
+      agentDir: params.followupRun.run.agentDir,
+      config: params.cfg,
+      skillsSnapshot: entry.skillsSnapshot ?? params.followupRun.run.skillsSnapshot,
+      provider,
+      model: params.followupRun.run.model,
+      thinkLevel: params.followupRun.run.thinkLevel,
+      reasoningLevel: params.followupRun.run.reasoningLevel,
+      bashElevated: params.followupRun.run.bashElevated,
+      trigger: "budget",
+      currentTokenCount: tokenCountForCompaction,
+      senderIsOwner: params.followupRun.run.senderIsOwner,
+      ownerNumbers: params.followupRun.run.ownerNumbers,
+      extraSystemPrompt: params.followupRun.run.extraSystemPrompt,
+      abortSignal: params.replyOperation.abortSignal,
+    });
+
+    if (!result?.ok || !result.compacted || !result.result?.summary?.trim()) {
+      logVerbose(
+        `preflightCompaction skipped: sessionKey=${params.sessionKey} reason=${result?.reason ?? "not_compacted"} cli=true`,
+      );
+      return entry ?? params.sessionEntry;
+    }
+
+    const updatedAt = memoryDeps.now();
+    const nextOverlay = {
+      provider,
+      summary: result.result.summary.trim(),
+      ...(normalizeOptionalString(result.result.firstKeptEntryId)
+        ? { firstKeptEntryId: normalizeOptionalString(result.result.firstKeptEntryId) }
+        : {}),
+      ...(typeof result.result.tokensBefore === "number" && result.result.tokensBefore > 0
+        ? { tokensBefore: Math.floor(result.result.tokensBefore) }
+        : {}),
+      ...(typeof result.result.tokensAfter === "number" && result.result.tokensAfter > 0
+        ? { tokensAfter: Math.floor(result.result.tokensAfter) }
+        : {}),
+      contextWindowTokens,
+      thresholdTokens: threshold,
+      createdAt: overlay?.createdAt ?? updatedAt,
+      updatedAt,
+    };
+    const compactedPrefix = buildCliColdStartPromptPrefix({
+      providerId: provider,
+      sessionId: entry.sessionId,
+      sessionFile: entry.sessionFile ?? params.followupRun.run.sessionFile,
+      currentPrompt: promptText,
+      overlay: nextOverlay,
+    }).promptPrefix;
+    const compactedAtPromptTokens = compactedPrefix
+      ? estimatePromptTokensForMemoryFlush(`${compactedPrefix}${promptText}`)
+      : undefined;
+
+    entry = await persistCliCompactionOverlayUpdate({
+      entry,
+      sessionStore: params.sessionStore,
+      sessionKey: params.sessionKey,
+      storePath: params.storePath,
+      mutate: (mutable) => {
+        clearCliSession(mutable, provider);
+        setCliCompactionOverlay(mutable, provider, {
+          ...nextOverlay,
+          ...(typeof compactedAtPromptTokens === "number" && compactedAtPromptTokens > 0
+            ? { compactedAtPromptTokens: Math.floor(compactedAtPromptTokens) }
+            : {}),
+        });
+      },
+    });
+
+    return entry ?? params.sessionEntry;
+  } finally {
+    await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 export async function runPreflightCompactionIfNeeded(params: {
   cfg: OpenClawConfig;
   followupRun: FollowupRun;
@@ -369,8 +640,14 @@ export async function runPreflightCompactionIfNeeded(params: {
   }
 
   const isCli = isCliProvider(params.followupRun.run.provider, params.cfg);
-  if (params.isHeartbeat || isCli) {
+  if (params.isHeartbeat) {
     return entry ?? params.sessionEntry;
+  }
+  if (isCli) {
+    return runCliPreflightCompactionIfNeeded({
+      ...params,
+      sessionEntry: entry,
+    });
   }
 
   const contextWindowTokens = resolveMemoryFlushContextWindowTokens({

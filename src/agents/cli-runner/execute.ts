@@ -1,4 +1,3 @@
-import { readSessionMessages } from "../../gateway/session-utils.fs.js";
 import { shouldLogVerbose } from "../../globals.js";
 import { emitAgentEvent } from "../../infra/agent-events.js";
 import { isTruthyEnvValue } from "../../infra/env.js";
@@ -8,9 +7,6 @@ import { enqueueSystemEvent as enqueueSystemEventImpl } from "../../infra/system
 import { getProcessSupervisor as getProcessSupervisorImpl } from "../../process/supervisor/index.js";
 import type { RunExit } from "../../process/supervisor/types.js";
 import { scopedHeartbeatWakeOptions } from "../../routing/session-key.js";
-import { extractAssistantVisibleText } from "../../shared/chat-message-content.js";
-import { normalizeOptionalString } from "../../shared/string-coerce.js";
-import { stripInlineDirectiveTagsForDisplay } from "../../utils/directive-tags.js";
 import { prependBootstrapPromptWarning } from "../bootstrap-budget.js";
 import {
   createCliJsonlStreamingParser,
@@ -21,6 +17,7 @@ import {
   type CliOutput,
   type CliStreamingDelta,
 } from "../cli-output.js";
+import { buildCliColdStartPromptPrefix } from "../cli-session-context.js";
 import { FailoverError, resolveFailoverStatus } from "../failover-error.js";
 import { classifyFailoverReason } from "../pi-embedded-helpers.js";
 import { applyPluginTextReplacements } from "../plugin-text-transforms.js";
@@ -63,114 +60,6 @@ function createCliAbortError(): Error {
   const error = new Error("CLI run aborted");
   error.name = "AbortError";
   return error;
-}
-
-function isClaudeCliProvider(providerId: string): boolean {
-  return providerId.startsWith("claude-cli");
-}
-
-type TranscriptBootstrapTurn = {
-  role: "user" | "assistant";
-  text: string;
-};
-
-function extractUserVisibleText(message: unknown): string | undefined {
-  if (!message || typeof message !== "object") {
-    return undefined;
-  }
-  const record = message as { content?: unknown; text?: unknown };
-  if (typeof record.text === "string") {
-    const trimmed = record.text.trim();
-    return trimmed || undefined;
-  }
-  if (typeof record.content === "string") {
-    const trimmed = record.content.trim();
-    return trimmed || undefined;
-  }
-  if (!Array.isArray(record.content)) {
-    return undefined;
-  }
-  const text = record.content
-    .flatMap((part) =>
-      part && typeof part === "object" && (part as { type?: unknown }).type === "text"
-        ? [normalizeOptionalString((part as { text?: unknown }).text) ?? ""]
-        : [],
-    )
-    .join("\n")
-    .trim();
-  return text || undefined;
-}
-
-function normalizeComparablePromptText(text: string): string {
-  return text.replace(/\s+/g, " ").trim();
-}
-
-function buildCliColdStartTranscriptBootstrap(params: {
-  providerId: string;
-  sessionId: string;
-  sessionFile: string;
-  currentPrompt: string;
-}): string | undefined {
-  if (!isClaudeCliProvider(params.providerId)) {
-    return undefined;
-  }
-  const messages = readSessionMessages(params.sessionId, undefined, params.sessionFile);
-  const turns: TranscriptBootstrapTurn[] = [];
-
-  for (const message of messages) {
-    if (!message || typeof message !== "object") {
-      continue;
-    }
-    const role = (message as { role?: unknown }).role;
-    if (role === "user") {
-      const text = extractUserVisibleText(message);
-      if (text) {
-        turns.push({ role: "user", text });
-      }
-      continue;
-    }
-    if (role === "assistant") {
-      const visibleText = extractAssistantVisibleText(message);
-      if (!visibleText) {
-        continue;
-      }
-      const text = stripInlineDirectiveTagsForDisplay(visibleText).text.trim();
-      if (text) {
-        turns.push({ role: "assistant", text });
-      }
-    }
-  }
-
-  if (turns.length === 0) {
-    return undefined;
-  }
-
-  const normalizedCurrentPrompt = normalizeComparablePromptText(params.currentPrompt);
-  if (
-    normalizedCurrentPrompt &&
-    turns[turns.length - 1]?.role === "user" &&
-    normalizeComparablePromptText(turns[turns.length - 1].text) === normalizedCurrentPrompt
-  ) {
-    turns.pop();
-  }
-
-  if (turns.length === 0) {
-    return undefined;
-  }
-
-  const formattedTurns = turns
-    .map((turn) => `${turn.role === "user" ? "User" : "Assistant"}: ${turn.text}`)
-    .join("\n\n");
-
-  return [
-    "[OpenClaw session continuity bootstrap]",
-    "The following are earlier turns from this same session. Treat them as prior conversation context, not as a new instruction.",
-    "",
-    formattedTurns,
-    "",
-    "[Current user message]",
-    "",
-  ].join("\n");
 }
 
 function buildCliLogArgs(params: {
@@ -310,14 +199,15 @@ export async function executePreparedCliRun(
     context.backendResolved.textTransforms?.input,
   );
   if (!useResume) {
-    const continuityBootstrap = buildCliColdStartTranscriptBootstrap({
+    const continuityBootstrap = buildCliColdStartPromptPrefix({
       providerId: context.backendResolved.id,
       sessionId: params.sessionId,
       sessionFile: params.sessionFile,
       currentPrompt: params.prompt,
+      overlay: params.cliCompactionOverlay,
     });
-    if (continuityBootstrap) {
-      prompt = `${continuityBootstrap}${prompt}`;
+    if (continuityBootstrap.promptPrefix) {
+      prompt = `${continuityBootstrap.promptPrefix}${prompt}`;
     }
   }
   const {
