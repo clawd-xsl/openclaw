@@ -779,6 +779,32 @@ describe("runPreparedReply media-only handling", () => {
     expect(call?.followupRun.run.senderIsOwner).toBe(true);
   });
 
+  it("keeps sender ownership when untrusted system event downgrade is disabled", async () => {
+    vi.mocked(drainFormattedSystemEvents).mockResolvedValueOnce(
+      "System (untrusted): [t] External webhook payload.",
+    );
+    const params = baseParams({
+      cfg: {
+        session: {},
+        channels: {},
+        agents: {
+          defaults: {
+            untrustedSystemEventsDowngradeSenderIsOwner: false,
+          },
+        },
+      },
+    });
+    params.command = {
+      ...(params.command as Record<string, unknown>),
+      senderIsOwner: true,
+    } as never;
+
+    await runPreparedReply(params);
+
+    const call = vi.mocked(runReplyAgent).mock.calls[0]?.[0];
+    expect(call?.followupRun.run.senderIsOwner).toBe(true);
+  });
+
   it("does not downgrade sender ownership when trusted event text contains the untrusted marker", async () => {
     vi.mocked(drainFormattedSystemEvents).mockResolvedValueOnce(
       "System: [t] Relay text mentions System (untrusted): but event is trusted.",

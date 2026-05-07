@@ -362,6 +362,8 @@ export const FIELD_LABELS: Record<string, string> = {
   "agents.defaults.envelopeTimezone": "Envelope Timezone",
   "agents.defaults.envelopeTimestamp": "Envelope Timestamp",
   "agents.defaults.envelopeElapsed": "Envelope Elapsed",
+  "agents.defaults.untrustedSystemEventsDowngradeSenderIsOwner":
+    "Untrusted System Events Downgrade Sender Is Owner",
   "agents.defaults.memorySearch": "Memory Search",
   "agents.defaults.memorySearch.enabled": "Enable Memory Search",
   "agents.defaults.memorySearch.sources": "Memory Search Sources",

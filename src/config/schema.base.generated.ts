@@ -3380,6 +3380,12 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
                 title: "Envelope Elapsed",
                 description: 'Include elapsed time in message envelopes ("on" or "off").',
               },
+              untrustedSystemEventsDowngradeSenderIsOwner: {
+                type: "boolean",
+                title: "Untrusted System Events Downgrade Sender Is Owner",
+                description:
+                  "When enabled (default), drained untrusted system events force the resulting agent turn to run with senderIsOwner=false. Set false if you want hook/system-event wakes to preserve the original ownership/auth context instead of downgrading it.",
+              },
               contextTokens: {
                 type: "integer",
                 exclusiveMinimum: 0,
@@ -24695,6 +24701,11 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
       label: "Envelope Elapsed",
       help: 'Include elapsed time in message envelopes ("on" or "off").',
       tags: ["advanced"],
+    },
+    "agents.defaults.untrustedSystemEventsDowngradeSenderIsOwner": {
+      label: "Untrusted System Events Downgrade Sender Is Owner",
+      help: "When enabled (default), drained untrusted system events force the resulting agent turn to run with senderIsOwner=false. Set false if you want hook/system-event wakes to preserve the original ownership/auth context instead of downgrading it.",
+      tags: ["access"],
     },
     "agents.defaults.memorySearch": {
       label: "Memory Search",

@@ -104,6 +104,12 @@ let sessionStoreRuntimePromise: Promise<
 > | null = null;
 const UNTRUSTED_SYSTEM_EVENT_LINE_RE = /^System \(untrusted\):/m;
 
+function shouldDowngradeSenderOwnershipForUntrustedSystemEvents(
+  cfg: OpenClawConfig | undefined,
+): boolean {
+  return cfg?.agents?.defaults?.untrustedSystemEventsDowngradeSenderIsOwner !== false;
+}
+
 function loadPiEmbeddedRuntime() {
   piEmbeddedRuntimePromise ??= import("../../agents/pi-embedded.runtime.js");
   return piEmbeddedRuntimePromise;
@@ -442,7 +448,10 @@ export async function runPreparedReply(
       });
       if (eventsBlock) {
         drainedSystemEventBlocks.push(eventsBlock);
-        if (UNTRUSTED_SYSTEM_EVENT_LINE_RE.test(eventsBlock)) {
+        if (
+          shouldDowngradeSenderOwnershipForUntrustedSystemEvents(cfg) &&
+          UNTRUSTED_SYSTEM_EVENT_LINE_RE.test(eventsBlock)
+        ) {
           forceSenderIsOwnerFalseFromSystemEvents = true;
         }
       }

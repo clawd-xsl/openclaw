@@ -231,6 +231,12 @@ export type AgentDefaultsConfig = {
    * Include elapsed time in message envelopes ("on" | "off", default: "on").
    */
   envelopeElapsed?: "on" | "off";
+  /**
+   * When true (default), drained untrusted system events force the resulting
+   * agent turn to run with senderIsOwner=false. Set false to preserve the
+   * original ownership/auth context across hook/system-event wakes.
+   */
+  untrustedSystemEventsDowngradeSenderIsOwner?: boolean;
   /** Optional context window cap (used for runtime estimates + status %). */
   contextTokens?: number;
   /** Optional CLI backends for text-only fallback (claude-cli, etc.). */

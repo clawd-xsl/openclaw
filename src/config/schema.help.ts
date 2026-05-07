@@ -887,6 +887,8 @@ export const FIELD_HELP: Record<string, string> = {
   "agents.defaults.envelopeTimestamp":
     'Include absolute timestamps in message envelopes ("on" or "off").',
   "agents.defaults.envelopeElapsed": 'Include elapsed time in message envelopes ("on" or "off").',
+  "agents.defaults.untrustedSystemEventsDowngradeSenderIsOwner":
+    "When enabled (default), drained untrusted system events force the resulting agent turn to run with senderIsOwner=false. Set false if you want hook/system-event wakes to preserve the original ownership/auth context instead of downgrading it.",
   "agents.defaults.models": "Configured model catalog (keys are full provider/model IDs).",
   "agents.defaults.memorySearch":
     "Vector search over MEMORY.md and memory/*.md (per-agent overrides supported).",
