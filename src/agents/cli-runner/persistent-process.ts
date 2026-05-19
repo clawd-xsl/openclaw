@@ -26,6 +26,7 @@ export type PersistentCliTurnExit = RunExit & {
 
 type PersistentTurnState = {
   startedAtMs: number;
+  runId: string;
   promptChars: number;
   stdout: string;
   stderr: string;
@@ -37,6 +38,7 @@ type PersistentTurnState = {
   writeRequestedAtMs: number | null;
   writeCompletedAtMs: number | null;
   firstStdoutAtMs: number | null;
+  firstJsonRecordAtMs: number | null;
   firstDeltaAtMs: number | null;
   preDeltaRecordLogCount: number;
   timeoutTimer: NodeJS.Timeout | null;
@@ -144,6 +146,8 @@ function buildPersistentRuntimeSignature(params: {
         executionMode: params.backend.executionMode ?? "spawn-per-turn",
         sessionMode: params.backend.sessionMode ?? "always",
         model: params.context.normalizedModel,
+        thinkLevel: params.context.params.thinkLevel ?? null,
+        fastMode: params.context.params.fastMode ?? null,
         systemPrompt: params.context.systemPrompt,
         mcpConfigHash: params.context.preparedBackend.mcpConfigHash ?? null,
         authProfileId: params.context.params.authProfileId ?? null,
@@ -225,12 +229,12 @@ function logPersistentTurnTiming(
   phase: string,
   extra?: Record<string, unknown>,
 ): void {
-  if (!runtime.logOutputText || !isTimingTraceEnabled()) {
+  if (!isTimingTraceEnabled()) {
     return;
   }
   const trace = createTimingTrace({
     channel: "cli-persistent-trace",
-    label: `${runtime.key}:turn=${runtime.turnCount + 1}`,
+    label: `${runtime.key}:run=${turn.runId}`,
     scope: "persistentTurn",
     sink: (line) => {
       cliBackendLog.info(line);
@@ -239,6 +243,8 @@ function logPersistentTurnTiming(
   });
   const summary = Object.entries({
     provider: runtime.providerId,
+    model: runtime.modelId,
+    completedTurns: runtime.turnCount,
     promptChars: turn.promptChars,
     claudeSessionId: turn.sessionId ?? runtime.sessionId ?? "unknown",
     ...extra,
@@ -246,6 +252,24 @@ function logPersistentTurnTiming(
     .map(([key, value]) => `${key}=${String(value)}`)
     .join(" ");
   trace(phase, summary);
+}
+
+function createPersistentRuntimeTrace(params: {
+  runtimeKey: string;
+  providerId: string;
+  modelId: string;
+  runId: string;
+  startedAtMs?: number;
+}) {
+  return createTimingTrace({
+    channel: "cli-persistent-trace",
+    label: `${params.runtimeKey}:run=${params.runId}`,
+    scope: "persistentRuntime",
+    sink: (line) => {
+      cliBackendLog.info(line);
+    },
+    startedAtMs: params.startedAtMs,
+  });
 }
 
 function noteRuntimeActivity(runtime: PersistentRuntime): void {
@@ -453,6 +477,10 @@ function finalizeSuccessfulTurn(runtime: PersistentRuntime, turn: PersistentTurn
         : Math.max(0, turn.writeCompletedAtMs - turn.startedAtMs),
     firstStdoutMs:
       turn.firstStdoutAtMs == null ? "none" : Math.max(0, turn.firstStdoutAtMs - turn.startedAtMs),
+    firstJsonRecordMs:
+      turn.firstJsonRecordAtMs == null
+        ? "none"
+        : Math.max(0, turn.firstJsonRecordAtMs - turn.startedAtMs),
     firstDeltaMs:
       turn.firstDeltaAtMs == null ? "none" : Math.max(0, turn.firstDeltaAtMs - turn.startedAtMs),
     totalMs: Math.max(0, Date.now() - turn.startedAtMs),
@@ -491,6 +519,17 @@ function parseTurnStdout(runtime: PersistentRuntime, turn: PersistentTurnState):
       continue;
     }
     const record = parsed as Record<string, unknown>;
+    if (turn.firstJsonRecordAtMs == null) {
+      turn.firstJsonRecordAtMs = Date.now();
+      logPersistentTurnTiming(runtime, turn, "first-json-record", {
+        recordType: typeof record.type === "string" ? record.type : "unknown",
+        recordSubtype: typeof record.subtype === "string" ? record.subtype : "none",
+        sinceFirstStdoutMs:
+          turn.firstStdoutAtMs == null
+            ? "none"
+            : Math.max(0, turn.firstJsonRecordAtMs - turn.firstStdoutAtMs),
+      });
+    }
     if (
       turn.firstDeltaAtMs == null &&
       (shouldLogAllPreDeltaRecords() || turn.preDeltaRecordLogCount < 8)
@@ -586,6 +625,11 @@ function handleRuntimeStderrChunk(runtime: PersistentRuntime, chunk: string): vo
     return;
   }
   noteRuntimeActivity(runtime);
+  if (!turn.stderr) {
+    logPersistentTurnTiming(runtime, turn, "first-stderr", {
+      chunkChars: chunk.length,
+    });
+  }
   turn.stderr += chunk;
   rescheduleNoOutputTimer(runtime, turn);
 }
@@ -618,6 +662,18 @@ async function launchPersistentRuntime(params: {
   initialSessionId?: string;
   logOutputText: boolean;
 }): Promise<PersistentRuntime> {
+  const launchStartedAtMs = Date.now();
+  const trace = createPersistentRuntimeTrace({
+    runtimeKey: params.runtimeKey,
+    providerId: params.context.params.provider,
+    modelId: params.context.modelId,
+    runId: params.context.params.runId,
+    startedAtMs: launchStartedAtMs,
+  });
+  trace(
+    "launch-start",
+    `resume=${params.resumeSessionId ? "yes" : "no"} initialSession=${params.initialSessionId ?? "none"}`,
+  );
   const materializedMcp = await materializeCliBundleMcpConfig({
     backend: params.backend,
     spec: params.context.preparedBackend.bundleMcpSpec ?? {
@@ -625,15 +681,21 @@ async function launchPersistentRuntime(params: {
       env: params.context.preparedBackend.env,
     },
   });
+  trace("bundle-mcp-ready");
   const claudeSkillsPluginSpec =
     params.context.preparedBackend.claudeSkillsPluginSpec ??
     (await buildClaudeCliSkillsPluginSpec({
       backendId: params.context.backendResolved.id,
       skillsSnapshot: params.context.params.skillsSnapshot,
     }));
+  trace(
+    "skills-spec-ready",
+    `signature=${claudeSkillsPluginSpec.signature ?? "none"} skills=${claudeSkillsPluginSpec.skills.length}`,
+  );
   const materializedSkills = await materializeClaudeCliSkillsPlugin({
     spec: claudeSkillsPluginSpec,
   });
+  trace("skills-materialized", `args=${materializedSkills.args.length}`);
   const backend = materializedMcp.backend;
   const systemPromptArg = resolveSystemPromptUsage({
     backend,
@@ -646,6 +708,10 @@ async function launchPersistentRuntime(params: {
         systemPrompt: systemPromptArg,
       })
     : undefined;
+  trace(
+    "system-prompt-ready",
+    `chars=${systemPromptArg?.length ?? 0} file=${systemPromptFile ? "yes" : "no"}`,
+  );
   const launchCleanup = async () => {
     await materializedSkills.cleanup();
     await materializedMcp.cleanup?.();
@@ -662,11 +728,14 @@ async function launchPersistentRuntime(params: {
       : baseArgs;
     const args = buildCliArgs({
       backend,
+      backendId: params.context.backendResolved.id,
       baseArgs:
         materializedSkills.args.length > 0
           ? [...resolvedArgs, ...materializedSkills.args]
           : resolvedArgs,
       modelId: params.context.normalizedModel,
+      thinkLevel: params.context.params.thinkLevel,
+      fastMode: params.context.params.fastMode,
       sessionId: useResume ? params.resumeSessionId : params.initialSessionId,
       systemPrompt: systemPromptArg,
       systemPromptFilePath: systemPromptFile?.filePath,
@@ -687,6 +756,7 @@ async function launchPersistentRuntime(params: {
     const pendingStdoutChunks: string[] = [];
     const pendingStderrChunks: string[] = [];
     let runtimeRef: PersistentRuntime | undefined;
+    trace("spawn-start", `command=${backend.command} args=${args.length}`);
     const managedRun = await params.supervisor.spawn({
       sessionId: params.context.params.sessionId,
       backendId: params.context.backendResolved.id,
@@ -716,6 +786,7 @@ async function launchPersistentRuntime(params: {
         pendingStderrChunks.push(chunk);
       },
     });
+    trace("spawn-done", `pid=${managedRun.pid ?? "unknown"}`);
 
     const runtime: PersistentRuntime = {
       key: params.runtimeKey,
@@ -751,6 +822,10 @@ async function launchPersistentRuntime(params: {
     for (const chunk of pendingStderrChunks) {
       handleRuntimeStderrChunk(runtime, chunk);
     }
+    trace(
+      "runtime-ready",
+      `pendingStdoutChunks=${pendingStdoutChunks.length} pendingStderrChunks=${pendingStderrChunks.length}`,
+    );
 
     runtime.exitPromise = runtime.managedRun
       .wait()
@@ -817,6 +892,7 @@ function beginPersistentTurn(params: {
   return new Promise<PersistentCliTurnExit>((resolve, reject) => {
     const turn: PersistentTurnState = {
       startedAtMs: Date.now(),
+      runId: params.context.params.runId,
       promptChars: params.prompt.length,
       stdout: "",
       stderr: "",
@@ -828,6 +904,7 @@ function beginPersistentTurn(params: {
       writeRequestedAtMs: null,
       writeCompletedAtMs: null,
       firstStdoutAtMs: null,
+      firstJsonRecordAtMs: null,
       firstDeltaAtMs: null,
       preDeltaRecordLogCount: 0,
       timeoutTimer: null,
@@ -870,7 +947,12 @@ function beginPersistentTurn(params: {
     }
     try {
       turn.writeRequestedAtMs = Date.now();
-      stdin.write(buildUserMessageLine(params.prompt), (error) => {
+      const stdinLine = buildUserMessageLine(params.prompt);
+      logPersistentTurnTiming(params.runtime, turn, "stdin-write-start", {
+        stdinChars: stdinLine.length,
+        sessionIdSent: turn.sessionId ?? "none",
+      });
+      stdin.write(stdinLine, (error) => {
         if (!error) {
           turn.writeCompletedAtMs = Date.now();
           logPersistentTurnTiming(params.runtime, turn, "stdin-write-cb", {
@@ -891,24 +973,38 @@ function beginPersistentTurn(params: {
 export async function executePersistentCliTurn(
   params: ExecutePersistentCliTurnParams,
 ): Promise<PersistentCliTurnExit> {
+  const resolveStartedAtMs = Date.now();
   const runtimeKey = buildPersistentRuntimeKey(params.context);
+  const trace = createPersistentRuntimeTrace({
+    runtimeKey,
+    providerId: params.context.params.provider,
+    modelId: params.context.modelId,
+    runId: params.context.params.runId,
+    startedAtMs: resolveStartedAtMs,
+  });
   const signature = buildPersistentRuntimeSignature({
     context: params.context,
     backend: params.backend,
   });
   const explicitResumeSessionId = normalizeOptionalString(params.resumeSessionId);
   let runtime = RUNTIMES.get(runtimeKey);
+  trace(
+    "resolve-start",
+    `cached=${runtime ? "yes" : "no"} explicitResume=${explicitResumeSessionId ?? "none"} resolvedSession=${params.resolvedSessionId ?? "none"}`,
+  );
   if (runtime) {
     noteRuntimeActivity(runtime);
   }
 
   if (runtime && !explicitResumeSessionId) {
+    trace("relaunch-start", "reason=openclaw-cold-start");
     cliBackendLog.info(
       `cli persistent relaunch: provider=${params.context.params.provider} reason=openclaw-cold-start session=${runtimeKey}`,
     );
     clearPersistentRuntimeSessionId(runtimeKey);
     await closePersistentRuntime(runtime, "manual-cancel");
     runtime = undefined;
+    trace("relaunch-done", "reason=openclaw-cold-start");
   }
 
   if (
@@ -917,25 +1013,33 @@ export async function executePersistentCliTurn(
     runtime.sessionId &&
     runtime.sessionId !== explicitResumeSessionId
   ) {
+    trace(
+      "relaunch-start",
+      `reason=session-binding-drift runtimeSession=${runtime.sessionId} explicitResume=${explicitResumeSessionId}`,
+    );
     cliBackendLog.info(
       `cli persistent relaunch: provider=${params.context.params.provider} reason=session-binding-drift session=${runtimeKey}`,
     );
     await closePersistentRuntime(runtime, "manual-cancel");
     runtime = undefined;
+    trace("relaunch-done", "reason=session-binding-drift");
   }
 
   if (runtime && runtime.signature !== signature) {
+    trace("relaunch-start", "reason=launch-context-drift");
     cliBackendLog.info(
       `cli persistent relaunch: provider=${params.context.params.provider} reason=launch-context-drift session=${runtimeKey}`,
     );
     await closePersistentRuntime(runtime, "manual-cancel");
     runtime = undefined;
+    trace("relaunch-done", "reason=launch-context-drift");
   }
 
   if (!runtime) {
     if (!explicitResumeSessionId) {
       clearPersistentRuntimeSessionId(runtimeKey);
     }
+    trace("launch-needed");
     runtime = await launchPersistentRuntime({
       context: params.context,
       backend: params.backend,
@@ -947,6 +1051,14 @@ export async function executePersistentCliTurn(
       initialSessionId: params.resolvedSessionId,
       logOutputText: params.logOutputText,
     });
+  } else {
+    trace(
+      "runtime-reuse",
+      `completedTurns=${runtime.turnCount} ageMs=${Math.max(0, Date.now() - runtime.launchedAtMs)} idleMs=${Math.max(
+        0,
+        Date.now() - runtime.lastActivityAtMs,
+      )} session=${runtime.sessionId ?? "none"}`,
+    );
   }
 
   const replyBackendHandle = params.context.params.replyOperation
@@ -979,11 +1091,16 @@ export async function executePersistentCliTurn(
       noOutputTimeoutMs: params.noOutputTimeoutMs,
       onAssistantDelta: params.onAssistantDelta,
     });
+    trace("turn-begun");
     params.context.params.abortSignal?.addEventListener("abort", abortTurn, { once: true });
     if (params.context.params.abortSignal?.aborted) {
       abortTurn();
     }
     const result = await turnPromise;
+    trace(
+      "turn-complete",
+      `sessionId=${result.sessionId ?? "none"} stdoutChars=${result.stdout.length} stderrChars=${result.stderr.length} durationMs=${result.durationMs}`,
+    );
     if (result.sessionId) {
       runtime.sessionId = result.sessionId;
     }

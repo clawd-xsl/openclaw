@@ -183,6 +183,116 @@ function isClaudeCliProvider(providerId: string): boolean {
   return normalizeOptionalLowercaseString(providerId)?.startsWith("claude-cli") === true;
 }
 
+const CLAUDE_CLI_MAX_THINKING_TOKENS_ENV = "MAX_THINKING_TOKENS";
+const CLAUDE_CLI_EFFORT_LEVEL_ENV = "CLAUDE_CODE_EFFORT_LEVEL";
+const CLAUDE_CLI_DISABLE_ADAPTIVE_THINKING_ENV = "CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING";
+const CLAUDE_CLI_SETTINGS_ARG = "--settings";
+
+type ClaudeCliEffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
+
+function resolveClaudeCliEffortLevel(thinkLevel?: ThinkLevel): ClaudeCliEffortLevel | undefined {
+  switch (thinkLevel as ThinkLevel | "max") {
+    case "off":
+      return undefined;
+    case "minimal":
+    case "low":
+      return "low";
+    case "medium":
+      return "medium";
+    case "high":
+      return "high";
+    case "xhigh":
+      return "xhigh";
+    case "max":
+      return "max";
+    case "adaptive":
+    case undefined:
+      return undefined;
+  }
+  return undefined;
+}
+
+function hasCliOption(args: string[], option: string): boolean {
+  return args.some((arg) => arg === option || arg.startsWith(`${option}=`));
+}
+
+function mergeClaudeCliFastModeSetting(value: string | undefined, fastMode: boolean): string {
+  if (!value || value.trim().length === 0) {
+    return JSON.stringify({ fastMode });
+  }
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return JSON.stringify({ fastMode });
+    }
+    return JSON.stringify({
+      ...parsed,
+      fastMode,
+    });
+  } catch {
+    return JSON.stringify({ fastMode });
+  }
+}
+
+function applyClaudeCliFastModeSettingsArgs(args: string[], fastMode: boolean | undefined) {
+  if (fastMode === undefined) {
+    return args;
+  }
+  const normalized: string[] = [];
+  let hasSettings = false;
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i] ?? "";
+    if (arg === CLAUDE_CLI_SETTINGS_ARG) {
+      hasSettings = true;
+      const maybeValue = args[i + 1];
+      if (typeof maybeValue === "string" && !maybeValue.startsWith("-")) {
+        normalized.push(arg, mergeClaudeCliFastModeSetting(maybeValue, fastMode));
+        i += 1;
+      } else {
+        normalized.push(arg, mergeClaudeCliFastModeSetting(undefined, fastMode));
+      }
+      continue;
+    }
+    if (arg.startsWith(`${CLAUDE_CLI_SETTINGS_ARG}=`)) {
+      hasSettings = true;
+      normalized.push(
+        `${CLAUDE_CLI_SETTINGS_ARG}=${mergeClaudeCliFastModeSetting(
+          arg.slice(`${CLAUDE_CLI_SETTINGS_ARG}=`.length),
+          fastMode,
+        )}`,
+      );
+      continue;
+    }
+    normalized.push(arg);
+  }
+  if (!hasSettings) {
+    normalized.push(CLAUDE_CLI_SETTINGS_ARG, mergeClaudeCliFastModeSetting(undefined, fastMode));
+  }
+  return normalized;
+}
+
+export function applyClaudeCliThinkingEnv(params: {
+  env: Record<string, string>;
+  backendId?: string;
+  thinkLevel?: ThinkLevel;
+}): void {
+  if (!params.backendId || !isClaudeCliProvider(params.backendId)) {
+    return;
+  }
+
+  // OpenClaw owns thinking semantics for managed Claude CLI runs. Do not let
+  // inherited shell knobs silently override the configured level.
+  delete params.env[CLAUDE_CLI_EFFORT_LEVEL_ENV];
+  delete params.env[CLAUDE_CLI_DISABLE_ADAPTIVE_THINKING_ENV];
+
+  if (params.thinkLevel === "off") {
+    params.env[CLAUDE_CLI_MAX_THINKING_TOKENS_ENV] = "0";
+    return;
+  }
+
+  delete params.env[CLAUDE_CLI_MAX_THINKING_TOKENS_ENV];
+}
+
 export function enqueueCliRun<T>(key: string, task: () => Promise<T>): Promise<T> {
   return CLI_RUN_QUEUE.enqueue(key, task);
 }
@@ -552,8 +662,11 @@ export async function prepareCliPromptImagePayload(params: {
 
 export function buildCliArgs(params: {
   backend: CliBackendConfig;
+  backendId?: string;
   baseArgs: string[];
   modelId: string;
+  thinkLevel?: ThinkLevel;
+  fastMode?: boolean;
   sessionId?: string;
   systemPrompt?: string | null;
   systemPromptFilePath?: string;
@@ -562,10 +675,15 @@ export function buildCliArgs(params: {
   useResume: boolean;
   includeSystemPromptOnResume?: boolean;
 }): string[] {
-  const args: string[] = [...params.baseArgs];
+  let args: string[] = [...params.baseArgs];
   const includeSystemPrompt = !params.useResume || params.includeSystemPromptOnResume === true;
+  const isClaudeCliBackend = params.backendId ? isClaudeCliProvider(params.backendId) : false;
   if (params.backend.modelArg && params.modelId) {
     args.push(params.backend.modelArg, params.modelId);
+  }
+  const claudeCliEffort = resolveClaudeCliEffortLevel(params.thinkLevel);
+  if (isClaudeCliBackend && claudeCliEffort && !hasCliOption(args, "--effort")) {
+    args.push("--effort", claudeCliEffort);
   }
   if (
     includeSystemPrompt &&
@@ -608,6 +726,9 @@ export function buildCliArgs(params: {
         }
       }
     }
+  }
+  if (isClaudeCliBackend) {
+    args = applyClaudeCliFastModeSettingsArgs(args, params.fastMode);
   }
   if (params.promptArg !== undefined) {
     let replacedPromptPlaceholder = false;

@@ -78,6 +78,7 @@ export async function runPreparedCliAgent(
         },
         requestShaping: {
           ...(params.thinkLevel ? { thinking: params.thinkLevel } : {}),
+          ...(typeof params.fastMode === "boolean" ? { fastMode: params.fastMode } : {}),
           ...(params.authProfileId ? { authMode: "auth-profile" } : {}),
         },
         completion: {
@@ -196,6 +197,7 @@ export function buildRunClaudeCliAgentParams(params: RunClaudeCliAgentParams): R
     provider: params.provider ?? "claude-cli",
     model: params.model ?? "opus",
     thinkLevel: params.thinkLevel,
+    fastMode: params.fastMode,
     reasoningLevel: params.reasoningLevel,
     timeoutMs: params.timeoutMs,
     runId: params.runId,

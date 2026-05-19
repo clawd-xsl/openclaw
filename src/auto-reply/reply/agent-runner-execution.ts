@@ -924,6 +924,7 @@ export async function runAgentTurnWithFallback(params: {
                   provider,
                   model,
                   thinkLevel: params.followupRun.run.thinkLevel,
+                  fastMode: params.followupRun.run.fastMode,
                   reasoningLevel: params.followupRun.run.reasoningLevel,
                   timeoutMs: params.followupRun.run.timeoutMs,
                   runId,

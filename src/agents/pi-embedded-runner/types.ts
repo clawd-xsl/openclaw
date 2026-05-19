@@ -60,6 +60,7 @@ export type ExecutionTrace = {
 export type RequestShapingTrace = {
   authMode?: string;
   thinking?: string;
+  fastMode?: boolean;
   reasoning?: string;
   verbose?: string;
   trace?: string;

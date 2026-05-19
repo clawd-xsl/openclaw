@@ -55,6 +55,7 @@ import { resolveSession } from "./command/session.js";
 import type { AgentCommandIngressOpts, AgentCommandOpts } from "./command/types.js";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "./defaults.js";
 import { canExecRequestNode } from "./exec-defaults.js";
+import { resolveFastModeState } from "./fast-mode.js";
 import { AGENT_LANE_SUBAGENT } from "./lanes.js";
 import { LiveSessionModelSwitchError } from "./live-model-switch.js";
 import { loadModelCatalog } from "./model-catalog.js";
@@ -811,6 +812,16 @@ async function agentCommandInternal(
         });
       }
     }
+    const resolvedFastMode =
+      typeof opts.streamParams?.fastMode === "boolean"
+        ? opts.streamParams.fastMode
+        : resolveFastModeState({
+            cfg,
+            provider,
+            model,
+            agentId: sessionAgentId,
+            sessionEntry,
+          }).enabled;
     const { resolveSessionTranscriptFile } = await loadTranscriptResolveRuntime();
     let sessionFile: string | undefined;
     if (sessionStore && sessionKey) {
@@ -886,6 +897,7 @@ async function agentCommandInternal(
               body,
               isFallbackRetry,
               resolvedThinkLevel,
+              resolvedFastMode,
               timeoutMs,
               runId,
               opts,

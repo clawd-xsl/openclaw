@@ -12,6 +12,7 @@ import type { PreparedCliRunContext } from "./cli-runner/types.js";
 
 type SpawnInput = {
   argv?: string[];
+  env?: Record<string, string>;
   onStdout?: (chunk: string) => void;
   onStderr?: (chunk: string) => void;
 };
@@ -65,6 +66,8 @@ function buildPersistentContext(params?: {
   bundleMcpSerializedConfig?: string;
   bundleMcpEnv?: Record<string, string>;
   reusableCliSessionId?: string;
+  thinkLevel?: PreparedCliRunContext["params"]["thinkLevel"];
+  fastMode?: boolean;
   onAssistantDelta?: PreparedCliRunContext["params"]["onAssistantDelta"];
 }): PreparedCliRunContext {
   const backend = {
@@ -126,6 +129,8 @@ function buildPersistentContext(params?: {
       prompt: params?.prompt ?? "hello",
       provider: "claude-cli-streaming",
       model: "sonnet",
+      thinkLevel: params?.thinkLevel,
+      fastMode: params?.fastMode,
       timeoutMs: 5_000,
       runId: crypto.randomUUID(),
       abortSignal: params?.abortSignal,
@@ -190,6 +195,18 @@ function buildReplyOperationMock(
     abortByUser: vi.fn(),
     abortForRestart: vi.fn(),
   };
+}
+
+function readClaudeSettingsArg(argv: string[] | undefined): Record<string, unknown> {
+  const index = argv?.indexOf("--settings") ?? -1;
+  if (index < 0) {
+    return {};
+  }
+  const raw = argv?.[index + 1];
+  if (!raw) {
+    return {};
+  }
+  return JSON.parse(raw) as Record<string, unknown>;
 }
 
 function installPersistentSpawnMock(params?: { scenarios?: SpawnScenario[] }) {
@@ -461,6 +478,53 @@ describe("claude-cli-streaming persistent process runner", () => {
     expect(controller.spawnInputs[0]?.argv).toContain("--session-id");
     expect(controller.spawnInputs[1]?.argv).toContain("--resume");
     expect(controller.spawnInputs[1]?.argv).toContain("claude-session-1");
+  });
+
+  it("passes native Claude thinking controls and relaunches when thinking level changes", async () => {
+    const controller = installPersistentSpawnMock();
+
+    await executePreparedCliRun(buildPersistentContext({ thinkLevel: "off" }));
+    await executePreparedCliRun(
+      buildPersistentContext({
+        thinkLevel: "high",
+        reusableCliSessionId: "claude-session-1",
+      }),
+      "claude-session-1",
+    );
+
+    expect(controller.getSpawnCount()).toBe(2);
+    expect(controller.spawnInputs[0]?.argv).not.toContain("--effort");
+    expect(controller.spawnInputs[0]?.env?.MAX_THINKING_TOKENS).toBe("0");
+    expect(controller.spawnInputs[1]?.argv).toContain("--resume");
+    expect(controller.spawnInputs[1]?.argv).toContain("--effort");
+    expect(controller.spawnInputs[1]?.argv).toContain("high");
+    expect(controller.spawnInputs[1]?.env).not.toHaveProperty("MAX_THINKING_TOKENS");
+  });
+
+  it("passes fast mode through Claude settings and relaunches when fast mode changes", async () => {
+    const controller = installPersistentSpawnMock();
+
+    await executePreparedCliRun(buildPersistentContext({ fastMode: true }));
+    await executePreparedCliRun(
+      buildPersistentContext({
+        fastMode: false,
+        reusableCliSessionId: "claude-session-1",
+      }),
+      "claude-session-1",
+    );
+
+    expect(controller.getSpawnCount()).toBe(2);
+    expect(readClaudeSettingsArg(controller.spawnInputs[0]?.argv)).toMatchObject({
+      disableAllHooks: true,
+      fastMode: true,
+    });
+    expect(controller.spawnInputs[0]?.argv).not.toContain("--effort");
+    expect(controller.spawnInputs[1]?.argv).toContain("--resume");
+    expect(readClaudeSettingsArg(controller.spawnInputs[1]?.argv)).toMatchObject({
+      disableAllHooks: true,
+      fastMode: false,
+    });
+    expect(controller.spawnInputs[1]?.argv).not.toContain("--effort");
   });
 
   it("relaunches with --resume when the bundled MCP hash changes", async () => {

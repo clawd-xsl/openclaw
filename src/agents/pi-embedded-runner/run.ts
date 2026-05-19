@@ -2043,6 +2043,7 @@ export async function runEmbeddedPiAgent(
               requestShaping: {
                 ...(lastProfileId ? { authMode: "auth-profile" } : {}),
                 ...(thinkLevel ? { thinking: thinkLevel } : {}),
+                ...(typeof params.fastMode === "boolean" ? { fastMode: params.fastMode } : {}),
                 ...(params.reasoningLevel ? { reasoning: params.reasoningLevel } : {}),
                 ...(params.verboseLevel ? { verbose: params.verboseLevel } : {}),
                 ...(params.blockReplyBreak ? { blockStreaming: params.blockReplyBreak } : {}),

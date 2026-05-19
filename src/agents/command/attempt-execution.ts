@@ -97,6 +97,7 @@ export function runAgentAttempt(params: {
   body: string;
   isFallbackRetry: boolean;
   resolvedThinkLevel: ThinkLevel;
+  resolvedFastMode: boolean;
   timeoutMs: number;
   runId: string;
   opts: AgentCommandOpts & { senderIsOwner: boolean };
@@ -141,6 +142,7 @@ export function runAgentAttempt(params: {
         provider: params.providerOverride,
         model: params.modelOverride,
         thinkLevel: params.resolvedThinkLevel,
+        fastMode: params.resolvedFastMode,
         timeoutMs: params.timeoutMs,
         runId: params.runId,
         extraSystemPrompt: params.opts.extraSystemPrompt,
@@ -251,6 +253,7 @@ export function runAgentAttempt(params: {
     authProfileId,
     authProfileIdSource: authProfileId ? params.sessionEntry?.authProfileOverrideSource : undefined,
     thinkLevel: params.resolvedThinkLevel,
+    fastMode: params.resolvedFastMode,
     verboseLevel: params.resolvedVerboseLevel,
     timeoutMs: params.timeoutMs,
     runId: params.runId,

@@ -729,12 +729,14 @@ function formatRawTraceSummaryLine(params: {
   contextManagement?: TraceContextManagementView;
   requestShaping?: {
     thinking?: string;
+    fastMode?: boolean;
   };
 }): string | undefined {
   const thinking = normalizeOptionalString(params.requestShaping?.thinking);
+  const fastMode = params.requestShaping?.fastMode === true;
   const fields = [
     params.executionTrace?.winnerModel
-      ? `winner=${params.executionTrace.winnerModel}${thinking ? ` 🧠 ${thinking}` : ""}`
+      ? `winner=${params.executionTrace.winnerModel}${thinking ? ` 🧠 ${thinking}` : ""}${fastMode ? " fast=on" : ""}`
       : undefined,
     typeof params.executionTrace?.fallbackUsed === "boolean"
       ? `fallback=${params.executionTrace.fallbackUsed ? "yes" : "no"}`
@@ -809,6 +811,7 @@ function buildInlineRawTracePayload(params: {
   requestShaping?: {
     authMode?: string;
     thinking?: string;
+    fastMode?: boolean;
     reasoning?: string;
     verbose?: string;
     trace?: string;
@@ -845,6 +848,7 @@ function buildInlineRawTracePayload(params: {
       ["model", params.model],
       ["auth", params.requestShaping?.authMode],
       ["thinking", params.requestShaping?.thinking],
+      ["fastMode", params.requestShaping?.fastMode],
       ["reasoning", params.requestShaping?.reasoning],
       ["verbose", params.requestShaping?.verbose],
       ["trace", params.requestShaping?.trace],
@@ -1783,6 +1787,9 @@ export async function runReplyAgent(params: {
       thinking:
         runResult.meta?.requestShaping?.thinking ??
         normalizeOptionalString(followupRun.run.thinkLevel),
+      fastMode:
+        runResult.meta?.requestShaping?.fastMode ??
+        (typeof followupRun.run.fastMode === "boolean" ? followupRun.run.fastMode : undefined),
       reasoning:
         runResult.meta?.requestShaping?.reasoning ??
         normalizeOptionalString(followupRun.run.reasoningLevel),

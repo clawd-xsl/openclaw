@@ -24,6 +24,7 @@ export type RunCliAgentParams = {
   provider: string;
   model?: string;
   thinkLevel?: ThinkLevel;
+  fastMode?: boolean;
   reasoningLevel?: ReasoningLevel;
   timeoutMs: number;
   runId: string;

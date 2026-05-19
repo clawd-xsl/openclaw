@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resolvePreferredOpenClawTmpDir } from "../infra/tmp-openclaw-dir.js";
 import { MAX_IMAGE_BYTES } from "../media/constants.js";
 import {
+  applyClaudeCliThinkingEnv,
   buildCliArgs,
   buildSystemPrompt,
   clearSystemPromptCacheForTest,
@@ -133,6 +134,185 @@ describe("buildCliArgs", () => {
     ).toEqual(["exec", "resume", "thread-123", "--model", "gpt-5.4"]);
   });
 
+  it("maps explicit Claude CLI thinking levels onto native effort args", () => {
+    expect(
+      buildCliArgs({
+        backend: {
+          command: "claude",
+          modelArg: "--model",
+        },
+        backendId: "claude-cli-streaming",
+        baseArgs: ["--output-format", "stream-json"],
+        modelId: "opus",
+        thinkLevel: "low",
+        useResume: false,
+      }),
+    ).toEqual(["--output-format", "stream-json", "--model", "opus", "--effort", "low"]);
+
+    expect(
+      buildCliArgs({
+        backend: {
+          command: "claude",
+          modelArg: "--model",
+        },
+        backendId: "claude-cli",
+        baseArgs: ["-p"],
+        modelId: "sonnet",
+        thinkLevel: "xhigh",
+        useResume: false,
+      }),
+    ).toEqual(["-p", "--model", "sonnet", "--effort", "xhigh"]);
+  });
+
+  it("maps Claude CLI fast mode onto native settings without using effort", () => {
+    expect(
+      buildCliArgs({
+        backend: {
+          command: "claude",
+          modelArg: "--model",
+        },
+        backendId: "claude-cli-streaming",
+        baseArgs: ["--output-format", "stream-json", "--settings", '{"disableAllHooks":true}'],
+        modelId: "opus",
+        fastMode: true,
+        useResume: false,
+      }),
+    ).toEqual([
+      "--output-format",
+      "stream-json",
+      "--settings",
+      '{"disableAllHooks":true,"fastMode":true}',
+      "--model",
+      "opus",
+    ]);
+
+    expect(
+      buildCliArgs({
+        backend: {
+          command: "claude",
+          modelArg: "--model",
+        },
+        backendId: "claude-cli",
+        baseArgs: ["-p"],
+        modelId: "sonnet",
+        fastMode: false,
+        useResume: false,
+      }),
+    ).toEqual(["-p", "--model", "sonnet", "--settings", '{"fastMode":false}']);
+  });
+
+  it("does not map fast mode onto effort for non-Claude backends", () => {
+    expect(
+      buildCliArgs({
+        backend: {
+          command: "codex",
+          modelArg: "--model",
+        },
+        backendId: "openai-codex",
+        baseArgs: ["exec", "--json"],
+        modelId: "gpt-5.4",
+        fastMode: true,
+        useResume: false,
+      }),
+    ).toEqual(["exec", "--json", "--model", "gpt-5.4"]);
+  });
+
+  it("omits Claude CLI effort args for disabled and adaptive thinking", () => {
+    expect(
+      buildCliArgs({
+        backend: {
+          command: "claude",
+          modelArg: "--model",
+        },
+        backendId: "claude-cli-streaming",
+        baseArgs: ["--output-format", "stream-json"],
+        modelId: "opus",
+        thinkLevel: "off",
+        useResume: false,
+      }),
+    ).toEqual(["--output-format", "stream-json", "--model", "opus"]);
+
+    expect(
+      buildCliArgs({
+        backend: {
+          command: "claude",
+          modelArg: "--model",
+        },
+        backendId: "claude-cli-streaming",
+        baseArgs: ["--output-format", "stream-json"],
+        modelId: "opus",
+        thinkLevel: "adaptive",
+        useResume: false,
+      }),
+    ).toEqual(["--output-format", "stream-json", "--model", "opus"]);
+  });
+
+  it("does not override explicit Claude CLI effort args", () => {
+    expect(
+      buildCliArgs({
+        backend: {
+          command: "claude",
+          modelArg: "--model",
+        },
+        backendId: "claude-cli-streaming",
+        baseArgs: ["--output-format", "stream-json", "--effort", "medium"],
+        modelId: "opus",
+        thinkLevel: "high",
+        useResume: false,
+      }),
+    ).toEqual(["--output-format", "stream-json", "--effort", "medium", "--model", "opus"]);
+  });
+
+  it("omits Claude CLI effort args for non-Claude backends", () => {
+    expect(
+      buildCliArgs({
+        backend: {
+          command: "codex",
+          modelArg: "--model",
+        },
+        backendId: "openai-codex",
+        baseArgs: ["exec", "--json"],
+        modelId: "gpt-5.4",
+        thinkLevel: "high",
+        useResume: false,
+      }),
+    ).toEqual(["exec", "--json", "--model", "gpt-5.4"]);
+  });
+
+  it("applies Claude CLI thinking environment overrides", () => {
+    const offEnv = {
+      MAX_THINKING_TOKENS: "8192",
+      CLAUDE_CODE_EFFORT_LEVEL: "high",
+      CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING: "1",
+    };
+    applyClaudeCliThinkingEnv({
+      env: offEnv,
+      backendId: "claude-cli-streaming",
+      thinkLevel: "off",
+    });
+    expect(offEnv).toEqual({ MAX_THINKING_TOKENS: "0" });
+
+    const adaptiveEnv = {
+      MAX_THINKING_TOKENS: "0",
+      CLAUDE_CODE_EFFORT_LEVEL: "high",
+      CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING: "1",
+    };
+    applyClaudeCliThinkingEnv({
+      env: adaptiveEnv,
+      backendId: "claude-cli-streaming",
+      thinkLevel: "adaptive",
+    });
+    expect(adaptiveEnv).toEqual({});
+
+    const nonClaudeEnv = { MAX_THINKING_TOKENS: "0" };
+    applyClaudeCliThinkingEnv({
+      env: nonClaudeEnv,
+      backendId: "openai-codex",
+      thinkLevel: "off",
+    });
+    expect(nonClaudeEnv).toEqual({ MAX_THINKING_TOKENS: "0" });
+  });
+
   it("strips the internal cache boundary from CLI system prompt args", () => {
     expect(
       buildCliArgs({
@@ -249,7 +429,7 @@ describe("buildSystemPrompt", () => {
       previousSessionId: "prev-session",
       recentSessionHistory: "history",
       sessionCreatedAt: 123,
-    } as const;
+    };
 
     const first = buildSystemPrompt(params);
     const second = buildSystemPrompt(params);

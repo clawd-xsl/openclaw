@@ -27,6 +27,7 @@ import {
   materializeClaudeCliSkillsPlugin,
 } from "./claude-skills-plugin.js";
 import {
+  applyClaudeCliThinkingEnv,
   buildCliSupervisorScopeKey,
   buildCliArgs,
   resolveCliRunQueueKey,
@@ -262,11 +263,14 @@ export async function executePreparedCliRun(
     });
     args = buildCliArgs({
       backend,
+      backendId: context.backendResolved.id,
       baseArgs:
         claudeSkillsPlugin.args.length > 0
           ? [...resolvedArgs, ...claudeSkillsPlugin.args]
           : resolvedArgs,
       modelId: context.normalizedModel,
+      thinkLevel: params.thinkLevel,
+      fastMode: params.fastMode,
       sessionId: resolvedSessionId,
       systemPrompt: systemPromptArg,
       systemPromptFilePath: systemPromptFile?.filePath,
@@ -329,6 +333,12 @@ export async function executePreparedCliRun(
           // Anthropic's separate host-managed usage tier instead of normal CLI
           // subscription behavior.
           delete next["CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST"];
+
+          applyClaudeCliThinkingEnv({
+            env: next,
+            backendId: context.backendResolved.id,
+            thinkLevel: params.thinkLevel,
+          });
 
           return next;
         })();
