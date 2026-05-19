@@ -29,6 +29,7 @@ import { normalizeHttpWebhookUrl } from "../cron/webhook-url.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { runHeartbeatOnce } from "../infra/heartbeat-runner.js";
 import { requestHeartbeatNow } from "../infra/heartbeat-wake.js";
+import { requestHookAgentTurn } from "../infra/hook-agent-turn.js";
 import { fetchWithSsrFGuard } from "../infra/net/fetch-guard.js";
 import { SsrFBlockedError } from "../infra/net/ssrf.js";
 import { deliverOutboundPayloads } from "../infra/outbound/deliver.js";
@@ -286,6 +287,10 @@ export function buildGatewayCronService(params: {
         requestedSessionKey: opts?.sessionKey,
       });
       enqueueSystemEvent(text, { sessionKey, contextKey: opts?.contextKey });
+    },
+    requestMainAgentTurn: (opts) => {
+      const { sessionKey } = resolveCronWakeTarget(opts);
+      requestHookAgentTurn({ reason: opts?.reason, sessionKey });
     },
     requestHeartbeatNow: (opts) => {
       const { agentId, sessionKey } = resolveCronWakeTarget(opts);

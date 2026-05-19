@@ -1,6 +1,6 @@
 import { getReplyFromConfig } from "../auto-reply/reply.js";
 import { routeReply } from "../auto-reply/reply/route-reply.js";
-import type { MsgContext } from "../auto-reply/templating.js";
+import type { MsgContext, OriginatingChannelType } from "../auto-reply/templating.js";
 import type { ReplyPayload } from "../auto-reply/types.js";
 import { loadConfig } from "../config/config.js";
 import { resolveMainSessionKeyFromConfig } from "../config/sessions.js";
@@ -13,8 +13,15 @@ import { peekSystemEventEntries, resolveSystemEventDeliveryContext } from "./sys
 const DEFAULT_COALESCE_MS = 300;
 const log = createSubsystemLogger("hook-agent-turn");
 
-let pendingTimer: NodeJS.Timeout | null = null;
-let pendingReason: string | undefined;
+const DEFAULT_WAKE_KEY = "__default__";
+
+type PendingWake = {
+  timer: NodeJS.Timeout;
+  reason?: string;
+  sessionKey?: string;
+};
+
+const pendingWakes = new Map<string, PendingWake>();
 
 function asReplyPayloadArray(
   value: ReplyPayload | ReplyPayload[] | undefined,
@@ -30,12 +37,21 @@ function previewHookEventText(value: string, maxChars = 120): string {
   return singleLine.length > maxChars ? `${singleLine.slice(0, maxChars - 1)}…` : singleLine;
 }
 
-function runTurn(reason?: string): void {
+function normalizeRequestedSessionKey(sessionKey?: string | null): string | undefined {
+  const trimmed = sessionKey?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function resolvePendingWakeKey(sessionKey?: string): string {
+  return sessionKey ?? DEFAULT_WAKE_KEY;
+}
+
+function runTurn(reason?: string, requestedSessionKey?: string): void {
   void enqueueCommandInLane(
     CommandLane.Main,
     async () => {
       const cfg = loadConfig();
-      const sessionKey = resolveMainSessionKeyFromConfig();
+      const sessionKey = requestedSessionKey ?? resolveMainSessionKeyFromConfig();
       const pendingBefore = peekSystemEventEntries(sessionKey);
       const queueSize = getQueueSize(CommandLane.Main);
       // Let already-queued work drain pending hook system events instead of
@@ -80,10 +96,11 @@ function runTurn(reason?: string): void {
       try {
         const reply = await getReplyFromConfig(ctx, { isHeartbeat: false }, cfg);
         if (delivery?.channel && delivery?.to) {
+          const channel = delivery.channel as OriginatingChannelType;
           for (const payload of asReplyPayloadArray(reply)) {
             const result = await routeReply({
               payload,
-              channel: delivery.channel as MsgContext["OriginatingChannel"],
+              channel,
               to: delivery.to,
               accountId: delivery.accountId,
               threadId: delivery.threadId,
@@ -132,30 +149,47 @@ function runTurn(reason?: string): void {
   });
 }
 
-export function requestHookAgentTurn(opts?: { reason?: string; coalesceMs?: number }): void {
-  pendingReason = opts?.reason ?? pendingReason;
+export function requestHookAgentTurn(opts?: {
+  reason?: string;
+  coalesceMs?: number;
+  sessionKey?: string;
+}): void {
+  const sessionKey = normalizeRequestedSessionKey(opts?.sessionKey);
+  const key = resolvePendingWakeKey(sessionKey);
+  const existing = pendingWakes.get(key);
   const delay = opts?.coalesceMs ?? DEFAULT_COALESCE_MS;
 
-  if (pendingTimer) {
+  if (existing) {
+    existing.reason = opts?.reason ?? existing.reason;
     log.info("hook trace: synthetic wake coalesced", {
-      reason: pendingReason,
+      reason: existing.reason,
+      sessionKey: sessionKey ?? null,
       delayMs: delay,
     });
     return;
   }
 
   log.info("hook trace: synthetic wake scheduled", {
-    reason: pendingReason,
+    reason: opts?.reason,
+    sessionKey: sessionKey ?? null,
     delayMs: delay,
   });
-  pendingTimer = setTimeout(() => {
-    pendingTimer = null;
-    const reason = pendingReason;
-    pendingReason = undefined;
+  const timer = setTimeout(() => {
+    const pending = pendingWakes.get(key);
+    pendingWakes.delete(key);
+    const reason = pending?.reason;
+    const turnSessionKey = pending?.sessionKey ?? sessionKey;
     log.info("hook trace: synthetic wake timer fired", {
       reason,
+      sessionKey: turnSessionKey ?? null,
     });
-    runTurn(reason);
+    runTurn(reason, turnSessionKey);
   }, delay);
-  pendingTimer.unref?.();
+  const pending: PendingWake = {
+    reason: opts?.reason,
+    sessionKey,
+    timer,
+  };
+  pendingWakes.set(key, pending);
+  timer.unref?.();
 }

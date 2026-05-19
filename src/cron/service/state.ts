@@ -64,21 +64,23 @@ export type CronServiceDeps = {
     text: string,
     opts?: { agentId?: string; sessionKey?: string; contextKey?: string },
   ) => void;
+  requestMainAgentTurn?: (opts?: {
+    reason?: string;
+    agentId?: string;
+    sessionKey?: string;
+  }) => void;
   requestHeartbeatNow: (opts?: { reason?: string; agentId?: string; sessionKey?: string }) => void;
+  /** Legacy heartbeat seam retained for callers/tests that still inject it. */
   runHeartbeatOnce?: (opts?: {
     reason?: string;
     agentId?: string;
     sessionKey?: string;
-    /** Optional heartbeat config override (e.g. target: "last" for cron-triggered heartbeats). */
+    /** Optional heartbeat config override. */
     heartbeat?: { target?: string };
   }) => Promise<HeartbeatRunResult>;
-  /**
-   * WakeMode=now: max time to wait for runHeartbeatOnce to stop returning
-   * { status:"skipped", reason:"requests-in-flight" } before falling back to
-   * requestHeartbeatNow.
-   */
+  /** Legacy wake-now heartbeat fallback timeout. */
   wakeNowHeartbeatBusyMaxWaitMs?: number;
-  /** WakeMode=now: delay between runHeartbeatOnce retries while busy. */
+  /** Legacy wake-now heartbeat fallback retry delay. */
   wakeNowHeartbeatBusyRetryDelayMs?: number;
   runIsolatedAgentJob: (params: {
     job: CronJob;

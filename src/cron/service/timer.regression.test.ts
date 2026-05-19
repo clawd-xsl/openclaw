@@ -11,19 +11,11 @@ import {
   setupCronRegressionFixtures,
   writeCronJobs,
 } from "../../../test/helpers/cron/service-regression-fixtures.js";
-import type { HeartbeatRunResult } from "../../infra/heartbeat-wake.js";
 import * as schedule from "../schedule.js";
 import type { CronJob } from "../types.js";
 import { computeJobNextRunAtMs } from "./jobs.js";
 import { createCronServiceState, type CronEvent } from "./state.js";
-import {
-  DEFAULT_JOB_TIMEOUT_MS,
-  applyJobResult,
-  executeJob,
-  executeJobCore,
-  onTimer,
-  runMissedJobs,
-} from "./timer.js";
+import { DEFAULT_JOB_TIMEOUT_MS, applyJobResult, onTimer, runMissedJobs } from "./timer.js";
 
 const FAST_TIMEOUT_SECONDS = 1;
 const timerRegressionFixtures = setupCronRegressionFixtures({
@@ -707,108 +699,6 @@ describe("cron service timer regressions", () => {
     } finally {
       vi.useRealTimers();
     }
-  });
-
-  it("respects abort signals while retrying one-shot main-session wake-now heartbeat runs", async () => {
-    const abortController = new AbortController();
-    const runHeartbeatOnce = vi.fn(
-      async (): Promise<HeartbeatRunResult> => ({
-        status: "skipped",
-        reason: "requests-in-flight",
-      }),
-    );
-    const enqueueSystemEvent = vi.fn();
-    const requestHeartbeatNow = vi.fn();
-    const mainJob: CronJob = {
-      id: "main-abort",
-      name: "main abort",
-      enabled: true,
-      createdAtMs: Date.now(),
-      updatedAtMs: Date.now(),
-      schedule: { kind: "at", at: new Date(Date.now() + 60_000).toISOString() },
-      sessionTarget: "main",
-      wakeMode: "now",
-      payload: { kind: "systemEvent", text: "tick" },
-      state: {},
-    };
-    const state = createCronServiceState({
-      cronEnabled: true,
-      storePath: "/tmp/openclaw-cron-abort-test/jobs.json",
-      log: noopLogger,
-      nowMs: () => Date.now(),
-      enqueueSystemEvent,
-      requestHeartbeatNow,
-      runHeartbeatOnce,
-      wakeNowHeartbeatBusyMaxWaitMs: 30,
-      wakeNowHeartbeatBusyRetryDelayMs: 5,
-      runIsolatedAgentJob: createDefaultIsolatedRunner(),
-    });
-
-    setTimeout(() => {
-      abortController.abort();
-    }, 10);
-
-    const resultPromise = executeJobCore(state, mainJob, abortController.signal);
-    await vi.advanceTimersByTimeAsync(10);
-    const result = await resultPromise;
-
-    expect(result.status).toBe("error");
-    expect(result.error).toContain("timed out");
-    expect(enqueueSystemEvent).toHaveBeenCalledTimes(1);
-    expect(runHeartbeatOnce).toHaveBeenCalled();
-    expect(requestHeartbeatNow).not.toHaveBeenCalled();
-  });
-
-  it("finishes recurring wake-now main jobs quickly when the main lane is busy (#58833)", async () => {
-    let now = 0;
-    const nowMs = () => {
-      now += 10;
-      return now;
-    };
-    const runHeartbeatOnce = vi.fn(
-      async (): Promise<HeartbeatRunResult> => ({
-        status: "skipped",
-        reason: "requests-in-flight",
-      }),
-    );
-    const enqueueSystemEvent = vi.fn();
-    const requestHeartbeatNow = vi.fn();
-    const job: CronJob = {
-      id: "busy-recurring-main",
-      name: "busy recurring main",
-      enabled: true,
-      createdAtMs: 0,
-      updatedAtMs: 0,
-      schedule: { kind: "cron", expr: "*/3 * * * *", tz: "UTC", staggerMs: 0 },
-      sessionTarget: "main",
-      wakeMode: "now",
-      payload: { kind: "systemEvent", text: "tick" },
-      state: { nextRunAtMs: 0 },
-    };
-    const state = createCronServiceState({
-      cronEnabled: true,
-      storePath: "/tmp/openclaw-cron-busy-main-test/jobs.json",
-      log: noopLogger,
-      nowMs,
-      enqueueSystemEvent,
-      requestHeartbeatNow,
-      runHeartbeatOnce,
-      wakeNowHeartbeatBusyMaxWaitMs: 120_000,
-      wakeNowHeartbeatBusyRetryDelayMs: 250,
-      runIsolatedAgentJob: createDefaultIsolatedRunner(),
-    });
-    state.store = { version: 1, jobs: [job] };
-
-    await executeJob(state, job, nowMs(), { forced: false });
-
-    expect(enqueueSystemEvent).toHaveBeenCalledTimes(1);
-    expect(runHeartbeatOnce).toHaveBeenCalledTimes(1);
-    expect(requestHeartbeatNow).toHaveBeenCalledWith(
-      expect.objectContaining({ reason: "cron:busy-recurring-main" }),
-    );
-    expect(job.state.lastStatus).toBe("ok");
-    expect(job.state.lastDurationMs).toBeLessThan(100);
-    expect(job.state.runningAtMs).toBeUndefined();
   });
 
   it("retries cron schedule computation from the next second when the first attempt returns undefined (#17821)", () => {

@@ -10,6 +10,7 @@ const {
   enqueueSystemEventMock,
   requestHeartbeatNowMock,
   runHeartbeatOnceMock,
+  requestHookAgentTurnMock,
   loadConfigMock,
   fetchWithSsrFGuardMock,
   runCronIsolatedAgentTurnMock,
@@ -20,6 +21,7 @@ const {
   runHeartbeatOnceMock: vi.fn<
     (...args: unknown[]) => Promise<{ status: "ran"; durationMs: number }>
   >(async () => ({ status: "ran", durationMs: 1 })),
+  requestHookAgentTurnMock: vi.fn(),
   loadConfigMock: vi.fn(),
   fetchWithSsrFGuardMock: vi.fn(),
   runCronIsolatedAgentTurnMock: vi.fn(async () => ({ status: "ok" as const, summary: "ok" })),
@@ -36,6 +38,10 @@ function requestHeartbeatNow(...args: unknown[]) {
 
 function runHeartbeatOnce(...args: unknown[]) {
   return runHeartbeatOnceMock(...args);
+}
+
+function requestHookAgentTurn(...args: unknown[]) {
+  return requestHookAgentTurnMock(...args);
 }
 
 vi.mock("../infra/system-events.js", () => ({
@@ -55,6 +61,10 @@ vi.mock("../infra/heartbeat-wake.js", async () => {
 
 vi.mock("../infra/heartbeat-runner.js", () => ({
   runHeartbeatOnce,
+}));
+
+vi.mock("../infra/hook-agent-turn.js", () => ({
+  requestHookAgentTurn,
 }));
 
 vi.mock("../config/config.js", async () => {
@@ -96,13 +106,14 @@ describe("buildGatewayCronService", () => {
     enqueueSystemEventMock.mockClear();
     requestHeartbeatNowMock.mockClear();
     runHeartbeatOnceMock.mockClear();
+    requestHookAgentTurnMock.mockClear();
     loadConfigMock.mockClear();
     fetchWithSsrFGuardMock.mockClear();
     runCronIsolatedAgentTurnMock.mockClear();
     cleanupBrowserSessionsForLifecycleEndMock.mockClear();
   });
 
-  it("routes main-target jobs to the scoped session for enqueue + wake", async () => {
+  it("routes main-target jobs to the scoped session and synthetic main turn", async () => {
     const cfg = createCronConfig("server-cron");
     loadConfigMock.mockReturnValue(cfg);
 
@@ -130,11 +141,11 @@ describe("buildGatewayCronService", () => {
           sessionKey: "agent:main:discord:channel:ops",
         }),
       );
-      expect(requestHeartbeatNowMock).toHaveBeenCalledWith(
-        expect.objectContaining({
-          sessionKey: "agent:main:discord:channel:ops",
-        }),
-      );
+      expect(requestHookAgentTurnMock).toHaveBeenCalledWith({
+        reason: `cron:${job.id}`,
+        sessionKey: "agent:main:discord:channel:ops",
+      });
+      expect(requestHeartbeatNowMock).not.toHaveBeenCalled();
     } finally {
       state.cron.stop();
     }

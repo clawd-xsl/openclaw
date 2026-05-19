@@ -78,12 +78,12 @@ This fires ~5–6 times per month instead of 0–1 times per month. OpenClaw use
 
 | Style           | `--session` value   | Runs in                  | Best for                        |
 | --------------- | ------------------- | ------------------------ | ------------------------------- |
-| Main session    | `main`              | Next heartbeat turn      | Reminders, system events        |
+| Main session    | `main`              | Synthetic main turn      | Reminders, system events        |
 | Isolated        | `isolated`          | Dedicated `cron:<jobId>` | Reports, background chores      |
 | Current session | `current`           | Bound at creation time   | Context-aware recurring work    |
 | Custom session  | `session:custom-id` | Persistent named session | Workflows that build on history |
 
-**Main session** jobs enqueue a system event and optionally wake the heartbeat (`--wake now` or `--wake next-heartbeat`). **Isolated** jobs run a dedicated agent turn with a fresh session. **Custom sessions** (`session:xxx`) persist context across runs, enabling workflows like daily standups that build on previous summaries.
+**Main session** jobs enqueue a system event and request the same synthetic main turn used for hook wakes. **Isolated** jobs run a dedicated agent turn with a fresh session. **Custom sessions** (`session:xxx`) persist context across runs, enabling workflows like daily standups that build on previous summaries.
 
 For isolated jobs, runtime teardown now includes best-effort browser cleanup for that cron session. Cleanup failures are ignored so the actual cron result still wins.
 
