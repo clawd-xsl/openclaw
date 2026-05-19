@@ -64,7 +64,7 @@ export type MonitorSignalOpts = {
   cliPath?: string;
   httpHost?: string;
   httpPort?: number;
-  receiveMode?: "on-start" | "manual";
+  receiveMode?: "on-start" | "on-connection" | "manual";
   ignoreAttachments?: boolean;
   ignoreStories?: boolean;
   sendReadReceipts?: boolean;

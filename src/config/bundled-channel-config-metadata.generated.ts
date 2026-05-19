@@ -9678,6 +9678,10 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
             },
             {
               type: "string",
+              const: "on-connection",
+            },
+            {
+              type: "string",
               const: "manual",
             },
           ],
@@ -10014,6 +10018,10 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
                   {
                     type: "string",
                     const: "on-start",
+                  },
+                  {
+                    type: "string",
+                    const: "on-connection",
                   },
                   {
                     type: "string",

@@ -30,7 +30,7 @@ export type SignalAccountConfig = CommonChannelMessagingConfig & {
   autoStart?: boolean;
   /** Max time to wait for signal-cli daemon startup (ms, cap 120000). */
   startupTimeoutMs?: number;
-  receiveMode?: "on-start" | "manual";
+  receiveMode?: "on-start" | "on-connection" | "manual";
   ignoreAttachments?: boolean;
   ignoreStories?: boolean;
   sendReadReceipts?: boolean;
