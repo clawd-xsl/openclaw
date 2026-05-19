@@ -1,4 +1,8 @@
-import { peekSystemEventEntries } from "openclaw/plugin-sdk/infra-runtime";
+import {
+  consumeSystemEventEntries,
+  peekSystemEventEntries,
+  type SystemEvent,
+} from "openclaw/plugin-sdk/infra-runtime";
 import type { OpenClawConfig, OpenClawPluginApi } from "openclaw/plugin-sdk/memory-core";
 import {
   DEFAULT_MEMORY_DREAMING_FREQUENCY as DEFAULT_MEMORY_DREAMING_CRON_EXPR,
@@ -38,6 +42,7 @@ const LEGACY_REM_SLEEP_CRON_TAG = "[managed-by=memory-core.dreaming.rem]";
 const LEGACY_REM_SLEEP_EVENT_TEXT = "__openclaw_memory_core_rem_sleep__";
 const RUNTIME_CRON_RECONCILE_INTERVAL_MS = 60_000;
 const HEARTBEAT_ISOLATED_SESSION_SUFFIX = ":heartbeat";
+const SYNTHETIC_HOOK_WAKE_BODY = "[hook event: process pending system events]";
 
 type Logger = Pick<OpenClawPluginApi["logger"], "info" | "warn" | "error">;
 
@@ -365,14 +370,39 @@ function resolveDreamingTriggerSessionKeys(sessionKey?: string): string[] {
   return Array.from(new Set(keys));
 }
 
-function hasPendingManagedDreamingCronEvent(sessionKey?: string): boolean {
-  return resolveDreamingTriggerSessionKeys(sessionKey).some((candidateSessionKey) =>
-    peekSystemEventEntries(candidateSessionKey).some(
-      (event) =>
-        event.contextKey?.startsWith("cron:") === true &&
-        normalizeTrimmedString(event.text) === DREAMING_SYSTEM_EVENT_TEXT,
-    ),
+function isManagedDreamingCronEvent(event: SystemEvent): boolean {
+  return (
+    event.contextKey?.startsWith("cron:") === true &&
+    normalizeTrimmedString(event.text) === DREAMING_SYSTEM_EVENT_TEXT
   );
+}
+
+function resolvePendingManagedDreamingCronEvent(
+  sessionKey?: string,
+): { sessionKey: string; event: SystemEvent } | null {
+  for (const candidateSessionKey of resolveDreamingTriggerSessionKeys(sessionKey)) {
+    const event = peekSystemEventEntries(candidateSessionKey).find(isManagedDreamingCronEvent);
+    if (event) {
+      return { sessionKey: candidateSessionKey, event };
+    }
+  }
+  return null;
+}
+
+function hasPendingManagedDreamingCronEvent(sessionKey?: string): boolean {
+  return resolvePendingManagedDreamingCronEvent(sessionKey) !== null;
+}
+
+function consumePendingManagedDreamingCronEvent(sessionKey?: string): boolean {
+  const pending = resolvePendingManagedDreamingCronEvent(sessionKey);
+  if (!pending) {
+    return false;
+  }
+  return consumeSystemEventEntries(pending.sessionKey, [pending.event]).length > 0;
+}
+
+function isSyntheticHookWakeBody(cleanedBody: string): boolean {
+  return normalizeTrimmedString(cleanedBody)?.includes(SYNTHETIC_HOOK_WAKE_BODY) === true;
 }
 
 export function resolveShortTermPromotionDreamingConfig(params: {
@@ -489,7 +519,7 @@ export async function runShortTermDreamingPromotionIfTriggered(params: {
   logger: Logger;
   subagent?: Parameters<typeof generateAndAppendDreamNarrative>[0]["subagent"];
 }): Promise<{ handled: true; reason: string } | undefined> {
-  if (params.trigger !== "heartbeat") {
+  if (params.trigger !== "heartbeat" && params.trigger !== "synthetic-main") {
     return undefined;
   }
   if (!includesSystemEventToken(params.cleanedBody, DREAMING_SYSTEM_EVENT_TEXT)) {
@@ -740,22 +770,34 @@ export function registerShortTermPromotionDreaming(api: OpenClawPluginApi): void
   );
 
   api.on("before_agent_reply", async (event, ctx) => {
+    let handledManagedDreamingWake = false;
     try {
-      if (ctx.trigger !== "heartbeat") {
+      const isHeartbeatTrigger = ctx.trigger === "heartbeat";
+      const isSyntheticMainTrigger =
+        ctx.trigger === "user" && isSyntheticHookWakeBody(event.cleanedBody);
+      if (!isHeartbeatTrigger && !isSyntheticMainTrigger) {
         return undefined;
       }
       const config = await reconcileManagedDreamingCron({
         reason: "runtime",
       });
+      const hasPendingManagedEvent = hasPendingManagedDreamingCronEvent(ctx.sessionKey);
+      if (!hasPendingManagedEvent) {
+        return undefined;
+      }
       if (
-        !hasPendingManagedDreamingCronEvent(ctx.sessionKey) ||
+        isHeartbeatTrigger &&
         !includesSystemEventToken(event.cleanedBody, DREAMING_SYSTEM_EVENT_TEXT)
       ) {
         return undefined;
       }
+      handledManagedDreamingWake = true;
+      if (isSyntheticMainTrigger) {
+        consumePendingManagedDreamingCronEvent(ctx.sessionKey);
+      }
       return await runShortTermDreamingPromotionIfTriggered({
-        cleanedBody: event.cleanedBody,
-        trigger: ctx.trigger,
+        cleanedBody: DREAMING_SYSTEM_EVENT_TEXT,
+        trigger: isSyntheticMainTrigger ? "synthetic-main" : ctx.trigger,
         workspaceDir: ctx.workspaceDir,
         cfg: api.config,
         config,
@@ -764,6 +806,9 @@ export function registerShortTermPromotionDreaming(api: OpenClawPluginApi): void
       });
     } catch (err) {
       api.logger.error(`memory-core: dreaming trigger failed: ${formatErrorMessage(err)}`);
+      if (handledManagedDreamingWake) {
+        return { handled: true, reason: "memory-core: dreaming trigger failed" };
+      }
       return undefined;
     }
   });
@@ -784,5 +829,6 @@ export const __testing = {
     DEFAULT_DREAMING_MIN_RECALL_COUNT: DEFAULT_MEMORY_DREAMING_MIN_RECALL_COUNT,
     DEFAULT_DREAMING_MIN_UNIQUE_QUERIES: DEFAULT_MEMORY_DREAMING_MIN_UNIQUE_QUERIES,
     DEFAULT_DREAMING_RECENCY_HALF_LIFE_DAYS: DEFAULT_MEMORY_DREAMING_RECENCY_HALF_LIFE_DAYS,
+    SYNTHETIC_HOOK_WAKE_BODY,
   },
 };

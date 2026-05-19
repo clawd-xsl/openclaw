@@ -1,6 +1,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { enqueueSystemEvent, resetSystemEventsForTest } from "openclaw/plugin-sdk/infra-runtime";
+import {
+  enqueueSystemEvent,
+  peekSystemEventEntries,
+  resetSystemEventsForTest,
+} from "openclaw/plugin-sdk/infra-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/memory-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -1236,6 +1240,65 @@ describe("gateway startup reconciliation", () => {
         handled: true,
         reason: "memory-core: short-term dreaming disabled",
       });
+    } finally {
+      clearInternalHooks();
+    }
+  });
+
+  it("handles managed dreaming cron events from synthetic main turns", async () => {
+    clearInternalHooks();
+    const logger = createLogger();
+    const harness = createCronHarness();
+    const onMock = vi.fn();
+    const api: DreamingPluginApiTestDouble = {
+      config: {
+        plugins: {
+          entries: {
+            "memory-core": {
+              config: {
+                dreaming: {
+                  enabled: false,
+                },
+              },
+            },
+          },
+        },
+      } as OpenClawConfig,
+      pluginConfig: {},
+      logger,
+      runtime: {},
+      registerHook: (event: string, handler: Parameters<typeof registerInternalHook>[1]) => {
+        registerInternalHook(event, handler);
+      },
+      on: onMock,
+    };
+
+    try {
+      registerShortTermPromotionDreamingForTest(api);
+      await triggerInternalHook(
+        createInternalHookEvent("gateway", "startup", "gateway:startup", {
+          cfg: api.config,
+          deps: { cron: harness.cron },
+        }),
+      );
+
+      const sessionKey = "agent:main:main";
+      enqueueSystemEvent(constants.DREAMING_SYSTEM_EVENT_TEXT, {
+        sessionKey,
+        contextKey: "cron:memory-dreaming",
+      });
+
+      const beforeAgentReply = getBeforeAgentReplyHandler(onMock);
+      const result = await beforeAgentReply(
+        { cleanedBody: constants.SYNTHETIC_HOOK_WAKE_BODY },
+        { trigger: "user", workspaceDir: ".", sessionKey },
+      );
+
+      expect(result).toEqual({
+        handled: true,
+        reason: "memory-core: short-term dreaming disabled",
+      });
+      expect(peekSystemEventEntries(sessionKey)).toEqual([]);
     } finally {
       clearInternalHooks();
     }
