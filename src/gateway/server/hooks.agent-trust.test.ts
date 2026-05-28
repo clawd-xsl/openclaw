@@ -107,6 +107,21 @@ describe("dispatchAgentHook trust handling", () => {
     });
   });
 
+  it("does not queue a main-session fallback for silent hook replies", async () => {
+    runCronIsolatedAgentTurnMock.mockResolvedValueOnce({
+      status: "ok",
+      summary: "NO_REPLY",
+      delivered: false,
+    });
+
+    expect(capturedDispatchAgentHook).toBeDefined();
+    capturedDispatchAgentHook?.(buildAgentPayload("Gmail"));
+    await flushHookDispatchMicrotasks();
+
+    expect(enqueueSystemEventMock).not.toHaveBeenCalled();
+    expect(requestHookAgentTurnMock).not.toHaveBeenCalled();
+  });
+
   it("marks error events as untrusted and sanitizes hook names", async () => {
     runCronIsolatedAgentTurnMock.mockRejectedValueOnce(new Error("agent exploded"));
 

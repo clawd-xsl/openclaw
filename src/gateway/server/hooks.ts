@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { sanitizeInboundSystemTags } from "../../auto-reply/reply/inbound-text.js";
+import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../../auto-reply/tokens.js";
 import type { CliDeps } from "../../cli/deps.types.js";
 import { loadConfig } from "../../config/config.js";
 import { resolveMainSessionKeyFromConfig } from "../../config/sessions.js";
@@ -153,6 +154,17 @@ export function createGatewayHooksRequestHandler(params: {
           errorPreview: previewHookTraceText(result.error),
         });
         if (!result.delivered) {
+          if (result.status === "ok" && isSilentReplyText(summary, SILENT_REPLY_TOKEN)) {
+            logHooks.info("hook trace: silent fallback suppressed", {
+              jobId,
+              runId,
+              hookName: safeName,
+              mainSessionKey,
+              wakeMode: value.wakeMode,
+              summaryPreview: previewHookTraceText(summary),
+            });
+            return;
+          }
           const fallbackText = `${prefix}: ${summary}`.trim();
           const enqueued = enqueueSystemEvent(fallbackText, {
             sessionKey: mainSessionKey,
