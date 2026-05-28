@@ -61,14 +61,24 @@ describe("applyDiscoveredContextWindows", () => {
     expect(cache.get("gpt-5.4")).toBe(272_000);
   });
 
-  it("forces 1M context for discovered claude-cli-streaming opus 4.7 entries", () => {
+  it("forces 1M context for discovered claude-cli-streaming Opus 4.8 entries", () => {
     const cache = new Map<string, number>();
     applyDiscoveredContextWindows({
       cache,
-      models: [{ id: "claude-cli-streaming/claude-opus-4-7", contextWindow: 200_000 }],
+      models: [{ id: "claude-cli-streaming/claude-opus-4-8", contextWindow: 200_000 }],
     });
 
-    expect(cache.get("claude-cli-streaming/claude-opus-4-7")).toBe(ANTHROPIC_CONTEXT_1M_TOKENS);
+    expect(cache.get("claude-cli-streaming/claude-opus-4-8")).toBe(ANTHROPIC_CONTEXT_1M_TOKENS);
+  });
+
+  it("forces 1M context for discovered claude-cli-streaming Opus 4.8 1M entries", () => {
+    const cache = new Map<string, number>();
+    applyDiscoveredContextWindows({
+      cache,
+      models: [{ id: "claude-cli-streaming/claude-opus-4-8[1m]", contextWindow: 200_000 }],
+    });
+
+    expect(cache.get("claude-cli-streaming/claude-opus-4-8[1m]")).toBe(ANTHROPIC_CONTEXT_1M_TOKENS);
   });
 });
 
@@ -238,19 +248,41 @@ describe("resolveContextTokensForModel", () => {
     expect(result).toBe(200_000);
   });
 
-  it("returns 1M context for claude-cli-streaming opus 4.7 without requiring context1m", () => {
+  it("returns 1M context for claude-cli-streaming Opus 4.8", () => {
     const result = resolveContextTokensForModel({
       cfg: {
         models: {
           providers: {
             "claude-cli-streaming": {
-              models: [testModelContextWindow("claude-opus-4-7", 200_000)],
+              baseUrl: "https://api.anthropic.com",
+              models: [testModelContextWindow("claude-opus-4-8", 200_000)],
             },
           },
         },
       },
       provider: "claude-cli-streaming",
-      model: "claude-opus-4-7",
+      model: "claude-opus-4-8",
+      fallbackContextTokens: 200_000,
+      allowAsyncLoad: false,
+    });
+
+    expect(result).toBe(ANTHROPIC_CONTEXT_1M_TOKENS);
+  });
+
+  it("returns 1M context for claude-cli-streaming Opus 4.8 1M without requiring context1m", () => {
+    const result = resolveContextTokensForModel({
+      cfg: {
+        models: {
+          providers: {
+            "claude-cli-streaming": {
+              baseUrl: "https://api.anthropic.com",
+              models: [testModelContextWindow("claude-opus-4-8[1m]", 200_000)],
+            },
+          },
+        },
+      },
+      provider: "claude-cli-streaming",
+      model: "claude-opus-4-8[1m]",
       fallbackContextTokens: 200_000,
       allowAsyncLoad: false,
     });

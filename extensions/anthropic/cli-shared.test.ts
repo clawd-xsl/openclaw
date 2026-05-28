@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { buildAnthropicCliBackend } from "./cli-backend.js";
 import {
   CLAUDE_CLI_CLEAR_ENV,
+  CLAUDE_CLI_DEFAULT_MODEL_REF,
+  CLAUDE_CLI_MODEL_ALIASES,
   normalizeClaudeBackendConfig,
   normalizeClaudeIsolationArgs,
   normalizeClaudePermissionArgs,
@@ -11,6 +13,15 @@ import {
 } from "./cli-shared.js";
 
 describe("normalizeClaudePermissionArgs", () => {
+  it("pins the Claude CLI default to Opus 4.8", () => {
+    expect(CLAUDE_CLI_DEFAULT_MODEL_REF).toBe("claude-cli/claude-opus-4-8");
+    expect(CLAUDE_CLI_MODEL_ALIASES["opus-4.8"]).toBe("claude-opus-4-8");
+    expect(CLAUDE_CLI_MODEL_ALIASES["opus-4.8[1m]"]).toBe("claude-opus-4-8[1m]");
+    expect(CLAUDE_CLI_MODEL_ALIASES["claude-opus-4-8"]).toBe("claude-opus-4-8");
+    expect(CLAUDE_CLI_MODEL_ALIASES["claude-opus-4-8[1m]"]).toBe("claude-opus-4-8[1m]");
+    expect(CLAUDE_CLI_MODEL_ALIASES["claude-opus-4-7"]).toBe("claude-opus-4-7");
+  });
+
   it("injects bypassPermissions when args omit permission flags", () => {
     expect(
       normalizeClaudePermissionArgs(["-p", "--output-format", "stream-json", "--verbose"]),

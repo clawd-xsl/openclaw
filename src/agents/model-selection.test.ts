@@ -57,6 +57,15 @@ const ANTHROPIC_OPUS_47_CATALOG = [
   },
 ];
 
+const ANTHROPIC_OPUS_48_CATALOG = [
+  {
+    provider: "anthropic",
+    id: "claude-opus-4-8",
+    name: "Claude Opus 4.8",
+    reasoning: true,
+  },
+];
+
 function resolveAnthropicOpusThinking(cfg: OpenClawConfig) {
   return resolveThinkingDefault({
     cfg,
@@ -72,6 +81,15 @@ function resolveAnthropicOpus47Thinking(cfg: OpenClawConfig) {
     provider: "anthropic",
     model: "claude-opus-4-7",
     catalog: ANTHROPIC_OPUS_47_CATALOG,
+  });
+}
+
+function resolveAnthropicOpus48Thinking(cfg: OpenClawConfig) {
+  return resolveThinkingDefault({
+    cfg,
+    provider: "anthropic",
+    model: "claude-opus-4-8",
+    catalog: ANTHROPIC_OPUS_48_CATALOG,
   });
 }
 
@@ -218,9 +236,15 @@ describe("model-selection", () => {
       },
       {
         name: "normalizes anthropic shorthand aliases",
-        variants: ["anthropic/opus-4.6", "opus-4.6", " anthropic / opus-4.6 "],
+        variants: ["anthropic/opus-4.8", "opus-4.8", " anthropic / opus-4.8 "],
         defaultProvider: "anthropic",
-        expected: { provider: "anthropic", model: "claude-opus-4-6" },
+        expected: { provider: "anthropic", model: "claude-opus-4-8" },
+      },
+      {
+        name: "normalizes anthropic 1M shorthand aliases",
+        variants: ["anthropic/opus-4.8[1m]", "opus-4.8-1m"],
+        defaultProvider: "anthropic",
+        expected: { provider: "anthropic", model: "claude-opus-4-8[1m]" },
       },
       {
         name: "normalizes anthropic sonnet aliases",
@@ -1180,6 +1204,12 @@ describe("model-selection", () => {
       const cfg = {} as OpenClawConfig;
 
       expect(resolveAnthropicOpus47Thinking(cfg)).toBe("off");
+    });
+
+    it("defaults Claude Opus 4.8 to off when no explicit thinking config is set", () => {
+      const cfg = {} as OpenClawConfig;
+
+      expect(resolveAnthropicOpus48Thinking(cfg)).toBe("off");
     });
 
     it("falls back to low when no provider thinking hook is active", () => {

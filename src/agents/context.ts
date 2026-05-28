@@ -25,7 +25,14 @@ type ModelsConfig = { providers?: Record<string, ProviderConfigEntry | undefined
 type AgentModelEntry = { params?: Record<string, unknown> };
 
 const ANTHROPIC_1M_MODEL_PREFIXES = ["claude-opus-4", "claude-sonnet-4"] as const;
-const CLAUDE_OPUS_47_MODEL_PREFIXES = ["claude-opus-4-7", "claude-opus-4.7"] as const;
+const CLAUDE_OPUS_LONG_CONTEXT_MODEL_PREFIXES = [
+  "claude-opus-4-8",
+  "claude-opus-4.8",
+  "claude-opus-4-8[1m]",
+  "claude-opus-4.8[1m]",
+  "claude-opus-4-7",
+  "claude-opus-4.7",
+] as const;
 export const ANTHROPIC_CONTEXT_1M_TOKENS = 1_048_576;
 const CONFIG_LOAD_RETRY_POLICY: BackoffPolicy = {
   initialMs: 1_000,
@@ -48,7 +55,7 @@ export function applyDiscoveredContextWindows(params: {
         : typeof model.contextWindow === "number"
           ? Math.trunc(model.contextWindow)
           : undefined;
-    const contextTokens = shouldUseDiscoveredAnthropicOpus47ContextWindow(model.id)
+    const contextTokens = shouldUseDiscoveredAnthropicOpusLongContextWindow(model.id)
       ? ANTHROPIC_CONTEXT_1M_TOKENS
       : discoveredContextTokens;
     if (!contextTokens || contextTokens <= 0) {
@@ -385,7 +392,7 @@ function isAnthropic1MModel(provider: string, model: string): boolean {
   return ANTHROPIC_1M_MODEL_PREFIXES.some((prefix) => modelId.startsWith(prefix));
 }
 
-function shouldUseAnthropicOpus47ContextWindow(params: {
+function shouldUseAnthropicOpusLongContextWindow(params: {
   provider?: string;
   model: string;
 }): boolean {
@@ -394,12 +401,12 @@ function shouldUseAnthropicOpus47ContextWindow(params: {
     (provider === "anthropic" ||
       provider === "claude-cli" ||
       provider === "claude-cli-streaming") &&
-    isClaudeOpus47Model(params.model)
+    isClaudeOpusLongContextModel(params.model)
   );
 }
 
-function shouldUseDiscoveredAnthropicOpus47ContextWindow(modelId: string): boolean {
-  if (!isClaudeOpus47Model(modelId)) {
+function shouldUseDiscoveredAnthropicOpusLongContextWindow(modelId: string): boolean {
+  if (!isClaudeOpusLongContextModel(modelId)) {
     return false;
   }
   const normalized = normalizeLowercaseStringOrEmpty(modelId);
@@ -416,9 +423,9 @@ function resolveModelFamilyId(modelId: string): string {
   return normalized.includes("/") ? (normalized.split("/").at(-1) ?? normalized) : normalized;
 }
 
-function isClaudeOpus47Model(model: string): boolean {
+function isClaudeOpusLongContextModel(model: string): boolean {
   const modelId = resolveModelFamilyId(model);
-  return CLAUDE_OPUS_47_MODEL_PREFIXES.some((prefix) => modelId.startsWith(prefix));
+  return CLAUDE_OPUS_LONG_CONTEXT_MODEL_PREFIXES.some((prefix) => modelId.startsWith(prefix));
 }
 
 export function resolveContextTokensForModel(params: {
@@ -443,7 +450,7 @@ export function resolveContextTokensForModel(params: {
     if (modelParams?.context1m === true && isAnthropic1MModel(ref.provider, ref.model)) {
       return ANTHROPIC_CONTEXT_1M_TOKENS;
     }
-    if (shouldUseAnthropicOpus47ContextWindow({ provider: ref.provider, model: ref.model })) {
+    if (shouldUseAnthropicOpusLongContextWindow({ provider: ref.provider, model: ref.model })) {
       return ANTHROPIC_CONTEXT_1M_TOKENS;
     }
     // Only do the config direct scan when the caller explicitly passed a

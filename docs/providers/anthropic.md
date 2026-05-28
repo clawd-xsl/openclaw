@@ -62,7 +62,7 @@ Anthropic's current public docs:
     ```json5
     {
       env: { ANTHROPIC_API_KEY: "sk-ant-..." },
-      agents: { defaults: { model: { primary: "anthropic/claude-opus-4-6" } } },
+      agents: { defaults: { model: { primary: "anthropic/claude-opus-4-8" } } },
     }
     ```
 
@@ -105,9 +105,9 @@ Anthropic's current public docs:
   </Tab>
 </Tabs>
 
-## Thinking defaults (Claude 4.6)
+## Thinking defaults (Claude Opus 4.8 / Claude 4.6)
 
-Claude 4.6 models default to `adaptive` thinking in OpenClaw when no explicit thinking level is set.
+Claude Opus 4.8 and 4.7 default to `off` in OpenClaw so Claude owns its adaptive reasoning unless you explicitly request `/think`. Claude 4.6 models default to `adaptive` when no explicit thinking level is set.
 
 Override per-message with `/think:<level>` or in model params:
 
@@ -234,7 +234,7 @@ OpenClaw supports Anthropic's prompt caching feature for API-key auth.
 
     | Property       | Value                |
     | -------------- | -------------------- |
-    | Default model  | `claude-opus-4-6`    |
+    | Default model  | `claude-opus-4-8`    |
     | Supported input | Images, PDF documents |
 
     When an image or PDF is attached to a conversation, OpenClaw automatically
@@ -243,7 +243,7 @@ OpenClaw supports Anthropic's prompt caching feature for API-key auth.
   </Accordion>
 
   <Accordion title="1M context window (beta)">
-    Anthropic's 1M context window is beta-gated. Enable it per model:
+    Anthropic's 1M context window is beta-gated. For direct Anthropic API traffic, enable it per model:
 
     ```json5
     {
@@ -260,6 +260,19 @@ OpenClaw supports Anthropic's prompt caching feature for API-key auth.
     ```
 
     OpenClaw maps this to `anthropic-beta: context-1m-2025-08-07` on requests.
+
+    Claude Code v2.1.154+ reports `claude-opus-4-8` as a 1M-context model.
+    You can also select the explicit Claude Code 1M model id:
+
+    ```json5
+    {
+      agents: {
+        defaults: {
+          model: { primary: "claude-cli-streaming/claude-opus-4-8[1m]" },
+        },
+      },
+    }
+    ```
 
     <Warning>
     Requires long-context access on your Anthropic credential. Legacy token auth (`sk-ant-oat-*`) is rejected for 1M context requests — OpenClaw logs a warning and falls back to the standard context window.

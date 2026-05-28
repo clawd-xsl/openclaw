@@ -123,6 +123,8 @@ describe("anthropic cli migration", () => {
             fallbacks: ["claude-cli/claude-opus-4-6", "openai/gpt-5.2"],
           },
           models: {
+            "claude-cli/claude-opus-4-8": {},
+            "claude-cli/claude-opus-4-8[1m]": {},
             "claude-cli/claude-opus-4-7": {},
             "claude-cli/claude-sonnet-4-6": { alias: "Sonnet" },
             "claude-cli/claude-opus-4-6": { alias: "Opus" },
@@ -148,12 +150,14 @@ describe("anthropic cli migration", () => {
       },
     });
 
-    expect(result.defaultModel).toBe("claude-cli/claude-opus-4-7");
+    expect(result.defaultModel).toBe("claude-cli/claude-opus-4-8");
     expect(result.configPatch).toEqual({
       agents: {
         defaults: {
           models: {
             "openai/gpt-5.2": {},
+            "claude-cli/claude-opus-4-8": {},
+            "claude-cli/claude-opus-4-8[1m]": {},
             "claude-cli/claude-opus-4-7": {},
             "claude-cli/claude-sonnet-4-6": {},
             "claude-cli/claude-opus-4-6": {},
@@ -182,6 +186,8 @@ describe("anthropic cli migration", () => {
       agents: {
         defaults: {
           models: {
+            "claude-cli/claude-opus-4-8": {},
+            "claude-cli/claude-opus-4-8[1m]": {},
             "claude-cli/claude-opus-4-7": {},
             "claude-cli/claude-sonnet-4-6": {},
             "claude-cli/claude-opus-4-6": {},

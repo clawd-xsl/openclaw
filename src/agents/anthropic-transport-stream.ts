@@ -102,6 +102,8 @@ type MutableAssistantOutput = {
 
 function supportsAdaptiveThinking(modelId: string): boolean {
   return (
+    modelId.includes("opus-4-8") ||
+    modelId.includes("opus-4.8") ||
     modelId.includes("opus-4-7") ||
     modelId.includes("opus-4.7") ||
     modelId.includes("opus-4-6") ||
@@ -119,7 +121,12 @@ function mapThinkingLevelToEffort(level: ThinkingLevel, modelId: string): Anthro
     case "medium":
       return "medium";
     case "xhigh":
-      if (modelId.includes("opus-4-7") || modelId.includes("opus-4.7")) {
+      if (
+        modelId.includes("opus-4-8") ||
+        modelId.includes("opus-4.8") ||
+        modelId.includes("opus-4-7") ||
+        modelId.includes("opus-4.7")
+      ) {
         return "xhigh";
       }
       return modelId.includes("opus-4-6") || modelId.includes("opus-4.6") ? "max" : "high";
@@ -532,7 +539,7 @@ function buildAnthropicParams(
         params.thinking = { type: "adaptive" };
         if (options.effort) {
           // pi-ai 0.58 still types Anthropic effort as low|medium|high|max, but
-          // Opus 4.7 accepts xhigh. Keep the wire payload forward-compatible.
+          // Opus 4.7+ accepts xhigh. Keep the wire payload forward-compatible.
           params.output_config = {
             effort: options.effort as NonNullable<AnthropicOptions["effort"]>,
           };

@@ -15,6 +15,8 @@ export function buildClaudeCliModelRef(backendId: ClaudeCliBackendId, modelId: s
 
 export function buildClaudeCliAllowlistRefs(backendId: ClaudeCliBackendId): readonly string[] {
   return [
+    buildClaudeCliModelRef(backendId, "claude-opus-4-8"),
+    buildClaudeCliModelRef(backendId, "claude-opus-4-8[1m]"),
     buildClaudeCliModelRef(backendId, "claude-opus-4-7"),
     buildClaudeCliModelRef(backendId, "claude-sonnet-4-6"),
     buildClaudeCliModelRef(backendId, "claude-opus-4-6"),
@@ -24,10 +26,10 @@ export function buildClaudeCliAllowlistRefs(backendId: ClaudeCliBackendId): read
   ] as const;
 }
 
-export const CLAUDE_CLI_DEFAULT_MODEL_REF = `${CLAUDE_CLI_BACKEND_ID}/claude-opus-4-7`;
+export const CLAUDE_CLI_DEFAULT_MODEL_REF = `${CLAUDE_CLI_BACKEND_ID}/claude-opus-4-8`;
 export const CLAUDE_CLI_STREAMING_DEFAULT_MODEL_REF = buildClaudeCliModelRef(
   CLAUDE_CLI_STREAMING_BACKEND_ID,
-  "claude-opus-4-7",
+  "claude-opus-4-8",
 );
 export const CLAUDE_CLI_DEFAULT_ALLOWLIST_REFS = buildClaudeCliAllowlistRefs(CLAUDE_CLI_BACKEND_ID);
 export const CLAUDE_CLI_STREAMING_DEFAULT_ALLOWLIST_REFS = buildClaudeCliAllowlistRefs(
@@ -36,23 +38,28 @@ export const CLAUDE_CLI_STREAMING_DEFAULT_ALLOWLIST_REFS = buildClaudeCliAllowli
 
 export const CLAUDE_CLI_MODEL_ALIASES: Record<string, string> = {
   opus: "opus",
-  "opus-4.7": "opus",
-  "opus-4.6": "opus",
-  "opus-4.5": "opus",
+  "opus-4.8": "claude-opus-4-8",
+  "opus-4.8[1m]": "claude-opus-4-8[1m]",
+  "opus-4.8-1m": "claude-opus-4-8[1m]",
+  "opus-4.7": "claude-opus-4-7",
+  "opus-4.6": "claude-opus-4-6",
+  "opus-4.5": "claude-opus-4-5",
   "opus-4": "opus",
-  "claude-opus-4-7": "opus",
-  "claude-opus-4-6": "opus",
-  "claude-opus-4-5": "opus",
+  "claude-opus-4-8": "claude-opus-4-8",
+  "claude-opus-4-8[1m]": "claude-opus-4-8[1m]",
+  "claude-opus-4-7": "claude-opus-4-7",
+  "claude-opus-4-6": "claude-opus-4-6",
+  "claude-opus-4-5": "claude-opus-4-5",
   "claude-opus-4": "opus",
   sonnet: "sonnet",
-  "sonnet-4.6": "sonnet",
-  "sonnet-4.5": "sonnet",
-  "sonnet-4.1": "sonnet",
-  "sonnet-4.0": "sonnet",
-  "claude-sonnet-4-6": "sonnet",
-  "claude-sonnet-4-5": "sonnet",
-  "claude-sonnet-4-1": "sonnet",
-  "claude-sonnet-4-0": "sonnet",
+  "sonnet-4.6": "claude-sonnet-4-6",
+  "sonnet-4.5": "claude-sonnet-4-5",
+  "sonnet-4.1": "claude-sonnet-4-1",
+  "sonnet-4.0": "claude-sonnet-4-0",
+  "claude-sonnet-4-6": "claude-sonnet-4-6",
+  "claude-sonnet-4-5": "claude-sonnet-4-5",
+  "claude-sonnet-4-1": "claude-sonnet-4-1",
+  "claude-sonnet-4-0": "claude-sonnet-4-0",
   haiku: "haiku",
   "haiku-3.5": "haiku",
   "claude-haiku-3-5": "haiku",

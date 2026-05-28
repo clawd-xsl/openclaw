@@ -337,11 +337,11 @@ describe("anthropic transport stream", () => {
     );
   });
 
-  it("maps xhigh reasoning to xhigh effort for Claude Opus 4.7", async () => {
+  it("maps xhigh reasoning to xhigh effort for Claude Opus 4.8", async () => {
     const model = attachModelProviderRequestTransport(
       {
-        id: "claude-opus-4-7",
-        name: "Claude Opus 4.7",
+        id: "claude-opus-4-8",
+        name: "Claude Opus 4.8",
         api: "anthropic-messages",
         provider: "anthropic",
         baseUrl: "https://api.anthropic.com",

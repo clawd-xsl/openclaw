@@ -7,6 +7,7 @@ import type {
 type ThinkingProviderPlugin = {
   id: string;
   aliases?: string[];
+  hookAliases?: string[];
   isBinaryThinking?: (ctx: ProviderThinkingPolicyContext) => boolean | undefined;
   supportsXHighThinking?: (ctx: ProviderThinkingPolicyContext) => boolean | undefined;
   resolveDefaultThinkingLevel?: (
@@ -32,7 +33,9 @@ function matchesProviderId(provider: ThinkingProviderPlugin, providerId: string)
   if (normalizeProviderId(provider.id) === normalized) {
     return true;
   }
-  return (provider.aliases ?? []).some((alias) => normalizeProviderId(alias) === normalized);
+  return [...(provider.aliases ?? []), ...(provider.hookAliases ?? [])].some(
+    (alias) => normalizeProviderId(alias) === normalized,
+  );
 }
 
 function resolveActiveThinkingProvider(providerId: string): ThinkingProviderPlugin | undefined {

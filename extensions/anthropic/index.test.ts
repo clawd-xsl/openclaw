@@ -73,6 +73,14 @@ describe("anthropic provider replay hooks", () => {
       entries: [
         {
           provider: "anthropic",
+          id: "claude-opus-4-8",
+          name: "Claude Opus 4.8",
+          reasoning: true,
+          input: ["text", "image"],
+          contextWindow: 1_048_576,
+        },
+        {
+          provider: "anthropic",
           id: "claude-opus-4-5",
           name: "Claude Opus 4.5",
           reasoning: true,
@@ -100,6 +108,20 @@ describe("anthropic provider replay hooks", () => {
 
     expect(entries).toEqual(
       expect.arrayContaining([
+        expect.objectContaining({
+          provider: "claude-cli",
+          id: "claude-opus-4-8",
+          name: "Claude Opus 4.8",
+          contextWindow: 1_048_576,
+          contextTokens: 1_048_576,
+        }),
+        expect.objectContaining({
+          provider: "claude-cli",
+          id: "claude-opus-4-8[1m]",
+          name: "Claude Opus 4.8 1M",
+          contextWindow: 1_048_576,
+          contextTokens: 1_048_576,
+        }),
         expect.objectContaining({
           provider: "claude-cli",
           id: "claude-opus-4-7",
@@ -135,6 +157,20 @@ describe("anthropic provider replay hooks", () => {
           provider: "claude-cli",
           id: "claude-haiku-4-5",
           name: "Claude Haiku 4.5",
+        }),
+        expect.objectContaining({
+          provider: "claude-cli-streaming",
+          id: "claude-opus-4-8",
+          name: "Claude Opus 4.8",
+          contextWindow: 1_048_576,
+          contextTokens: 1_048_576,
+        }),
+        expect.objectContaining({
+          provider: "claude-cli-streaming",
+          id: "claude-opus-4-8[1m]",
+          name: "Claude Opus 4.8 1M",
+          contextWindow: 1_048_576,
+          contextTokens: 1_048_576,
         }),
         expect.objectContaining({
           provider: "claude-cli-streaming",
@@ -262,6 +298,8 @@ describe("anthropic provider replay hooks", () => {
       every: "1h",
     });
     expect(next?.agents?.defaults?.models).toMatchObject({
+      "claude-cli/claude-opus-4-8": {},
+      "claude-cli/claude-opus-4-8[1m]": {},
       "claude-cli/claude-opus-4-7": {},
       "claude-cli/claude-sonnet-4-6": {},
       "claude-cli/claude-opus-4-6": {},
@@ -318,6 +356,77 @@ describe("anthropic provider replay hooks", () => {
     });
   });
 
+  it("resolves claude-cli-streaming claude-opus-4-8 from the Opus template family", async () => {
+    const provider = await registerSingleProviderPlugin(anthropicPlugin);
+
+    const resolved = provider.resolveDynamicModel?.({
+      provider: "claude-cli-streaming",
+      modelId: "claude-opus-4-8",
+      modelRegistry: createModelRegistry([
+        {
+          id: "claude-opus-4-7",
+          name: "Claude Opus 4.7",
+          provider: "anthropic",
+          api: "anthropic-messages",
+          reasoning: true,
+          input: ["text", "image"],
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: 1_048_576,
+          maxTokens: 32_000,
+        } as ProviderRuntimeModel,
+        {
+          id: "claude-opus-4-6",
+          name: "Claude Opus 4.6",
+          provider: "anthropic",
+          api: "anthropic-messages",
+          reasoning: true,
+          input: ["text", "image"],
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: 200_000,
+          maxTokens: 32_000,
+        } as ProviderRuntimeModel,
+      ]),
+    } as ProviderResolveDynamicModelContext);
+
+    expect(resolved).toMatchObject({
+      provider: "claude-cli-streaming",
+      id: "claude-opus-4-8",
+      name: "Claude Opus 4.8",
+      contextWindow: 1_048_576,
+      contextTokens: 1_048_576,
+    });
+  });
+
+  it("resolves claude-cli-streaming claude-opus-4-8 1M from the Opus template family", async () => {
+    const provider = await registerSingleProviderPlugin(anthropicPlugin);
+
+    const resolved = provider.resolveDynamicModel?.({
+      provider: "claude-cli-streaming",
+      modelId: "claude-opus-4-8[1m]",
+      modelRegistry: createModelRegistry([
+        {
+          id: "claude-opus-4-6",
+          name: "Claude Opus 4.6",
+          provider: "anthropic",
+          api: "anthropic-messages",
+          reasoning: true,
+          input: ["text", "image"],
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: 200_000,
+          maxTokens: 32_000,
+        } as ProviderRuntimeModel,
+      ]),
+    } as ProviderResolveDynamicModelContext);
+
+    expect(resolved).toMatchObject({
+      provider: "claude-cli-streaming",
+      id: "claude-opus-4-8[1m]",
+      name: "Claude Opus 4.8 1M",
+      contextWindow: 1_048_576,
+      contextTokens: 1_048_576,
+    });
+  });
+
   it("resolves claude-cli-streaming claude-opus-4-7 from the 4.6 template family", async () => {
     const provider = await registerSingleProviderPlugin(anthropicPlugin);
 
@@ -346,6 +455,17 @@ describe("anthropic provider replay hooks", () => {
       contextWindow: 1_048_576,
       contextTokens: 1_048_576,
     });
+  });
+
+  it("advertises xhigh thinking for Claude Opus 4.8", async () => {
+    const provider = await registerSingleProviderPlugin(anthropicPlugin);
+
+    expect(
+      provider.supportsXHighThinking?.({
+        provider: "claude-cli-streaming",
+        modelId: "claude-opus-4-8",
+      } as never),
+    ).toBe(true);
   });
 
   it("resolves claude-cli synthetic token auth", async () => {
