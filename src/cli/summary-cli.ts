@@ -8,12 +8,12 @@ import { resolveStateDir } from "../config/paths.js";
 import { resolveSessionTranscriptsDirForAgent } from "../config/sessions/paths.js";
 import { requireNodeSqlite } from "../infra/node-sqlite.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { ensureSessionSummariesSchema } from "../sessions/session-summary-schema.js";
 import {
   extractFullTranscript,
   extractSessionTimestamps,
   generateSessionSummary,
 } from "../sessions/session-summary.js";
-import { ensureSessionSummariesSchema } from "../sessions/session-summary-schema.js";
 
 const log = createSubsystemLogger("summary-cli");
 

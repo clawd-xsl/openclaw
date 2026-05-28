@@ -419,9 +419,7 @@ export async function resolveReplyDirectives(params: {
   const resolvedBlockStreamingBreak: "text_end" | "message_end" =
     agentCfg?.blockStreamingBreak === "message_end" ? "message_end" : "text_end";
   const blockStreamingEnabled =
-    resolvedBlockStreaming === "on" &&
-    opts?.disableBlockStreaming !== true &&
-    !opts?.isHeartbeat;
+    resolvedBlockStreaming === "on" && opts?.disableBlockStreaming !== true && !opts?.isHeartbeat;
   const blockReplyChunking = blockStreamingEnabled
     ? resolveBlockStreamingChunking(cfg, sessionCtx.Provider, sessionCtx.AccountId)
     : undefined;

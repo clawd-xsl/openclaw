@@ -33,12 +33,12 @@ import {
   resolveAgentIdFromSessionKey,
   toAgentStoreSessionKey,
 } from "../../routing/session-key.js";
+import { querySummaries as querySessionSummaries } from "../../sessions/session-summary-loader.js";
 import {
   normalizeOptionalLowercaseString,
   normalizeOptionalString,
   readStringValue,
 } from "../../shared/string-coerce.js";
-import { querySummaries as querySessionSummaries } from "../../sessions/session-summary-loader.js";
 import { GATEWAY_CLIENT_IDS } from "../protocol/client-info.js";
 import {
   ErrorCodes,

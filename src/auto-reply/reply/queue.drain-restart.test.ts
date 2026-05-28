@@ -175,13 +175,7 @@ describe("followup queue drain restart after idle window", () => {
     scheduleFollowupDrain(key, staleFollowup);
     await firstStarted.promise;
 
-    enqueueFollowupRun(
-      key,
-      createRun({ prompt: "second" }),
-      settings,
-      "message-id",
-      freshFollowup,
-    );
+    enqueueFollowupRun(key, createRun({ prompt: "second" }), settings, "message-id", freshFollowup);
     releaseFirstRun();
 
     await vi.waitFor(() => {
