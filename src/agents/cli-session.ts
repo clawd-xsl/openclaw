@@ -1,5 +1,10 @@
 import crypto from "node:crypto";
-import type { CliCompactionOverlay, CliSessionBinding, SessionEntry } from "../config/sessions.js";
+import type {
+  CliCompactionOverlay,
+  CliSessionBinding,
+  CliSessionUsageSnapshot,
+  SessionEntry,
+} from "../config/sessions.js";
 import { normalizeOptionalString } from "../shared/string-coerce.js";
 import { normalizeProviderId } from "./model-selection.js";
 
@@ -54,6 +59,40 @@ export function hashCliSessionText(value: string | undefined): string | undefine
   return crypto.createHash("sha256").update(trimmed).digest("hex");
 }
 
+function normalizePositiveInteger(value: number | undefined): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : undefined;
+}
+
+function normalizeCliSessionUsageSnapshot(
+  usage: CliSessionUsageSnapshot | undefined,
+): CliSessionUsageSnapshot | undefined {
+  if (!usage) {
+    return undefined;
+  }
+  const input = normalizePositiveInteger(usage.input);
+  const output = normalizePositiveInteger(usage.output);
+  const cacheRead = normalizePositiveInteger(usage.cacheRead);
+  const cacheWrite = normalizePositiveInteger(usage.cacheWrite);
+  const total = normalizePositiveInteger(usage.total);
+  if (!input && !output && !cacheRead && !cacheWrite && !total) {
+    return undefined;
+  }
+  const updatedAt =
+    typeof usage.updatedAt === "number" && Number.isFinite(usage.updatedAt) && usage.updatedAt > 0
+      ? Math.floor(usage.updatedAt)
+      : Date.now();
+  return {
+    ...(input ? { input } : {}),
+    ...(output ? { output } : {}),
+    ...(cacheRead ? { cacheRead } : {}),
+    ...(cacheWrite ? { cacheWrite } : {}),
+    ...(total ? { total } : {}),
+    updatedAt,
+  };
+}
+
 export function getCliSessionBinding(
   entry: SessionEntry | undefined,
   provider: string,
@@ -65,12 +104,14 @@ export function getCliSessionBinding(
   const fromBindings = entry.cliSessionBindings?.[normalized];
   const bindingSessionId = normalizeOptionalString(fromBindings?.sessionId);
   if (bindingSessionId) {
+    const lastUsage = normalizeCliSessionUsageSnapshot(fromBindings?.lastUsage);
     return {
       sessionId: bindingSessionId,
       authProfileId: normalizeOptionalString(fromBindings?.authProfileId),
       authEpoch: normalizeOptionalString(fromBindings?.authEpoch),
       extraSystemPromptHash: normalizeOptionalString(fromBindings?.extraSystemPromptHash),
       mcpConfigHash: normalizeOptionalString(fromBindings?.mcpConfigHash),
+      ...(lastUsage ? { lastUsage } : {}),
     };
   }
   const fromMap = entry.cliSessionIds?.[normalized];
@@ -108,6 +149,7 @@ export function setCliSessionBinding(
   if (!trimmed) {
     return;
   }
+  const lastUsage = normalizeCliSessionUsageSnapshot(binding.lastUsage);
   entry.cliSessionBindings = {
     ...entry.cliSessionBindings,
     [normalized]: {
@@ -124,6 +166,7 @@ export function setCliSessionBinding(
       ...(normalizeOptionalString(binding.mcpConfigHash)
         ? { mcpConfigHash: normalizeOptionalString(binding.mcpConfigHash) }
         : {}),
+      ...(lastUsage ? { lastUsage } : {}),
     },
   };
   entry.cliSessionIds = { ...entry.cliSessionIds, [normalized]: trimmed };

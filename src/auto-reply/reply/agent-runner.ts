@@ -1,6 +1,10 @@
 import fs from "node:fs/promises";
 import { hasConfiguredModelFallbacks } from "../../agents/agent-scope.js";
-import { setCliSessionBinding, setCliSessionId } from "../../agents/cli-session.js";
+import {
+  clearCliSession,
+  setCliSessionBinding,
+  setCliSessionId,
+} from "../../agents/cli-session.js";
 import { resolveContextTokensForModel } from "../../agents/context.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../../agents/defaults.js";
 import { resolveModelAuthMode } from "../../agents/model-auth.js";
@@ -123,6 +127,7 @@ function applyRunSessionContinuityToActiveEntry(params: {
   contextTokensUsed?: number;
   cliSessionId?: string;
   cliSessionBinding?: import("../../config/sessions.js").CliSessionBinding;
+  clearCliSession?: boolean;
 }): SessionEntry | undefined {
   const activeEntry =
     params.entry ?? (params.sessionKey ? params.sessionStore?.[params.sessionKey] : undefined);
@@ -140,7 +145,9 @@ function applyRunSessionContinuityToActiveEntry(params: {
     activeEntry.contextTokens = params.contextTokensUsed;
   }
   if (params.providerUsed) {
-    if (params.cliSessionBinding) {
+    if (params.clearCliSession) {
+      clearCliSession(activeEntry, params.providerUsed);
+    } else if (params.cliSessionBinding) {
       setCliSessionBinding(activeEntry, params.providerUsed, params.cliSessionBinding);
     } else if (params.cliSessionId) {
       setCliSessionId(activeEntry, params.providerUsed, params.cliSessionId);
@@ -1409,12 +1416,17 @@ export async function runReplyAgent(params: {
         });
       }
     }
-    const cliSessionId = isCliProvider(providerUsed, cfg)
-      ? normalizeOptionalString(runResult.meta?.agentMeta?.sessionId)
-      : undefined;
-    const cliSessionBinding = isCliProvider(providerUsed, cfg)
-      ? runResult.meta?.agentMeta?.cliSessionBinding
-      : undefined;
+    const cliProviderUsed = isCliProvider(providerUsed, cfg);
+    const clearCliSessionAfterRun =
+      cliProviderUsed && runResult.meta?.agentMeta?.clearCliSession === true;
+    const cliSessionId =
+      cliProviderUsed && !clearCliSessionAfterRun
+        ? normalizeOptionalString(runResult.meta?.agentMeta?.sessionId)
+        : undefined;
+    const cliSessionBinding =
+      cliProviderUsed && !clearCliSessionAfterRun
+        ? runResult.meta?.agentMeta?.cliSessionBinding
+        : undefined;
     const contextTokensUsed =
       resolveContextTokensForModel({
         cfg,
@@ -1434,6 +1446,7 @@ export async function runReplyAgent(params: {
       contextTokensUsed,
       cliSessionId,
       cliSessionBinding,
+      clearCliSession: clearCliSessionAfterRun,
     });
 
     const persistParams = {
@@ -1449,7 +1462,8 @@ export async function runReplyAgent(params: {
       systemPromptReport: runResult.meta?.systemPromptReport,
       cliSessionId,
       cliSessionBinding,
-      usageIsContextSnapshot: isCliProvider(providerUsed, cfg),
+      clearCliSession: clearCliSessionAfterRun,
+      usageIsContextSnapshot: cliProviderUsed,
       logLabel: traceId,
     };
     let persistRunSessionContinuityPromise: Promise<void> | null = null;
@@ -1462,7 +1476,7 @@ export async function runReplyAgent(params: {
       }
       trace(
         "persistRunSessionContinuity-start",
-        `provider=${providerUsed} model=${modelUsed} cli=${cliSessionBinding?.sessionId ?? cliSessionId ?? "none"}`,
+        `provider=${providerUsed} model=${modelUsed} cli=${clearCliSessionAfterRun ? "clear" : (cliSessionBinding?.sessionId ?? cliSessionId ?? "none")}`,
       );
       persistRunSessionContinuityPromise = persistRunSessionContinuity(persistParams);
       void persistRunSessionContinuityPromise.catch((err) => {

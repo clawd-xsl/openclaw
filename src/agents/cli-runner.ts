@@ -1,10 +1,40 @@
+import type { CliSessionUsageSnapshot } from "../config/sessions.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { createTimingTrace } from "../infra/timing-trace.js";
+import type { CliUsage } from "./cli-output.js";
 import type { PreparedCliRunContext, RunCliAgentParams } from "./cli-runner/types.js";
 import { CliSessionContinuityError } from "./cli-session.js";
 import { FailoverError, isFailoverError, resolveFailoverStatus } from "./failover-error.js";
 import { classifyFailoverReason, isFailoverErrorMessage } from "./pi-embedded-helpers.js";
 import type { EmbeddedPiRunResult } from "./pi-embedded-runner.js";
+
+function toCliSessionUsageSnapshot(
+  usage: CliUsage | undefined,
+): CliSessionUsageSnapshot | undefined {
+  if (!usage) {
+    return undefined;
+  }
+  const pick = (value: number | undefined) =>
+    typeof value === "number" && Number.isFinite(value) && value > 0
+      ? Math.floor(value)
+      : undefined;
+  const input = pick(usage.input);
+  const output = pick(usage.output);
+  const cacheRead = pick(usage.cacheRead);
+  const cacheWrite = pick(usage.cacheWrite);
+  const total = pick(usage.total);
+  if (!input && !output && !cacheRead && !cacheWrite && !total) {
+    return undefined;
+  }
+  return {
+    ...(input ? { input } : {}),
+    ...(output ? { output } : {}),
+    ...(cacheRead ? { cacheRead } : {}),
+    ...(cacheWrite ? { cacheWrite } : {}),
+    ...(total ? { total } : {}),
+    updatedAt: Date.now(),
+  };
+}
 
 export async function runCliAgent(params: RunCliAgentParams): Promise<EmbeddedPiRunResult> {
   const trace = createTimingTrace({
@@ -45,6 +75,20 @@ export async function runPreparedCliAgent(
         .filter((payload): payload is { text: string } => payload !== null) ?? [];
     const payloads =
       normalizedPayloads.length > 0 ? normalizedPayloads : text ? [{ text }] : undefined;
+    const hasVisibleCliOutput =
+      Boolean(text) ||
+      normalizedPayloads.length > 0 ||
+      (resultParams.output.streamedAssistantTexts ?? []).some((entry) => Boolean(entry.trim()));
+    const shouldClearCliSession = Boolean(
+      resultParams.effectiveCliSessionId && !hasVisibleCliOutput,
+    );
+    const previousCliSessionBinding = params.cliSessionBinding;
+    const cliSessionUsage =
+      toCliSessionUsageSnapshot(resultParams.output.usage) ??
+      (previousCliSessionBinding &&
+      resultParams.effectiveCliSessionId === previousCliSessionBinding.sessionId
+        ? previousCliSessionBinding.lastUsage
+        : undefined);
 
     return {
       payloads,
@@ -91,7 +135,8 @@ export async function runPreparedCliAgent(
           provider: params.provider,
           model: context.modelId,
           usage: resultParams.output.usage,
-          ...(resultParams.effectiveCliSessionId
+          ...(shouldClearCliSession ? { clearCliSession: true } : {}),
+          ...(resultParams.effectiveCliSessionId && !shouldClearCliSession
             ? {
                 cliSessionBinding: {
                   sessionId: resultParams.effectiveCliSessionId,
@@ -103,6 +148,7 @@ export async function runPreparedCliAgent(
                   ...(context.preparedBackend.mcpConfigHash
                     ? { mcpConfigHash: context.preparedBackend.mcpConfigHash }
                     : {}),
+                  ...(cliSessionUsage ? { lastUsage: cliSessionUsage } : {}),
                 },
               }
             : {}),

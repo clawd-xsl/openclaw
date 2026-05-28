@@ -68,12 +68,22 @@ export type AcpSessionRuntimeOptions = {
   backendExtras?: Record<string, string>;
 };
 
+export type CliSessionUsageSnapshot = {
+  input?: number;
+  output?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  total?: number;
+  updatedAt: number;
+};
+
 export type CliSessionBinding = {
   sessionId: string;
   authProfileId?: string;
   authEpoch?: string;
   extraSystemPromptHash?: string;
   mcpConfigHash?: string;
+  lastUsage?: CliSessionUsageSnapshot;
 };
 
 export type CliCompactionOverlay = {

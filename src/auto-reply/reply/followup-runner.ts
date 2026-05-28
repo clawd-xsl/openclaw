@@ -296,6 +296,9 @@ export function createFollowupRunner(params: {
       const modelUsed = runResult.meta?.agentMeta?.model ?? fallbackModel ?? defaultModel;
       const providerUsed =
         runResult.meta?.agentMeta?.provider ?? fallbackProvider ?? queued.run.provider;
+      const cliProviderUsed = isCliProvider(providerUsed, runtimeConfig);
+      const clearCliSessionAfterRun =
+        cliProviderUsed && runResult.meta?.agentMeta?.clearCliSession === true;
       const contextTokensUsed =
         resolveContextTokensForModel({
           cfg: queued.run.config,
@@ -318,8 +321,11 @@ export function createFollowupRunner(params: {
           providerUsed,
           contextTokensUsed,
           systemPromptReport: runResult.meta?.systemPromptReport,
-          cliSessionBinding: runResult.meta?.agentMeta?.cliSessionBinding,
-          usageIsContextSnapshot: isCliProvider(providerUsed, runtimeConfig),
+          cliSessionBinding: clearCliSessionAfterRun
+            ? undefined
+            : runResult.meta?.agentMeta?.cliSessionBinding,
+          clearCliSession: clearCliSessionAfterRun,
+          usageIsContextSnapshot: cliProviderUsed,
           logLabel: "followup",
         });
       }

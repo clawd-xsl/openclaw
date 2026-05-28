@@ -145,4 +145,63 @@ describe("updateSessionStoreAfterAgentRun", () => {
     );
     expect(persisted[sessionKey]?.claudeCliSessionId).toBeUndefined();
   });
+
+  it("clears cli session bindings when the runner marks the session unusable", async () => {
+    const cfg = {
+      agents: {
+        defaults: {
+          cliBackends: {
+            "claude-cli-streaming": {
+              command: "claude",
+            },
+          },
+        },
+      },
+    } as OpenClawConfig;
+    const sessionKey = "agent:main:explicit:test-clear-cli-session";
+    const sessionId = "test-openclaw-session";
+    const sessionStore: Record<string, SessionEntry> = {
+      [sessionKey]: {
+        sessionId,
+        updatedAt: 1,
+        cliSessionIds: { "claude-cli-streaming": "old-stream-session" },
+        cliSessionBindings: {
+          "claude-cli-streaming": {
+            sessionId: "old-stream-session",
+          },
+        },
+      },
+    };
+    await fs.writeFile(storePath, JSON.stringify(sessionStore, null, 2));
+
+    const result: EmbeddedPiRunResult = {
+      meta: {
+        durationMs: 1,
+        agentMeta: {
+          sessionId: "empty-stream-session",
+          provider: "claude-cli-streaming",
+          model: "claude-sonnet-4-6",
+          clearCliSession: true,
+        },
+      },
+    };
+
+    await updateSessionStoreAfterAgentRun({
+      cfg,
+      sessionId,
+      sessionKey,
+      storePath,
+      sessionStore,
+      defaultProvider: "claude-cli-streaming",
+      defaultModel: "claude-sonnet-4-6",
+      result,
+    });
+
+    expect(sessionStore[sessionKey]?.cliSessionBindings).toBeUndefined();
+    expect(sessionStore[sessionKey]?.cliSessionIds).toBeUndefined();
+
+    const persisted = loadSessionStore(storePath);
+    expect(persisted[sessionKey]?.cliSessionBindings).toBeUndefined();
+    expect(persisted[sessionKey]?.cliSessionIds).toBeUndefined();
+  });
 });

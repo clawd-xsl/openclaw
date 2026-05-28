@@ -22,6 +22,12 @@ describe("cli-session helpers", () => {
       authEpoch: "auth-epoch",
       extraSystemPromptHash: "prompt-hash",
       mcpConfigHash: "mcp-hash",
+      lastUsage: {
+        input: 24_000.9,
+        output: 2_000,
+        cacheRead: 8_000,
+        updatedAt: 1_700_000_000_000,
+      },
     });
 
     expect(entry.cliSessionIds?.["claude-cli"]).toBe("cli-session-1");
@@ -32,6 +38,12 @@ describe("cli-session helpers", () => {
       authEpoch: "auth-epoch",
       extraSystemPromptHash: "prompt-hash",
       mcpConfigHash: "mcp-hash",
+      lastUsage: {
+        input: 24_000,
+        output: 2_000,
+        cacheRead: 8_000,
+        updatedAt: 1_700_000_000_000,
+      },
     });
   });
 

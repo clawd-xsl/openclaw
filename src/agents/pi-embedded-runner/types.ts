@@ -6,6 +6,7 @@ export type EmbeddedPiAgentMeta = {
   provider: string;
   model: string;
   cliSessionBinding?: CliSessionBinding;
+  clearCliSession?: boolean;
   compactionCount?: number;
   promptTokens?: number;
   usage?: {

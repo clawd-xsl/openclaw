@@ -1,4 +1,8 @@
-import { setCliSessionBinding, setCliSessionId } from "../../agents/cli-session.js";
+import {
+  clearCliSession,
+  setCliSessionBinding,
+  setCliSessionId,
+} from "../../agents/cli-session.js";
 import {
   normalizeStoredOverrideModel,
   resolveDefaultModelForAgent,
@@ -28,11 +32,22 @@ function applyCliSessionIdToSessionPatch(
     providerUsed?: string;
     cliSessionId?: string;
     cliSessionBinding?: import("../../config/sessions.js").CliSessionBinding;
+    clearCliSession?: boolean;
   },
   entry: SessionEntry,
   patch: Partial<SessionEntry>,
 ): Partial<SessionEntry> {
   const cliProvider = params.providerUsed ?? entry.modelProvider;
+  if (params.clearCliSession && cliProvider) {
+    const nextEntry = { ...entry, ...patch };
+    clearCliSession(nextEntry, cliProvider);
+    return {
+      ...patch,
+      cliSessionIds: nextEntry.cliSessionIds,
+      cliSessionBindings: nextEntry.cliSessionBindings,
+      claudeCliSessionId: nextEntry.claudeCliSessionId,
+    };
+  }
   if (params.cliSessionBinding && cliProvider) {
     const nextEntry = { ...entry, ...patch };
     setCliSessionBinding(nextEntry, cliProvider, params.cliSessionBinding);
@@ -97,6 +112,7 @@ export type PersistSessionUsageUpdateParams = {
   systemPromptReport?: SessionSystemPromptReport;
   cliSessionId?: string;
   cliSessionBinding?: import("../../config/sessions.js").CliSessionBinding;
+  clearCliSession?: boolean;
   logLabel?: string;
 };
 
@@ -182,6 +198,12 @@ function buildSessionContinuityPatch(
   }
 
   const cliProvider = params.providerUsed ?? entry.modelProvider;
+  if (params.clearCliSession && cliProvider) {
+    return applyCliSessionIdToSessionPatch(params, entry, {
+      ...patch,
+      updatedAt: Date.now(),
+    });
+  }
   if (params.cliSessionBinding && cliProvider) {
     const existingBinding = entry.cliSessionBindings?.[cliProvider];
     if (JSON.stringify(existingBinding) !== JSON.stringify(params.cliSessionBinding)) {

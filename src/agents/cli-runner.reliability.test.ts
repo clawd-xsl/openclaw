@@ -377,6 +377,69 @@ describe("runCliAgent reliability", () => {
     expect(result.payloads).toEqual([{ text: "First reply" }, { text: "Second reply" }]);
     expect(result.meta.finalAssistantVisibleText).toBe("Second reply");
   });
+
+  it("marks empty structured Claude CLI sessions for clearing", async () => {
+    supervisorSpawnMock.mockResolvedValueOnce(
+      createManagedRun({
+        reason: "exit",
+        exitCode: 0,
+        exitSignal: null,
+        durationMs: 50,
+        stdout: [
+          JSON.stringify({ type: "init", session_id: "empty-session" }),
+          JSON.stringify({
+            type: "assistant",
+            session_id: "empty-session",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "" }],
+            },
+          }),
+          JSON.stringify({
+            type: "result",
+            session_id: "empty-session",
+            result: "",
+          }),
+        ].join("\n"),
+        stderr: "",
+        timedOut: false,
+        noOutputTimedOut: false,
+      }),
+    );
+
+    const base = buildPreparedContext({ cliSessionId: "previous-session" });
+    const result = await runPreparedCliAgent({
+      ...base,
+      backendResolved: {
+        ...base.backendResolved,
+        id: "claude-cli-streaming",
+      },
+      preparedBackend: {
+        ...base.preparedBackend,
+        backend: {
+          command: "claude",
+          args: ["-p", "--output-format", "stream-json"],
+          output: "jsonl",
+          input: "stdin",
+          sessionMode: "always",
+          serialize: true,
+          jsonlDialect: "claude-stream-json",
+        },
+      },
+      params: {
+        ...base.params,
+        provider: "claude-cli-streaming",
+      },
+    });
+
+    expect(result.payloads).toBeUndefined();
+    expect(result.meta.agentMeta).toMatchObject({
+      sessionId: "empty-session",
+      provider: "claude-cli-streaming",
+      clearCliSession: true,
+    });
+    expect(result.meta.agentMeta?.cliSessionBinding).toBeUndefined();
+  });
 });
 
 describe("resolveCliNoOutputTimeoutMs", () => {

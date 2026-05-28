@@ -6,7 +6,7 @@ import {
 import { isRecord } from "../utils.js";
 import { extractAssistantText } from "./tools/chat-history-text.js";
 
-type CliUsage = {
+export type CliUsage = {
   input?: number;
   output?: number;
   cacheRead?: number;
