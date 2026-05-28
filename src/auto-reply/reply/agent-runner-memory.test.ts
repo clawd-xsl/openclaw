@@ -390,6 +390,87 @@ describe("runMemoryFlushIfNeeded", () => {
     );
   });
 
+  it("rotates bloated CLI resume sessions from stored CLI usage without compacting small transcripts", async () => {
+    const sessionDir = await fs.mkdtemp(path.join(rootDir, "openclaw-cli-usage-"));
+    const sessionFile = path.join(sessionDir, "session.jsonl");
+    await fs.writeFile(
+      sessionFile,
+      [
+        JSON.stringify({
+          id: "m1",
+          message: {
+            role: "user",
+            content: [{ type: "text", text: "short context" }],
+          },
+        }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+
+    const storePath = path.join(rootDir, "sessions.json");
+    const sessionKey = "main";
+    const sessionEntry: SessionEntry = {
+      sessionId: "session",
+      updatedAt: Date.now(),
+      sessionFile,
+      cliSessionIds: { "claude-cli": "cli-session-1" },
+      cliSessionBindings: {
+        "claude-cli": {
+          sessionId: "cli-session-1",
+          lastUsage: {
+            input: 1_200,
+            output: 500,
+            cacheRead: 170_000,
+            updatedAt: 1_700_000_000_000,
+          },
+        },
+      },
+    };
+    const sessionStore = { [sessionKey]: sessionEntry };
+    await writeSessionStore(storePath, sessionKey, sessionEntry);
+
+    const entry = await runPreflightCompactionIfNeeded({
+      cfg: {
+        agents: {
+          defaults: {
+            cliBackends: {
+              "claude-cli": { command: "claude" },
+            },
+            compaction: {
+              reserveTokensFloor: 20_000,
+            },
+          },
+        },
+      },
+      followupRun: createFollowupRun({
+        provider: "claude-cli",
+        model: "sonnet",
+        sessionFile,
+      }),
+      promptForEstimate: "hello",
+      defaultModel: "claude-cli/sonnet",
+      agentCfgContextTokens: 200_000,
+      sessionEntry,
+      sessionStore,
+      sessionKey,
+      storePath,
+      isHeartbeat: false,
+      replyOperation: createReplyOperation(),
+    });
+
+    expect(compactEmbeddedPiSessionMock).not.toHaveBeenCalled();
+    expect(entry?.cliSessionBindings).toBeUndefined();
+    expect(entry?.cliSessionIds).toBeUndefined();
+    expect(entry?.cliCompactionOverlays).toBeUndefined();
+
+    const persisted = JSON.parse(await fs.readFile(storePath, "utf8")) as {
+      main: SessionEntry;
+    };
+    expect(persisted.main.cliSessionBindings).toBeUndefined();
+    expect(persisted.main.cliSessionIds).toBeUndefined();
+    expect(persisted.main.cliCompactionOverlays).toBeUndefined();
+  });
+
   it("uses configured prompts and stored bootstrap warning signatures", async () => {
     const sessionEntry: SessionEntry = {
       sessionId: "session",

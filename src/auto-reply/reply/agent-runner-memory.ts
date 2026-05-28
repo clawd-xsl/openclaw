@@ -9,6 +9,7 @@ import {
   clearCliCompactionOverlay,
   clearCliSession,
   getCliCompactionOverlay,
+  getCliSessionBinding,
   setCliCompactionOverlay,
 } from "../../agents/cli-session.js";
 import { estimateMessagesTokens } from "../../agents/compaction.js";
@@ -26,6 +27,7 @@ import {
   resolveFreshSessionTotalTokens,
   resolveSessionFilePath,
   resolveSessionFilePathOptions,
+  type CliSessionBinding,
   type SessionEntry,
   updateSessionStoreEntry,
 } from "../../config/sessions.js";
@@ -133,6 +135,7 @@ const TRANSCRIPT_OUTPUT_READ_BUFFER_TOKENS = 8192;
 const TRANSCRIPT_TAIL_CHUNK_BYTES = 64 * 1024;
 const CLI_MEMORY_FLUSH_RETRIGGER_TOKENS = 20_000;
 const CLI_PREFLIGHT_COMPACTION_RETRIGGER_TOKENS = 20_000;
+const CLI_HIDDEN_USAGE_CONTEXT_RATIO = 0.8;
 
 function parseUsageFromTranscriptLine(line: string): ReturnType<typeof normalizeUsage> | undefined {
   const trimmed = line.trim();
@@ -380,6 +383,30 @@ function shouldRunCliPreflightCompaction(params: {
   return tokenCount >= overlayPromptTokens + CLI_PREFLIGHT_COMPACTION_RETRIGGER_TOKENS;
 }
 
+function resolveCliSessionUsageTokens(binding: CliSessionBinding | undefined): number | undefined {
+  const usage = binding?.lastUsage;
+  if (!usage) {
+    return undefined;
+  }
+  const promptSideTokens =
+    Math.max(0, usage.input ?? 0) +
+    Math.max(0, usage.cacheRead ?? 0) +
+    Math.max(0, usage.cacheWrite ?? 0);
+  const totalTokens = Math.max(0, usage.total ?? 0);
+  const tokens = Math.max(promptSideTokens, totalTokens);
+  return Number.isFinite(tokens) && tokens > 0 ? Math.floor(tokens) : undefined;
+}
+
+function resolveCliSessionUsageThreshold(params: {
+  contextWindowTokens: number;
+  transcriptThreshold: number;
+}): number {
+  const hiddenUsageThreshold = Math.floor(
+    params.contextWindowTokens * CLI_HIDDEN_USAGE_CONTEXT_RATIO,
+  );
+  return Math.max(1, Math.min(params.transcriptThreshold, hiddenUsageThreshold));
+}
+
 async function persistCliCompactionOverlayUpdate(params: {
   entry: SessionEntry;
   sessionStore?: Record<string, SessionEntry>;
@@ -488,13 +515,22 @@ async function runCliPreflightCompactionIfNeeded(params: {
   const softThresholdTokens = memoryFlushPlan?.softThresholdTokens ?? 4_000;
   const threshold = contextWindowTokens - reserveTokensFloor - softThresholdTokens;
   const overlayPromptTokens = overlay?.compactedAtPromptTokens;
+  const cliSessionUsageTokens = resolveCliSessionUsageTokens(getCliSessionBinding(entry, provider));
+  const cliSessionUsageThreshold = resolveCliSessionUsageThreshold({
+    contextWindowTokens,
+    transcriptThreshold: threshold,
+  });
+  const shouldRotateHiddenCliSession =
+    typeof cliSessionUsageTokens === "number" && cliSessionUsageTokens >= cliSessionUsageThreshold;
 
   logVerbose(
     `preflightCompaction check: sessionKey=${params.sessionKey} ` +
       `tokenCount=${tokenCountForCompaction ?? "undefined"} contextWindow=${contextWindowTokens} ` +
       `threshold=${threshold} isHeartbeat=false isCli=true ` +
       `overlay=${overlay ? "yes" : "no"} overlayInvalidReason=${prefixResult.overlayInvalidReason ?? "none"} ` +
-      `overlayPromptTokens=${overlayPromptTokens ?? "undefined"} promptPrefixChars=${promptPrefix.length}`,
+      `overlayPromptTokens=${overlayPromptTokens ?? "undefined"} ` +
+      `cliSessionUsageTokens=${cliSessionUsageTokens ?? "undefined"} ` +
+      `cliSessionUsageThreshold=${cliSessionUsageThreshold} promptPrefixChars=${promptPrefix.length}`,
   );
 
   const shouldCompact = shouldRunCliPreflightCompaction({
@@ -503,6 +539,23 @@ async function runCliPreflightCompactionIfNeeded(params: {
     overlayPromptTokens,
   });
   if (!shouldCompact) {
+    if (shouldRotateHiddenCliSession) {
+      logVerbose(
+        `preflightCompaction rotating CLI session: sessionKey=${params.sessionKey} ` +
+          `reason=cli_hidden_usage cliSessionUsageTokens=${cliSessionUsageTokens} ` +
+          `threshold=${cliSessionUsageThreshold} transcriptTokens=${tokenCountForCompaction ?? "undefined"}`,
+      );
+      entry = await persistCliCompactionOverlayUpdate({
+        entry,
+        sessionStore: params.sessionStore,
+        sessionKey: params.sessionKey,
+        storePath: params.storePath,
+        mutate: (mutable) => {
+          clearCliSession(mutable, provider);
+          mutable.updatedAt = memoryDeps.now();
+        },
+      });
+    }
     return entry ?? params.sessionEntry;
   }
 
@@ -518,7 +571,12 @@ async function runCliPreflightCompactionIfNeeded(params: {
 
   logVerbose(
     `preflightCompaction triggered: sessionKey=${params.sessionKey} ` +
-      `tokenCount=${tokenCountForCompaction ?? "undefined"} threshold=${threshold} cli=true`,
+      `tokenCount=${tokenCountForCompaction ?? "undefined"} threshold=${threshold} cli=true ` +
+      `cliSessionUsageTokens=${cliSessionUsageTokens ?? "undefined"}`,
+  );
+  const effectiveTokenCountForCompaction = Math.max(
+    tokenCountForCompaction ?? 0,
+    cliSessionUsageTokens ?? 0,
   );
 
   params.replyOperation.setPhase("preflight_compacting");
@@ -550,7 +608,8 @@ async function runCliPreflightCompactionIfNeeded(params: {
       reasoningLevel: params.followupRun.run.reasoningLevel,
       bashElevated: params.followupRun.run.bashElevated,
       trigger: "budget",
-      currentTokenCount: tokenCountForCompaction,
+      currentTokenCount:
+        effectiveTokenCountForCompaction > 0 ? effectiveTokenCountForCompaction : undefined,
       senderIsOwner: params.followupRun.run.senderIsOwner,
       ownerNumbers: params.followupRun.run.ownerNumbers,
       extraSystemPrompt: params.followupRun.run.extraSystemPrompt,
