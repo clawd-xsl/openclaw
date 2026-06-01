@@ -161,6 +161,7 @@ export async function getReplyFromConfig(
           ctx.To ??
           ctx.From,
       ) ?? "unknown",
+    sink: "stderr",
     scope: "getReply",
   });
   trace("start", `provider=${ctx.Provider ?? "unknown"} session=${ctx.SessionKey ?? "none"}`);
@@ -577,14 +578,24 @@ export async function getReplyFromConfig(
 
   // Allow plugins to intercept and return a synthetic reply before the LLM runs.
   if (!useFastTestBootstrap) {
+    trace("before-agent-reply-runner-load-start");
     const { getGlobalHookRunner } = await loadHookRunnerGlobal();
+    trace("before-agent-reply-runner-load-done");
     const hookRunner = getGlobalHookRunner();
-    if (hookRunner?.hasHooks("before_agent_reply")) {
+    const hasBeforeAgentReplyHook = Boolean(hookRunner?.hasHooks("before_agent_reply"));
+    trace("before-agent-reply-hooks-check", `hasHooks=${hasBeforeAgentReplyHook ? "yes" : "no"}`);
+    if (hookRunner && hasBeforeAgentReplyHook) {
+      trace("before-agent-reply-origin-routing-start");
       const { resolveOriginMessageProvider } = await loadOriginRouting();
+      trace("before-agent-reply-origin-routing-done");
       const hookMessageProvider = resolveOriginMessageProvider({
         originatingChannel: sessionCtx.OriginatingChannel,
         provider: sessionCtx.Provider,
       });
+      trace(
+        "before-agent-reply-start",
+        `trigger=${opts?.isHeartbeat ? "heartbeat" : "user"} channel=${hookMessageProvider}`,
+      );
       const hookResult = await hookRunner.runBeforeAgentReply(
         { cleanedBody },
         {
@@ -597,6 +608,7 @@ export async function getReplyFromConfig(
           channelId: hookMessageProvider,
         },
       );
+      trace("before-agent-reply-done", `handled=${hookResult?.handled ? "yes" : "no"}`);
       if (hookResult?.handled) {
         return hookResult.reply ?? { text: SILENT_REPLY_TOKEN };
       }
@@ -604,6 +616,7 @@ export async function getReplyFromConfig(
   }
 
   if (!useFastTestBootstrap && sessionKey && hasInboundMedia(ctx)) {
+    trace("stage-sandbox-media-start");
     const { stageSandboxMedia } = await loadStageSandboxMediaRuntime();
     await stageSandboxMedia({
       ctx,

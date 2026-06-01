@@ -255,6 +255,7 @@ export async function runPreparedReply(
   const trace = createTimingTrace({
     channel: "reply-trace",
     label: traceLabel,
+    sink: "stderr",
     scope: "runPreparedReply",
   });
   const useFastReplyRuntime = shouldUseReplyFastTestRuntime({
@@ -288,6 +289,10 @@ export async function runPreparedReply(
     typingPolicy,
     suppressTyping,
   });
+  trace(
+    "start",
+    `provider=${provider} model=${model} session=${sessionKey ?? "none"} new=${isNewSession ? "yes" : "no"} typingMode=${typingMode} suppressTyping=${suppressTyping ? "yes" : "no"} fastRuntime=${useFastReplyRuntime ? "yes" : "no"}`,
+  );
   let queuedImmediateTypingStart = false;
   const startImmediateTypingIfNeeded = () => {
     if (queuedImmediateTypingStart || suppressTyping || typingMode !== "instant") {
@@ -350,19 +355,23 @@ export async function runPreparedReply(
     typing.cleanup();
     return undefined;
   }
+  trace("immediate-typing-check", `mode=${typingMode} suppress=${suppressTyping ? "yes" : "no"}`);
   startImmediateTypingIfNeeded();
+  trace("immediate-typing-done", `queued=${queuedImmediateTypingStart ? "yes" : "no"}`);
   const isBareNewOrReset = /^\/(new|reset)$/.test(normalizedCommandBody);
   const isBareSessionReset =
     isNewSession &&
     ((baseBodyTrimmedRaw.length === 0 && rawBodyTrimmed.length > 0) || isBareNewOrReset);
   const startupAction = /^\/reset(?:\s|$)/.test(normalizedCommandBody) ? "reset" : "new";
-  const startupContextPrelude =
-    isBareSessionReset && shouldApplyStartupContext({ cfg, action: startupAction })
-      ? await buildSessionStartupContextPrelude({
-          workspaceDir,
-          cfg,
-        })
-      : null;
+  let startupContextPrelude: string | null = null;
+  if (isBareSessionReset && shouldApplyStartupContext({ cfg, action: startupAction })) {
+    trace("startup-context-prelude-start", `action=${startupAction}`);
+    startupContextPrelude = await buildSessionStartupContextPrelude({
+      workspaceDir,
+      cfg,
+    });
+    trace("startup-context-prelude-done", `chars=${startupContextPrelude?.length ?? 0}`);
+  }
   const baseBodyFinal = isBareSessionReset
     ? buildBareSessionResetPrompt(cfg)
     : stripPromptThinkingDirectives(baseBody);
@@ -403,6 +412,10 @@ export async function runPreparedReply(
   const effectiveBaseBody = baseBodyTrimmed
     ? baseBodyForPrompt
     : "[User sent media without caption]";
+  trace(
+    "session-hints-start",
+    `abortedLastRun=${abortedLastRun ? "yes" : "no"} baseChars=${effectiveBaseBody.length}`,
+  );
   let prefixedBodyBase = await applySessionHints({
     baseBody: effectiveBaseBody,
     abortedLastRun,
@@ -412,6 +425,7 @@ export async function runPreparedReply(
     storePath,
     abortKey: command.abortKey,
   });
+  trace("session-hints-done", `chars=${prefixedBodyBase.length}`);
   const isGroupSession = sessionEntry?.chatType === "group" || sessionEntry?.chatType === "channel";
   const isMainSession = !isGroupSession && sessionKey === normalizeMainKey(sessionCfg?.mainKey);
   // Extract first-token think hint from the user body BEFORE prepending system events.
@@ -440,12 +454,14 @@ export async function runPreparedReply(
     queuedBody: string;
   }> => {
     if (!useFastReplyRuntime) {
+      trace("system-events-drain-start", `main=${isMainSession ? "yes" : "no"}`);
       const eventsBlock = await drainFormattedSystemEvents({
         cfg,
         sessionKey,
         isMainSession,
         isNewSession,
       });
+      trace("system-events-drain-done", `chars=${eventsBlock?.length ?? 0}`);
       if (eventsBlock) {
         drainedSystemEventBlocks.push(eventsBlock);
         if (
@@ -456,7 +472,11 @@ export async function runPreparedReply(
         }
       }
     }
-    return buildReplyPromptBodies({
+    trace(
+      "prompt-bodies-build-start",
+      `events=${drainedSystemEventBlocks.length} threadContext=${threadContextNote ? "yes" : "no"}`,
+    );
+    const bodies = buildReplyPromptBodies({
       ctx,
       sessionCtx,
       effectiveBaseBody,
@@ -464,7 +484,13 @@ export async function runPreparedReply(
       threadContextNote,
       systemEventBlocks: drainedSystemEventBlocks,
     });
+    trace(
+      "prompt-bodies-build-done",
+      `prefixedChars=${bodies.prefixedCommandBody.length} queuedChars=${bodies.queuedBody.length}`,
+    );
+    return bodies;
   };
+  trace("skill-snapshot-start", `fast=${process.env.OPENCLAW_TEST_FAST === "1" ? "yes" : "no"}`);
   const skillResult =
     process.env.OPENCLAW_TEST_FAST === "1"
       ? {
@@ -473,7 +499,10 @@ export async function runPreparedReply(
           systemSent: currentSystemSent,
         }
       : await (async () => {
+          trace("session-updates-runtime-start");
           const { ensureSkillSnapshot } = await loadSessionUpdatesRuntime();
+          trace("session-updates-runtime-done");
+          trace("ensure-skill-snapshot-start");
           return ensureSkillSnapshot({
             sessionEntry,
             sessionStore,
@@ -493,10 +522,18 @@ export async function runPreparedReply(
   sessionEntry = skillResult.sessionEntry ?? sessionEntry;
   currentSystemSent = skillResult.systemSent;
   const skillsSnapshot = skillResult.skillsSnapshot;
+  trace("prompt-bodies-start");
   let { prefixedCommandBody, queuedBody } = await rebuildPromptBodies();
-  trace("prompt-bodies-done");
+  trace(
+    "prompt-bodies-done",
+    `prefixedChars=${prefixedCommandBody.length} queuedChars=${queuedBody.length}`,
+  );
   if (!resolvedThinkLevel) {
+    trace("default-thinking-start");
     resolvedThinkLevel = await modelState.resolveDefaultThinkingLevel();
+    trace("default-thinking-done", `level=${resolvedThinkLevel ?? "none"}`);
+  } else {
+    trace("default-thinking-skipped", `level=${resolvedThinkLevel}`);
   }
   if (resolvedThinkLevel === "xhigh" && !supportsXHighThinking(provider, model)) {
     const explicitThink = directives.hasThinkDirective && directives.thinkLevel !== undefined;
@@ -545,6 +582,11 @@ export async function runPreparedReply(
     };
   };
   let preparedSessionState = resolvePreparedSessionState();
+  trace(
+    "prepared-session-state-done",
+    `sessionId=${preparedSessionState.sessionId} hasEntry=${preparedSessionState.sessionEntry ? "yes" : "no"}`,
+  );
+  trace("queue-settings-start", `inlineMode=${perMessageQueueMode ?? "none"}`);
   const resolvedQueue = useFastReplyRuntime
     ? {
         mode: "collect" as const,
@@ -563,6 +605,7 @@ export async function runPreparedReply(
     "queue-settings-done",
     `mode=${resolvedQueue.mode} debounceMs=${resolvedQueue.debounceMs} cap=${resolvedQueue.cap}`,
   );
+  trace("pi-runtime-start", `fast=${useFastReplyRuntime ? "yes" : "no"}`);
   const piRuntime = useFastReplyRuntime ? null : await loadPiEmbeddedRuntime();
   trace("pi-runtime-done", `loaded=${piRuntime ? "yes" : "no"}`);
   const sessionLaneKey = piRuntime
@@ -577,6 +620,7 @@ export async function runPreparedReply(
     );
     logVerbose(`Interrupting ${sessionLaneKey} (cleared ${cleared}, aborted=${aborted})`);
   }
+  trace("auth-profile-start", `fast=${useFastReplyRuntime ? "yes" : "no"}`);
   let authProfileId = useFastReplyRuntime
     ? undefined
     : await resolveSessionAuthProfileOverride({
@@ -590,11 +634,13 @@ export async function runPreparedReply(
         isNewSession,
       });
   trace("auth-profile-done", `authProfileId=${authProfileId ?? "none"}`);
+  trace("agent-runner-runtime-start");
   const { runReplyAgent } = await loadAgentRunnerRuntime();
   trace("agent-runner-runtime-done");
   const queueKey = sessionKey ?? sessionIdFinal;
   preparedSessionState = resolvePreparedSessionState();
   let recentSessionHistory: string | undefined;
+  trace("recent-session-history-start");
   try {
     const summaries = loadRecentSummaries({
       sessionKey,
@@ -636,7 +682,12 @@ export async function runPreparedReply(
     shouldFollowup,
     queueMode: resolvedQueue.mode,
   });
+  trace(
+    "queue-busy-state-done",
+    `active=${isActive ? "yes" : "no"} streaming=${isStreaming ? "yes" : "no"} action=${activeRunQueueAction}`,
+  );
   if (isActive && activeRunQueueAction === "run-now") {
+    trace("queue-state-start", `activeSessionId=${activeSessionId ?? "none"}`);
     const queueState = await resolvePreparedReplyQueueState({
       activeRunQueueAction,
       activeSessionId: activeSessionId ?? resolveActiveQueueSessionId(),
@@ -666,6 +717,7 @@ export async function runPreparedReply(
       },
       resolveBusyState: resolveQueueBusyState,
     });
+    trace("queue-state-done", `kind=${queueState.kind}`);
     if (queueState.kind === "reply") {
       typing.cleanup();
       return queueState.reply;
@@ -761,6 +813,11 @@ export async function runPreparedReply(
     },
   };
 
+  trace(
+    "followup-run-built",
+    `promptChars=${queuedBody.length} commandChars=${prefixedCommandBody.length} active=${isActive ? "yes" : "no"}`,
+  );
+  trace("runReplyAgent-start");
   return runReplyAgent({
     commandBody: prefixedCommandBody,
     followupRun,

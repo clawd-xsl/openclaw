@@ -9,6 +9,7 @@ import {
   classifyOAuthRefreshFailure,
 } from "../../agents/auth-profiles/oauth-refresh-failure.js";
 import { resolveBootstrapWarningSignaturesSeen } from "../../agents/bootstrap-budget.js";
+import { normalizeCliAssistantVisibleText } from "../../agents/cli-output.js";
 import { runCliAgent } from "../../agents/cli-runner.js";
 import {
   getCliCompactionOverlay,
@@ -104,14 +105,14 @@ function resolveCliFinalAssistantPayloadTexts(params: {
   streamedAssistantTexts?: string[];
 }): string[] {
   const cliPayloadTexts = (params.payloads ?? [])
-    .map((payload) => normalizeOptionalString(payload.text))
+    .map((payload) => normalizeCliAssistantVisibleText(payload.text))
     .filter((text): text is string => Boolean(text));
   if (cliPayloadTexts.length === 0) {
     return [];
   }
   const streamedAssistantTexts = new Set(
     (params.streamedAssistantTexts ?? [])
-      .map((text) => normalizeOptionalString(text))
+      .map((text) => normalizeCliAssistantVisibleText(text))
       .filter((text): text is string => Boolean(text)),
   );
   if (streamedAssistantTexts.size === 0) {
@@ -621,7 +622,12 @@ export async function runAgentTurnWithFallback(params: {
     channel: "reply-trace",
     label: params.opts?.runId ?? params.sessionKey ?? params.followupRun.run.sessionId ?? "unknown",
     scope: "runAgentTurnWithFallback",
+    sink: "stderr",
   });
+  trace(
+    "start",
+    `provider=${params.followupRun.run.provider} model=${params.followupRun.run.model} session=${params.sessionKey ?? params.followupRun.run.sessionId ?? "unknown"}`,
+  );
   const TRANSIENT_HTTP_RETRY_DELAY_MS = 2_500;
   let didLogHeartbeatStrip = false;
   let autoCompactionCount = 0;
@@ -952,7 +958,11 @@ export async function runAgentTurnWithFallback(params: {
                   abortSignal: params.replyOperation?.abortSignal ?? params.opts?.abortSignal,
                   replyOperation: params.replyOperation,
                   onAssistantDelta: async (payload) => {
-                    const textForTyping = await handlePartialForTyping({ text: payload.text });
+                    const visibleText = normalizeCliAssistantVisibleText(payload.text);
+                    if (!visibleText) {
+                      return;
+                    }
+                    const textForTyping = await handlePartialForTyping({ text: visibleText });
                     if (!params.opts?.onPartialReply || textForTyping === undefined) {
                       return;
                     }

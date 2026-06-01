@@ -15,7 +15,7 @@ const state = vi.hoisted(() => ({
   runCliAgentMock: vi.fn(),
   runEmbeddedPiAgentMock: vi.fn(),
   runWithModelFallbackMock: vi.fn(),
-  isCliProviderMock: vi.fn((_: unknown) => false),
+  isCliProviderMock: vi.fn((_: unknown, _runtimeConfig?: unknown) => false),
   isInternalMessageChannelMock: vi.fn((_: unknown) => false),
 }));
 
@@ -1660,7 +1660,7 @@ describe("runAgentTurnWithFallback", () => {
   });
 
   it("rolls over the OpenClaw session and retries the same CLI turn when CLI continuity breaks", async () => {
-    state.isCliProviderMock.mockImplementation((provider: string) => provider === "claude-cli");
+    state.isCliProviderMock.mockImplementation((provider: unknown) => provider === "claude-cli");
     state.runWithModelFallbackMock.mockImplementation(
       async (params: { run: (provider: string, model: string) => Promise<unknown> }) => ({
         result: await params.run("claude-cli", "claude-sonnet-4-6"),
@@ -1746,7 +1746,7 @@ describe("runAgentTurnWithFallback", () => {
   });
 
   it("only replays CLI payload texts that were not already streamed live", async () => {
-    state.isCliProviderMock.mockImplementation((provider: string) => provider === "claude-cli");
+    state.isCliProviderMock.mockImplementation((provider: unknown) => provider === "claude-cli");
     state.runWithModelFallbackMock.mockImplementation(
       async (params: { run: (provider: string, model: string) => Promise<unknown> }) => ({
         result: await params.run("claude-cli", "claude-sonnet-4-6"),
@@ -1795,10 +1795,7 @@ describe("runAgentTurnWithFallback", () => {
     const assistantEvents = vi
       .mocked(emitAgentEvent)
       .mock.calls.map(([event]) => event)
-      .filter(
-        (event): event is { stream: string; data: { text?: string } } =>
-          typeof event?.stream === "string" && event.stream === "assistant",
-      );
+      .filter((event) => typeof event?.stream === "string" && event.stream === "assistant");
 
     expect(assistantEvents).toEqual([
       {
@@ -1810,7 +1807,7 @@ describe("runAgentTurnWithFallback", () => {
   });
 
   it("forwards live CLI assistant deltas into onPartialReply", async () => {
-    state.isCliProviderMock.mockImplementation((provider: string) => provider === "claude-cli");
+    state.isCliProviderMock.mockImplementation((provider: unknown) => provider === "claude-cli");
     state.runWithModelFallbackMock.mockImplementation(
       async (params: { run: (provider: string, model: string) => Promise<unknown> }) => ({
         result: await params.run("claude-cli", "claude-sonnet-4-6"),

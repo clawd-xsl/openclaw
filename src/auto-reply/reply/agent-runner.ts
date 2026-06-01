@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import { hasConfiguredModelFallbacks } from "../../agents/agent-scope.js";
 import {
   clearCliSession,
+  getCliSessionBinding,
   setCliSessionBinding,
   setCliSessionId,
 } from "../../agents/cli-session.js";
@@ -15,6 +16,7 @@ import {
   loadSessionStore,
   resolveSessionPluginStatusLines,
   resolveSessionPluginTraceLines,
+  type CliSessionBinding,
   type SessionEntry,
   updateSessionStoreEntry,
 } from "../../config/sessions.js";
@@ -158,6 +160,82 @@ function applyRunSessionContinuityToActiveEntry(params: {
     params.sessionStore[params.sessionKey] = activeEntry;
   }
   return activeEntry;
+}
+
+type RunSessionContinuityState = {
+  provider?: string;
+  model?: string;
+  contextTokens?: number;
+  cliBinding?: CliSessionBinding;
+};
+
+type RunSessionContinuityAwaitDecision = {
+  awaitBeforeReply: boolean;
+  reason: string;
+};
+
+function captureRunSessionContinuityState(params: {
+  entry?: SessionEntry;
+  providerUsed: string;
+}): RunSessionContinuityState {
+  return {
+    provider: params.entry?.modelProvider,
+    model: params.entry?.model,
+    contextTokens: params.entry?.contextTokens,
+    cliBinding: getCliSessionBinding(params.entry, params.providerUsed),
+  };
+}
+
+function stableCliBindingChanged(
+  previous: CliSessionBinding | undefined,
+  next: CliSessionBinding | undefined,
+): boolean {
+  if (!previous || !next) {
+    return Boolean(previous) !== Boolean(next);
+  }
+  return (
+    previous.sessionId !== next.sessionId ||
+    previous.authProfileId !== next.authProfileId ||
+    previous.extraSystemPromptHash !== next.extraSystemPromptHash ||
+    previous.mcpConfigHash !== next.mcpConfigHash
+  );
+}
+
+function resolveRunSessionContinuityAwaitDecision(params: {
+  previous: RunSessionContinuityState;
+  providerUsed: string;
+  modelUsed: string;
+  contextTokensUsed: number;
+  cliProviderUsed: boolean;
+  clearCliSessionAfterRun: boolean;
+  cliSessionId?: string;
+  cliSessionBinding?: CliSessionBinding;
+}): RunSessionContinuityAwaitDecision {
+  if (params.previous.provider !== undefined && params.previous.provider !== params.providerUsed) {
+    return { awaitBeforeReply: true, reason: "provider-changed" };
+  }
+  if (params.previous.model !== undefined && params.previous.model !== params.modelUsed) {
+    return { awaitBeforeReply: true, reason: "model-changed" };
+  }
+  if (
+    params.previous.contextTokens !== undefined &&
+    params.previous.contextTokens !== params.contextTokensUsed
+  ) {
+    return { awaitBeforeReply: true, reason: "context-tokens-changed" };
+  }
+  if (!params.cliProviderUsed) {
+    return { awaitBeforeReply: false, reason: "non-cli" };
+  }
+  if (params.clearCliSessionAfterRun) {
+    return { awaitBeforeReply: true, reason: "cli-session-cleared" };
+  }
+  const nextBinding =
+    params.cliSessionBinding ??
+    (params.cliSessionId ? { sessionId: params.cliSessionId } : undefined);
+  if (stableCliBindingChanged(params.previous.cliBinding, nextBinding)) {
+    return { awaitBeforeReply: true, reason: "cli-session-identity-changed" };
+  }
+  return { awaitBeforeReply: false, reason: "cli-session-stable" };
 }
 
 function hasTraceUsageFields(
@@ -985,6 +1063,7 @@ export async function runReplyAgent(params: {
   const trace = createTimingTrace({
     channel: "reply-trace",
     label: traceId,
+    sink: "stderr",
     scope: "runReplyAgent",
   });
   trace(
@@ -1002,12 +1081,14 @@ export async function runReplyAgent(params: {
     mode: typingMode,
     isHeartbeat,
   });
+  trace("typing-signaler-created", `mode=${typingMode} heartbeat=${isHeartbeat ? "yes" : "no"}`);
 
   const shouldEmitToolResult = createShouldEmitToolResult({
     sessionKey,
     storePath,
     resolvedVerboseLevel,
   });
+  trace("tool-output-predicates-done", `verbose=${resolvedVerboseLevel}`);
   const shouldEmitToolOutput = createShouldEmitToolOutput({
     sessionKey,
     storePath,
@@ -1050,6 +1131,10 @@ export async function runReplyAgent(params: {
     shouldFollowup,
     queueMode: resolvedQueue.mode,
   });
+  trace(
+    "active-run-queue-action-done",
+    `action=${activeRunQueueAction} active=${isActive ? "yes" : "no"} streaming=${isStreaming ? "yes" : "no"}`,
+  );
 
   const queuedRunFollowupTurn = createFollowupRunner({
     opts,
@@ -1062,6 +1147,7 @@ export async function runReplyAgent(params: {
     defaultModel,
     agentCfgContextTokens,
   });
+  trace("followup-runner-created");
 
   if (activeRunQueueAction === "drop") {
     typing.cleanup();
@@ -1087,7 +1173,9 @@ export async function runReplyAgent(params: {
     return undefined;
   }
 
+  trace("queued-exec-config-start");
   followupRun.run.config = await resolveQueuedReplyExecutionConfig(followupRun.run.config);
+  trace("queued-exec-config-done");
 
   const replyToChannel = resolveOriginMessageProvider({
     originatingChannel: sessionCtx.OriginatingChannel,
@@ -1100,6 +1188,7 @@ export async function runReplyAgent(params: {
     sessionCtx.ChatType,
   );
   const applyReplyToMode = createReplyToModeFilterForChannel(replyToMode, replyToChannel);
+  trace("reply-to-mode-done", `mode=${replyToMode ?? "none"} channel=${replyToChannel ?? "none"}`);
   const cfg = followupRun.run.config;
   const normalizeReplyMediaPaths = createReplyMediaPathNormalizer({
     cfg,
@@ -1124,10 +1213,18 @@ export async function runReplyAgent(params: {
           buffer: createAudioAsVoiceBuffer({ isAudioPayload }),
         })
       : null;
+  const blockReplyCoalescingLabel = blockReplyCoalescing
+    ? `min=${blockReplyCoalescing.minChars} max=${blockReplyCoalescing.maxChars} idle=${blockReplyCoalescing.idleMs}`
+    : "none";
+  trace(
+    "block-reply-pipeline-done",
+    `enabled=${blockReplyPipeline ? "yes" : "no"} coalescing=${blockReplyCoalescingLabel}`,
+  );
 
   const replySessionKey = sessionKey ?? followupRun.run.sessionKey;
   let replyOperation: ReplyOperation;
   try {
+    trace("reply-operation-start");
     replyOperation =
       providedReplyOperation ??
       createReplyOperation({
@@ -1136,6 +1233,7 @@ export async function runReplyAgent(params: {
         resetTriggered: resetTriggered === true,
         upstreamAbortSignal: opts?.abortSignal,
       });
+    trace("reply-operation-done", `provided=${providedReplyOperation ? "yes" : "no"}`);
   } catch (error) {
     if (error instanceof ReplyRunAlreadyActiveError) {
       typing.cleanup();
@@ -1181,6 +1279,7 @@ export async function runReplyAgent(params: {
         );
       });
 
+    trace("preflight-compaction-start");
     activeSessionEntry = await runPreflightCompactionIfNeeded({
       cfg,
       followupRun,
@@ -1436,6 +1535,24 @@ export async function runReplyAgent(params: {
         fallbackContextTokens: activeSessionEntry?.contextTokens ?? DEFAULT_CONTEXT_TOKENS,
         allowAsyncLoad: false,
       }) ?? DEFAULT_CONTEXT_TOKENS;
+    const previousContinuityState = captureRunSessionContinuityState({
+      entry: activeSessionEntry,
+      providerUsed,
+    });
+    const continuityAwaitDecision = resolveRunSessionContinuityAwaitDecision({
+      previous: previousContinuityState,
+      providerUsed,
+      modelUsed,
+      contextTokensUsed,
+      cliProviderUsed,
+      clearCliSessionAfterRun,
+      cliSessionId,
+      cliSessionBinding,
+    });
+    trace(
+      "persistRunSessionContinuity-mode",
+      `awaitBeforeReply=${continuityAwaitDecision.awaitBeforeReply ? "yes" : "no"} reason=${continuityAwaitDecision.reason}`,
+    );
 
     activeSessionEntry = applyRunSessionContinuityToActiveEntry({
       entry: activeSessionEntry,
@@ -1917,10 +2034,14 @@ export async function runReplyAgent(params: {
       finalPayloads = appendUsageLine(finalPayloads, responseUsageLine);
     }
 
-    // Session continuity must be durable before we hand the reply back to the
-    // dispatcher. Otherwise a gateway restart can resume a stale CLI binding
-    // even though the user already saw the newer Claude turn.
-    await awaitDeferredSessionContinuity("before-return");
+    if (continuityAwaitDecision.awaitBeforeReply) {
+      // Critical continuity changes must be durable before we hand the reply
+      // back to the dispatcher. Otherwise a gateway restart can resume a stale
+      // CLI binding even though the user already saw the newer Claude turn.
+      await awaitDeferredSessionContinuity(`before-return:${continuityAwaitDecision.reason}`);
+    } else {
+      trace("persistRunSessionContinuity-background", continuityAwaitDecision.reason);
+    }
 
     return finalizeWithFollowup(
       finalPayloads.length === 1 ? finalPayloads[0] : finalPayloads,

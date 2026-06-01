@@ -123,6 +123,7 @@ function createPersistSessionUsageTrace(
   return createTimingTrace({
     channel: "reply-trace",
     label: params.logLabel ?? params.sessionKey ?? "unknown",
+    sink: "stderr",
     scope,
   });
 }
@@ -289,18 +290,34 @@ export async function persistSessionContinuityUpdate(
   const label = params.logLabel ? `${params.logLabel} ` : "";
   const trace = createPersistSessionUsageTrace(params, "persistSessionContinuityUpdate");
   try {
-    trace("update-start");
+    trace("update-start", `session=${sessionKey}`);
+    let patchKeys: string[] = [];
     const next = await writeHotSessionEntry({
       storePath,
       sessionKey,
       createIfMissing: false,
       mutator: async (entry) => {
+        trace(
+          "mutator-start",
+          `hasEntry=${entry ? "yes" : "no"} provider=${params.providerUsed ?? entry?.modelProvider ?? "none"} cli=${params.clearCliSession ? "clear" : (params.cliSessionBinding?.sessionId ?? params.cliSessionId ?? "none")}`,
+        );
         const patch = entry ? buildSessionContinuityPatch(params, entry) : null;
+        patchKeys = patch ? Object.keys(patch).toSorted() : [];
+        trace(
+          "mutator-done",
+          `hasPatch=${patch ? "yes" : "no"} keys=${patchKeys.length > 0 ? patchKeys.join(",") : "none"}`,
+        );
         return entry && patch ? { ...entry, ...patch } : (entry ?? null);
       },
     });
+    trace(
+      "hot-write-done",
+      `updated=${next ? "yes" : "no"} patchKeys=${patchKeys.join(",") || "none"}`,
+    );
     if (next) {
+      trace("cold-backfill-queue-start");
       queueSessionStoreColdBackfill({ storePath, sessionKey, entry: next });
+      trace("cold-backfill-queue-done");
     }
     trace("update-done");
   } catch (err) {
@@ -318,12 +335,14 @@ export async function persistSessionAccountingUpdate(
 
   const label = params.logLabel ? `${params.logLabel} ` : "";
   const trace = createPersistSessionUsageTrace(params, "persistSessionAccountingUpdate");
+  trace("start", `session=${sessionKey}`);
   const cfg = params.cfg ?? loadConfig();
   const hasUsage = hasNonzeroUsage(params.usage);
   const freshContextSnapshot = hasFreshContextSnapshot(params);
 
   if (hasUsage || freshContextSnapshot || params.systemPromptReport) {
     try {
+      let patchKeys: string[] = [];
       trace(
         "update-start",
         `hasUsage=${hasUsage ? "yes" : "no"} freshContext=${freshContextSnapshot ? "yes" : "no"}`,
@@ -333,12 +352,27 @@ export async function persistSessionAccountingUpdate(
         sessionKey,
         createIfMissing: false,
         mutator: async (entry) => {
+          trace(
+            "mutator-start",
+            `hasEntry=${entry ? "yes" : "no"} hasUsage=${hasUsage ? "yes" : "no"} freshContext=${freshContextSnapshot ? "yes" : "no"}`,
+          );
           const patch = entry ? buildSessionAccountingPatch(params, entry, cfg) : null;
+          patchKeys = patch ? Object.keys(patch).toSorted() : [];
+          trace(
+            "mutator-done",
+            `hasPatch=${patch ? "yes" : "no"} keys=${patchKeys.length > 0 ? patchKeys.join(",") : "none"}`,
+          );
           return entry && patch ? { ...entry, ...patch } : (entry ?? null);
         },
       });
+      trace(
+        "hot-write-done",
+        `updated=${next ? "yes" : "no"} patchKeys=${patchKeys.join(",") || "none"}`,
+      );
       if (next) {
+        trace("cold-backfill-queue-start");
         queueSessionStoreColdBackfill({ storePath, sessionKey, entry: next });
+        trace("cold-backfill-queue-done");
       }
       trace("update-done");
     } catch (err) {
@@ -346,6 +380,10 @@ export async function persistSessionAccountingUpdate(
     }
     return;
   }
+  trace(
+    "skipped",
+    `hasUsage=${hasUsage ? "yes" : "no"} freshContext=${freshContextSnapshot ? "yes" : "no"}`,
+  );
 }
 
 export async function persistSessionUsageUpdate(

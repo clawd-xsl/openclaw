@@ -236,30 +236,144 @@ describe("runReplyAgent heartbeat followup guard", () => {
     expect(state.runEmbeddedPiAgentMock).not.toHaveBeenCalled();
   });
 
-  it("waits for session continuity persistence before returning a successful reply", async () => {
+  it("returns before non-critical stable CLI continuity persistence finishes", async () => {
     const accounting = await import("./session-run-accounting.js");
-    let resolveContinuityPersist: (() => void) | undefined;
-    let resolveAccountingPersist: (() => void) | undefined;
+    const resolveContinuityPersists: Array<() => void> = [];
+    const resolveAccountingPersists: Array<() => void> = [];
+    const continuityPersistPromises: Promise<void>[] = [];
+    const accountingPersistPromises: Promise<void>[] = [];
+    const continuitySpy = vi
+      .spyOn(accounting, "persistRunSessionContinuity")
+      .mockImplementation(async () => {
+        const promise = new Promise<void>((resolve) => {
+          resolveContinuityPersists.push(resolve);
+        });
+        continuityPersistPromises.push(promise);
+        await promise;
+      });
+    const accountingSpy = vi
+      .spyOn(accounting, "persistRunSessionAccounting")
+      .mockImplementation(async () => {
+        const promise = new Promise<void>((resolve) => {
+          resolveAccountingPersists.push(resolve);
+        });
+        accountingPersistPromises.push(promise);
+        await promise;
+      });
+    state.runEmbeddedPiAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "final" }],
+      meta: {
+        agentMeta: {
+          provider: "claude-cli-streaming",
+          model: "claude-opus-4-8",
+          sessionId: "cli-session-1",
+          cliSessionBinding: {
+            sessionId: "cli-session-1",
+            lastUsage: { input: 1, output: 1, total: 2, updatedAt: 1 },
+          },
+          usage: { input: 1, output: 1 },
+        },
+      },
+    });
+
+    try {
+      const sessionEntry = {
+        sessionId: "session",
+        updatedAt: 1,
+        modelProvider: "claude-cli-streaming",
+        model: "claude-opus-4-8",
+        cliSessionBindings: {
+          "claude-cli-streaming": {
+            sessionId: "cli-session-1",
+          },
+        },
+      } satisfies SessionEntry;
+      const { run } = createMinimalRun({
+        sessionEntry,
+        sessionStore: { main: sessionEntry },
+        runOverrides: {
+          config: {
+            agents: {
+              defaults: { cliBackends: { "claude-cli-streaming": { command: "claude" } } },
+            },
+          },
+        },
+      });
+      const result = await run();
+
+      expect(result).toMatchObject({ text: "final" });
+      expect(continuitySpy).toHaveBeenCalledTimes(1);
+      expect(accountingSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      resolveContinuityPersists.forEach((resolve) => resolve());
+      resolveAccountingPersists.forEach((resolve) => resolve());
+      await Promise.allSettled([...continuityPersistPromises, ...accountingPersistPromises]);
+      continuitySpy.mockRestore();
+      accountingSpy.mockRestore();
+    }
+  });
+
+  it("waits for critical CLI session identity persistence before returning a successful reply", async () => {
+    const accounting = await import("./session-run-accounting.js");
+    const resolveContinuityPersists: Array<() => void> = [];
+    const resolveAccountingPersists: Array<() => void> = [];
+    const continuityPersistPromises: Promise<void>[] = [];
+    const accountingPersistPromises: Promise<void>[] = [];
     let runPromise: ReturnType<ReturnType<typeof createMinimalRun>["run"]> | undefined;
     const continuitySpy = vi
       .spyOn(accounting, "persistRunSessionContinuity")
-      .mockImplementationOnce(
-        async () =>
-          await new Promise<void>((resolve) => {
-            resolveContinuityPersist = resolve;
-          }),
-      );
+      .mockImplementation(async () => {
+        const promise = new Promise<void>((resolve) => {
+          resolveContinuityPersists.push(resolve);
+        });
+        continuityPersistPromises.push(promise);
+        await promise;
+      });
     const accountingSpy = vi
       .spyOn(accounting, "persistRunSessionAccounting")
-      .mockImplementationOnce(
-        async () =>
-          await new Promise<void>((resolve) => {
-            resolveAccountingPersist = resolve;
-          }),
-      );
+      .mockImplementation(async () => {
+        const promise = new Promise<void>((resolve) => {
+          resolveAccountingPersists.push(resolve);
+        });
+        accountingPersistPromises.push(promise);
+        await promise;
+      });
+    state.runEmbeddedPiAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "final" }],
+      meta: {
+        agentMeta: {
+          provider: "claude-cli-streaming",
+          model: "claude-opus-4-8",
+          sessionId: "cli-session-2",
+          cliSessionBinding: { sessionId: "cli-session-2" },
+          usage: { input: 1, output: 1 },
+        },
+      },
+    });
 
     try {
-      const { run } = createMinimalRun();
+      const sessionEntry = {
+        sessionId: "session",
+        updatedAt: 1,
+        modelProvider: "claude-cli-streaming",
+        model: "claude-opus-4-8",
+        cliSessionBindings: {
+          "claude-cli-streaming": {
+            sessionId: "cli-session-1",
+          },
+        },
+      } satisfies SessionEntry;
+      const { run } = createMinimalRun({
+        sessionEntry,
+        sessionStore: { main: sessionEntry },
+        runOverrides: {
+          config: {
+            agents: {
+              defaults: { cliBackends: { "claude-cli-streaming": { command: "claude" } } },
+            },
+          },
+        },
+      });
       runPromise = run();
       const result = await Promise.race([
         runPromise.then((value) => ({ kind: "resolved" as const, value })),
@@ -270,8 +384,7 @@ describe("runReplyAgent heartbeat followup guard", () => {
       expect(result).toEqual({ kind: "timeout" });
       expect(continuitySpy).toHaveBeenCalledTimes(1);
       expect(accountingSpy).toHaveBeenCalledTimes(1);
-      resolveContinuityPersist?.();
-      resolveContinuityPersist = undefined;
+      resolveContinuityPersists.forEach((resolve) => resolve());
       const resumed = await Promise.race([
         runPromise.then((value) => ({ kind: "resolved" as const, value })),
         new Promise<{ kind: "timeout" }>((resolve) =>
@@ -283,8 +396,10 @@ describe("runReplyAgent heartbeat followup guard", () => {
         value: { text: "final" },
       });
     } finally {
-      resolveAccountingPersist?.();
+      resolveContinuityPersists.forEach((resolve) => resolve());
+      resolveAccountingPersists.forEach((resolve) => resolve());
       await runPromise?.catch(() => undefined);
+      await Promise.allSettled([...continuityPersistPromises, ...accountingPersistPromises]);
       continuitySpy.mockRestore();
       accountingSpy.mockRestore();
     }
