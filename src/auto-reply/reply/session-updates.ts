@@ -5,7 +5,10 @@ import { resolveSessionAgentId } from "../../agents/agent-scope.js";
 import { clearAllCliCompactionOverlays } from "../../agents/cli-session.js";
 import { canExecRequestNode } from "../../agents/exec-defaults.js";
 import { buildWorkspaceSkillSnapshot } from "../../agents/skills.js";
-import { matchesSkillFilter } from "../../agents/skills/filter.js";
+import {
+  matchesSkillFilter,
+  normalizeSkillFilterForComparison,
+} from "../../agents/skills/filter.js";
 import {
   ensureSkillsWatcher,
   getSkillsSnapshotVersion,
@@ -21,6 +24,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolveStableSessionEndTranscript } from "../../gateway/session-transcript-files.fs.js";
 import { logVerbose } from "../../globals.js";
 import { getRemoteSkillEligibility } from "../../infra/skills-remote.js";
+import { createTimingTrace } from "../../infra/timing-trace.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import { normalizeOptionalString } from "../../shared/string-coerce.js";
@@ -28,11 +32,17 @@ import { buildSessionEndHookPayload, buildSessionStartHookPayload } from "./sess
 export { drainFormattedSystemEvents } from "./session-system-events.js";
 
 const RECENT_SKILL_SNAPSHOTS = new Map<string, NonNullable<SessionEntry["skillsSnapshot"]>>();
+const WORKSPACE_SKILL_SNAPSHOTS = new Map<string, NonNullable<SessionEntry["skillsSnapshot"]>>();
+const MAX_WORKSPACE_SKILL_SNAPSHOT_CACHE_ENTRIES = 64;
 
-async function persistSessionEntryUpdate(params: {
+export function resetSkillSnapshotRuntimeForTest(): void {
+  RECENT_SKILL_SNAPSHOTS.clear();
+  WORKSPACE_SKILL_SNAPSHOTS.clear();
+}
+
+function rememberSessionEntryUpdate(params: {
   sessionStore?: Record<string, SessionEntry>;
   sessionKey?: string;
-  storePath?: string;
   nextEntry: SessionEntry;
 }) {
   if (!params.sessionStore || !params.sessionKey) {
@@ -42,12 +52,94 @@ async function persistSessionEntryUpdate(params: {
     ...params.sessionStore[params.sessionKey],
     ...params.nextEntry,
   };
-  if (!params.storePath) {
+}
+
+async function persistSessionEntryUpdate(params: {
+  sessionStore?: Record<string, SessionEntry>;
+  sessionKey?: string;
+  storePath?: string;
+  nextEntry: SessionEntry;
+}) {
+  rememberSessionEntryUpdate(params);
+  if (!params.storePath || !params.sessionKey) {
     return;
   }
   await updateSessionStore(params.storePath, (store) => {
     store[params.sessionKey!] = { ...store[params.sessionKey!], ...params.nextEntry };
   });
+}
+
+function skillSnapshotHasRuntimePayload(snapshot?: SessionEntry["skillsSnapshot"]): boolean {
+  if (!snapshot) {
+    return false;
+  }
+  if ((snapshot.skills?.length ?? 0) === 0) {
+    return true;
+  }
+  return Boolean(snapshot.prompt?.trim()) || (snapshot.resolvedSkills?.length ?? 0) > 0;
+}
+
+function remoteEligibilityCacheKey(
+  remoteEligibility: ReturnType<typeof getRemoteSkillEligibility>,
+): string {
+  if (!remoteEligibility) {
+    return "none";
+  }
+  return JSON.stringify({
+    note: remoteEligibility.note ?? "",
+    platforms: [...remoteEligibility.platforms].toSorted(),
+  });
+}
+
+function buildSkillSnapshotCacheKey(params: {
+  workspaceDir: string;
+  agentId: string;
+  skillFilter?: string[];
+  remoteEligibility: ReturnType<typeof getRemoteSkillEligibility>;
+  snapshotVersion: number;
+}): string {
+  return JSON.stringify({
+    agentId: params.agentId,
+    filter: normalizeSkillFilterForComparison(params.skillFilter) ?? null,
+    remote: remoteEligibilityCacheKey(params.remoteEligibility),
+    version: params.snapshotVersion,
+    workspaceDir: path.resolve(params.workspaceDir),
+  });
+}
+
+function isFreshSkillSnapshot(
+  snapshot: SessionEntry["skillsSnapshot"] | undefined,
+  params: {
+    skillFilter?: string[];
+    snapshotVersion: number;
+  },
+): snapshot is NonNullable<SessionEntry["skillsSnapshot"]> {
+  return (
+    Boolean(snapshot) &&
+    !shouldRefreshSnapshotForVersion(snapshot?.version, params.snapshotVersion) &&
+    matchesSkillFilter(snapshot?.skillFilter, params.skillFilter)
+  );
+}
+
+function rememberSkillSnapshot(params: {
+  cacheKey: string;
+  sessionKey?: string;
+  snapshot: NonNullable<SessionEntry["skillsSnapshot"]>;
+}) {
+  if (params.sessionKey) {
+    RECENT_SKILL_SNAPSHOTS.set(params.sessionKey, params.snapshot);
+  }
+  if (WORKSPACE_SKILL_SNAPSHOTS.has(params.cacheKey)) {
+    WORKSPACE_SKILL_SNAPSHOTS.delete(params.cacheKey);
+  }
+  WORKSPACE_SKILL_SNAPSHOTS.set(params.cacheKey, params.snapshot);
+  while (WORKSPACE_SKILL_SNAPSHOTS.size > MAX_WORKSPACE_SKILL_SNAPSHOT_CACHE_ENTRIES) {
+    const oldest = WORKSPACE_SKILL_SNAPSHOTS.keys().next();
+    if (oldest.done) {
+      break;
+    }
+    WORKSPACE_SKILL_SNAPSHOTS.delete(oldest.value);
+  }
 }
 
 function emitCompactionSessionLifecycleHooks(params: {
@@ -134,9 +226,23 @@ export async function ensureSkillSnapshot(params: {
     skillFilter,
   } = params;
 
+  const trace = createTimingTrace({
+    channel: "reply-trace",
+    label: sessionKey ?? sessionId ?? "unknown",
+    sink: "stderr",
+    scope: "ensureSkillSnapshot",
+  });
+  trace(
+    "start",
+    `firstTurn=${isFirstTurnInSession ? "yes" : "no"} hasEntry=${sessionEntry ? "yes" : "no"} hasStore=${sessionStore ? "yes" : "no"} filter=${skillFilter?.length ?? 0}`,
+  );
+
   let nextEntry = sessionEntry;
   let systemSent = sessionEntry?.systemSent ?? false;
+  trace("agent-id-start");
   const sessionAgentId = resolveSessionAgentId({ sessionKey, config: cfg });
+  trace("agent-id-done", `agent=${sessionAgentId}`);
+  trace("remote-eligibility-start");
   const remoteEligibility = getRemoteSkillEligibility({
     advertiseExecNode: canExecRequestNode({
       cfg,
@@ -145,30 +251,94 @@ export async function ensureSkillSnapshot(params: {
       agentId: sessionAgentId,
     }),
   });
+  trace("remote-eligibility-done", `remote=${remoteEligibility ? "yes" : "no"}`);
+  trace("snapshot-version-start");
   const snapshotVersion = getSkillsSnapshotVersion(workspaceDir);
-  const cachedSnapshot = sessionKey ? RECENT_SKILL_SNAPSHOTS.get(sessionKey) : undefined;
-  const existingSnapshot = nextEntry?.skillsSnapshot ?? cachedSnapshot;
+  trace("snapshot-version-done", `version=${snapshotVersion}`);
+  const snapshotCacheKey = buildSkillSnapshotCacheKey({
+    workspaceDir,
+    agentId: sessionAgentId,
+    skillFilter,
+    remoteEligibility,
+    snapshotVersion,
+  });
+  const entrySnapshot =
+    nextEntry?.skillsSnapshot ??
+    (sessionKey ? sessionStore?.[sessionKey]?.skillsSnapshot : undefined);
+  const sessionCachedSnapshot = sessionKey ? RECENT_SKILL_SNAPSHOTS.get(sessionKey) : undefined;
+  const workspaceCachedSnapshot = WORKSPACE_SKILL_SNAPSHOTS.get(snapshotCacheKey);
+  const freshRuntimeSnapshot =
+    [entrySnapshot, sessionCachedSnapshot, workspaceCachedSnapshot].find(
+      (snapshot) =>
+        skillSnapshotHasRuntimePayload(snapshot) &&
+        isFreshSkillSnapshot(snapshot, { skillFilter, snapshotVersion }),
+    ) ?? undefined;
+  const existingSnapshot =
+    freshRuntimeSnapshot ?? entrySnapshot ?? sessionCachedSnapshot ?? workspaceCachedSnapshot;
+  const freshRuntimeSnapshotSource = freshRuntimeSnapshot
+    ? freshRuntimeSnapshot === entrySnapshot
+      ? "entry"
+      : freshRuntimeSnapshot === sessionCachedSnapshot
+        ? "recent"
+        : "workspace"
+    : undefined;
+  trace(
+    "existing-snapshot-done",
+    `source=${freshRuntimeSnapshotSource ?? (entrySnapshot ? "entry-meta" : sessionCachedSnapshot ? "recent-meta" : workspaceCachedSnapshot ? "workspace-meta" : "none")} existingVersion=${existingSnapshot?.version ?? "none"} runtime=${skillSnapshotHasRuntimePayload(existingSnapshot) ? "yes" : "no"}`,
+  );
+  trace("skills-watcher-start");
   ensureSkillsWatcher({ workspaceDir, config: cfg });
+  trace("skills-watcher-done");
   const shouldRefreshSnapshot =
     shouldRefreshSnapshotForVersion(existingSnapshot?.version, snapshotVersion) ||
     !matchesSkillFilter(existingSnapshot?.skillFilter, skillFilter);
-  const buildSnapshot = () =>
-    buildWorkspaceSkillSnapshot(workspaceDir, {
+  trace("refresh-check-done", `refresh=${shouldRefreshSnapshot ? "yes" : "no"}`);
+  const buildSnapshot = (reason: string) => {
+    trace("build-snapshot-start", reason);
+    const snapshot = buildWorkspaceSkillSnapshot(workspaceDir, {
       config: cfg,
       agentId: sessionAgentId,
       skillFilter,
       eligibility: { remote: remoteEligibility },
       snapshotVersion,
     });
+    trace(
+      "build-snapshot-done",
+      `reason=${reason} skills=${snapshot.skills.length} promptChars=${snapshot.prompt.length}`,
+    );
+    rememberSkillSnapshot({ cacheKey: snapshotCacheKey, sessionKey, snapshot });
+    return snapshot;
+  };
+  const selectFreshRuntimeSnapshot = () => {
+    const snapshot =
+      [entrySnapshot, sessionCachedSnapshot, workspaceCachedSnapshot].find(
+        (candidate) =>
+          skillSnapshotHasRuntimePayload(candidate) &&
+          isFreshSkillSnapshot(candidate, { skillFilter, snapshotVersion }),
+      ) ?? undefined;
+    if (!snapshot) {
+      return undefined;
+    }
+    trace(
+      "snapshot-cache-hit",
+      `source=${snapshot === entrySnapshot ? "entry" : snapshot === sessionCachedSnapshot ? "recent" : "workspace"}`,
+    );
+    rememberSkillSnapshot({ cacheKey: snapshotCacheKey, sessionKey, snapshot });
+    return snapshot;
+  };
+  const resolveSnapshot = (reason: string) => selectFreshRuntimeSnapshot() ?? buildSnapshot(reason);
 
   if (isFirstTurnInSession && sessionStore && sessionKey) {
+    trace("first-turn-entry-start");
     const current = nextEntry ??
       sessionStore[sessionKey] ?? {
         sessionId: sessionId ?? crypto.randomUUID(),
         updatedAt: Date.now(),
       };
     const skillSnapshot =
-      !current.skillsSnapshot || shouldRefreshSnapshot ? buildSnapshot() : current.skillsSnapshot;
+      !skillSnapshotHasRuntimePayload(current.skillsSnapshot) || shouldRefreshSnapshot
+        ? resolveSnapshot("first-turn")
+        : current.skillsSnapshot;
     nextEntry = {
       ...current,
       sessionId: sessionId ?? current.sessionId ?? crypto.randomUUID(),
@@ -176,28 +346,44 @@ export async function ensureSkillSnapshot(params: {
       systemSent: true,
       skillsSnapshot: skillSnapshot,
     };
+    trace("first-turn-persist-start");
     await persistSessionEntryUpdate({ sessionStore, sessionKey, storePath, nextEntry });
+    trace("first-turn-persist-done");
     systemSent = true;
   }
 
+  const entryRuntimeSnapshot = nextEntry?.skillsSnapshot;
   const hasFreshSnapshotInEntry =
-    Boolean(nextEntry?.skillsSnapshot) &&
-    (nextEntry?.skillsSnapshot !== existingSnapshot || !shouldRefreshSnapshot);
-  const shouldBuildSnapshot =
-    shouldRefreshSnapshot || (!nextEntry?.skillsSnapshot && !cachedSnapshot);
+    skillSnapshotHasRuntimePayload(entryRuntimeSnapshot) &&
+    isFreshSkillSnapshot(entryRuntimeSnapshot, { skillFilter, snapshotVersion });
   const skillsSnapshot = hasFreshSnapshotInEntry
-    ? nextEntry?.skillsSnapshot
-    : shouldBuildSnapshot
-      ? buildSnapshot()
-      : (nextEntry?.skillsSnapshot ?? cachedSnapshot);
-  const shouldPersistMissingSnapshot = !nextEntry?.skillsSnapshot && !cachedSnapshot;
-  if (
-    skillsSnapshot &&
-    sessionStore &&
-    sessionKey &&
-    !isFirstTurnInSession &&
-    (shouldRefreshSnapshot || shouldPersistMissingSnapshot)
-  ) {
+    ? entryRuntimeSnapshot
+    : resolveSnapshot("refresh-or-cache-miss");
+  trace(
+    "skills-snapshot-selected",
+    `source=${hasFreshSnapshotInEntry ? "entry" : "runtime-cache-or-built"} skills=${skillsSnapshot?.skills.length ?? 0}`,
+  );
+  if (skillsSnapshot && sessionStore && sessionKey && !hasFreshSnapshotInEntry) {
+    const current = nextEntry ??
+      sessionStore[sessionKey] ?? {
+        sessionId: sessionId ?? crypto.randomUUID(),
+        updatedAt: Date.now(),
+      };
+    nextEntry = {
+      ...current,
+      sessionId: sessionId ?? current.sessionId ?? crypto.randomUUID(),
+      skillsSnapshot,
+    };
+    rememberSessionEntryUpdate({ sessionStore, sessionKey, nextEntry });
+    trace("runtime-cache-hydrated", `hasStorePath=${storePath ? "yes" : "no"}`);
+  }
+  const shouldPersistRefreshedSnapshot =
+    !isFirstTurnInSession && Boolean(entrySnapshot) && shouldRefreshSnapshot;
+  if (skillsSnapshot && sessionStore && sessionKey && shouldPersistRefreshedSnapshot) {
+    trace(
+      "refresh-persist-start",
+      `refresh=${shouldRefreshSnapshot ? "yes" : "no"} entrySnapshot=${entrySnapshot ? "yes" : "no"}`,
+    );
     const current = nextEntry ?? {
       sessionId: sessionId ?? crypto.randomUUID(),
       updatedAt: Date.now(),
@@ -209,12 +395,23 @@ export async function ensureSkillSnapshot(params: {
       skillsSnapshot,
     };
     await persistSessionEntryUpdate({ sessionStore, sessionKey, storePath, nextEntry });
+    trace("refresh-persist-done");
+  } else if (skillsSnapshot && sessionStore && sessionKey && !isFirstTurnInSession) {
+    trace(
+      "refresh-persist-skip",
+      `entrySnapshot=${entrySnapshot ? "yes" : "no"} refresh=${shouldRefreshSnapshot ? "yes" : "no"}`,
+    );
   }
 
-  if (sessionKey && skillsSnapshot) {
-    RECENT_SKILL_SNAPSHOTS.set(sessionKey, skillsSnapshot);
+  if (skillsSnapshot) {
+    rememberSkillSnapshot({ cacheKey: snapshotCacheKey, sessionKey, snapshot: skillsSnapshot });
+    trace("recent-cache-updated");
   }
 
+  trace(
+    "done",
+    `systemSent=${systemSent ? "yes" : "no"} skills=${skillsSnapshot?.skills.length ?? 0}`,
+  );
   return { sessionEntry: nextEntry, skillsSnapshot, systemSent };
 }
 

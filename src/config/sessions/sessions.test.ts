@@ -201,6 +201,14 @@ describe("session store lock (Promise chain mutex)", () => {
       [key]: { sessionId: "s-noop", updatedAt: Date.now() },
     });
 
+    await updateSessionStore(
+      storePath,
+      async () => {
+        // Warm the hot projection; the assertion below is about repeated no-op saves.
+      },
+      { skipMaintenance: true },
+    );
+
     const writeSpy = vi.spyOn(jsonFiles, "writeTextAtomic");
     await updateSessionStore(
       storePath,
@@ -211,6 +219,93 @@ describe("session store lock (Promise chain mutex)", () => {
     );
     expect(writeSpy).not.toHaveBeenCalled();
     writeSpy.mockRestore();
+  });
+
+  it("compacts prompt snapshots only in persisted session store JSON", async () => {
+    const key = "agent:main:prompt-snapshot-bloat";
+    const { storePath } = await makeTmpStore();
+    let liveEntry: SessionEntry | undefined;
+
+    await updateSessionStore(
+      storePath,
+      async (store) => {
+        store[key] = {
+          sessionId: "sess-prompt-snapshot-bloat",
+          updatedAt: Date.now(),
+          skillsSnapshot: {
+            prompt: "large rendered skills prompt payload that should not persist",
+            skills: [{ name: "large-skill", primaryEnv: "LARGE_SKILL_API_KEY" }],
+            resolvedSkills: [{ name: "large-skill" }] as never,
+            version: 7,
+          },
+          systemPromptReport: {
+            source: "run",
+            generatedAt: Date.now(),
+            bootstrapTruncation: {
+              warningMode: "once",
+              warningSignaturesSeen: ["sig-a"],
+            },
+            systemPrompt: {
+              chars: 12_000,
+              projectContextChars: 8_000,
+              nonProjectContextChars: 4_000,
+            },
+            injectedWorkspaceFiles: [
+              {
+                name: "AGENTS.md",
+                path: "/workspace/AGENTS.md",
+                missing: false,
+                rawChars: 6_000,
+                injectedChars: 3_000,
+                truncated: true,
+              },
+            ],
+            skills: {
+              promptChars: 5_000,
+              entries: [{ name: "large-skill", blockChars: 5_000 }],
+            },
+            tools: {
+              listChars: 10_000,
+              schemaChars: 20_000,
+              entries: [
+                {
+                  name: "large_tool",
+                  summaryChars: 1_000,
+                  schemaChars: 9_000,
+                },
+              ],
+            },
+          },
+        };
+        liveEntry = store[key];
+      },
+      { skipMaintenance: true },
+    );
+
+    expect(liveEntry?.skillsSnapshot?.prompt).toContain("large rendered skills prompt");
+    expect(liveEntry?.skillsSnapshot?.resolvedSkills).toHaveLength(1);
+    expect(liveEntry?.systemPromptReport?.injectedWorkspaceFiles).toHaveLength(1);
+
+    const raw = await fsPromises.readFile(storePath, "utf8");
+    expect(raw).not.toContain("large rendered skills prompt payload");
+    expect(raw).not.toContain("resolvedSkills");
+    expect(raw).not.toContain("/workspace/AGENTS.md");
+    expect(raw).not.toContain("large_tool");
+
+    const persisted = loadSessionStore(storePath, { skipCache: true })[key];
+    expect(persisted?.skillsSnapshot).toMatchObject({
+      prompt: "",
+      skills: [{ name: "large-skill", primaryEnv: "LARGE_SKILL_API_KEY" }],
+      version: 7,
+    });
+    expect(persisted?.skillsSnapshot?.resolvedSkills).toBeUndefined();
+    expect(persisted?.systemPromptReport?.bootstrapTruncation?.warningSignaturesSeen).toEqual([
+      "sig-a",
+    ]);
+    expect(persisted?.systemPromptReport?.systemPrompt.chars).toBe(12_000);
+    expect(persisted?.systemPromptReport?.injectedWorkspaceFiles).toEqual([]);
+    expect(persisted?.systemPromptReport?.skills.entries).toEqual([]);
+    expect(persisted?.systemPromptReport?.tools.entries).toEqual([]);
   });
 
   it("multiple consecutive errors do not permanently poison the queue", async () => {

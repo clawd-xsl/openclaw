@@ -289,6 +289,67 @@ type SaveSessionStoreOptions = {
   skipHotProjectionSync?: boolean;
 };
 
+function compactSessionSkillSnapshotForPersistence(
+  snapshot: SessionEntry["skillsSnapshot"],
+): SessionEntry["skillsSnapshot"] {
+  if (!snapshot) {
+    return snapshot;
+  }
+  const compacted = { ...snapshot, prompt: "" };
+  delete compacted.resolvedSkills;
+  return compacted;
+}
+
+function compactSessionSystemPromptReportForPersistence(
+  report: SessionEntry["systemPromptReport"],
+): SessionEntry["systemPromptReport"] {
+  if (!report) {
+    return report;
+  }
+  return {
+    ...report,
+    injectedWorkspaceFiles: [],
+    skills: {
+      ...report.skills,
+      entries: [],
+    },
+    tools: {
+      ...report.tools,
+      entries: [],
+    },
+  };
+}
+
+function compactSessionEntryForPersistence(entry: SessionEntry): SessionEntry {
+  const skillsSnapshot = compactSessionSkillSnapshotForPersistence(entry.skillsSnapshot);
+  const systemPromptReport = compactSessionSystemPromptReportForPersistence(
+    entry.systemPromptReport,
+  );
+  if (skillsSnapshot === entry.skillsSnapshot && systemPromptReport === entry.systemPromptReport) {
+    return entry;
+  }
+  return {
+    ...entry,
+    skillsSnapshot,
+    systemPromptReport,
+  };
+}
+
+function compactSessionStoreForPersistence(
+  store: Record<string, SessionEntry>,
+): Record<string, SessionEntry> {
+  let compacted: Record<string, SessionEntry> | undefined;
+  for (const [key, entry] of Object.entries(store)) {
+    const nextEntry = compactSessionEntryForPersistence(entry);
+    if (nextEntry === entry) {
+      continue;
+    }
+    compacted ??= { ...store };
+    compacted[key] = nextEntry;
+  }
+  return compacted ?? store;
+}
+
 function updateSessionStoreWriteCaches(params: {
   storePath: string;
   store: Record<string, SessionEntry>;
@@ -433,36 +494,64 @@ export async function writeHotSessionEntry(params: {
     resolved: ReturnType<typeof resolveSessionStoreEntry>,
   ) => Promise<SessionEntry | null> | SessionEntry | null;
 }): Promise<SessionEntry | null> {
+  const traceCaller = resolveSessionStoreTraceCaller();
+  const trace = createTimingTrace({
+    channel: "session-store-trace",
+    label: params.sessionKey,
+    sink: "stderr",
+    scope: "writeHotSessionEntry",
+  });
+  trace(
+    "start",
+    `caller=${traceCaller} createIfMissing=${params.createIfMissing === false ? "no" : "yes"}`,
+  );
+  trace("hydrate-start");
   await ensureHotSessionStoreHydrated(params.storePath);
+  trace("hydrate-done");
   const hotStorePath = resolveHotSessionStorePath(params.storePath);
+  trace("lock-wait-start");
   return await withSessionStoreLock(hotStorePath, async () => {
+    trace("lock-acquired");
     const store = loadSessionStore(hotStorePath, { skipCache: true });
+    trace("store-loaded", `entries=${Object.keys(store).length}`);
     const resolved = resolveSessionStoreEntry({ store, sessionKey: params.sessionKey });
     const existing = resolved.existing;
+    trace(
+      "entry-resolved",
+      `hasExisting=${existing ? "yes" : "no"} legacyKeys=${resolved.legacyKeys.length}`,
+    );
     if (!existing && params.createIfMissing === false) {
+      trace("missing-entry");
       return null;
     }
+    trace("mutator-start");
     const next = await params.mutator(existing, resolved);
+    trace("mutator-done", `hasNext=${next ? "yes" : "no"}`);
     if (!next) {
+      trace("no-next");
       return existing ?? null;
     }
     const nextHot = projectSessionEntryToHot(next);
+    trace("project-hot-done");
     const canSkipPersist =
       resolved.legacyKeys.length === 0 &&
       Object.prototype.hasOwnProperty.call(store, resolved.normalizedKey) &&
       areProjectedHotEntriesEqual(existing, next);
     if (canSkipPersist) {
+      trace("persist-skipped");
       return existing ?? next;
     }
     store[resolved.normalizedKey] = nextHot;
     for (const legacyKey of resolved.legacyKeys) {
       delete store[legacyKey];
     }
+    trace("persist-start");
     await saveSessionStoreUnlocked(hotStorePath, store, {
       activeSessionKey: normalizeStoreSessionKey(params.sessionKey),
       skipMaintenance: true,
       skipHotProjectionSync: true,
     });
+    trace("persist-done");
     return next;
   });
 }
@@ -556,8 +645,13 @@ async function saveSessionStoreUnlocked(
   const trace = createTimingTrace({
     channel: "session-store-trace",
     label: opts?.activeSessionKey ?? "store",
+    sink: "stderr",
     scope: "saveSessionStoreUnlocked",
   });
+  trace(
+    "start",
+    `hot=${isHotSessionStorePath(storePath) ? "yes" : "no"} skipMaintenance=${opts?.skipMaintenance ? "yes" : "no"}`,
+  );
   normalizeSessionStore(store);
   trace("normalize-done", `entries=${Object.keys(store).length}`);
 
@@ -686,7 +780,8 @@ async function saveSessionStoreUnlocked(
 
   await fs.promises.mkdir(path.dirname(storePath), { recursive: true });
   trace("mkdir-done");
-  const json = JSON.stringify(store, null, 2);
+  const persistedStore = compactSessionStoreForPersistence(store);
+  const json = JSON.stringify(persistedStore, null, 2);
   trace("json-serialized", `bytes=${Buffer.byteLength(json)}`);
   if (getSerializedSessionStore(storePath) === json) {
     updateSessionStoreWriteCaches({ storePath, store, serialized: json });
@@ -774,8 +869,11 @@ export async function updateSessionStore<T>(
   const trace = createTimingTrace({
     channel: "session-store-trace",
     label: "store",
+    sink: "stderr",
     scope: "updateSessionStore",
   });
+  trace("start", `caller=${traceCaller}`);
+  trace("lock-wait-start", `caller=${traceCaller}`);
   return await withSessionStoreLock(storePath, async () => {
     trace("lock-acquired", `caller=${traceCaller}`);
     // Always re-read inside the lock to avoid clobbering concurrent writers.
@@ -789,6 +887,7 @@ export async function updateSessionStore<T>(
       nextStore: store,
       allowDropSessionKeys: opts?.allowDropAcpMetaSessionKeys,
     });
+    trace("preserve-acp-done", `caller=${traceCaller}`);
     const persistStartedAt = Date.now();
     await saveSessionStoreUnlocked(storePath, store, opts);
     trace("persisted", `caller=${traceCaller} persistMs=${Date.now() - persistStartedAt}`);
@@ -931,18 +1030,21 @@ async function drainSessionStoreLockQueue(storePath: string): Promise<void> {
         let failed: unknown;
         let hasFailure = false;
         try {
+          task.onAcquireStart?.();
           lock = await (sessionWriteLockAcquirerForTests ?? acquireSessionWriteLock)({
             sessionFile: storePath,
             timeoutMs: remainingTimeoutMs,
             staleMs: task.staleMs,
             maxHoldMs: resolveSessionStoreLockMaxHoldMs(task.timeoutMs),
           });
+          task.onAcquireDone?.();
           result = await task.fn();
         } catch (err) {
           hasFailure = true;
           failed = err;
         } finally {
           await lock?.release().catch(() => undefined);
+          task.onReleaseDone?.();
         }
         if (hasFailure) {
           task.reject(failed);
@@ -982,10 +1084,28 @@ async function withSessionStoreLock<T>(
 
   const hasTimeout = timeoutMs > 0 && Number.isFinite(timeoutMs);
   const queue = getOrCreateLockQueue(storePath);
+  const trace = createTimingTrace({
+    channel: "session-store-trace",
+    label: path.basename(storePath) || "store",
+    sink: "stderr",
+    scope: "withSessionStoreLock",
+  });
+  trace(
+    "enqueue",
+    `running=${queue.running ? "yes" : "no"} pending=${queue.pending.length} timeoutMs=${hasTimeout ? timeoutMs : "none"} staleMs=${staleMs}`,
+  );
 
   const promise = new Promise<T>((resolve, reject) => {
     const task: SessionStoreLockTask = {
-      fn: async () => await fn(),
+      fn: async () => {
+        trace("fn-start");
+        const result = await fn();
+        trace("fn-done");
+        return result;
+      },
+      onAcquireStart: () => trace("file-lock-start"),
+      onAcquireDone: () => trace("file-lock-done"),
+      onReleaseDone: () => trace("file-lock-release-done"),
       resolve: (value) => resolve(value as T),
       reject,
       timeoutMs: hasTimeout ? timeoutMs : undefined,
@@ -993,10 +1113,13 @@ async function withSessionStoreLock<T>(
     };
 
     queue.pending.push(task);
+    trace("queued", `pending=${queue.pending.length}`);
     void drainSessionStoreLockQueue(storePath);
   });
 
-  return await promise;
+  const result = await promise;
+  trace("done");
+  return result;
 }
 
 export async function updateSessionStoreEntry(params: {
@@ -1009,8 +1132,11 @@ export async function updateSessionStoreEntry(params: {
   const trace = createTimingTrace({
     channel: "session-store-trace",
     label: sessionKey,
+    sink: "stderr",
     scope: "updateSessionStoreEntry",
   });
+  trace("start", `caller=${traceCaller}`);
+  trace("lock-wait-start", `caller=${traceCaller}`);
   return await withSessionStoreLock(storePath, async () => {
     trace("lock-acquired", `caller=${traceCaller}`);
     const store = loadSessionStore(storePath, { skipCache: true });
@@ -1096,6 +1222,7 @@ export async function updateLastRoute(params: {
   const trace = createTimingTrace({
     channel: "session-store-trace",
     label: sessionKey,
+    sink: "stderr",
     scope: "updateLastRoute",
   });
   let shouldQueueColdBackfill = false;

@@ -4,6 +4,9 @@ export type SessionStoreLockTask = {
   fn: () => Promise<unknown>;
   resolve: (value: unknown) => void;
   reject: (reason: unknown) => void;
+  onAcquireStart?: () => void;
+  onAcquireDone?: () => void;
+  onReleaseDone?: () => void;
   timeoutMs?: number;
   staleMs: number;
 };
