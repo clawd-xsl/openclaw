@@ -13,7 +13,7 @@ import {
 
 async function resolveRealStorePath(sessionsDir: string): Promise<string> {
   // Match the native realpath behavior used by both discovery paths.
-  return fsSync.realpathSync.native(path.join(sessionsDir, "sessions.json"));
+  return fsSync.realpathSync.native(path.join(sessionsDir, "sessions.sqlite"));
 }
 
 async function createAgentSessionStores(
@@ -24,7 +24,7 @@ async function createAgentSessionStores(
   for (const agentId of agentIds) {
     const sessionsDir = path.join(root, "agents", agentId, "sessions");
     await fs.mkdir(sessionsDir, { recursive: true });
-    await fs.writeFile(path.join(sessionsDir, "sessions.json"), "{}", "utf8");
+    await fs.writeFile(path.join(sessionsDir, "sessions.sqlite"), "", "utf8");
     storePaths[agentId] = await resolveRealStorePath(sessionsDir);
   }
   return storePaths;
@@ -33,7 +33,7 @@ async function createAgentSessionStores(
 function createCustomRootCfg(customRoot: string, defaultAgentId = "ops"): OpenClawConfig {
   return {
     session: {
-      store: path.join(customRoot, "agents", "{agentId}", "sessions", "sessions.json"),
+      store: path.join(customRoot, "agents", "{agentId}", "sessions", "sessions.sqlite"),
     },
     agents: {
       list: [{ id: defaultAgentId, default: true }],
@@ -81,7 +81,7 @@ describe("resolveSessionStoreTargets", () => {
     await withTempHome(async () => {
       const cfg: OpenClawConfig = {
         session: {
-          store: "~/.openclaw/agents/{agentId}/sessions/sessions.json",
+          store: "~/.openclaw/agents/{agentId}/sessions/sessions.sqlite",
         },
         agents: {
           list: [{ id: "main", default: true }, { id: "work" }],
@@ -106,7 +106,7 @@ describe("resolveSessionStoreTargets", () => {
   it("dedupes shared store paths for --all-agents", () => {
     const cfg: OpenClawConfig = {
       session: {
-        store: "/tmp/shared-sessions.json",
+        store: "/tmp/shared-sessions.sqlite",
       },
       agents: {
         list: [{ id: "main", default: true }, { id: "work" }],
@@ -114,7 +114,7 @@ describe("resolveSessionStoreTargets", () => {
     };
 
     expect(resolveSessionStoreTargets(cfg, { allAgents: true })).toEqual([
-      { agentId: "main", storePath: path.resolve("/tmp/shared-sessions.json") },
+      { agentId: "main", storePath: path.resolve("/tmp/shared-sessions.sqlite") },
     ]);
   });
 
@@ -133,7 +133,7 @@ describe("resolveSessionStoreTargets", () => {
       /cannot be used together/i,
     );
     expect(() =>
-      resolveSessionStoreTargets({}, { store: "/tmp/sessions.json", allAgents: true }),
+      resolveSessionStoreTargets({}, { store: "/tmp/sessions.sqlite", allAgents: true }),
     ).toThrow(/cannot be combined/i);
   });
 });
@@ -191,8 +191,8 @@ describe("resolveAllAgentSessionStoreTargets", () => {
       const retiredSessionsDir = path.join(envStateDir, "agents", "retired", "sessions");
       await fs.mkdir(mainSessionsDir, { recursive: true });
       await fs.mkdir(retiredSessionsDir, { recursive: true });
-      await fs.writeFile(path.join(mainSessionsDir, "sessions.json"), "{}", "utf8");
-      await fs.writeFile(path.join(retiredSessionsDir, "sessions.json"), "{}", "utf8");
+      await fs.writeFile(path.join(mainSessionsDir, "sessions.sqlite"), "", "utf8");
+      await fs.writeFile(path.join(retiredSessionsDir, "sessions.sqlite"), "", "utf8");
 
       const env = {
         ...process.env,
@@ -255,12 +255,12 @@ describe("resolveAllAgentSessionStoreTargets", () => {
         const leakedFile = path.join(home, "outside.json");
         await fs.mkdir(opsSessionsDir, { recursive: true });
         await fs.writeFile(leakedFile, JSON.stringify({ leak: { secret: "x" } }), "utf8");
-        await fs.symlink(leakedFile, path.join(opsSessionsDir, "sessions.json"));
+        await fs.symlink(leakedFile, path.join(opsSessionsDir, "sessions.sqlite"));
 
         const targets = await resolver.resolve(createCustomRootCfg(customRoot), process.env);
         expect(targets).not.toContainEqual({
           agentId: "ops",
-          storePath: expect.stringContaining(path.join("ops", "sessions", "sessions.json")),
+          storePath: expect.stringContaining(path.join("ops", "sessions", "sessions.sqlite")),
         });
       });
     });
@@ -273,8 +273,8 @@ describe("resolveAllAgentSessionStoreTargets", () => {
       const junkSessionsDir = path.join(stateDir, "agents", "###", "sessions");
       await fs.mkdir(mainSessionsDir, { recursive: true });
       await fs.mkdir(junkSessionsDir, { recursive: true });
-      await fs.writeFile(path.join(mainSessionsDir, "sessions.json"), "{}", "utf8");
-      await fs.writeFile(path.join(junkSessionsDir, "sessions.json"), "{}", "utf8");
+      await fs.writeFile(path.join(mainSessionsDir, "sessions.sqlite"), "", "utf8");
+      await fs.writeFile(path.join(junkSessionsDir, "sessions.sqlite"), "", "utf8");
 
       const cfg: OpenClawConfig = {};
       const mainStorePath = await resolveRealStorePath(mainSessionsDir);
@@ -285,7 +285,9 @@ describe("resolveAllAgentSessionStoreTargets", () => {
         storePath: mainStorePath,
       });
       expect(
-        targets.some((target) => target.storePath === path.join(junkSessionsDir, "sessions.json")),
+        targets.some(
+          (target) => target.storePath === path.join(junkSessionsDir, "sessions.sqlite"),
+        ),
       ).toBe(false);
     });
   });

@@ -9,6 +9,8 @@ import {
 } from "../../agents/pi-bundle-mcp-tools.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import {
+  loadSessionStore,
+  saveSessionStore,
   flushSessionStoreBackfillForTest,
   resetSessionStoreBackfillRuntimeForTest,
   type SessionEntry,
@@ -90,7 +92,7 @@ async function makeCaseDir(prefix: string): Promise<string> {
 
 async function makeStorePath(prefix: string): Promise<string> {
   const root = await makeCaseDir(prefix);
-  return path.join(root, "sessions.json");
+  return path.join(root, "sessions.sqlite");
 }
 
 const createStorePath = makeStorePath;
@@ -101,7 +103,13 @@ async function writeSessionStoreFast(
   store: Record<string, SessionEntry | Record<string, unknown>>,
 ): Promise<void> {
   await fs.mkdir(path.dirname(storePath), { recursive: true });
-  await fs.writeFile(storePath, JSON.stringify(store), "utf-8");
+  await saveSessionStore(storePath, store as Record<string, SessionEntry>, {
+    skipMaintenance: true,
+  });
+}
+
+function readSessionStoreFast(storePath: string): Record<string, SessionEntry> {
+  return loadSessionStore(storePath, { skipCache: true });
 }
 
 function setMinimalCurrentConversationBindingRegistryForTests(): void {
@@ -272,7 +280,7 @@ describe("initSessionState thread forking", () => {
       "utf-8",
     );
 
-    const storePath = path.join(root, "sessions.json");
+    const storePath = path.join(root, "sessions.sqlite");
     const parentSessionKey = "agent:main:slack:channel:c1";
     await writeSessionStoreFast(storePath, {
       [parentSessionKey]: {
@@ -360,7 +368,7 @@ describe("initSessionState thread forking", () => {
       "utf-8",
     );
 
-    const storePath = path.join(root, "sessions.json");
+    const storePath = path.join(root, "sessions.sqlite");
     const parentSessionKey = "agent:main:slack:channel:c1";
     const threadSessionKey = "agent:main:slack:channel:c1:thread:123";
     await writeSessionStoreFast(storePath, {
@@ -441,7 +449,7 @@ describe("initSessionState thread forking", () => {
       "utf-8",
     );
 
-    const storePath = path.join(root, "sessions.json");
+    const storePath = path.join(root, "sessions.sqlite");
     const parentSessionKey = "agent:main:slack:channel:c1";
     // Set totalTokens well above PARENT_FORK_MAX_TOKENS (100_000)
     await writeSessionStoreFast(storePath, {
@@ -510,7 +518,7 @@ describe("initSessionState thread forking", () => {
       "utf-8",
     );
 
-    const storePath = path.join(root, "sessions.json");
+    const storePath = path.join(root, "sessions.sqlite");
     const parentSessionKey = "agent:main:slack:channel:c1";
     await writeSessionStoreFast(storePath, {
       [parentSessionKey]: {
@@ -556,7 +564,7 @@ describe("initSessionState thread forking", () => {
 
   it("records topic-specific session files when MessageThreadId is present", async () => {
     const root = await makeCaseDir("openclaw-topic-session-");
-    const storePath = path.join(root, "sessions.json");
+    const storePath = path.join(root, "sessions.sqlite");
 
     const cfg = {
       session: { store: storePath },
@@ -581,7 +589,7 @@ describe("initSessionState thread forking", () => {
 
   it("records topic-specific session files from SessionKey when MessageThreadId is absent", async () => {
     const root = await makeCaseDir("openclaw-topic-session-key-");
-    const storePath = path.join(root, "sessions.json");
+    const storePath = path.join(root, "sessions.sqlite");
 
     const cfg = {
       session: { store: storePath },
@@ -612,7 +620,7 @@ describe("initSessionState thread forking", () => {
 describe("initSessionState RawBody", () => {
   it("uses RawBody for command extraction and reset triggers when Body contains wrapped context", async () => {
     const root = await makeCaseDir("openclaw-rawbody-");
-    const storePath = path.join(root, "sessions.json");
+    const storePath = path.join(root, "sessions.sqlite");
     const cfg = { session: { store: storePath } } as OpenClawConfig;
 
     const statusResult = await initSessionState({
@@ -643,7 +651,7 @@ describe("initSessionState RawBody", () => {
 
   it("preserves argument casing while still matching reset triggers case-insensitively", async () => {
     const root = await makeCaseDir("openclaw-rawbody-reset-case-");
-    const storePath = path.join(root, "sessions.json");
+    const storePath = path.join(root, "sessions.sqlite");
 
     const cfg = {
       session: {
@@ -671,7 +679,7 @@ describe("initSessionState RawBody", () => {
 
   it("rotates local session state for /new on bound ACP sessions", async () => {
     const root = await makeCaseDir("openclaw-rawbody-acp-reset-");
-    const storePath = path.join(root, "sessions.json");
+    const storePath = path.join(root, "sessions.sqlite");
     const sessionKey = "agent:codex:acp:binding:discord:default:feedface";
     const existingSessionId = "session-existing";
     const now = Date.now();
@@ -727,7 +735,7 @@ describe("initSessionState RawBody", () => {
 
   it("rotates local session state for ACP /new when no matching conversation binding exists", async () => {
     const root = await makeCaseDir("openclaw-rawbody-acp-reset-no-conversation-");
-    const storePath = path.join(root, "sessions.json");
+    const storePath = path.join(root, "sessions.sqlite");
     const sessionKey = "agent:codex:acp:binding:discord:default:feedface";
     const existingSessionId = "session-existing";
     const now = Date.now();
@@ -772,7 +780,7 @@ describe("initSessionState RawBody", () => {
 
   it("keeps custom reset triggers working on bound ACP sessions", async () => {
     const root = await makeCaseDir("openclaw-rawbody-acp-custom-reset-");
-    const storePath = path.join(root, "sessions.json");
+    const storePath = path.join(root, "sessions.sqlite");
     const sessionKey = "agent:codex:acp:binding:discord:default:feedface";
     const existingSessionId = "session-existing";
     const now = Date.now();
@@ -831,7 +839,7 @@ describe("initSessionState RawBody", () => {
 
   it("keeps normal /new behavior for unbound ACP-shaped session keys", async () => {
     const root = await makeCaseDir("openclaw-rawbody-acp-unbound-reset-");
-    const storePath = path.join(root, "sessions.json");
+    const storePath = path.join(root, "sessions.sqlite");
     const sessionKey = "agent:codex:acp:binding:discord:default:feedface";
     const existingSessionId = "session-existing";
     const now = Date.now();
@@ -875,7 +883,7 @@ describe("initSessionState RawBody", () => {
 
   it("does not suppress /new when active conversation binding points to a non-ACP session", async () => {
     const root = await makeCaseDir("openclaw-rawbody-acp-nonacp-binding-");
-    const storePath = path.join(root, "sessions.json");
+    const storePath = path.join(root, "sessions.sqlite");
     const sessionKey = "agent:codex:acp:binding:discord:default:feedface";
     const existingSessionId = "session-existing";
     const now = Date.now();
@@ -961,7 +969,7 @@ describe("initSessionState RawBody", () => {
 
   it("does not suppress /new when active target session key is non-ACP even with configured ACP binding", async () => {
     const root = await makeCaseDir("openclaw-rawbody-acp-configured-fallback-target-");
-    const storePath = path.join(root, "sessions.json");
+    const storePath = path.join(root, "sessions.sqlite");
     const channelId = "1478836151241412759";
     const fallbackSessionKey = "agent:main:discord:channel:focus-target";
     const existingSessionId = "session-existing";
@@ -1070,7 +1078,7 @@ describe("initSessionState RawBody", () => {
     const sessionKey = `agent:${agentId}:telegram:12345`;
     const sessionId = "sess-worker-1";
     const sessionFile = path.join(stateDir, "agents", agentId, "sessions", `${sessionId}.jsonl`);
-    const storePath = path.join(stateDir, "agents", agentId, "sessions", "sessions.json");
+    const storePath = path.join(stateDir, "agents", agentId, "sessions", "sessions.sqlite");
 
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
     try {
@@ -1206,7 +1214,7 @@ describe("initSessionState reset policy", () => {
   it("defaults to daily reset at 4am local time", async () => {
     vi.setSystemTime(new Date(2026, 0, 18, 5, 0, 0));
     const root = await makeCaseDir("openclaw-reset-daily-");
-    const storePath = path.join(root, "sessions.json");
+    const storePath = path.join(root, "sessions.sqlite");
     const sessionKey = "agent:main:whatsapp:dm:s1";
     const existingSessionId = "daily-session-id";
 
@@ -1240,7 +1248,7 @@ describe("initSessionState reset policy", () => {
   it("treats sessions as stale before the daily reset when updated before yesterday's boundary", async () => {
     vi.setSystemTime(new Date(2026, 0, 18, 3, 0, 0));
     const root = await makeCaseDir("openclaw-reset-daily-edge-");
-    const storePath = path.join(root, "sessions.json");
+    const storePath = path.join(root, "sessions.sqlite");
     const sessionKey = "agent:main:whatsapp:dm:s-edge";
     const existingSessionId = "daily-edge-session";
 
@@ -1265,7 +1273,7 @@ describe("initSessionState reset policy", () => {
   it("expires sessions when idle timeout wins over daily reset", async () => {
     vi.setSystemTime(new Date(2026, 0, 18, 5, 30, 0));
     const root = await makeCaseDir("openclaw-reset-idle-");
-    const storePath = path.join(root, "sessions.json");
+    const storePath = path.join(root, "sessions.sqlite");
     const sessionKey = "agent:main:whatsapp:dm:s2";
     const existingSessionId = "idle-session-id";
 
@@ -1295,7 +1303,7 @@ describe("initSessionState reset policy", () => {
   it("uses per-type overrides for thread sessions", async () => {
     vi.setSystemTime(new Date(2026, 0, 18, 5, 0, 0));
     const root = await makeCaseDir("openclaw-reset-thread-");
-    const storePath = path.join(root, "sessions.json");
+    const storePath = path.join(root, "sessions.sqlite");
     const sessionKey = "agent:main:slack:channel:c1:thread:123";
     const existingSessionId = "thread-session-id";
 
@@ -1326,7 +1334,7 @@ describe("initSessionState reset policy", () => {
   it("detects thread sessions without thread key suffix", async () => {
     vi.setSystemTime(new Date(2026, 0, 18, 5, 0, 0));
     const root = await makeCaseDir("openclaw-reset-thread-nosuffix-");
-    const storePath = path.join(root, "sessions.json");
+    const storePath = path.join(root, "sessions.sqlite");
     const sessionKey = "agent:main:discord:channel:c1";
     const existingSessionId = "thread-nosuffix";
 
@@ -1356,7 +1364,7 @@ describe("initSessionState reset policy", () => {
   it("defaults to daily resets when only resetByType is configured", async () => {
     vi.setSystemTime(new Date(2026, 0, 18, 5, 0, 0));
     const root = await makeCaseDir("openclaw-reset-type-default-");
-    const storePath = path.join(root, "sessions.json");
+    const storePath = path.join(root, "sessions.sqlite");
     const sessionKey = "agent:main:whatsapp:dm:s4";
     const existingSessionId = "type-default-session";
 
@@ -1386,7 +1394,7 @@ describe("initSessionState reset policy", () => {
   it("keeps legacy idleMinutes behavior without reset config", async () => {
     vi.setSystemTime(new Date(2026, 0, 18, 5, 0, 0));
     const root = await makeCaseDir("openclaw-reset-legacy-");
-    const storePath = path.join(root, "sessions.json");
+    const storePath = path.join(root, "sessions.sqlite");
     const sessionKey = "agent:main:whatsapp:dm:s3";
     const existingSessionId = "legacy-session-id";
 
@@ -1421,7 +1429,7 @@ describe("initSessionState reset policy", () => {
 describe("initSessionState channel reset overrides", () => {
   it("uses channel-specific reset policy when configured", async () => {
     const root = await makeCaseDir("openclaw-channel-idle-");
-    const storePath = path.join(root, "sessions.json");
+    const storePath = path.join(root, "sessions.sqlite");
     const sessionKey = "agent:main:discord:dm:123";
     const sessionId = "session-override";
     const updatedAt = Date.now() - (10080 - 1) * 60_000;
@@ -1756,7 +1764,7 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
       expect(result.sessionEntry.cliSessionBindings).toBeUndefined();
       expect(result.sessionEntry.claudeCliSessionId).toBeUndefined();
 
-      const stored = JSON.parse(await fs.readFile(storePath, "utf-8"));
+      const stored = readSessionStoreFast(storePath);
       expect(stored[sessionKey].cliSessionIds).toBeUndefined();
       expect(stored[sessionKey].cliSessionBindings).toBeUndefined();
       expect(stored[sessionKey].claudeCliSessionId).toBeUndefined();
@@ -2108,12 +2116,9 @@ describe("persistSessionUsageUpdate", () => {
     sessionKey: string;
     entry: Record<string, unknown>;
   }) {
-    await fs.mkdir(path.dirname(params.storePath), { recursive: true });
-    await fs.writeFile(
-      params.storePath,
-      JSON.stringify({ [params.sessionKey]: params.entry }, null, 2),
-      "utf-8",
-    );
+    await writeSessionStoreFast(params.storePath, {
+      [params.sessionKey]: params.entry,
+    });
   }
 
   it("uses lastCallUsage for totalTokens when provided", async () => {
@@ -2136,7 +2141,7 @@ describe("persistSessionUsageUpdate", () => {
       contextTokensUsed: 200_000,
     });
 
-    const stored = JSON.parse(await fs.readFile(storePath, "utf-8"));
+    const stored = readSessionStoreFast(storePath);
     expect(stored[sessionKey].totalTokens).toBe(12_000);
     expect(stored[sessionKey].totalTokensFresh).toBe(true);
     expect(stored[sessionKey].inputTokens).toBe(180_000);
@@ -2170,7 +2175,7 @@ describe("persistSessionUsageUpdate", () => {
       contextTokensUsed: 200_000,
     });
 
-    const stored = JSON.parse(await fs.readFile(storePath, "utf-8"));
+    const stored = readSessionStoreFast(storePath);
     expect(stored[sessionKey].inputTokens).toBe(100_000);
     expect(stored[sessionKey].outputTokens).toBe(8_000);
     expect(stored[sessionKey].cacheRead).toBe(18_000);
@@ -2193,7 +2198,7 @@ describe("persistSessionUsageUpdate", () => {
       contextTokensUsed: 200_000,
     });
 
-    const stored = JSON.parse(await fs.readFile(storePath, "utf-8"));
+    const stored = readSessionStoreFast(storePath);
     expect(stored[sessionKey].totalTokens).toBeUndefined();
     expect(stored[sessionKey].totalTokensFresh).toBe(false);
   });
@@ -2215,7 +2220,7 @@ describe("persistSessionUsageUpdate", () => {
       contextTokensUsed: 200_000,
     });
 
-    const stored = JSON.parse(await fs.readFile(storePath, "utf-8"));
+    const stored = readSessionStoreFast(storePath);
     expect(stored[sessionKey].totalTokens).toBe(42_000);
     expect(stored[sessionKey].totalTokensFresh).toBe(true);
   });
@@ -2250,7 +2255,7 @@ describe("persistSessionUsageUpdate", () => {
     });
 
     await flushSessionStoreBackfillForTest(storePath);
-    const stored = JSON.parse(await fs.readFile(storePath, "utf-8"));
+    const stored = readSessionStoreFast(storePath);
     expect(stored[sessionKey].totalTokens).toBeUndefined();
     expect(stored[sessionKey].totalTokensFresh).toBe(false);
     expect(stored[sessionKey].cliSessionIds?.["claude-cli"]).toBe("cli-session-1");
@@ -2292,7 +2297,7 @@ describe("persistSessionUsageUpdate", () => {
     });
 
     await flushSessionStoreBackfillForTest(storePath);
-    const stored = JSON.parse(await fs.readFile(storePath, "utf-8"));
+    const stored = readSessionStoreFast(storePath);
     expect(stored[sessionKey].totalTokens).toBeUndefined();
     expect(stored[sessionKey].totalTokensFresh).toBe(false);
     expect(stored[sessionKey].cliSessionIds?.["claude-cli-streaming"]).toBe("stream-session-1");
@@ -2328,7 +2333,7 @@ describe("persistSessionUsageUpdate", () => {
     });
 
     await flushSessionStoreBackfillForTest(storePath);
-    const stored = JSON.parse(await fs.readFile(storePath, "utf-8"));
+    const stored = readSessionStoreFast(storePath);
     expect(stored[sessionKey].totalTokens).toBe(39_000);
     expect(stored[sessionKey].totalTokensFresh).toBe(true);
   });
@@ -2376,7 +2381,7 @@ describe("persistSessionUsageUpdate", () => {
     });
 
     await flushSessionStoreBackfillForTest(storePath);
-    const stored = JSON.parse(await fs.readFile(storePath, "utf-8"));
+    const stored = readSessionStoreFast(storePath);
     expect(stored[sessionKey].modelProvider).toBe("claude-cli-streaming");
     expect(stored[sessionKey].model).toBe("claude-opus-4-6");
     expect(stored[sessionKey].contextTokens).toBe(200_000);
@@ -2420,7 +2425,7 @@ describe("persistSessionUsageUpdate", () => {
     });
 
     await flushSessionStoreBackfillForTest(storePath);
-    const stored = JSON.parse(await fs.readFile(storePath, "utf-8"));
+    const stored = readSessionStoreFast(storePath);
     expect(stored[sessionKey].providerOverride).toBe("xiaomi-coding");
     expect(stored[sessionKey].modelOverride).toBe("mimo-v2.5-pro");
     expect(stored[sessionKey].liveModelSwitchPending).toBe(true);
@@ -2476,7 +2481,7 @@ describe("persistSessionUsageUpdate", () => {
     });
 
     await flushSessionStoreBackfillForTest(storePath);
-    const stored = JSON.parse(await fs.readFile(storePath, "utf-8"));
+    const stored = readSessionStoreFast(storePath);
     expect(stored[sessionKey].modelProvider).toBe("claude-cli-streaming");
     expect(stored[sessionKey].model).toBe("claude-opus-4-6");
     expect(stored[sessionKey].contextTokens).toBe(200_000);
@@ -2513,7 +2518,7 @@ describe("persistSessionUsageUpdate", () => {
       contextTokensUsed: 200_000,
     });
 
-    const stored = JSON.parse(await fs.readFile(storePath, "utf-8"));
+    const stored = readSessionStoreFast(storePath);
     expect(stored[sessionKey].totalTokens).toBe(39_000);
     expect(stored[sessionKey].totalTokensFresh).toBe(true);
     expect(stored[sessionKey].inputTokens).toBe(1_234);
@@ -2537,7 +2542,7 @@ describe("persistSessionUsageUpdate", () => {
       contextTokensUsed: 200_000,
     });
 
-    const stored = JSON.parse(await fs.readFile(storePath, "utf-8"));
+    const stored = readSessionStoreFast(storePath);
     expect(stored[sessionKey].totalTokens).toBe(250_000);
     expect(stored[sessionKey].totalTokensFresh).toBe(true);
   });
@@ -2585,7 +2590,7 @@ describe("persistSessionUsageUpdate", () => {
       contextTokensUsed: 200_000,
     });
 
-    const stored = JSON.parse(await fs.readFile(storePath, "utf-8"));
+    const stored = readSessionStoreFast(storePath);
     expect(stored[sessionKey].estimatedCostUsd).toBeCloseTo(0.009225, 8);
   });
 
@@ -2631,7 +2636,7 @@ describe("persistSessionUsageUpdate", () => {
       contextTokensUsed: 200_000,
     });
 
-    const stored = JSON.parse(await fs.readFile(storePath, "utf-8"));
+    const stored = readSessionStoreFast(storePath);
     expect(stored[sessionKey].estimatedCostUsd).toBe(0);
   });
 });
@@ -2730,10 +2735,7 @@ describe("initSessionState dmScope delivery migration", () => {
     });
 
     expect(result.sessionKey).toBe("agent:main:telegram:direct:6101296751");
-    const persisted = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
-      string,
-      SessionEntry
-    >;
+    const persisted = readSessionStoreFast(storePath);
     expect(persisted["agent:main:main"]?.sessionId).toBe("legacy-main");
     expect(persisted["agent:main:main"]?.deliveryContext).toBeUndefined();
     expect(persisted["agent:main:main"]?.lastChannel).toBeUndefined();
@@ -2775,10 +2777,7 @@ describe("initSessionState dmScope delivery migration", () => {
       commandAuthorized: true,
     });
 
-    const persisted = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
-      string,
-      SessionEntry
-    >;
+    const persisted = readSessionStoreFast(storePath);
     expect(persisted["agent:main:main"]?.deliveryContext).toEqual({
       channel: "telegram",
       to: "1111",
@@ -2842,10 +2841,7 @@ describe("initSessionState internal channel routing preservation", () => {
       accountId: "default",
     });
 
-    const persisted = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
-      string,
-      SessionEntry
-    >;
+    const persisted = readSessionStoreFast(storePath);
     expect(persisted[sessionKey]?.lastThreadId).toBeUndefined();
     expect(persisted[sessionKey]?.deliveryContext).toEqual({
       channel: "mattermost",
@@ -3155,14 +3151,14 @@ describe("initSessionState internal channel routing preservation", () => {
       cfg,
       commandAuthorized: true,
     });
-    const persistedAfterFirstTurn = await fs.readFile(storePath, "utf-8");
+    const persistedAfterFirstTurn = JSON.stringify(readSessionStoreFast(storePath));
 
     const result = await initSessionState({
       ctx,
       cfg,
       commandAuthorized: true,
     });
-    const persistedAfterSecondTurn = await fs.readFile(storePath, "utf-8");
+    const persistedAfterSecondTurn = JSON.stringify(readSessionStoreFast(storePath));
 
     expect(persistedAfterSecondTurn).toBe(persistedAfterFirstTurn);
     expect(result.sessionEntry.lastChannel).toBe("webchat");

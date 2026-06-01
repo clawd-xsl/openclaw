@@ -9,6 +9,7 @@ import { parseConfigJson5, resetConfigRuntimeState } from "../config/config.js";
 import {
   clearSessionStoreCacheForTest,
   resolveMainSessionKeyFromConfig,
+  saveSessionStore,
   type SessionEntry,
 } from "../config/sessions.js";
 import { resetAgentRunContextForTest } from "../infra/agent-events.js";
@@ -214,7 +215,9 @@ export async function writeSessionStore(params: {
   clearSessionStoreCacheForTest();
   await persistTestSessionConfig();
   await fs.mkdir(path.dirname(storePath), { recursive: true });
-  await fs.writeFile(storePath, JSON.stringify(store, null, 2), "utf-8");
+  await saveSessionStore(storePath, store as Record<string, SessionEntry>, {
+    skipMaintenance: true,
+  });
   clearSessionStoreCacheForTest();
 }
 

@@ -46,7 +46,7 @@ afterEach(async () => {
 async function createSessionStoreFile(): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-session-message-"));
   cleanupDirs.push(dir);
-  const storePath = path.join(dir, "sessions.json");
+  const storePath = path.join(dir, "sessions.sqlite");
   testState.sessionStorePath = storePath;
   return storePath;
 }

@@ -156,7 +156,7 @@ function resolveCompactionRecoverySessionManager(
 ): CompactionRecoverySessionManager | undefined {
   const candidate =
     ctx.params.sessionManager ??
-    ((ctx.params.session as { sessionManager?: unknown }).sessionManager as unknown);
+    (ctx.params.session as { sessionManager?: unknown }).sessionManager;
   if (!candidate || typeof candidate !== "object") {
     return undefined;
   }

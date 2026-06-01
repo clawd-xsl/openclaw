@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   flushSessionStoreBackfillForTest,
   loadSessionStore,
+  saveSessionStore,
   type SessionEntry,
 } from "../../config/sessions.js";
 import { persistSessionContinuityUpdate } from "./session-usage.js";
@@ -37,7 +38,7 @@ describe("persistSessionContinuityUpdate", () => {
         },
       },
     };
-    await fs.writeFile(storePath, JSON.stringify(sessionStore, null, 2));
+    await saveSessionStore(storePath, sessionStore, { skipMaintenance: true });
 
     await persistSessionContinuityUpdate({
       storePath,

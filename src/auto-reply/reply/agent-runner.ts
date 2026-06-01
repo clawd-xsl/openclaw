@@ -13,7 +13,7 @@ import { isCliProvider } from "../../agents/model-selection.js";
 import { queueEmbeddedPiMessage } from "../../agents/pi-embedded-runner/runs.js";
 import { hasNonzeroUsage, normalizeUsage } from "../../agents/usage.js";
 import {
-  loadSessionStore,
+  loadSessionStoreEntry,
   resolveSessionPluginStatusLines,
   resolveSessionPluginTraceLines,
   type CliSessionBinding,
@@ -975,8 +975,7 @@ function refreshSessionEntryFromStore(params: {
     return fallbackEntry;
   }
   try {
-    const latestStore = loadSessionStore(storePath, { skipCache: true });
-    const latestEntry = latestStore?.[sessionKey];
+    const latestEntry = loadSessionStoreEntry({ storePath, sessionKey });
     if (!latestEntry) {
       return fallbackEntry;
     }

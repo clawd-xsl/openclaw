@@ -15,7 +15,13 @@ import {
 } from "./paths.js";
 import { evaluateSessionFreshness, resolveSessionResetPolicy } from "./reset.js";
 import { resolveAndPersistSessionFile } from "./session-file.js";
-import { clearSessionStoreCacheForTest, loadSessionStore, updateSessionStore } from "./store.js";
+import { resolveSessionStoreSqlitePath } from "./store-sqlite.js";
+import {
+  clearSessionStoreCacheForTest,
+  loadSessionStore,
+  saveSessionStore,
+  updateSessionStore,
+} from "./store.js";
 import { useTempSessionsFixture } from "./test-helpers.js";
 import { mergeSessionEntry, type SessionEntry } from "./types.js";
 
@@ -153,9 +159,11 @@ describe("session store lock (Promise chain mutex)", () => {
   ): Promise<{ dir: string; storePath: string }> {
     const dir = await lockFixtureRootTracker.make("case");
     lockTmpDirs.push(dir);
-    const storePath = path.join(dir, "sessions.json");
+    const storePath = path.join(dir, "sessions.sqlite");
     if (Object.keys(initial).length > 0) {
-      await fsPromises.writeFile(storePath, JSON.stringify(initial, null, 2), "utf-8");
+      await saveSessionStore(storePath, initial as Record<string, SessionEntry>, {
+        skipMaintenance: true,
+      });
     }
     return { dir, storePath };
   }
@@ -286,7 +294,7 @@ describe("session store lock (Promise chain mutex)", () => {
     expect(liveEntry?.skillsSnapshot?.resolvedSkills).toHaveLength(1);
     expect(liveEntry?.systemPromptReport?.injectedWorkspaceFiles).toHaveLength(1);
 
-    const raw = await fsPromises.readFile(storePath, "utf8");
+    const raw = await fsPromises.readFile(resolveSessionStoreSqlitePath(storePath), "utf8");
     expect(raw).not.toContain("large rendered skills prompt payload");
     expect(raw).not.toContain("resolvedSkills");
     expect(raw).not.toContain("/workspace/AGENTS.md");
@@ -448,7 +456,7 @@ describe("resolveAndPersistSessionFile", () => {
         updatedAt: Date.now(),
       },
     };
-    fs.writeFileSync(fixture.storePath(), JSON.stringify(store), "utf-8");
+    await saveSessionStore(fixture.storePath(), store, { skipMaintenance: true });
     const sessionStore = loadSessionStore(fixture.storePath(), { skipCache: true });
     const fallbackSessionFile = resolveSessionTranscriptPathInDir(
       sessionId,
@@ -474,7 +482,7 @@ describe("resolveAndPersistSessionFile", () => {
   it("creates and persists entry when session is not yet present", async () => {
     const sessionId = "new-session-id";
     const sessionKey = "agent:main:telegram:group:123";
-    fs.writeFileSync(fixture.storePath(), JSON.stringify({}), "utf-8");
+    await saveSessionStore(fixture.storePath(), {}, { skipMaintenance: true });
     const sessionStore = loadSessionStore(fixture.storePath(), { skipCache: true });
     const fallbackSessionFile = resolveSessionTranscriptPathInDir(sessionId, fixture.sessionsDir());
 

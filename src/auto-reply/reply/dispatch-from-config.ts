@@ -55,8 +55,7 @@ import type { FinalizedMsgContext } from "../templating.js";
 import { normalizeVerboseLevel } from "../thinking.js";
 import {
   createInternalHookEvent,
-  loadSessionStore,
-  resolveSessionStoreEntry,
+  loadSessionStoreEntry,
   resolveStorePath,
   triggerInternalHook,
 } from "./dispatch-from-config.runtime.js";
@@ -159,11 +158,10 @@ const resolveSessionStoreLookup = (
   const agentId = resolveSessionAgentId({ sessionKey, config: cfg });
   const storePath = resolveStorePath(cfg.session?.store, { agentId });
   try {
-    const store = loadSessionStore(storePath);
     return {
       sessionKey,
       storePath,
-      entry: resolveSessionStoreEntry({ store, sessionKey }).existing,
+      entry: loadSessionStoreEntry({ storePath, sessionKey }),
     };
   } catch {
     return {
@@ -181,8 +179,10 @@ const createShouldEmitVerboseProgress = (params: {
   return () => {
     if (params.sessionKey && params.storePath) {
       try {
-        const store = loadSessionStore(params.storePath);
-        const entry = resolveSessionStoreEntry({ store, sessionKey: params.sessionKey }).existing;
+        const entry = loadSessionStoreEntry({
+          storePath: params.storePath,
+          sessionKey: params.sessionKey,
+        });
         const currentLevel = normalizeVerboseLevel(entry?.verboseLevel ?? "");
         if (currentLevel) {
           return currentLevel !== "off";

@@ -6,9 +6,9 @@ import {
   flushSessionStoreBackfillForTest,
   loadSessionStore,
   resetSessionStoreBackfillRuntimeForTest,
+  saveSessionStore,
   updateLastRoute,
 } from "../sessions.js";
-import { resolveHotSessionStorePath } from "./store-hot.js";
 import type { SessionEntry } from "./types.js";
 
 function createEntry(overrides: Partial<SessionEntry> = {}): SessionEntry {
@@ -20,65 +20,47 @@ function createEntry(overrides: Partial<SessionEntry> = {}): SessionEntry {
   };
 }
 
-describe("session store hot overlay", () => {
+describe("session store sqlite hot path", () => {
   afterEach(() => {
     resetSessionStoreBackfillRuntimeForTest();
   });
 
-  it("overlays hot entries while preserving cold-only fields", async () => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-session-hot-overlay-"));
-    const storePath = path.join(dir, "sessions.json");
-    const hotPath = resolveHotSessionStorePath(storePath);
+  it("loads entries from the single sqlite store", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-session-sqlite-load-"));
+    const storePath = path.join(dir, "sessions.sqlite");
     const sessionKey = "agent:main:main";
-    await fs.writeFile(
+    await saveSessionStore(
       storePath,
-      JSON.stringify(
-        {
-          [sessionKey]: createEntry({
-            lastChannel: "telegram",
-            lastTo: "old",
-            skillsSnapshot: {
-              prompt: "skills",
-              skills: [],
+      {
+        [sessionKey]: createEntry({
+          lastChannel: "signal",
+          lastTo: "+15551234567",
+          skillsSnapshot: {
+            prompt: "skills",
+            skills: [],
+          },
+          systemPromptReport: {
+            source: "run",
+            generatedAt: 1,
+            systemPrompt: {
+              chars: 1,
+              projectContextChars: 0,
+              nonProjectContextChars: 1,
             },
-            systemPromptReport: {
-              source: "run",
-              generatedAt: 1,
-              systemPrompt: {
-                chars: 1,
-                projectContextChars: 0,
-                nonProjectContextChars: 1,
-              },
-              injectedWorkspaceFiles: [],
-              skills: { promptChars: 0, entries: [] },
-              tools: { listChars: 0, schemaChars: 0, entries: [] },
-            },
-          }),
-        },
-        null,
-        2,
-      ),
-    );
-    await fs.writeFile(
-      hotPath,
-      JSON.stringify(
-        {
-          [sessionKey]: createEntry({
-            updatedAt: 2,
-            lastChannel: "signal",
-            lastTo: "+15551234567",
-          }),
-        },
-        null,
-        2,
-      ),
+            injectedWorkspaceFiles: [],
+            skills: { promptChars: 0, entries: [] },
+            tools: { listChars: 0, schemaChars: 0, entries: [] },
+          },
+        }),
+      },
+      { skipMaintenance: true },
     );
 
     const loaded = loadSessionStore(storePath, { skipCache: true });
     expect(loaded[sessionKey]?.lastChannel).toBe("signal");
     expect(loaded[sessionKey]?.lastTo).toBe("+15551234567");
     expect(loaded[sessionKey]?.skillsSnapshot).toEqual({
-      prompt: "skills",
+      prompt: "",
       skills: [],
     });
     expect(loaded[sessionKey]?.systemPromptReport).toMatchObject({
@@ -87,23 +69,19 @@ describe("session store hot overlay", () => {
     });
   });
 
-  it("writes route updates to the hot store before cold backfill flushes", async () => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-session-hot-route-"));
-    const storePath = path.join(dir, "sessions.json");
-    const hotPath = resolveHotSessionStorePath(storePath);
+  it("writes route updates directly to sqlite without cold backfill", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-session-sqlite-route-"));
+    const storePath = path.join(dir, "sessions.sqlite");
     const sessionKey = "agent:main:main";
-    await fs.writeFile(
+    await saveSessionStore(
       storePath,
-      JSON.stringify(
-        {
-          [sessionKey]: createEntry({
-            lastChannel: "telegram",
-            lastTo: "old",
-          }),
-        },
-        null,
-        2,
-      ),
+      {
+        [sessionKey]: createEntry({
+          lastChannel: "telegram",
+          lastTo: "old",
+        }),
+      },
+      { skipMaintenance: true },
     );
 
     await updateLastRoute({
@@ -115,73 +93,36 @@ describe("session store hot overlay", () => {
       },
     });
 
-    const hotStore = JSON.parse(await fs.readFile(hotPath, "utf-8")) as Record<
-      string,
-      SessionEntry
-    >;
-    const coldStoreBeforeFlush = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
-      string,
-      SessionEntry
-    >;
-    expect(hotStore[sessionKey]?.lastChannel).toBe("signal");
-    expect(hotStore[sessionKey]?.lastTo).toBe("+15551234567");
-    expect(coldStoreBeforeFlush[sessionKey]?.lastChannel).toBe("telegram");
-    expect(coldStoreBeforeFlush[sessionKey]?.lastTo).toBe("old");
+    const storeBeforeFlush = loadSessionStore(storePath, { skipCache: true });
+    expect(storeBeforeFlush[sessionKey]?.lastChannel).toBe("signal");
+    expect(storeBeforeFlush[sessionKey]?.lastTo).toBe("+15551234567");
 
     await flushSessionStoreBackfillForTest(storePath);
 
-    const coldStoreAfterFlush = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
-      string,
-      SessionEntry
-    >;
-    expect(coldStoreAfterFlush[sessionKey]?.lastChannel).toBe("signal");
-    expect(coldStoreAfterFlush[sessionKey]?.lastTo).toBe("+15551234567");
+    const storeAfterFlush = loadSessionStore(storePath, { skipCache: true });
+    expect(storeAfterFlush[sessionKey]?.lastChannel).toBe("signal");
+    expect(storeAfterFlush[sessionKey]?.lastTo).toBe("+15551234567");
   });
 
-  it("skips hot-store writes when a route update is unchanged", async () => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-session-hot-noop-"));
-    const storePath = path.join(dir, "sessions.json");
-    const hotPath = resolveHotSessionStorePath(storePath);
+  it("keeps unchanged route updates as a sqlite no-op", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-session-sqlite-noop-"));
+    const storePath = path.join(dir, "sessions.sqlite");
     const sessionKey = "agent:main:main";
-    await fs.writeFile(
+    await saveSessionStore(
       storePath,
-      JSON.stringify(
-        {
-          [sessionKey]: createEntry({
-            updatedAt: 99,
-            lastChannel: "signal",
-            lastTo: "+15551234567",
-            deliveryContext: {
-              channel: "signal",
-              to: "+15551234567",
-            },
-          }),
-        },
-        null,
-        2,
-      ),
+      {
+        [sessionKey]: createEntry({
+          updatedAt: 99,
+          lastChannel: "signal",
+          lastTo: "+15551234567",
+          deliveryContext: {
+            channel: "signal",
+            to: "+15551234567",
+          },
+        }),
+      },
+      { skipMaintenance: true },
     );
-    await fs.writeFile(
-      hotPath,
-      JSON.stringify(
-        {
-          [sessionKey]: createEntry({
-            updatedAt: 99,
-            lastChannel: "signal",
-            lastTo: "+15551234567",
-            deliveryContext: {
-              channel: "signal",
-              to: "+15551234567",
-            },
-          }),
-        },
-        null,
-        2,
-      ),
-    );
-
-    const beforeHotStat = await fs.stat(hotPath);
-    await new Promise((resolve) => setTimeout(resolve, 20));
 
     await updateLastRoute({
       storePath,
@@ -192,16 +133,10 @@ describe("session store hot overlay", () => {
       },
     });
 
-    const afterHotStat = await fs.stat(hotPath);
-    expect(afterHotStat.mtimeMs).toBe(beforeHotStat.mtimeMs);
-
     await flushSessionStoreBackfillForTest(storePath);
-    const coldStoreAfterFlush = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
-      string,
-      SessionEntry
-    >;
-    expect(coldStoreAfterFlush[sessionKey]?.updatedAt).toBe(99);
-    expect(coldStoreAfterFlush[sessionKey]?.lastChannel).toBe("signal");
-    expect(coldStoreAfterFlush[sessionKey]?.lastTo).toBe("+15551234567");
+    const storeAfterFlush = loadSessionStore(storePath, { skipCache: true });
+    expect(storeAfterFlush[sessionKey]?.updatedAt).toBe(99);
+    expect(storeAfterFlush[sessionKey]?.lastChannel).toBe("signal");
+    expect(storeAfterFlush[sessionKey]?.lastTo).toBe("+15551234567");
   });
 });

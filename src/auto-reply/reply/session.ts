@@ -21,11 +21,7 @@ import {
 import { resolveAndPersistSessionFile } from "../../config/sessions/session-file.js";
 import { resolveSessionKey } from "../../config/sessions/session-key.js";
 import { resolveMaintenanceConfigFromInput } from "../../config/sessions/store-maintenance.js";
-import {
-  ensureHotSessionStoreHydrated,
-  loadHotSessionStore,
-  updateSessionStore,
-} from "../../config/sessions/store.js";
+import { loadSessionStoreEntry, updateSessionStore } from "../../config/sessions/store.js";
 import { parseSessionThreadInfo } from "../../config/sessions/thread-info.js";
 import {
   DEFAULT_RESET_TRIGGERS,
@@ -41,7 +37,7 @@ import { isTimingTraceEnabled } from "../../infra/timing-trace.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import type { PluginHookSessionEndReason } from "../../plugins/hook-types.js";
-import { normalizeMainKey } from "../../routing/session-key.js";
+import { buildAgentMainSessionKey, normalizeMainKey } from "../../routing/session-key.js";
 import { isInterSessionInputProvenance } from "../../sessions/input-provenance.js";
 import { generateSessionSummary } from "../../sessions/session-summary.js";
 import {
@@ -247,7 +243,21 @@ function stripSessionInitVolatileFields(
     return undefined;
   }
   const { updatedAt: _updatedAt, ...stableFields } = entry;
-  return stableFields;
+  return pruneUndefinedForSessionInitCompare(stableFields) as Omit<SessionEntry, "updatedAt">;
+}
+
+function pruneUndefinedForSessionInitCompare(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => pruneUndefinedForSessionInitCompare(item));
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([, entryValue]) => entryValue !== undefined)
+      .map(([key, entryValue]) => [key, pruneUndefinedForSessionInitCompare(entryValue)]),
+  );
 }
 
 export async function initSessionState(params: {
@@ -293,19 +303,6 @@ export async function initSessionState(params: {
   const storePath = resolveStorePath(sessionCfg?.store, { agentId });
   const ingressTimingEnabled = isTimingTraceEnabled();
 
-  // Interactive turns only need continuity metadata here. Load the projected
-  // hot store and leave the cold store for slower background persistence.
-  const sessionStoreLoadStartMs = ingressTimingEnabled ? Date.now() : 0;
-  await ensureHotSessionStoreHydrated(storePath);
-  const sessionStore: Record<string, SessionEntry> = loadHotSessionStore(storePath, {
-    skipCache: true,
-  });
-  if (ingressTimingEnabled) {
-    log.info(
-      `session-init store-load agent=${agentId} session=${sessionCtxForState.SessionKey ?? "(no-session)"} ` +
-        `elapsedMs=${Date.now() - sessionStoreLoadStartMs} path=${storePath}`,
-    );
-  }
   let sessionKey: string | undefined;
   let sessionEntry: SessionEntry;
 
@@ -403,6 +400,35 @@ export async function initSessionState(params: {
     agentId,
     sessionKey: resolveSessionKey(sessionScope, sessionCtxForState, mainKey),
   });
+  // Interactive turns only need the active session plus rare helper entries.
+  // Keep the sessionStore shape for downstream callers without scanning the
+  // whole SQLite table on every inbound message.
+  const sessionStoreLoadStartMs = ingressTimingEnabled ? Date.now() : 0;
+  const sessionStore: Record<string, SessionEntry> = {};
+  const activeEntry = loadSessionStoreEntry({ storePath, sessionKey });
+  if (activeEntry) {
+    sessionStore[sessionKey] = activeEntry;
+  }
+  const canonicalMainSessionKey = buildAgentMainSessionKey({ agentId, mainKey });
+  if (
+    (sessionCfg?.dmScope ?? "main") !== "main" &&
+    !isGroup &&
+    sessionKey !== canonicalMainSessionKey
+  ) {
+    const mainEntry = loadSessionStoreEntry({
+      storePath,
+      sessionKey: canonicalMainSessionKey,
+    });
+    if (mainEntry) {
+      sessionStore[canonicalMainSessionKey] = mainEntry;
+    }
+  }
+  if (ingressTimingEnabled) {
+    log.info(
+      `session-init store-load agent=${agentId} session=${sessionCtxForState.SessionKey ?? "(no-session)"} ` +
+        `entries=${Object.keys(sessionStore).length} elapsedMs=${Date.now() - sessionStoreLoadStartMs} path=${storePath}`,
+    );
+  }
   const retiredLegacyMainDelivery = maybeRetireLegacyMainDeliveryRoute({
     sessionCfg,
     sessionKey,
@@ -659,6 +685,12 @@ export async function initSessionState(params: {
   }
   const parentSessionKey = normalizeOptionalString(ctx.ParentSessionKey);
   const alreadyForked = sessionEntry.forkedFromParent === true;
+  if (parentSessionKey && parentSessionKey !== sessionKey && !sessionStore[parentSessionKey]) {
+    const parentEntry = loadSessionStoreEntry({ storePath, sessionKey: parentSessionKey });
+    if (parentEntry) {
+      sessionStore[parentSessionKey] = parentEntry;
+    }
+  }
   if (
     parentSessionKey &&
     parentSessionKey !== sessionKey &&
@@ -704,6 +736,7 @@ export async function initSessionState(params: {
         ctx.MessageThreadId ?? threadIdFromSessionKey,
       )
     : undefined;
+  const persistedSessionEntryBeforeResolve = sessionStore[sessionKey];
   const resolvedSessionFile = await resolveAndPersistSessionFile({
     sessionId: sessionEntry.sessionId,
     sessionKey,
@@ -717,7 +750,6 @@ export async function initSessionState(params: {
     maintenanceConfig,
   });
   sessionEntry = resolvedSessionFile.sessionEntry;
-  const persistedSessionEntryAfterResolve = sessionStore[sessionKey];
   if (isNewSession) {
     sessionEntry.compactionCount = 0;
     sessionEntry.previousSessionId = previousSessionEntry?.sessionId;
@@ -744,7 +776,7 @@ export async function initSessionState(params: {
     isNewSession ||
     Boolean(retiredLegacyMainDelivery) ||
     !isDeepStrictEqual(
-      stripSessionInitVolatileFields(persistedSessionEntryAfterResolve),
+      stripSessionInitVolatileFields(persistedSessionEntryBeforeResolve),
       stripSessionInitVolatileFields(mergedSessionEntry),
     );
   sessionEntry = mergedSessionEntry;

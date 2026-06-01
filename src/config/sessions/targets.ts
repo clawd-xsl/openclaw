@@ -65,7 +65,7 @@ function resolveValidatedDiscoveredStorePathSync(params: {
   agentsRoot: string;
   realAgentsRoot?: string;
 }): string | undefined {
-  const storePath = path.join(params.sessionsDir, "sessions.json");
+  const storePath = path.join(params.sessionsDir, "sessions.sqlite");
   try {
     const stat = fsSync.lstatSync(storePath);
     if (stat.isSymbolicLink() || !stat.isFile()) {
@@ -87,7 +87,7 @@ async function resolveValidatedDiscoveredStorePath(params: {
   agentsRoot: string;
   realAgentsRoot?: string;
 }): Promise<string | undefined> {
-  const storePath = path.join(params.sessionsDir, "sessions.json");
+  const storePath = path.join(params.sessionsDir, "sessions.sqlite");
   try {
     const stat = await fs.lstat(storePath);
     if (stat.isSymbolicLink() || !stat.isFile()) {

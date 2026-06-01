@@ -32,7 +32,7 @@ export function resolveSessionTranscriptsDirForAgent(
 }
 
 export function resolveDefaultSessionStorePath(agentId?: string): string {
-  return path.join(resolveAgentSessionsDir(agentId), "sessions.json");
+  return path.join(resolveAgentSessionsDir(agentId), "sessions.sqlite");
 }
 
 export type SessionFilePathOptions = {
@@ -285,7 +285,7 @@ export function resolveStorePath(
   const env = opts?.env ?? process.env;
   const homedir = () => resolveRequiredHomeDir(env, os.homedir);
   if (!store) {
-    return path.join(resolveAgentSessionsDir(agentId, env, homedir), "sessions.json");
+    return path.join(resolveAgentSessionsDir(agentId, env, homedir), "sessions.sqlite");
   }
   if (store.includes("{agentId}")) {
     const expanded = store.replaceAll("{agentId}", agentId);
@@ -314,7 +314,8 @@ export function resolveStorePath(
 
 export function resolveAgentsDirFromSessionStorePath(storePath: string): string | undefined {
   const candidateAbsPath = path.resolve(storePath);
-  if (path.basename(candidateAbsPath) !== "sessions.json") {
+  const baseName = path.basename(candidateAbsPath);
+  if (baseName !== "sessions.sqlite" && baseName !== "sessions.json") {
     return undefined;
   }
   const sessionsDir = path.dirname(candidateAbsPath);

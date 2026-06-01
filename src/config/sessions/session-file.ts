@@ -1,6 +1,6 @@
 import { resolveSessionFilePath } from "./paths.js";
 import type { ResolvedSessionMaintenanceConfig } from "./store-maintenance.js";
-import { updateSessionStore } from "./store.js";
+import { writeHotSessionEntry } from "./store.js";
 import type { SessionEntry } from "./types.js";
 
 export async function resolveAndPersistSessionFile(params: {
@@ -30,26 +30,19 @@ export async function resolveAndPersistSessionFile(params: {
   const persistedEntry: SessionEntry = {
     ...baseEntry,
     sessionId,
-    updatedAt: Date.now(),
+    updatedAt: baseEntry.updatedAt ?? Date.now(),
     sessionFile,
   };
   if (baseEntry.sessionId !== sessionId || baseEntry.sessionFile !== sessionFile) {
     sessionStore[sessionKey] = persistedEntry;
-    await updateSessionStore(
+    await writeHotSessionEntry({
       storePath,
-      (store) => {
-        store[sessionKey] = {
-          ...store[sessionKey],
-          ...persistedEntry,
-        };
-      },
-      params.activeSessionKey || params.maintenanceConfig
-        ? {
-            ...(params.activeSessionKey ? { activeSessionKey: params.activeSessionKey } : {}),
-            ...(params.maintenanceConfig ? { maintenanceConfig: params.maintenanceConfig } : {}),
-          }
-        : undefined,
-    );
+      sessionKey,
+      mutator: (existing) => ({
+        ...existing,
+        ...persistedEntry,
+      }),
+    });
     return { sessionFile, sessionEntry: persistedEntry };
   }
   sessionStore[sessionKey] = persistedEntry;

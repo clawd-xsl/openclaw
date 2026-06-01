@@ -1,13 +1,9 @@
-import fs from "node:fs";
 import path from "node:path";
-import { isDeepStrictEqual } from "node:util";
 import {
   acquireSessionWriteLock,
   resolveSessionLockMaxHoldFromTimeout,
 } from "../../agents/session-write-lock.js";
 import type { MsgContext } from "../../auto-reply/templating.js";
-import { logVerbose } from "../../globals.js";
-import { writeTextAtomic } from "../../infra/json-files.js";
 import { createTimingTrace } from "../../infra/timing-trace.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { normalizeLowercaseStringOrEmpty } from "../../shared/string-coerce.js";
@@ -18,22 +14,8 @@ import {
   normalizeSessionDeliveryFields,
 } from "../../utils/delivery-context.shared.js";
 import type { DeliveryContext } from "../../utils/delivery-context.types.js";
-import { getFileStatSnapshot } from "../cache-utils.js";
 import { enforceSessionDiskBudget, type SessionDiskBudgetSweepResult } from "./disk-budget.js";
 import { deriveSessionMetaPatch } from "./metadata.js";
-import {
-  dropSessionStoreObjectCache,
-  getSerializedSessionStore,
-  isSessionStoreCacheEnabled,
-  setSerializedSessionStore,
-  writeSessionStoreCache,
-} from "./store-cache.js";
-import {
-  isHotSessionStorePath,
-  projectSessionEntryToHot,
-  projectSessionStoreToHot,
-  resolveHotSessionStorePath,
-} from "./store-hot.js";
 import { loadHotSessionStore, loadSessionStore, normalizeSessionStore } from "./store-load.js";
 import {
   clearSessionStoreCacheForTest,
@@ -53,6 +35,12 @@ import {
   type SessionMaintenanceWarning,
 } from "./store-maintenance.js";
 import {
+  loadSessionEntryFromSqlite,
+  readSessionUpdatedAtFromSqlite,
+  saveSessionStoreToSqlite,
+  upsertSessionEntryInSqlite,
+} from "./store-sqlite.js";
+import {
   mergeSessionEntry,
   mergeSessionEntryPreserveActivity,
   type SessionEntry,
@@ -67,26 +55,7 @@ export { loadHotSessionStore, loadSessionStore } from "./store-load.js";
 
 export function isSessionStoreWriteBusy(storePath: string): boolean {
   const queue = LOCK_QUEUES.get(storePath);
-  const backfill = SESSION_STORE_BACKFILL_QUEUES.get(storePath);
-  const queueBusy = Boolean(queue && (queue.running || queue.pending.length > 0));
-  const backfillBusy = Boolean(
-    backfill && (backfill.flushing || backfill.entries.size > 0 || backfill.timer),
-  );
-  return queueBusy || backfillBusy;
-}
-
-function getOrCreateSessionStoreBackfillQueue(storePath: string): SessionStoreBackfillQueue {
-  const existing = SESSION_STORE_BACKFILL_QUEUES.get(storePath);
-  if (existing) {
-    return existing;
-  }
-  const created: SessionStoreBackfillQueue = {
-    timer: null,
-    flushing: false,
-    entries: new Map<string, SessionEntry>(),
-  };
-  SESSION_STORE_BACKFILL_QUEUES.set(storePath, created);
-  return created;
+  return Boolean(queue && (queue.running || queue.pending.length > 0));
 }
 
 const log = createSubsystemLogger("sessions/store");
@@ -94,17 +63,6 @@ let sessionArchiveRuntimePromise: Promise<
   typeof import("../../gateway/session-archive.runtime.js")
 > | null = null;
 let sessionWriteLockAcquirerForTests: typeof acquireSessionWriteLock | null = null;
-
-const SESSION_STORE_BACKFILL_DELAY_MS = 15_000;
-
-type SessionStoreBackfillQueue = {
-  timer: NodeJS.Timeout | null;
-  flushing: boolean;
-  entries: Map<string, SessionEntry>;
-};
-
-const SESSION_STORE_BACKFILL_QUEUES = new Map<string, SessionStoreBackfillQueue>();
-const HOT_STORE_BOOTSTRAP_PROMISES = new Map<string, Promise<void>>();
 
 function loadSessionArchiveRuntime() {
   sessionArchiveRuntimePromise ??= import("../../gateway/session-archive.runtime.js");
@@ -118,16 +76,6 @@ function removeThreadFromDeliveryContext(context?: DeliveryContext): DeliveryCon
   const next: DeliveryContext = { ...context };
   delete next.threadId;
   return next;
-}
-
-function areProjectedHotEntriesEqual(
-  left: SessionEntry | undefined,
-  right: SessionEntry | undefined,
-): boolean {
-  return isDeepStrictEqual(
-    left ? projectSessionEntryToHot(left) : undefined,
-    right ? projectSessionEntryToHot(right) : undefined,
-  );
 }
 
 export function normalizeStoreSessionKey(sessionKey: string): string {
@@ -236,12 +184,17 @@ export function readSessionUpdatedAt(params: {
   sessionKey: string;
 }): number | undefined {
   try {
-    const store = loadSessionStore(params.storePath);
-    const resolved = resolveSessionStoreEntry({ store, sessionKey: params.sessionKey });
-    return resolved.existing?.updatedAt;
+    return readSessionUpdatedAtFromSqlite(params);
   } catch {
     return undefined;
   }
+}
+
+export function loadSessionStoreEntry(params: {
+  storePath: string;
+  sessionKey: string;
+}): SessionEntry | undefined {
+  return loadSessionEntryFromSqlite(params.storePath, params.sessionKey);
 }
 
 // ============================================================================
@@ -285,204 +238,10 @@ type SaveSessionStoreOptions = {
   maintenanceOverride?: Partial<ResolvedSessionMaintenanceConfig>;
   /** Fully resolved maintenance settings when the caller already has config loaded. */
   maintenanceConfig?: ResolvedSessionMaintenanceConfig;
-  /** Internal: hot store writes must not recursively rewrite their own projection. */
-  skipHotProjectionSync?: boolean;
 };
 
-function compactSessionSkillSnapshotForPersistence(
-  snapshot: SessionEntry["skillsSnapshot"],
-): SessionEntry["skillsSnapshot"] {
-  if (!snapshot) {
-    return snapshot;
-  }
-  const compacted = { ...snapshot, prompt: "" };
-  delete compacted.resolvedSkills;
-  return compacted;
-}
-
-function compactSessionSystemPromptReportForPersistence(
-  report: SessionEntry["systemPromptReport"],
-): SessionEntry["systemPromptReport"] {
-  if (!report) {
-    return report;
-  }
-  return {
-    ...report,
-    injectedWorkspaceFiles: [],
-    skills: {
-      ...report.skills,
-      entries: [],
-    },
-    tools: {
-      ...report.tools,
-      entries: [],
-    },
-  };
-}
-
-function compactSessionEntryForPersistence(entry: SessionEntry): SessionEntry {
-  const skillsSnapshot = compactSessionSkillSnapshotForPersistence(entry.skillsSnapshot);
-  const systemPromptReport = compactSessionSystemPromptReportForPersistence(
-    entry.systemPromptReport,
-  );
-  if (skillsSnapshot === entry.skillsSnapshot && systemPromptReport === entry.systemPromptReport) {
-    return entry;
-  }
-  return {
-    ...entry,
-    skillsSnapshot,
-    systemPromptReport,
-  };
-}
-
-function compactSessionStoreForPersistence(
-  store: Record<string, SessionEntry>,
-): Record<string, SessionEntry> {
-  let compacted: Record<string, SessionEntry> | undefined;
-  for (const [key, entry] of Object.entries(store)) {
-    const nextEntry = compactSessionEntryForPersistence(entry);
-    if (nextEntry === entry) {
-      continue;
-    }
-    compacted ??= { ...store };
-    compacted[key] = nextEntry;
-  }
-  return compacted ?? store;
-}
-
-function updateSessionStoreWriteCaches(params: {
-  storePath: string;
-  store: Record<string, SessionEntry>;
-  serialized: string;
-}): void {
-  const fileStat = getFileStatSnapshot(params.storePath);
-  setSerializedSessionStore(params.storePath, params.serialized);
-  if (!isSessionStoreCacheEnabled()) {
-    dropSessionStoreObjectCache(params.storePath);
-    return;
-  }
-  writeSessionStoreCache({
-    storePath: params.storePath,
-    store: params.store,
-    mtimeMs: fileStat?.mtimeMs,
-    sizeBytes: fileStat?.sizeBytes,
-    serialized: params.serialized,
-  });
-}
-
-async function syncHotSessionStoreProjection(params: {
-  storePath: string;
-  store: Record<string, SessionEntry>;
-}): Promise<void> {
-  if (isHotSessionStorePath(params.storePath)) {
-    return;
-  }
-  const hotStorePath = resolveHotSessionStorePath(params.storePath);
-  const hotStore = projectSessionStoreToHot(params.store);
-  await fs.promises.mkdir(path.dirname(hotStorePath), { recursive: true });
-  const serialized = JSON.stringify(hotStore, null, 2);
-  if (getSerializedSessionStore(hotStorePath) === serialized) {
-    updateSessionStoreWriteCaches({ storePath: hotStorePath, store: hotStore, serialized });
-    return;
-  }
-  await writeTextAtomic(hotStorePath, serialized, { mode: 0o600 });
-  updateSessionStoreWriteCaches({ storePath: hotStorePath, store: hotStore, serialized });
-}
-
 export async function ensureHotSessionStoreHydrated(storePath: string): Promise<void> {
-  if (isHotSessionStorePath(storePath)) {
-    return;
-  }
-  const hotStorePath = resolveHotSessionStorePath(storePath);
-  if (fs.existsSync(hotStorePath)) {
-    return;
-  }
-  const existing = HOT_STORE_BOOTSTRAP_PROMISES.get(storePath);
-  if (existing) {
-    await existing;
-    return;
-  }
-  const bootstrapPromise = (async () => {
-    const coldStore = loadSessionStore(storePath, { skipCache: true });
-    await syncHotSessionStoreProjection({ storePath, store: coldStore });
-  })().finally(() => {
-    HOT_STORE_BOOTSTRAP_PROMISES.delete(storePath);
-  });
-  HOT_STORE_BOOTSTRAP_PROMISES.set(storePath, bootstrapPromise);
-  await bootstrapPromise;
-}
-
-function rememberBackfillEntry(params: {
-  storePath: string;
-  sessionKey: string;
-  entry: SessionEntry;
-}): void {
-  const queue = getOrCreateSessionStoreBackfillQueue(params.storePath);
-  const existing = queue.entries.get(params.sessionKey);
-  queue.entries.set(params.sessionKey, existing ? { ...existing, ...params.entry } : params.entry);
-}
-
-async function flushSessionStoreBackfillQueue(storePath: string): Promise<void> {
-  const queue = SESSION_STORE_BACKFILL_QUEUES.get(storePath);
-  if (!queue || queue.flushing || queue.entries.size === 0) {
-    if (queue && !queue.flushing && queue.entries.size === 0 && !queue.timer) {
-      SESSION_STORE_BACKFILL_QUEUES.delete(storePath);
-    }
-    return;
-  }
-  if (queue.timer) {
-    clearTimeout(queue.timer);
-    queue.timer = null;
-  }
-  const entries = [...queue.entries.entries()];
-  queue.entries.clear();
-  queue.flushing = true;
-  try {
-    await updateSessionStore(
-      storePath,
-      (store) => {
-        for (const [sessionKey, entry] of entries) {
-          const resolved = resolveSessionStoreEntry({ store, sessionKey });
-          store[resolved.normalizedKey] = {
-            ...store[resolved.normalizedKey],
-            ...entry,
-          };
-          for (const legacyKey of resolved.legacyKeys) {
-            delete store[legacyKey];
-          }
-        }
-      },
-      { activeSessionKey: entries[0]?.[0] },
-    );
-  } catch (error) {
-    logVerbose(`session store cold backfill failed: ${String(error)}`);
-    for (const [sessionKey, entry] of entries) {
-      rememberBackfillEntry({ storePath, sessionKey, entry });
-    }
-  } finally {
-    queue.flushing = false;
-    if (queue.entries.size === 0) {
-      if (!queue.timer) {
-        SESSION_STORE_BACKFILL_QUEUES.delete(storePath);
-      }
-    } else {
-      queue.timer = setTimeout(() => {
-        void flushSessionStoreBackfillQueue(storePath);
-      }, SESSION_STORE_BACKFILL_DELAY_MS);
-      queue.timer.unref?.();
-    }
-  }
-}
-
-function scheduleSessionStoreBackfillFlush(storePath: string): void {
-  const queue = getOrCreateSessionStoreBackfillQueue(storePath);
-  if (queue.timer) {
-    clearTimeout(queue.timer);
-  }
-  queue.timer = setTimeout(() => {
-    void flushSessionStoreBackfillQueue(storePath);
-  }, SESSION_STORE_BACKFILL_DELAY_MS);
-  queue.timer.unref?.();
+  void storePath;
 }
 
 export async function writeHotSessionEntry(params: {
@@ -505,21 +264,17 @@ export async function writeHotSessionEntry(params: {
     "start",
     `caller=${traceCaller} createIfMissing=${params.createIfMissing === false ? "no" : "yes"}`,
   );
-  trace("hydrate-start");
-  await ensureHotSessionStoreHydrated(params.storePath);
-  trace("hydrate-done");
-  const hotStorePath = resolveHotSessionStorePath(params.storePath);
   trace("lock-wait-start");
-  return await withSessionStoreLock(hotStorePath, async () => {
+  return await withSessionStoreLock(params.storePath, async () => {
     trace("lock-acquired");
-    const store = loadSessionStore(hotStorePath, { skipCache: true });
-    trace("store-loaded", `entries=${Object.keys(store).length}`);
-    const resolved = resolveSessionStoreEntry({ store, sessionKey: params.sessionKey });
-    const existing = resolved.existing;
-    trace(
-      "entry-resolved",
-      `hasExisting=${existing ? "yes" : "no"} legacyKeys=${resolved.legacyKeys.length}`,
-    );
+    const normalizedKey = normalizeStoreSessionKey(params.sessionKey);
+    const existing = loadSessionEntryFromSqlite(params.storePath, normalizedKey);
+    const resolved = {
+      normalizedKey,
+      existing,
+      legacyKeys: [],
+    };
+    trace("entry-resolved", `hasExisting=${existing ? "yes" : "no"}`);
     if (!existing && params.createIfMissing === false) {
       trace("missing-entry");
       return null;
@@ -531,28 +286,15 @@ export async function writeHotSessionEntry(params: {
       trace("no-next");
       return existing ?? null;
     }
-    const nextHot = projectSessionEntryToHot(next);
-    trace("project-hot-done");
-    const canSkipPersist =
-      resolved.legacyKeys.length === 0 &&
-      Object.prototype.hasOwnProperty.call(store, resolved.normalizedKey) &&
-      areProjectedHotEntriesEqual(existing, next);
-    if (canSkipPersist) {
-      trace("persist-skipped");
-      return existing ?? next;
-    }
-    store[resolved.normalizedKey] = nextHot;
-    for (const legacyKey of resolved.legacyKeys) {
-      delete store[legacyKey];
-    }
     trace("persist-start");
-    await saveSessionStoreUnlocked(hotStorePath, store, {
-      activeSessionKey: normalizeStoreSessionKey(params.sessionKey),
-      skipMaintenance: true,
-      skipHotProjectionSync: true,
+    const saved = upsertSessionEntryInSqlite({
+      storePath: params.storePath,
+      sessionKey: normalizedKey,
+      entry: next,
+      skipIfUnchanged: true,
     });
     trace("persist-done");
-    return next;
+    return saved;
   });
 }
 
@@ -561,22 +303,15 @@ export function queueSessionStoreColdBackfill(params: {
   sessionKey: string;
   entry: SessionEntry;
 }): void {
-  rememberBackfillEntry(params);
-  scheduleSessionStoreBackfillFlush(params.storePath);
+  void params;
 }
 
 export async function flushSessionStoreBackfillForTest(storePath: string): Promise<void> {
-  await flushSessionStoreBackfillQueue(storePath);
+  void storePath;
 }
 
 export function resetSessionStoreBackfillRuntimeForTest(): void {
-  for (const queue of SESSION_STORE_BACKFILL_QUEUES.values()) {
-    if (queue.timer) {
-      clearTimeout(queue.timer);
-    }
-  }
-  SESSION_STORE_BACKFILL_QUEUES.clear();
-  HOT_STORE_BOOTSTRAP_PROMISES.clear();
+  // SQLite is the only runtime store now; there is no hot/cold JSON backfill queue.
 }
 
 function resolveMutableSessionStoreKey(
@@ -641,6 +376,7 @@ async function saveSessionStoreUnlocked(
   storePath: string,
   store: Record<string, SessionEntry>,
   opts?: SaveSessionStoreOptions,
+  previousStore?: Record<string, SessionEntry>,
 ): Promise<void> {
   const trace = createTimingTrace({
     channel: "session-store-trace",
@@ -650,12 +386,12 @@ async function saveSessionStoreUnlocked(
   });
   trace(
     "start",
-    `hot=${isHotSessionStorePath(storePath) ? "yes" : "no"} skipMaintenance=${opts?.skipMaintenance ? "yes" : "no"}`,
+    `skipMaintenance=${opts?.skipMaintenance ? "yes" : "no"} previous=${previousStore ? "yes" : "no"}`,
   );
   normalizeSessionStore(store);
   trace("normalize-done", `entries=${Object.keys(store).length}`);
 
-  if (!opts?.skipMaintenance && !isHotSessionStorePath(storePath)) {
+  if (!opts?.skipMaintenance) {
     // Resolve maintenance config once (avoids repeated loadConfig() calls).
     const maintenance = opts?.maintenanceConfig
       ? { ...opts.maintenanceConfig, ...opts?.maintenanceOverride }
@@ -747,9 +483,6 @@ async function saveSessionStoreUnlocked(
           });
         }
       }
-
-      // Rotate the on-disk file if it exceeds the size threshold.
-      await rotateSessionFile(storePath, maintenance.rotateBytes);
       trace(
         "maintenance-prune-done",
         `entries=${Object.keys(store).length} archivedDirs=${archivedDirs.size}`,
@@ -778,76 +511,9 @@ async function saveSessionStoreUnlocked(
     }
   }
 
-  await fs.promises.mkdir(path.dirname(storePath), { recursive: true });
-  trace("mkdir-done");
-  const persistedStore = compactSessionStoreForPersistence(store);
-  const json = JSON.stringify(persistedStore, null, 2);
-  trace("json-serialized", `bytes=${Buffer.byteLength(json)}`);
-  if (getSerializedSessionStore(storePath) === json) {
-    updateSessionStoreWriteCaches({ storePath, store, serialized: json });
-    if (!opts?.skipHotProjectionSync) {
-      await syncHotSessionStoreProjection({ storePath, store });
-    }
-    trace("write-skipped-cache-hit");
-    return;
-  }
-
-  // Windows: keep retry semantics because rename can fail while readers hold locks.
-  if (process.platform === "win32") {
-    for (let i = 0; i < 5; i++) {
-      try {
-        await writeSessionStoreAtomic({ storePath, store, serialized: json });
-        if (!opts?.skipHotProjectionSync) {
-          await syncHotSessionStoreProjection({ storePath, store });
-        }
-        trace("write-atomic-done", "platform=win32");
-        return;
-      } catch (err) {
-        const code = getErrorCode(err);
-        if (code === "ENOENT") {
-          return;
-        }
-        if (i < 4) {
-          await new Promise((r) => setTimeout(r, 50 * (i + 1)));
-          continue;
-        }
-        // Final attempt failed — skip this save. The write lock ensures
-        // the next save will retry with fresh data. Log for diagnostics.
-        log.warn(`atomic write failed after 5 attempts: ${storePath}`);
-      }
-    }
-    return;
-  }
-
-  try {
-    await writeSessionStoreAtomic({ storePath, store, serialized: json });
-    if (!opts?.skipHotProjectionSync) {
-      await syncHotSessionStoreProjection({ storePath, store });
-    }
-    trace("write-atomic-done");
-  } catch (err) {
-    const code = getErrorCode(err);
-
-    if (code === "ENOENT") {
-      // In tests the temp session-store directory may be deleted while writes are in-flight.
-      // Best-effort: try a direct write (recreating the parent dir), otherwise ignore.
-      try {
-        await writeSessionStoreAtomic({ storePath, store, serialized: json });
-        if (!opts?.skipHotProjectionSync) {
-          await syncHotSessionStoreProjection({ storePath, store });
-        }
-      } catch (err2) {
-        const code2 = getErrorCode(err2);
-        if (code2 === "ENOENT") {
-          return;
-        }
-        throw err2;
-      }
-      return;
-    }
-
-    throw err;
-  }
+  const persistStartedAt = Date.now();
+  saveSessionStoreToSqlite({ storePath, store, previousStore });
+  trace("sqlite-persisted", `persistMs=${Date.now() - persistStartedAt}`);
 }
 
 export async function saveSessionStore(
@@ -878,6 +544,7 @@ export async function updateSessionStore<T>(
     trace("lock-acquired", `caller=${traceCaller}`);
     // Always re-read inside the lock to avoid clobbering concurrent writers.
     const store = loadSessionStore(storePath, { skipCache: true });
+    const previousStore = structuredClone(store);
     trace("store-loaded", `caller=${traceCaller} entries=${Object.keys(store).length}`);
     const previousAcpByKey = collectAcpMetadataSnapshot(store);
     const result = await mutator(store);
@@ -889,7 +556,7 @@ export async function updateSessionStore<T>(
     });
     trace("preserve-acp-done", `caller=${traceCaller}`);
     const persistStartedAt = Date.now();
-    await saveSessionStoreUnlocked(storePath, store, opts);
+    await saveSessionStoreUnlocked(storePath, store, opts, previousStore);
     trace("persisted", `caller=${traceCaller} persistMs=${Date.now() - persistStartedAt}`);
     return result;
   });
@@ -903,13 +570,6 @@ type SessionStoreLockOptions = {
 
 const SESSION_STORE_LOCK_MIN_HOLD_MS = 5_000;
 const SESSION_STORE_LOCK_TIMEOUT_GRACE_MS = 5_000;
-
-function getErrorCode(error: unknown): string | null {
-  if (!error || typeof error !== "object" || !("code" in error)) {
-    return null;
-  }
-  return String((error as { code?: unknown }).code);
-}
 
 function rememberRemovedSessionFile(
   removedSessionFiles: Map<string, string | undefined>,
@@ -947,19 +607,6 @@ export async function archiveRemovedSessionTranscripts(params: {
   return archivedDirs;
 }
 
-async function writeSessionStoreAtomic(params: {
-  storePath: string;
-  store: Record<string, SessionEntry>;
-  serialized: string;
-}): Promise<void> {
-  await writeTextAtomic(params.storePath, params.serialized, { mode: 0o600 });
-  updateSessionStoreWriteCaches({
-    storePath: params.storePath,
-    store: params.store,
-    serialized: params.serialized,
-  });
-}
-
 async function persistResolvedSessionEntry(params: {
   storePath: string;
   store: Record<string, SessionEntry>;
@@ -970,10 +617,11 @@ async function persistResolvedSessionEntry(params: {
   for (const legacyKey of params.resolved.legacyKeys) {
     delete params.store[legacyKey];
   }
-  await saveSessionStoreUnlocked(params.storePath, params.store, {
-    activeSessionKey: params.resolved.normalizedKey,
+  return upsertSessionEntryInSqlite({
+    storePath: params.storePath,
+    sessionKey: params.resolved.normalizedKey,
+    entry: params.next,
   });
-  return params.next;
 }
 
 function lockTimeoutError(storePath: string): Error {
@@ -1139,10 +787,8 @@ export async function updateSessionStoreEntry(params: {
   trace("lock-wait-start", `caller=${traceCaller}`);
   return await withSessionStoreLock(storePath, async () => {
     trace("lock-acquired", `caller=${traceCaller}`);
-    const store = loadSessionStore(storePath, { skipCache: true });
-    trace("store-loaded", `caller=${traceCaller} entries=${Object.keys(store).length}`);
-    const resolved = resolveSessionStoreEntry({ store, sessionKey });
-    const existing = resolved.existing;
+    const normalizedKey = normalizeStoreSessionKey(sessionKey);
+    const existing = loadSessionEntryFromSqlite(storePath, normalizedKey);
     if (!existing) {
       trace("missing-entry", `caller=${traceCaller}`);
       return null;
@@ -1155,10 +801,11 @@ export async function updateSessionStoreEntry(params: {
     const next = mergeSessionEntry(existing, patch);
     trace("entry-merged", `caller=${traceCaller}`);
     const persistStartedAt = Date.now();
+    const store: Record<string, SessionEntry> = { [normalizedKey]: existing };
     return await persistResolvedSessionEntry({
       storePath,
       store,
-      resolved,
+      resolved: { normalizedKey, existing, legacyKeys: [] },
       next,
     }).then((result) => {
       trace("persisted", `caller=${traceCaller} persistMs=${Date.now() - persistStartedAt}`);
@@ -1283,9 +930,6 @@ export async function updateLastRoute(params: {
       };
       const nextPatch = metaPatch ? { ...basePatch, ...metaPatch } : basePatch;
       const nextEntry = mergeSessionEntryPreserveActivity(existing, nextPatch);
-      if (existing && areProjectedHotEntriesEqual(existing, nextEntry)) {
-        return existing;
-      }
       shouldQueueColdBackfill = true;
       return nextEntry;
     },

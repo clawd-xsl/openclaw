@@ -1,4 +1,3 @@
-import fs from "node:fs/promises";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { MsgContext } from "../../auto-reply/templating.js";
@@ -8,8 +7,10 @@ import {
   loadSessionStore,
   recordSessionMetaFromInbound,
   resetSessionStoreBackfillRuntimeForTest,
+  saveSessionStore,
   updateLastRoute,
 } from "../sessions.js";
+import type { SessionEntry } from "./types.js";
 
 const CANONICAL_KEY = "agent:main:webchat:dm:mixed-user";
 const MIXED_CASE_KEY = "Agent:Main:WebChat:DM:MiXeD-User";
@@ -39,8 +40,7 @@ describe("session store key normalization", () => {
 
   beforeEach(async () => {
     tempDir = await suiteRootTracker.make("case");
-    storePath = path.join(tempDir, "sessions.json");
-    await fs.writeFile(storePath, "{}", "utf-8");
+    storePath = path.join(tempDir, "sessions.sqlite");
   });
 
   afterEach(async () => {
@@ -89,21 +89,17 @@ describe("session store key normalization", () => {
   });
 
   it("migrates legacy mixed-case entries to the canonical key on update", async () => {
-    await fs.writeFile(
+    await saveSessionStore(
       storePath,
-      JSON.stringify(
-        {
-          [MIXED_CASE_KEY]: {
-            sessionId: "legacy-session",
-            updatedAt: 1,
-            chatType: "direct",
-            channel: "webchat",
-          },
+      {
+        [MIXED_CASE_KEY]: {
+          sessionId: "legacy-session",
+          updatedAt: 1,
+          chatType: "direct",
+          channel: "webchat",
         },
-        null,
-        2,
-      ),
-      "utf-8",
+      } as Record<string, SessionEntry>,
+      { skipMaintenance: true },
     );
     clearSessionStoreCacheForTest();
 
@@ -120,27 +116,23 @@ describe("session store key normalization", () => {
   });
 
   it("preserves updatedAt when recording inbound metadata for an existing session", async () => {
-    await fs.writeFile(
+    await saveSessionStore(
       storePath,
-      JSON.stringify(
-        {
-          [CANONICAL_KEY]: {
-            sessionId: "existing-session",
-            updatedAt: 1111,
+      {
+        [CANONICAL_KEY]: {
+          sessionId: "existing-session",
+          updatedAt: 1111,
+          chatType: "direct",
+          channel: "webchat",
+          origin: {
+            provider: "webchat",
             chatType: "direct",
-            channel: "webchat",
-            origin: {
-              provider: "webchat",
-              chatType: "direct",
-              from: "WebChat:User-1",
-              to: "webchat:user-1",
-            },
+            from: "WebChat:User-1",
+            to: "webchat:user-1",
           },
         },
-        null,
-        2,
-      ),
-      "utf-8",
+      } as Record<string, SessionEntry>,
+      { skipMaintenance: true },
     );
     clearSessionStoreCacheForTest();
 
