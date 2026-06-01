@@ -16,7 +16,10 @@ const { sendTypingMock, sendReadReceiptMock, dispatchInboundMessageMock, capture
       dispatchInboundMessageMock: vi.fn(
         async (params: {
           ctx: MsgContext;
-          replyOptions?: { onReplyStart?: () => void | Promise<void> };
+          replyOptions?: {
+            abortSignal?: AbortSignal;
+            onReplyStart?: () => void | Promise<void>;
+          };
         }) => {
           captureState.ctx = params.ctx;
           await Promise.resolve(params.replyOptions?.onReplyStart?.());

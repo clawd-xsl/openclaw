@@ -1,3 +1,4 @@
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
 let signalMonitorTesting: typeof import("./monitor.js").__testing;
@@ -10,6 +11,7 @@ describe("signal monitor reply threading", () => {
   it("passes replyToId only on the first text send", async () => {
     const sendMessage = vi.fn(async () => ({ messageId: "m1" }));
     const sender = signalMonitorTesting.createSingleUseSignalReplySender({
+      cfg: {} as OpenClawConfig,
       target: "signal:+15550002222",
       baseUrl: "http://signal.local",
       accountId: "work",
@@ -42,6 +44,7 @@ describe("signal monitor reply threading", () => {
   it("passes replyToId only on the first media send", async () => {
     const sendMessage = vi.fn(async () => ({ messageId: "m2" }));
     const sender = signalMonitorTesting.createSingleUseSignalReplySender({
+      cfg: {} as OpenClawConfig,
       target: "signal:+15550002222",
       baseUrl: "http://signal.local",
       accountId: "work",
