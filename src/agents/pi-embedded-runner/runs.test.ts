@@ -25,6 +25,7 @@ function createRunHandle(
 ): RunHandle {
   const abort = overrides.abort ?? (() => {});
   return {
+    kind: "embedded",
     queueMessage: async () => {},
     isStreaming: () => true,
     isCompacting: () => overrides.isCompacting ?? false,
@@ -74,6 +75,7 @@ describe("pi-embedded runner run registry", () => {
     const abort = vi.fn();
     const cancel = vi.fn();
     const handle: RunHandle = {
+      kind: "embedded",
       queueMessage: async () => {},
       isStreaming: () => true,
       isCompacting: () => false,
@@ -87,7 +89,7 @@ describe("pi-embedded runner run registry", () => {
       sessionId: "session-live",
       resetTriggered: false,
     });
-    operation.attachBackend(handle);
+    operation.attachBackend(handle as Parameters<typeof operation.attachBackend>[0]);
 
     expect(abortEmbeddedPiRun("session-live")).toBe(true);
     expect(cancel).toHaveBeenCalledTimes(1);
@@ -125,6 +127,7 @@ describe("pi-embedded runner run registry", () => {
       const abort = vi.fn();
       const cancel = vi.fn();
       const handle: RunHandle = {
+        kind: "embedded",
         queueMessage: async () => {},
         isStreaming: () => true,
         isCompacting: () => false,
@@ -139,7 +142,7 @@ describe("pi-embedded runner run registry", () => {
         resetTriggered: false,
       });
       operation.setPhase("running");
-      operation.attachBackend(handle);
+      operation.attachBackend(handle as Parameters<typeof operation.attachBackend>[0]);
 
       expect(abortEmbeddedPiRun("session-wait")).toBe(true);
 

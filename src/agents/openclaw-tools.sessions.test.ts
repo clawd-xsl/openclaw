@@ -6,8 +6,8 @@ import { createTestRegistry } from "../test-utils/channel-plugins.js";
 
 const callGatewayMock = vi.fn();
 const subagentRegistryMocks = vi.hoisted(() => ({
-  reactivateSubagentRun: vi.fn(() => ({ reactivated: false })),
-  registerSubagentRun: vi.fn(),
+  reactivateSubagentRun: vi.fn((..._args: unknown[]) => ({ reactivated: false })),
+  registerSubagentRun: vi.fn((..._args: unknown[]) => undefined),
 }));
 vi.mock("../gateway/call.js", () => ({
   callGateway: (opts: unknown) => callGatewayMock(opts),

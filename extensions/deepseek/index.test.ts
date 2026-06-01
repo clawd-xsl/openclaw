@@ -157,7 +157,7 @@ describe("deepseek provider plugin", () => {
         supportsReasoningEffort: true,
         maxTokensField: "max_tokens",
       },
-    } as Model<"openai-completions">;
+    } as unknown as Model<"openai-completions">;
     const context = {
       messages: [
         { role: "user", content: "hi", timestamp: 1 },
@@ -194,13 +194,13 @@ describe("deepseek provider plugin", () => {
           parameters: { type: "object", properties: {}, required: [], additionalProperties: false },
         },
       ],
-    } as Context;
+    } as unknown as Context;
     const baseStreamFn = (
       streamModel: Model<"openai-completions">,
       streamContext: Context,
       options?: { onPayload?: (payload: unknown, model: unknown) => unknown },
     ) => {
-      capturedPayload = buildOpenAICompletionsParams(streamModel, streamContext, {
+      capturedPayload = buildOpenAICompletionsParams(streamModel as never, streamContext, {
         reasoning: "high",
       } as never);
       options?.onPayload?.(capturedPayload, streamModel);
@@ -247,7 +247,7 @@ describe("deepseek provider plugin", () => {
         supportsReasoningEffort: true,
         maxTokensField: "max_tokens",
       },
-    } as Model<"openai-completions">;
+    } as unknown as Model<"openai-completions">;
     const context = {
       messages: [
         { role: "user", content: "hi", timestamp: 1 },
@@ -287,13 +287,13 @@ describe("deepseek provider plugin", () => {
           parameters: { type: "object", properties: {}, required: [], additionalProperties: false },
         },
       ],
-    } as Context;
+    } as unknown as Context;
     const baseStreamFn = (
       streamModel: Model<"openai-completions">,
       streamContext: Context,
       options?: { onPayload?: (payload: unknown, model: unknown) => unknown },
     ) => {
-      capturedPayload = buildOpenAICompletionsParams(streamModel, streamContext, {
+      capturedPayload = buildOpenAICompletionsParams(streamModel as never, streamContext, {
         reasoning: "high",
       } as never);
       options?.onPayload?.(capturedPayload, streamModel);

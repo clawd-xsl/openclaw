@@ -271,10 +271,11 @@ describe("runPreparedReply media-only handling", () => {
     const typingStartPromise = new Promise<void>((resolve) => {
       resolveTypingStart = resolve;
     });
+    const onReplyStart = vi.fn(async () => await typingStartPromise);
     const typing = {
-      onReplyStart: vi.fn(async () => await typingStartPromise),
+      onReplyStart,
       cleanup: vi.fn(),
-    } as never;
+    } as unknown as Parameters<typeof runPreparedReply>[0]["typing"];
 
     const runPromise = runPreparedReply(
       baseParams({
@@ -294,7 +295,7 @@ describe("runPreparedReply media-only handling", () => {
     );
 
     await vi.waitFor(() => {
-      expect(typing.onReplyStart).toHaveBeenCalledTimes(1);
+      expect(onReplyStart).toHaveBeenCalledTimes(1);
       expect(vi.mocked(runReplyAgent)).toHaveBeenCalledTimes(1);
     });
 
@@ -400,6 +401,7 @@ describe("runPreparedReply media-only handling", () => {
     vi.mocked(queueSettings.resolveQueueSettings).mockReturnValueOnce({ mode: "interrupt" });
     const embeddedAbort = vi.fn();
     const embeddedHandle = {
+      kind: "embedded" as const,
       queueMessage: vi.fn(async () => {}),
       isStreaming: () => true,
       isCompacting: () => false,

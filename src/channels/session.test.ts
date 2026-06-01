@@ -1,10 +1,18 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MsgContext } from "../auto-reply/templating.js";
 
-const recordSessionMetaFromInboundMock = vi.fn((_args?: unknown) => Promise.resolve(undefined));
-const updateLastRouteMock = vi.fn((_args?: unknown) => Promise.resolve(undefined));
-const appendUserMessageToSessionTranscriptMock = vi.fn((_args?: unknown) =>
-  Promise.resolve({ ok: true, sessionFile: "/tmp/test.jsonl", messageId: "msg-1" }),
+const recordSessionMetaFromInboundMock = vi.fn(
+  (_args?: unknown): Promise<{ sessionId: string } | undefined> => Promise.resolve(undefined),
+);
+const updateLastRouteMock = vi.fn((_args?: unknown): Promise<void> => Promise.resolve());
+const appendUserMessageToSessionTranscriptMock = vi.fn(
+  (
+    _args?: unknown,
+  ): Promise<{
+    ok: true;
+    sessionFile: string;
+    messageId: string;
+  }> => Promise.resolve({ ok: true, sessionFile: "/tmp/test.jsonl", messageId: "msg-1" }),
 );
 
 vi.mock("../config/sessions/inbound.runtime.js", () => ({

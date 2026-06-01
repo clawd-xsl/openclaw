@@ -1030,7 +1030,7 @@ describe("image tool implicit imageModel config", () => {
           config: cfg,
           agentDir,
           workspaceDir,
-          fsPolicy: { workspaceOnly: true },
+          fsPolicy: { workspaceOnly: true, allowAllHostSendFileTypes: false },
         });
 
         // File inside workspace is allowed.
@@ -1063,7 +1063,7 @@ describe("image tool implicit imageModel config", () => {
         const tool = createRequiredImageTool({
           config: cfg,
           agentDir,
-          fsPolicy: { workspaceOnly: false },
+          fsPolicy: { workspaceOnly: false, allowAllHostSendFileTypes: false },
         });
 
         await expect(

@@ -440,7 +440,7 @@ export function buildOpenAICodexProviderPlugin(): ProviderPlugin {
               id: OPENAI_CODEX_GPT_55_MODEL_ID,
               name: OPENAI_CODEX_GPT_55_MODEL_ID,
               reasoning: true,
-              input: ["text", "image"],
+              input: ["text", "image"] as Array<"text" | "image">,
               contextWindow: OPENAI_CODEX_GPT_55_CODEX_CONTEXT_TOKENS,
               contextTokens: OPENAI_CODEX_GPT_55_DEFAULT_RUNTIME_CONTEXT_TOKENS,
               cost: undefined,

@@ -152,6 +152,7 @@ export function createCronPromptExecutor(params: {
             bootstrapPromptWarningSignature,
             senderIsOwner: true,
           });
+          const usage = result.meta?.agentMeta?.usage;
           await persistSessionTurnTranscript({
             promptText,
             replyText: resolveTranscriptReplyText(result),
@@ -162,13 +163,20 @@ export function createCronPromptExecutor(params: {
             api: "openclaw-cli",
             provider: providerOverride,
             model: modelOverride,
-            usage: result.meta?.agentMeta?.usage
+            usage: usage
               ? {
-                  input: result.meta.agentMeta.usage.input,
-                  output: result.meta.agentMeta.usage.output,
-                  cacheRead: result.meta.agentMeta.usage.cacheRead,
-                  cacheWrite: result.meta.agentMeta.usage.cacheWrite,
-                  totalTokens: result.meta.agentMeta.usage.total,
+                  input: usage.input ?? 0,
+                  output: usage.output ?? 0,
+                  cacheRead: usage.cacheRead ?? 0,
+                  cacheWrite: usage.cacheWrite ?? 0,
+                  totalTokens: usage.total ?? 0,
+                  cost: {
+                    input: 0,
+                    output: 0,
+                    cacheRead: 0,
+                    cacheWrite: 0,
+                    total: 0,
+                  },
                 }
               : undefined,
             stopReason: result.meta?.stopReason,

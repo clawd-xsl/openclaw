@@ -21,6 +21,19 @@ type SessionEndHook = (
     sessionKey?: string;
   },
 ) => Promise<void>;
+type RolloverRunCall = {
+  agentId?: string;
+  trigger?: string;
+  provider?: string;
+  model?: string;
+  disableMessageTool?: boolean;
+  silentExpected?: boolean;
+  timeoutMs?: number;
+  memoryFlushWritePath?: string;
+  prompt?: string;
+  extraSystemPrompt?: string;
+  sessionFile?: string;
+};
 
 afterEach(() => {
   __testing.resetHandledSessionIds();
@@ -126,7 +139,10 @@ describe("registerSessionRolloverMemoryFlush", () => {
     );
 
     expect(runEmbeddedPiAgent).toHaveBeenCalledTimes(1);
-    const call = runEmbeddedPiAgent.mock.calls[0]?.[0];
+    const call = (runEmbeddedPiAgent.mock.calls as unknown as Array<[RolloverRunCall]>)[0]?.[0];
+    if (!call) {
+      throw new Error("expected rollover flush run");
+    }
     expect(call).toMatchObject({
       agentId: "main",
       trigger: "memory",
@@ -142,7 +158,10 @@ describe("registerSessionRolloverMemoryFlush", () => {
     expect(call?.prompt).toContain("Assistant: You said you want to lift on Tuesdays and Fridays.");
     expect(call?.prompt).toContain("[Memory flush task]");
     expect(call?.extraSystemPrompt).toContain("Session rollover memory flush.");
-    await expect(fs.access(call?.sessionFile)).rejects.toThrow();
+    if (!call.sessionFile) {
+      throw new Error("expected temporary memory flush session file");
+    }
+    await expect(fs.access(call.sessionFile)).rejects.toThrow();
     expect(logger.warn).not.toHaveBeenCalled();
   });
 

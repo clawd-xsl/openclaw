@@ -98,7 +98,7 @@ describe("createOpenClawTools browser plugin integration", () => {
             allow: ["browser"],
           },
         } as OpenClawConfig,
-        fsPolicy: { workspaceOnly: true },
+        fsPolicy: { workspaceOnly: true, allowAllHostSendFileTypes: false },
       },
       resolvedConfig: {
         plugins: {

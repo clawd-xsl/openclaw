@@ -13,7 +13,7 @@ function isDisabledThinkingLevel(thinkingLevel: DeepSeekThinkingLevel): boolean 
 }
 
 function resolveDeepSeekReasoningEffort(thinkingLevel: DeepSeekThinkingLevel): "high" | "max" {
-  return thinkingLevel === "xhigh" || thinkingLevel === "max" ? "max" : "high";
+  return thinkingLevel === "xhigh" ? "max" : "high";
 }
 
 function stripDeepSeekReasoningContent(payload: Record<string, unknown>): void {

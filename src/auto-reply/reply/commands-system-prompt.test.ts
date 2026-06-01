@@ -127,8 +127,25 @@ describe("resolveCommandsSystemPromptBundle", () => {
     vi.clearAllMocks();
     createOpenClawCodingToolsMock.mockClear();
     createOpenClawCodingToolsMock.mockReturnValue([]);
-    vi.mocked(resolveSessionAgentIds).mockReturnValue({ sessionAgentId: "main" });
-    vi.mocked(resolveSandboxRuntimeStatus).mockReturnValue({ sandboxed: false, mode: "off" });
+    vi.mocked(resolveSessionAgentIds).mockReturnValue({
+      defaultAgentId: "main",
+      sessionAgentId: "main",
+    });
+    vi.mocked(resolveSandboxRuntimeStatus).mockReturnValue({
+      agentId: "main",
+      sessionKey: "agent:main:default",
+      mainSessionKey: "agent:main:default",
+      mode: "off",
+      sandboxed: false,
+      toolPolicy: {
+        allow: [],
+        deny: [],
+        sources: {
+          allow: { source: "default", key: "tools.sandbox.allow" },
+          deny: { source: "default", key: "tools.sandbox.deny" },
+        },
+      },
+    });
     vi.mocked(loadRecentSummaries).mockReturnValue([]);
     vi.mocked(buildSessionHistorySection).mockReturnValue("");
   });

@@ -42,7 +42,8 @@ function isOpenClawReplayMirrorAssistant(message: AgentMessage): boolean {
 function sanitizeOpenRouterReplayHistory(
   ctx: ProviderSanitizeReplayHistoryContext,
 ): AgentMessage[] | undefined {
-  if (!ctx.modelId.startsWith("deepseek/")) {
+  const modelId = ctx.modelId ?? "";
+  if (!modelId.startsWith("deepseek/")) {
     return undefined;
   }
   let changed = false;

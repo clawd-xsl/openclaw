@@ -5,12 +5,25 @@ type MockLoopbackConfig = {
   session: { mainKey: string };
   gateway?: { cliMcp?: { toolSurface?: "filtered" | "full" } };
 };
+type MockToolContent =
+  | { type: "text"; text: string }
+  | { type: "image"; data: string; mimeType: string };
+type MockScopedTool = {
+  name: string;
+  description: string;
+  parameters: { type: "object"; properties: Record<string, unknown> };
+  execute: () => Promise<{ content: MockToolContent[] }>;
+};
+type MockScopedToolsResult = {
+  agentId: string;
+  tools: MockScopedTool[];
+};
 
 const loadConfigMock = vi.hoisted(() =>
   vi.fn<() => MockLoopbackConfig>(() => ({ session: { mainKey: "main" } })),
 );
 const resolveGatewayScopedToolsMock = vi.hoisted(() =>
-  vi.fn(() => ({
+  vi.fn<() => MockScopedToolsResult>(() => ({
     agentId: "main",
     tools: [
       {

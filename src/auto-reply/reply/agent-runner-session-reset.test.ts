@@ -109,11 +109,13 @@ describe("resetReplyRunSession", () => {
       ) => Promise<void>,
       clearBootstrapSnapshotOnSessionRollover:
         clearBootstrapSnapshotOnSessionRolloverMock as unknown as (params: unknown) => void,
-      getHookRunner: () => ({
+      getHookRunner: (() => ({
         hasHooks: hookHasHooksMock,
         runSessionEnd: runSessionEndMock,
         runSessionStart: runSessionStartMock,
-      }),
+      })) as unknown as NonNullable<
+        NonNullable<Parameters<typeof setAgentRunnerSessionResetTestDeps>[0]>["getHookRunner"]
+      >,
       ensureSessionHeader: ensureSessionHeaderMock as unknown as (params: {
         sessionFile: string;
         sessionId: string;
