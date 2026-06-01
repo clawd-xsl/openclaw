@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  containsRawToolInvocationXml,
   sanitizeAssistantVisibleText,
   sanitizeAssistantVisibleTextWithProfile,
   stripAssistantInternalScaffolding,
@@ -439,6 +440,35 @@ describe("sanitizeAssistantVisibleText", () => {
     ].join("\n");
 
     expect(sanitizeAssistantVisibleText(input)).toBe("Visible answer");
+  });
+
+  it("strips raw invoke tool XML while preserving fenced examples", () => {
+    const input = [
+      "Visible before",
+      "<exec>",
+      '<parameter name="command">echo legacy hidden</parameter>',
+      "</exec>",
+      '<invoke name="exec">',
+      '<parameter name="command">echo hidden</parameter>',
+      "</invoke>",
+      "Visible after",
+      "```xml",
+      '<invoke name="exec">documented example</invoke>',
+      "```",
+    ].join("\n");
+
+    expect(containsRawToolInvocationXml(input)).toBe(true);
+    expect(sanitizeAssistantVisibleText(input)).toBe(
+      [
+        "Visible before",
+        "",
+        "",
+        "Visible after",
+        "```xml",
+        '<invoke name="exec">documented example</invoke>',
+        "```",
+      ].join("\n"),
+    );
   });
 });
 

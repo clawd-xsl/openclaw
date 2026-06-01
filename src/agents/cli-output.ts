@@ -3,6 +3,7 @@ import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
 } from "../shared/string-coerce.js";
+import { sanitizeAssistantVisibleText } from "../shared/text/assistant-visible-text.js";
 import { isRecord } from "../utils.js";
 import { extractAssistantText } from "./tools/chat-history-text.js";
 
@@ -27,9 +28,13 @@ export type CliOutput = {
 export type CliStreamingDelta = {
   text: string;
   delta: string;
+  rawText?: string;
   sessionId?: string;
   usage?: CliUsage;
 };
+
+type CliStreamingUpdate = CliStreamingDelta | { rawText: string };
+type CliStreamContentBlockTypes = Map<number, string>;
 
 function isClaudeCliProvider(providerId: string): boolean {
   return normalizeLowercaseStringOrEmpty(providerId) === "claude-cli";
@@ -268,6 +273,34 @@ function collectExplicitCliErrorText(parsed: Record<string, unknown>): string {
   return "";
 }
 
+function collectCliAssistantVisibleContentText(message: Record<string, unknown>): string {
+  if (typeof message.text === "string") {
+    return message.text;
+  }
+  if (typeof message.content === "string") {
+    return message.content;
+  }
+  if (!Array.isArray(message.content)) {
+    return "";
+  }
+  return message.content
+    .map((block) => {
+      if (!isRecord(block)) {
+        return "";
+      }
+      return block.type === "text" && typeof block.text === "string" ? block.text : "";
+    })
+    .join("");
+}
+
+export function normalizeCliAssistantVisibleText(text: unknown): string | undefined {
+  const normalized = typeof text === "string" ? normalizeOptionalString(text) : undefined;
+  if (!normalized) {
+    return undefined;
+  }
+  return normalizeOptionalString(sanitizeAssistantVisibleText(normalized));
+}
+
 function pickCliSessionId(
   parsed: Record<string, unknown>,
   backend: CliBackendConfig,
@@ -306,7 +339,7 @@ export function parseCliJson(raw: string, backend: CliBackendConfig): CliOutput 
       collectCliText(parsed.result) ||
       collectCliText(parsed.response) ||
       collectCliText(parsed);
-    const trimmedText = nextText.trim();
+    const trimmedText = normalizeCliAssistantVisibleText(nextText);
     if (trimmedText) {
       text = trimmedText;
       sawStructuredOutput = true;
@@ -338,7 +371,7 @@ function parseClaudeCliJsonlResult(params: {
     params.parsed.type === "result" &&
     typeof params.parsed.result === "string"
   ) {
-    const resultText = params.parsed.result.trim();
+    const resultText = normalizeCliAssistantVisibleText(params.parsed.result);
     if (resultText) {
       return { text: resultText, sessionId: params.sessionId, usage: params.usage };
     }
@@ -353,10 +386,27 @@ function readCliAssistantMessageText(parsed: Record<string, unknown>): string | 
   if (parsed.type !== "assistant" || !isRecord(parsed.message)) {
     return undefined;
   }
+  const message = parsed.message;
   if (collectExplicitCliErrorText(parsed)) {
     return undefined;
   }
-  return normalizeOptionalString(extractAssistantText(parsed.message));
+  return normalizeCliAssistantVisibleText(
+    collectCliAssistantVisibleContentText(message) || extractAssistantText(message),
+  );
+}
+
+function readClaudeStreamEventIndex(event: Record<string, unknown>): number | undefined {
+  return typeof event.index === "number" && Number.isInteger(event.index) && event.index >= 0
+    ? event.index
+    : undefined;
+}
+
+function readClaudeContentBlockType(block: unknown): string | undefined {
+  if (!isRecord(block) || typeof block.type !== "string") {
+    return undefined;
+  }
+  const normalized = normalizeOptionalString(block.type);
+  return normalized;
 }
 
 function buildCliStreamingDeltaFromNextText(params: {
@@ -365,7 +415,7 @@ function buildCliStreamingDeltaFromNextText(params: {
   sessionId?: string;
   usage?: CliUsage;
 }): CliStreamingDelta | null {
-  const nextText = normalizeOptionalString(params.nextText);
+  const nextText = normalizeCliAssistantVisibleText(params.nextText);
   if (!nextText) {
     return null;
   }
@@ -415,16 +465,18 @@ function parseClaudeCliStreamingDelta(params: {
   backend: CliBackendConfig;
   providerId: string;
   parsed: Record<string, unknown>;
-  textSoFar: string;
+  rawTextSoFar: string;
+  visibleTextSoFar: string;
+  activeContentBlockTypes: CliStreamContentBlockTypes;
   sessionId?: string;
   usage?: CliUsage;
-}): CliStreamingDelta | null {
+}): CliStreamingUpdate | null {
   if (!usesClaudeStreamJsonDialect(params)) {
     return null;
   }
   const snapshotDelta = buildCliStreamingDeltaFromNextText({
     nextText: readCliAssistantMessageText(params.parsed),
-    textSoFar: params.textSoFar,
+    textSoFar: params.visibleTextSoFar,
     sessionId: params.sessionId,
     usage: params.usage,
   });
@@ -435,7 +487,51 @@ function parseClaudeCliStreamingDelta(params: {
     return null;
   }
   const event = params.parsed.event;
+  if (event.type === "message_start" || event.type === "message_stop") {
+    params.activeContentBlockTypes.clear();
+    return null;
+  }
+  const index = readClaudeStreamEventIndex(event);
+  if (event.type === "content_block_start") {
+    if (index !== undefined) {
+      params.activeContentBlockTypes.set(
+        index,
+        readClaudeContentBlockType(event.content_block) ?? "unknown",
+      );
+    }
+    if (
+      isRecord(event.content_block) &&
+      event.content_block.type === "text" &&
+      typeof event.content_block.text === "string" &&
+      event.content_block.text.length > 0
+    ) {
+      const nextRawText = `${params.rawTextSoFar}${event.content_block.text}`;
+      const streamingDelta = buildCliStreamingDeltaFromNextText({
+        nextText: nextRawText,
+        textSoFar: params.visibleTextSoFar,
+        sessionId: params.sessionId,
+        usage: params.usage,
+      });
+      return streamingDelta
+        ? { ...streamingDelta, rawText: nextRawText }
+        : { rawText: nextRawText };
+    }
+    return null;
+  }
+  if (event.type === "content_block_stop") {
+    if (index !== undefined) {
+      params.activeContentBlockTypes.delete(index);
+    }
+    return null;
+  }
   if (event.type !== "content_block_delta" || !isRecord(event.delta)) {
+    return null;
+  }
+  const blockType = index === undefined ? undefined : params.activeContentBlockTypes.get(index);
+  if (blockType && blockType !== "text") {
+    return null;
+  }
+  if (blockType === undefined && params.activeContentBlockTypes.size > 0) {
     return null;
   }
   const delta = event.delta;
@@ -445,12 +541,14 @@ function parseClaudeCliStreamingDelta(params: {
   if (!delta.text) {
     return null;
   }
-  return buildCliStreamingDeltaFromNextText({
-    nextText: `${params.textSoFar}${delta.text}`,
-    textSoFar: params.textSoFar,
+  const nextRawText = `${params.rawTextSoFar}${delta.text}`;
+  const streamingDelta = buildCliStreamingDeltaFromNextText({
+    nextText: nextRawText,
+    textSoFar: params.visibleTextSoFar,
     sessionId: params.sessionId,
     usage: params.usage,
   });
+  return streamingDelta ? { ...streamingDelta, rawText: nextRawText } : { rawText: nextRawText };
 }
 
 export function createCliJsonlStreamingParser(params: {
@@ -459,7 +557,9 @@ export function createCliJsonlStreamingParser(params: {
   onAssistantDelta: (delta: CliStreamingDelta) => void;
 }) {
   let lineBuffer = "";
-  let assistantText = "";
+  let assistantRawText = "";
+  let assistantVisibleText = "";
+  const activeContentBlockTypes: CliStreamContentBlockTypes = new Map();
   let sessionId: string | undefined;
   let usage: CliUsage | undefined;
 
@@ -472,19 +572,31 @@ export function createCliJsonlStreamingParser(params: {
       usage = toCliUsage(parsed.usage) ?? usage;
     }
 
-    const delta = parseClaudeCliStreamingDelta({
+    const update = parseClaudeCliStreamingDelta({
       backend: params.backend,
       providerId: params.providerId,
       parsed,
-      textSoFar: assistantText,
+      rawTextSoFar: assistantRawText,
+      visibleTextSoFar: assistantVisibleText,
+      activeContentBlockTypes,
       sessionId,
       usage,
     });
-    if (!delta) {
+    if (!update) {
       return;
     }
-    assistantText = delta.text;
-    params.onAssistantDelta(delta);
+    if (!("delta" in update)) {
+      assistantRawText = update.rawText;
+      return;
+    }
+    assistantRawText = update.rawText ?? update.text;
+    assistantVisibleText = update.text;
+    params.onAssistantDelta({
+      text: update.text,
+      delta: update.delta,
+      sessionId: update.sessionId,
+      usage: update.usage,
+    });
   };
 
   const flushLines = (flushPartial: boolean) => {
@@ -576,8 +688,9 @@ export function parseCliJsonl(
       const item = isRecord(parsed.item) ? parsed.item : null;
       if (item && typeof item.text === "string") {
         const type = normalizeLowercaseStringOrEmpty(item.type);
-        if (!type || type.includes("message")) {
-          texts.push(item.text);
+        const itemText = normalizeCliAssistantVisibleText(item.text);
+        if (itemText && (!type || type.includes("message"))) {
+          texts.push(itemText);
         }
       }
     }

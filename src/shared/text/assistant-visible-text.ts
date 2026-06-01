@@ -23,6 +23,7 @@ const TOOL_CALL_TAG_NAMES = new Set([
   "function_calls",
   "tool_calls",
 ]);
+const RAW_TOOL_INVOCATION_QUICK_RE = /<\s*\/?\s*(?:exec|invoke|parameter)\b/i;
 const TOOL_CALL_JSON_PAYLOAD_START_RE =
   /^(?:\s+[A-Za-z_:][-A-Za-z0-9_:.]*\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))*\s*(?:\r?\n\s*)?[[{]/;
 const TOOL_CALL_XML_PAYLOAD_START_RE =
@@ -259,6 +260,69 @@ export function stripToolCallXmlTags(text: string): string {
   return result;
 }
 
+function findClosingXmlTagIndex(text: string, tagName: string, start: number): number {
+  const closeTagRe = new RegExp(`<\\s*\\/\\s*${tagName}\\s*>`, "gi");
+  closeTagRe.lastIndex = start;
+  const match = closeTagRe.exec(text);
+  return match ? match.index + match[0].length : -1;
+}
+
+function stripRawXmlBlocksOutsideCode(
+  text: string,
+  tagName: "exec" | "invoke" | "parameter",
+): string {
+  if (!text) {
+    return text;
+  }
+
+  const openTagRe = new RegExp(`<\\s*${tagName}\\b[^>]*>`, "gi");
+  const codeRegions = findCodeRegions(text);
+  let result = "";
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = openTagRe.exec(text)) !== null) {
+    const start = match.index;
+    if (isInsideCode(start, codeRegions)) {
+      continue;
+    }
+    result += text.slice(lastIndex, start);
+    const contentStart = start + match[0].length;
+    const closeEnd = findClosingXmlTagIndex(text, tagName, contentStart);
+    const end = closeEnd >= 0 ? closeEnd : text.length;
+    lastIndex = end;
+    openTagRe.lastIndex = end;
+  }
+  result += text.slice(lastIndex);
+  return result;
+}
+
+export function containsRawToolInvocationXml(text: string): boolean {
+  if (!text || !RAW_TOOL_INVOCATION_QUICK_RE.test(text)) {
+    return false;
+  }
+
+  const codeRegions = findCodeRegions(text);
+  const tagRe = /<\s*\/?\s*(?:exec|invoke|parameter)\b/gi;
+  let match: RegExpExecArray | null;
+  while ((match = tagRe.exec(text)) !== null) {
+    if (!isInsideCode(match.index, codeRegions)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function stripRawToolInvocationXml(text: string): string {
+  if (!text || !RAW_TOOL_INVOCATION_QUICK_RE.test(text)) {
+    return text;
+  }
+
+  return stripRawXmlBlocksOutsideCode(
+    stripRawXmlBlocksOutsideCode(stripRawXmlBlocksOutsideCode(text, "exec"), "invoke"),
+    "parameter",
+  );
+}
+
 /**
  * Strip malformed Minimax tool invocations that leak into text content.
  * Minimax sometimes embeds tool calls as XML in text blocks instead of
@@ -482,6 +546,7 @@ type AssistantVisibleTextPipelineOptions = {
   finalTrim: ReasoningTagTrim;
   preserveDowngradedToolText?: boolean;
   preserveMinimaxToolXml?: boolean;
+  preserveRawToolInvocationXml?: boolean;
   reasoningMode: ReasoningTagMode;
   reasoningTrim: ReasoningTagTrim;
   stageOrder: "reasoning-first" | "reasoning-last";
@@ -507,6 +572,7 @@ const ASSISTANT_VISIBLE_TEXT_PIPELINE_OPTIONS: Record<
     finalTrim: "start",
     preserveDowngradedToolText: true,
     preserveMinimaxToolXml: true,
+    preserveRawToolInvocationXml: true,
     reasoningMode: "preserve",
     reasoningTrim: "start",
     stageOrder: "reasoning-first",
@@ -543,6 +609,9 @@ function applyAssistantVisibleTextStagePipeline(
     cleaned = stripModelSpecialTokens(cleaned);
     cleaned = stripRelevantMemoriesTags(cleaned);
     cleaned = stripToolCallXmlTags(cleaned);
+    if (!options.preserveRawToolInvocationXml) {
+      cleaned = stripRawToolInvocationXml(cleaned);
+    }
     if (!options.preserveDowngradedToolText) {
       cleaned = stripDowngradedToolCallText(cleaned);
     }

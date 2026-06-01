@@ -533,6 +533,7 @@ describe("createCliJsonlStreamingParser", () => {
           session_id: "session-tool-turn",
           message: {
             role: "assistant",
+            stop_reason: "tool_use",
             content: [
               { type: "text", text: "Let me check." },
               { type: "tool_use", id: "toolu_1", name: "read", input: { path: "README.md" } },
@@ -544,6 +545,7 @@ describe("createCliJsonlStreamingParser", () => {
           session_id: "session-tool-turn",
           message: {
             role: "assistant",
+            stop_reason: "end_turn",
             content: [{ type: "text", text: "Let me check. It is 42." }],
           },
         }),
@@ -565,6 +567,223 @@ describe("createCliJsonlStreamingParser", () => {
         usage: undefined,
       },
     ]);
+  });
+
+  it("streams only structured text content blocks from Claude stream events", () => {
+    const deltas: Array<{ text: string; delta: string; sessionId?: string }> = [];
+    const parser = createCliJsonlStreamingParser({
+      backend: {
+        command: "claude",
+        output: "jsonl",
+        sessionIdFields: ["session_id"],
+      },
+      providerId: "claude-cli",
+      onAssistantDelta: (delta) => deltas.push(delta),
+    });
+
+    parser.push(
+      [
+        JSON.stringify({ type: "init", session_id: "session-structured-stream" }),
+        JSON.stringify({
+          type: "stream_event",
+          session_id: "session-structured-stream",
+          event: {
+            type: "content_block_start",
+            index: 0,
+            content_block: { type: "thinking", thinking: "" },
+          },
+        }),
+        JSON.stringify({
+          type: "stream_event",
+          session_id: "session-structured-stream",
+          event: {
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "thinking_delta", thinking: "internal" },
+          },
+        }),
+        JSON.stringify({
+          type: "stream_event",
+          session_id: "session-structured-stream",
+          event: { type: "content_block_stop", index: 0 },
+        }),
+        JSON.stringify({
+          type: "stream_event",
+          session_id: "session-structured-stream",
+          event: {
+            type: "content_block_start",
+            index: 1,
+            content_block: { type: "tool_use", id: "toolu_1", name: "mcp__openclaw__read" },
+          },
+        }),
+        JSON.stringify({
+          type: "stream_event",
+          session_id: "session-structured-stream",
+          event: {
+            type: "content_block_delta",
+            index: 1,
+            delta: { type: "input_json_delta", partial_json: '{"path":"skill.md"}' },
+          },
+        }),
+        JSON.stringify({
+          type: "stream_event",
+          session_id: "session-structured-stream",
+          event: { type: "content_block_stop", index: 1 },
+        }),
+        JSON.stringify({
+          type: "stream_event",
+          session_id: "session-structured-stream",
+          event: {
+            type: "content_block_start",
+            index: 2,
+            content_block: { type: "text", text: "" },
+          },
+        }),
+        JSON.stringify({
+          type: "stream_event",
+          session_id: "session-structured-stream",
+          event: {
+            type: "content_block_delta",
+            index: 2,
+            delta: { type: "text_delta", text: "Visible answer" },
+          },
+        }),
+      ].join("\n"),
+    );
+    parser.finish();
+
+    expect(deltas).toEqual([
+      {
+        text: "Visible answer",
+        delta: "Visible answer",
+        sessionId: "session-structured-stream",
+        usage: undefined,
+      },
+    ]);
+  });
+
+  it("keeps assistant text but drops Claude tool-use and tool-result records from parsed output", () => {
+    const result = parseCliJsonl(
+      [
+        JSON.stringify({ type: "init", session_id: "session-tool-result" }),
+        JSON.stringify({
+          type: "assistant",
+          session_id: "session-tool-result",
+          message: {
+            role: "assistant",
+            stop_reason: "tool_use",
+            content: [{ type: "text", text: "I'll read the skill first." }],
+          },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          session_id: "session-tool-result",
+          message: {
+            role: "assistant",
+            stop_reason: "tool_use",
+            content: [
+              {
+                type: "tool_use",
+                id: "toolu_1",
+                name: "mcp__openclaw__read",
+                input: { path: "skills/workout/SKILL.md" },
+              },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: "user",
+          session_id: "session-tool-result",
+          message: {
+            role: "user",
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "toolu_1",
+                content: "## Workout Skill\nfull skill text should stay internal",
+              },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          session_id: "session-tool-result",
+          message: {
+            role: "assistant",
+            stop_reason: "end_turn",
+            content: [{ type: "text", text: "看完了，skill 里是饮食和训练记录流程。" }],
+          },
+        }),
+      ].join("\n"),
+      {
+        command: "claude",
+        output: "jsonl",
+        sessionIdFields: ["session_id"],
+      },
+      "claude-cli",
+    );
+
+    expect(result).toEqual({
+      text: "看完了，skill 里是饮食和训练记录流程。",
+      payloads: [
+        { text: "I'll read the skill first." },
+        { text: "看完了，skill 里是饮食和训练记录流程。" },
+      ],
+      sessionId: "session-tool-result",
+      usage: undefined,
+    });
+  });
+
+  it("keeps text blocks from mixed assistant tool-use messages", () => {
+    const result = parseCliJsonl(
+      [
+        JSON.stringify({ type: "init", session_id: "session-mixed-tool-use" }),
+        JSON.stringify({
+          type: "assistant",
+          session_id: "session-mixed-tool-use",
+          message: {
+            role: "assistant",
+            stop_reason: "tool_use",
+            content: [
+              { type: "text", text: "I'll read the skill first." },
+              {
+                type: "tool_use",
+                id: "toolu_1",
+                name: "mcp__openclaw__read",
+                input: { path: "skills/workout/SKILL.md" },
+              },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: "user",
+          session_id: "session-mixed-tool-use",
+          message: {
+            role: "user",
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "toolu_1",
+                content: "## Workout Skill\nfull skill text should stay internal",
+              },
+            ],
+          },
+        }),
+      ].join("\n"),
+      {
+        command: "claude",
+        output: "jsonl",
+        sessionIdFields: ["session_id"],
+      },
+      "claude-cli",
+    );
+
+    expect(result).toEqual({
+      text: "I'll read the skill first.",
+      payloads: [{ text: "I'll read the skill first." }],
+      sessionId: "session-mixed-tool-use",
+      usage: undefined,
+    });
   });
 
   it("ignores stale assistant snapshots that do not extend streamed text", () => {
