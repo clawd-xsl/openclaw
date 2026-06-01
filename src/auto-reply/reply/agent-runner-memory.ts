@@ -14,7 +14,7 @@ import {
 } from "../../agents/cli-session.js";
 import { estimateMessagesTokens } from "../../agents/compaction.js";
 import { runWithModelFallback } from "../../agents/model-fallback.js";
-import { isCliProvider } from "../../agents/model-selection.js";
+import { isCliProvider, normalizeProviderId } from "../../agents/model-selection.js";
 import { resolveSandboxConfigForAgent, resolveSandboxRuntimeStatus } from "../../agents/sandbox.js";
 import {
   derivePromptTokens,
@@ -27,11 +27,14 @@ import {
   resolveFreshSessionTotalTokens,
   resolveSessionFilePath,
   resolveSessionFilePathOptions,
-  type CliSessionBinding,
   type SessionEntry,
   updateSessionStoreEntry,
 } from "../../config/sessions.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import {
+  readClaudeCliSessionMessages,
+  resolveClaudeCliSessionFilePath,
+} from "../../gateway/cli-session-history.js";
 import { readSessionMessages } from "../../gateway/session-utils.fs.js";
 import { logVerbose } from "../../globals.js";
 import { registerAgentRunContext } from "../../infra/agent-events.js";
@@ -136,6 +139,13 @@ const TRANSCRIPT_TAIL_CHUNK_BYTES = 64 * 1024;
 const CLI_MEMORY_FLUSH_RETRIGGER_TOKENS = 20_000;
 const CLI_PREFLIGHT_COMPACTION_RETRIGGER_TOKENS = 20_000;
 const CLI_HIDDEN_USAGE_CONTEXT_RATIO = 0.8;
+const CLAUDE_CLI_USAGE_PROVIDERS = new Set(["claude-cli", "claude-cli-streaming"]);
+
+type CliNativePromptUsageSnapshot = {
+  promptTokens?: number;
+  cliSessionId?: string;
+  source: string;
+};
 
 function parseUsageFromTranscriptLine(line: string): ReturnType<typeof normalizeUsage> | undefined {
   const trimmed = line.trim();
@@ -383,18 +393,60 @@ function shouldRunCliPreflightCompaction(params: {
   return tokenCount >= overlayPromptTokens + CLI_PREFLIGHT_COMPACTION_RETRIGGER_TOKENS;
 }
 
-function resolveCliSessionUsageTokens(binding: CliSessionBinding | undefined): number | undefined {
-  const usage = binding?.lastUsage;
-  if (!usage) {
-    return undefined;
+async function readCliNativePromptUsageSnapshot(params: {
+  entry: SessionEntry;
+  provider: string;
+}): Promise<CliNativePromptUsageSnapshot> {
+  const normalizedProvider = normalizeProviderId(params.provider);
+  if (!CLAUDE_CLI_USAGE_PROVIDERS.has(normalizedProvider)) {
+    return { source: "native_usage_unsupported_provider" };
   }
-  const promptSideTokens =
-    Math.max(0, usage.input ?? 0) +
-    Math.max(0, usage.cacheRead ?? 0) +
-    Math.max(0, usage.cacheWrite ?? 0);
-  const totalTokens = Math.max(0, usage.total ?? 0);
-  const tokens = Math.max(promptSideTokens, totalTokens);
-  return Number.isFinite(tokens) && tokens > 0 ? Math.floor(tokens) : undefined;
+
+  const cliSessionId = normalizeOptionalString(
+    getCliSessionBinding(params.entry, normalizedProvider)?.sessionId,
+  );
+  if (!cliSessionId) {
+    return { source: "claude_cli_session_missing" };
+  }
+
+  const transcriptPath = resolveClaudeCliSessionFilePath({ cliSessionId });
+  if (!transcriptPath) {
+    return { cliSessionId, source: "claude_cli_transcript_missing" };
+  }
+
+  try {
+    const usage = await readLastNonzeroUsageFromSessionLog(transcriptPath);
+    const promptTokens = derivePromptTokens(usage);
+    if (typeof promptTokens !== "number" || !Number.isFinite(promptTokens) || promptTokens <= 0) {
+      return { cliSessionId, source: "claude_cli_transcript_usage_missing" };
+    }
+    return {
+      cliSessionId,
+      promptTokens: Math.floor(promptTokens),
+      source: "claude_cli_transcript",
+    };
+  } catch {
+    return { cliSessionId, source: "claude_cli_transcript_unreadable" };
+  }
+}
+
+async function writeCliCompactionSessionFileFromClaudeHistory(params: {
+  tempSessionFile: string;
+  cliSessionId: string;
+}): Promise<{ ok: true; messageCount: number } | { ok: false; reason: string }> {
+  const messages = readClaudeCliSessionMessages({ cliSessionId: params.cliSessionId });
+  if (messages.length === 0) {
+    return { ok: false, reason: "claude_cli_transcript_empty" };
+  }
+
+  const { SessionManager } = await import("@mariozechner/pi-coding-agent");
+  const sessionManager = SessionManager.open(params.tempSessionFile) as unknown as {
+    appendMessage(message: Record<string, unknown>): string;
+  };
+  for (const message of messages) {
+    sessionManager.appendMessage(message);
+  }
+  return { ok: true, messageCount: messages.length };
 }
 
 function resolveCliSessionUsageThreshold(params: {
@@ -515,13 +567,15 @@ async function runCliPreflightCompactionIfNeeded(params: {
   const softThresholdTokens = memoryFlushPlan?.softThresholdTokens ?? 4_000;
   const threshold = contextWindowTokens - reserveTokensFloor - softThresholdTokens;
   const overlayPromptTokens = overlay?.compactedAtPromptTokens;
-  const cliSessionUsageTokens = resolveCliSessionUsageTokens(getCliSessionBinding(entry, provider));
+  const cliNativeUsage = await readCliNativePromptUsageSnapshot({ entry, provider });
+  const cliSessionUsageTokens = cliNativeUsage.promptTokens;
   const cliSessionUsageThreshold = resolveCliSessionUsageThreshold({
     contextWindowTokens,
     transcriptThreshold: threshold,
   });
-  const shouldRotateHiddenCliSession =
-    typeof cliSessionUsageTokens === "number" && cliSessionUsageTokens >= cliSessionUsageThreshold;
+  const compactionGateTokens = cliSessionUsageTokens;
+  const compactionGateThreshold = cliSessionUsageThreshold;
+  const compactionGateSource = cliNativeUsage.source;
 
   logVerbose(
     `preflightCompaction check: sessionKey=${params.sessionKey} ` +
@@ -529,33 +583,21 @@ async function runCliPreflightCompactionIfNeeded(params: {
       `threshold=${threshold} isHeartbeat=false isCli=true ` +
       `overlay=${overlay ? "yes" : "no"} overlayInvalidReason=${prefixResult.overlayInvalidReason ?? "none"} ` +
       `overlayPromptTokens=${overlayPromptTokens ?? "undefined"} ` +
+      `cliSessionId=${cliNativeUsage.cliSessionId ?? "undefined"} ` +
       `cliSessionUsageTokens=${cliSessionUsageTokens ?? "undefined"} ` +
-      `cliSessionUsageThreshold=${cliSessionUsageThreshold} promptPrefixChars=${promptPrefix.length}`,
+      `cliSessionUsageThreshold=${cliSessionUsageThreshold} ` +
+      `gateSource=${compactionGateSource} gateTokens=${compactionGateTokens ?? "undefined"} ` +
+      `gateThreshold=${compactionGateThreshold} promptPrefixChars=${promptPrefix.length}`,
   );
 
   const shouldCompact = shouldRunCliPreflightCompaction({
-    tokenCount: tokenCountForCompaction,
-    threshold,
-    overlayPromptTokens,
+    tokenCount: compactionGateTokens,
+    threshold: compactionGateThreshold,
+    // CLI preflight compaction is gated by Claude Code's native transcript
+    // usage, not OpenClaw-maintained session usage.
+    overlayPromptTokens: undefined,
   });
   if (!shouldCompact) {
-    if (shouldRotateHiddenCliSession) {
-      logVerbose(
-        `preflightCompaction rotating CLI session: sessionKey=${params.sessionKey} ` +
-          `reason=cli_hidden_usage cliSessionUsageTokens=${cliSessionUsageTokens} ` +
-          `threshold=${cliSessionUsageThreshold} transcriptTokens=${tokenCountForCompaction ?? "undefined"}`,
-      );
-      entry = await persistCliCompactionOverlayUpdate({
-        entry,
-        sessionStore: params.sessionStore,
-        sessionKey: params.sessionKey,
-        storePath: params.storePath,
-        mutate: (mutable) => {
-          clearCliSession(mutable, provider);
-          mutable.updatedAt = memoryDeps.now();
-        },
-      });
-    }
     return entry ?? params.sessionEntry;
   }
 
@@ -571,7 +613,8 @@ async function runCliPreflightCompactionIfNeeded(params: {
 
   logVerbose(
     `preflightCompaction triggered: sessionKey=${params.sessionKey} ` +
-      `tokenCount=${tokenCountForCompaction ?? "undefined"} threshold=${threshold} cli=true ` +
+      `tokenCount=${compactionGateTokens ?? "undefined"} threshold=${compactionGateThreshold} cli=true ` +
+      `gateSource=${compactionGateSource} transcriptTokens=${tokenCountForCompaction ?? "undefined"} ` +
       `cliSessionUsageTokens=${cliSessionUsageTokens ?? "undefined"}`,
   );
   const effectiveTokenCountForCompaction = Math.max(
@@ -585,7 +628,22 @@ async function runCliPreflightCompactionIfNeeded(params: {
   );
   const tempSessionFile = path.join(tempDir, path.basename(sessionFile));
   try {
-    await fs.promises.copyFile(sessionFile, tempSessionFile);
+    if (!cliNativeUsage.cliSessionId) {
+      logVerbose(
+        `preflightCompaction skipped: sessionKey=${params.sessionKey} reason=claude_cli_session_missing cli=true`,
+      );
+      return entry ?? params.sessionEntry;
+    }
+    const tempTranscript = await writeCliCompactionSessionFileFromClaudeHistory({
+      tempSessionFile,
+      cliSessionId: cliNativeUsage.cliSessionId,
+    });
+    if (!tempTranscript.ok) {
+      logVerbose(
+        `preflightCompaction skipped: sessionKey=${params.sessionKey} reason=${tempTranscript.reason} cli=true`,
+      );
+      return entry ?? params.sessionEntry;
+    }
     const result = await memoryDeps.compactEmbeddedPiSession({
       sessionId: entry.sessionId,
       messageChannel: params.followupRun.run.messageProvider,
@@ -627,9 +685,8 @@ async function runCliPreflightCompactionIfNeeded(params: {
     const nextOverlay = {
       provider,
       summary: result.result.summary.trim(),
-      ...(normalizeOptionalString(result.result.firstKeptEntryId)
-        ? { firstKeptEntryId: normalizeOptionalString(result.result.firstKeptEntryId) }
-        : {}),
+      // CLI compaction runs over a temporary Claude Code history transcript. Its entry
+      // ids do not exist in OpenClaw's visible transcript, so they cannot anchor tails there.
       ...(typeof result.result.tokensBefore === "number" && result.result.tokensBefore > 0
         ? { tokensBefore: Math.floor(result.result.tokensBefore) }
         : {}),
@@ -637,7 +694,7 @@ async function runCliPreflightCompactionIfNeeded(params: {
         ? { tokensAfter: Math.floor(result.result.tokensAfter) }
         : {}),
       contextWindowTokens,
-      thresholdTokens: threshold,
+      thresholdTokens: compactionGateThreshold,
       createdAt: overlay?.createdAt ?? updatedAt,
       updatedAt,
     };

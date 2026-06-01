@@ -21,6 +21,7 @@ const compactEmbeddedPiSessionMock = vi.fn();
 const refreshQueuedFollowupSessionMock = vi.fn();
 const incrementCompactionCountMock = vi.fn();
 const updateSessionStoreEntryMock = vi.fn();
+const ORIGINAL_HOME = process.env.HOME;
 
 function createReplyOperation() {
   return {
@@ -68,11 +69,46 @@ async function writeSessionStore(
   await fs.writeFile(storePath, JSON.stringify({ [sessionKey]: entry }, null, 2), "utf8");
 }
 
+async function writeClaudeCliTranscript(params: {
+  homeDir: string;
+  cliSessionId: string;
+  usage: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
+  };
+}): Promise<string> {
+  const projectDir = path.join(params.homeDir, ".claude", "projects", "test-workspace");
+  const transcriptPath = path.join(projectDir, `${params.cliSessionId}.jsonl`);
+  await fs.mkdir(projectDir, { recursive: true });
+  await fs.writeFile(
+    transcriptPath,
+    [
+      JSON.stringify({
+        type: "assistant",
+        sessionId: params.cliSessionId,
+        timestamp: "2026-05-30T03:16:53.007Z",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "ok" }],
+          usage: params.usage,
+        },
+      }),
+    ].join("\n") + "\n",
+    "utf8",
+  );
+  return transcriptPath;
+}
+
 describe("runMemoryFlushIfNeeded", () => {
   let rootDir = "";
+  let homeDir = "";
 
   beforeEach(async () => {
     rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-memory-unit-"));
+    homeDir = path.join(rootDir, "home");
+    process.env.HOME = homeDir;
     registerMemoryFlushPlanResolver(() => ({
       softThresholdTokens: 4_000,
       forceFlushTranscriptBytes: 1_000_000_000,
@@ -146,6 +182,11 @@ describe("runMemoryFlushIfNeeded", () => {
   afterEach(async () => {
     setAgentRunnerMemoryTestDeps();
     clearMemoryPluginState();
+    if (ORIGINAL_HOME === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = ORIGINAL_HOME;
+    }
     await fs.rm(rootDir, { recursive: true, force: true });
   });
 
@@ -262,7 +303,7 @@ describe("runMemoryFlushIfNeeded", () => {
     expect(flushCall.silentExpected).toBe(true);
   });
 
-  it("compacts CLI sessions into provider overlays and clears only the CLI binding", async () => {
+  it("compacts CLI sessions from Claude transcript usage into provider overlays and clears only the CLI binding", async () => {
     registerMemoryFlushPlanResolver(() => ({
       softThresholdTokens: 10,
       forceFlushTranscriptBytes: 1_000_000_000,
@@ -303,6 +344,15 @@ describe("runMemoryFlushIfNeeded", () => {
 
     const storePath = path.join(rootDir, "sessions.json");
     const sessionKey = "main";
+    await writeClaudeCliTranscript({
+      homeDir,
+      cliSessionId: "cli-session-1",
+      usage: {
+        input_tokens: 120,
+        cache_read_input_tokens: 240,
+        output_tokens: 20,
+      },
+    });
     const sessionEntry: SessionEntry = {
       sessionId: "session",
       updatedAt: Date.now(),
@@ -317,15 +367,21 @@ describe("runMemoryFlushIfNeeded", () => {
     };
     const sessionStore = { [sessionKey]: sessionEntry };
     await writeSessionStore(storePath, sessionKey, sessionEntry);
-    compactEmbeddedPiSessionMock.mockResolvedValue({
-      ok: true,
-      compacted: true,
-      result: {
-        summary: "Condensed earlier context.",
-        firstKeptEntryId: "m2",
-        tokensBefore: 1_024,
-        tokensAfter: 256,
-      },
+    compactEmbeddedPiSessionMock.mockImplementation(async (params: { sessionFile: string }) => {
+      const tempTranscript = await fs.readFile(params.sessionFile, "utf8");
+      expect(tempTranscript).toContain("ok");
+      expect(tempTranscript).not.toContain("older question");
+      expect(tempTranscript).not.toContain("older answer");
+      return {
+        ok: true,
+        compacted: true,
+        result: {
+          summary: "Condensed earlier context.",
+          firstKeptEntryId: "m2",
+          tokensBefore: 1_024,
+          tokensAfter: 256,
+        },
+      };
     });
 
     const entry = await runPreflightCompactionIfNeeded({
@@ -371,11 +427,11 @@ describe("runMemoryFlushIfNeeded", () => {
     expect(entry?.cliCompactionOverlays?.["claude-cli"]).toMatchObject({
       provider: "claude-cli",
       summary: "Condensed earlier context.",
-      firstKeptEntryId: "m2",
       tokensBefore: 1024,
       tokensAfter: 256,
       thresholdTokens: 290,
     });
+    expect(entry?.cliCompactionOverlays?.["claude-cli"]).not.toHaveProperty("firstKeptEntryId");
     expect(entry?.cliCompactionOverlays?.["claude-cli"]?.compactedAtPromptTokens).toBeGreaterThan(
       0,
     );
@@ -390,8 +446,128 @@ describe("runMemoryFlushIfNeeded", () => {
     );
   });
 
-  it("rotates bloated CLI resume sessions from stored CLI usage without compacting small transcripts", async () => {
+  it("compacts bloated CLI resume sessions from Claude transcript usage even with small transcripts", async () => {
     const sessionDir = await fs.mkdtemp(path.join(rootDir, "openclaw-cli-usage-"));
+    const sessionFile = path.join(sessionDir, "session.jsonl");
+    await fs.writeFile(
+      sessionFile,
+      [
+        JSON.stringify({
+          id: "m1",
+          message: {
+            role: "user",
+            content: [{ type: "text", text: "short context" }],
+          },
+        }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+
+    const storePath = path.join(rootDir, "sessions.json");
+    const sessionKey = "main";
+    await writeClaudeCliTranscript({
+      homeDir,
+      cliSessionId: "cli-session-1",
+      usage: {
+        input_tokens: 1_200,
+        output_tokens: 500,
+        cache_read_input_tokens: 170_000,
+      },
+    });
+    const sessionEntry: SessionEntry = {
+      sessionId: "session",
+      updatedAt: Date.now(),
+      sessionFile,
+      cliSessionIds: { "claude-cli": "cli-session-1" },
+      cliSessionBindings: {
+        "claude-cli": {
+          sessionId: "cli-session-1",
+          lastUsage: {
+            input: 10,
+            output: 5,
+            cacheRead: 20,
+            updatedAt: 1_700_000_000_000,
+          },
+        },
+      },
+    };
+    const sessionStore = { [sessionKey]: sessionEntry };
+    await writeSessionStore(storePath, sessionKey, sessionEntry);
+    compactEmbeddedPiSessionMock.mockImplementation(async (params: { sessionFile: string }) => {
+      const tempTranscript = await fs.readFile(params.sessionFile, "utf8");
+      expect(tempTranscript).toContain("ok");
+      expect(tempTranscript).not.toContain("short context");
+      return {
+        ok: true,
+        compacted: true,
+        result: {
+          summary: "Condensed hidden-usage context.",
+          firstKeptEntryId: "m1",
+          tokensBefore: 512,
+          tokensAfter: 128,
+        },
+      };
+    });
+
+    const entry = await runPreflightCompactionIfNeeded({
+      cfg: {
+        agents: {
+          defaults: {
+            cliBackends: {
+              "claude-cli": { command: "claude" },
+            },
+            compaction: {
+              reserveTokensFloor: 20_000,
+            },
+          },
+        },
+      },
+      followupRun: createFollowupRun({
+        provider: "claude-cli",
+        model: "sonnet",
+        sessionFile,
+      }),
+      promptForEstimate: "hello",
+      defaultModel: "claude-cli/sonnet",
+      agentCfgContextTokens: 200_000,
+      sessionEntry,
+      sessionStore,
+      sessionKey,
+      storePath,
+      isHeartbeat: false,
+      replyOperation: createReplyOperation(),
+    });
+
+    expect(compactEmbeddedPiSessionMock).toHaveBeenCalledTimes(1);
+    const compactionCall = compactEmbeddedPiSessionMock.mock.calls[0]?.[0] as {
+      currentTokenCount?: number;
+      sessionFile?: string;
+    };
+    expect(compactionCall.currentTokenCount).toBe(171_200);
+    expect(compactionCall.sessionFile).not.toBe(sessionFile);
+    expect(entry?.cliSessionBindings).toBeUndefined();
+    expect(entry?.cliSessionIds).toBeUndefined();
+    expect(entry?.cliCompactionOverlays?.["claude-cli"]).toMatchObject({
+      provider: "claude-cli",
+      summary: "Condensed hidden-usage context.",
+      tokensBefore: 512,
+      tokensAfter: 128,
+      thresholdTokens: 160_000,
+    });
+    expect(entry?.cliCompactionOverlays?.["claude-cli"]).not.toHaveProperty("firstKeptEntryId");
+
+    const persisted = JSON.parse(await fs.readFile(storePath, "utf8")) as {
+      main: SessionEntry;
+    };
+    expect(persisted.main.cliSessionBindings).toBeUndefined();
+    expect(persisted.main.cliSessionIds).toBeUndefined();
+    expect(persisted.main.cliCompactionOverlays?.["claude-cli"]?.summary).toBe(
+      "Condensed hidden-usage context.",
+    );
+  });
+
+  it("does not compact CLI sessions from OpenClaw-maintained usage when Claude transcript usage is unavailable", async () => {
+    const sessionDir = await fs.mkdtemp(path.join(rootDir, "openclaw-cli-usage-missing-"));
     const sessionFile = path.join(sessionDir, "session.jsonl");
     await fs.writeFile(
       sessionFile,
@@ -413,10 +589,10 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionId: "session",
       updatedAt: Date.now(),
       sessionFile,
-      cliSessionIds: { "claude-cli": "cli-session-1" },
+      cliSessionIds: { "claude-cli": "cli-session-missing-transcript" },
       cliSessionBindings: {
         "claude-cli": {
-          sessionId: "cli-session-1",
+          sessionId: "cli-session-missing-transcript",
           lastUsage: {
             input: 1_200,
             output: 500,
@@ -459,16 +635,8 @@ describe("runMemoryFlushIfNeeded", () => {
     });
 
     expect(compactEmbeddedPiSessionMock).not.toHaveBeenCalled();
-    expect(entry?.cliSessionBindings).toBeUndefined();
-    expect(entry?.cliSessionIds).toBeUndefined();
+    expect(entry?.cliSessionBindings?.["claude-cli"]?.lastUsage?.cacheRead).toBe(170_000);
     expect(entry?.cliCompactionOverlays).toBeUndefined();
-
-    const persisted = JSON.parse(await fs.readFile(storePath, "utf8")) as {
-      main: SessionEntry;
-    };
-    expect(persisted.main.cliSessionBindings).toBeUndefined();
-    expect(persisted.main.cliSessionIds).toBeUndefined();
-    expect(persisted.main.cliCompactionOverlays).toBeUndefined();
   });
 
   it("uses configured prompts and stored bootstrap warning signatures", async () => {
