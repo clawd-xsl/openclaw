@@ -289,7 +289,7 @@ describe("createChildAdapter", () => {
         cb?.(err);
       });
       return true;
-    }) as typeof stdin.write;
+    }) as unknown as typeof stdin.write;
     stdin.end = vi.fn(() => {
       stdinEnded = true;
       stdin.emit("finish");
