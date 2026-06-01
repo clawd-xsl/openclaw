@@ -47,8 +47,8 @@ function buildPreparedCliRunContext(params: {
             "-p",
             "--output-format",
             "stream-json",
-            "--tools",
-            "",
+            "--disallowedTools",
+            "Bash,Read,Edit,Write",
             "--setting-sources",
             "",
             "--settings",
@@ -134,8 +134,8 @@ describe("runCliAgent spawn path", () => {
         "-p",
         "--output-format",
         "stream-json",
-        "--tools",
-        "",
+        "--disallowedTools",
+        "Bash,Read,Edit,Write",
         "--setting-sources",
         "",
         "--settings",
@@ -417,7 +417,7 @@ describe("runCliAgent spawn path", () => {
       sessionFile: "/tmp/session.jsonl",
       workspaceDir: "/tmp",
       prompt: "hello",
-      provider: "claude-cli-streaming",
+      provider: "claude-cli",
       model: "sonnet-4.6",
       timeoutMs: 1_000,
       runId: "run-claude-mcp-no-metadata-resume",
@@ -428,6 +428,44 @@ describe("runCliAgent spawn path", () => {
 
     expect(context.preparedBackend.mcpConfigHash).toBeTruthy();
     expect(context.reusableCliSession).toEqual({ invalidatedReason: "mcp" });
+  });
+
+  it("reuses stored CLI bindings for Claude streaming sessions", async () => {
+    setCliRunnerPrepareTestDeps({
+      makeBootstrapWarn: () => () => {},
+      resolveBootstrapContextForRun: async () => ({
+        bootstrapFiles: [],
+        contextFiles: [],
+      }),
+      resolveOpenClawDocsPath: async () => null,
+      getActiveMcpLoopbackRuntime: () => ({
+        port: 23119,
+        token: "loopback-token",
+      }),
+      ensureMcpLoopbackServer: async () => {
+        throw new Error("should not start loopback server when runtime is already active");
+      },
+    });
+
+    const context = await prepareCliRunContext({
+      sessionId: "session-current",
+      sessionKey: "agent:main:test",
+      agentId: "main",
+      sessionFile: "/tmp/session.jsonl",
+      workspaceDir: "/tmp",
+      prompt: "hello",
+      provider: "claude-cli-streaming",
+      model: "sonnet-4.6",
+      timeoutMs: 1_000,
+      runId: "run-claude-streaming-ignore-binding",
+      cliSessionBinding: {
+        sessionId: "claude-session-legacy",
+        mcpConfigHash: "previous-mcp-hash",
+      },
+    });
+
+    expect(context.preparedBackend.backend.sessionMode).toBe("always");
+    expect(context.reusableCliSession).toEqual({ sessionId: "claude-session-legacy" });
   });
 
   it("pipes Claude prompts over stdin instead of argv", async () => {

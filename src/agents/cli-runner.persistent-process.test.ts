@@ -80,8 +80,8 @@ function buildPersistentContext(params?: {
       "stream-json",
       "--include-partial-messages",
       "--verbose",
-      "--tools",
-      "",
+      "--disallowedTools",
+      "Bash,Read,Edit,Write",
       "--setting-sources",
       "",
       "--settings",
@@ -96,8 +96,8 @@ function buildPersistentContext(params?: {
       "stream-json",
       "--include-partial-messages",
       "--verbose",
-      "--tools",
-      "",
+      "--disallowedTools",
+      "Bash,Read,Edit,Write",
       "--setting-sources",
       "",
       "--settings",
@@ -355,7 +355,7 @@ describe("claude-cli-streaming persistent process runner", () => {
     expect(controller.getSpawnCount()).toBe(1);
   });
 
-  it("relaunches fresh on turn two when OpenClaw does not pass a reusable Claude session id", async () => {
+  it("relaunches a live Claude process when OpenClaw stops passing the reusable Claude session id", async () => {
     const controller = installPersistentSpawnMock();
 
     await executePreparedCliRun(buildPersistentContext({ prompt: "first prompt" }));
@@ -363,8 +363,6 @@ describe("claude-cli-streaming persistent process runner", () => {
 
     expect(second.text).toBe("turn-2-1");
     expect(controller.getSpawnCount()).toBe(2);
-    expect(controller.spawnInputs[1]?.argv).toContain("--session-id");
-    expect(controller.spawnInputs[1]?.argv).not.toContain("--resume");
   });
 
   it("streams assistant snapshot growth after tool work on the persistent path", async () => {
@@ -462,11 +460,11 @@ describe("claude-cli-streaming persistent process runner", () => {
     }
   });
 
-  it("relaunches with --resume when the effective system prompt changes", async () => {
+  it("does not relaunch a live process when the effective system prompt changes", async () => {
     const controller = installPersistentSpawnMock();
 
     await executePreparedCliRun(buildPersistentContext({ systemPrompt: "system prompt A" }));
-    await executePreparedCliRun(
+    const second = await executePreparedCliRun(
       buildPersistentContext({
         systemPrompt: "system prompt B",
         reusableCliSessionId: "claude-session-1",
@@ -474,17 +472,16 @@ describe("claude-cli-streaming persistent process runner", () => {
       "claude-session-1",
     );
 
-    expect(controller.getSpawnCount()).toBe(2);
+    expect(second.text).toBe("turn-1-2");
+    expect(controller.getSpawnCount()).toBe(1);
     expect(controller.spawnInputs[0]?.argv).toContain("--session-id");
-    expect(controller.spawnInputs[1]?.argv).toContain("--resume");
-    expect(controller.spawnInputs[1]?.argv).toContain("claude-session-1");
   });
 
-  it("passes native Claude thinking controls and relaunches when thinking level changes", async () => {
+  it("does not relaunch a live process when thinking level changes", async () => {
     const controller = installPersistentSpawnMock();
 
     await executePreparedCliRun(buildPersistentContext({ thinkLevel: "off" }));
-    await executePreparedCliRun(
+    const second = await executePreparedCliRun(
       buildPersistentContext({
         thinkLevel: "high",
         reusableCliSessionId: "claude-session-1",
@@ -492,20 +489,17 @@ describe("claude-cli-streaming persistent process runner", () => {
       "claude-session-1",
     );
 
-    expect(controller.getSpawnCount()).toBe(2);
+    expect(second.text).toBe("turn-1-2");
+    expect(controller.getSpawnCount()).toBe(1);
     expect(controller.spawnInputs[0]?.argv).not.toContain("--effort");
     expect(controller.spawnInputs[0]?.env?.MAX_THINKING_TOKENS).toBe("0");
-    expect(controller.spawnInputs[1]?.argv).toContain("--resume");
-    expect(controller.spawnInputs[1]?.argv).toContain("--effort");
-    expect(controller.spawnInputs[1]?.argv).toContain("high");
-    expect(controller.spawnInputs[1]?.env).not.toHaveProperty("MAX_THINKING_TOKENS");
   });
 
-  it("passes fast mode through Claude settings and relaunches when fast mode changes", async () => {
+  it("does not relaunch a live process when fast mode changes", async () => {
     const controller = installPersistentSpawnMock();
 
     await executePreparedCliRun(buildPersistentContext({ fastMode: true }));
-    await executePreparedCliRun(
+    const second = await executePreparedCliRun(
       buildPersistentContext({
         fastMode: false,
         reusableCliSessionId: "claude-session-1",
@@ -513,25 +507,20 @@ describe("claude-cli-streaming persistent process runner", () => {
       "claude-session-1",
     );
 
-    expect(controller.getSpawnCount()).toBe(2);
+    expect(second.text).toBe("turn-1-2");
+    expect(controller.getSpawnCount()).toBe(1);
     expect(readClaudeSettingsArg(controller.spawnInputs[0]?.argv)).toMatchObject({
       disableAllHooks: true,
       fastMode: true,
     });
     expect(controller.spawnInputs[0]?.argv).not.toContain("--effort");
-    expect(controller.spawnInputs[1]?.argv).toContain("--resume");
-    expect(readClaudeSettingsArg(controller.spawnInputs[1]?.argv)).toMatchObject({
-      disableAllHooks: true,
-      fastMode: false,
-    });
-    expect(controller.spawnInputs[1]?.argv).not.toContain("--effort");
   });
 
-  it("relaunches with --resume when the bundled MCP hash changes", async () => {
+  it("does not relaunch a live process when the bundled MCP hash changes", async () => {
     const controller = installPersistentSpawnMock();
 
     await executePreparedCliRun(buildPersistentContext({ mcpConfigHash: "mcp-a" }));
-    await executePreparedCliRun(
+    const second = await executePreparedCliRun(
       buildPersistentContext({
         mcpConfigHash: "mcp-b",
         reusableCliSessionId: "claude-session-1",
@@ -539,9 +528,8 @@ describe("claude-cli-streaming persistent process runner", () => {
       "claude-session-1",
     );
 
-    expect(controller.getSpawnCount()).toBe(2);
-    expect(controller.spawnInputs[1]?.argv).toContain("--resume");
-    expect(controller.spawnInputs[1]?.argv).toContain("claude-session-1");
+    expect(second.text).toBe("turn-1-2");
+    expect(controller.getSpawnCount()).toBe(1);
   });
 
   it("does not relaunch when only non-signature MCP materialization fields churn", async () => {
@@ -567,11 +555,11 @@ describe("claude-cli-streaming persistent process runner", () => {
     expect(controller.getSpawnCount()).toBe(1);
   });
 
-  it("relaunches with --resume when the Claude skills signature changes", async () => {
+  it("does not relaunch a live process when the Claude skills signature changes", async () => {
     const controller = installPersistentSpawnMock();
 
     await executePreparedCliRun(buildPersistentContext({ skillsSignature: "skills-a" }));
-    await executePreparedCliRun(
+    const second = await executePreparedCliRun(
       buildPersistentContext({
         skillsSignature: "skills-b",
         reusableCliSessionId: "claude-session-1",
@@ -579,12 +567,11 @@ describe("claude-cli-streaming persistent process runner", () => {
       "claude-session-1",
     );
 
-    expect(controller.getSpawnCount()).toBe(2);
-    expect(controller.spawnInputs[1]?.argv).toContain("--resume");
-    expect(controller.spawnInputs[1]?.argv).toContain("claude-session-1");
+    expect(second.text).toBe("turn-1-2");
+    expect(controller.getSpawnCount()).toBe(1);
   });
 
-  it("relaunches with --resume when backend env and clearEnv drift", async () => {
+  it("does not relaunch a live process when backend env and clearEnv drift", async () => {
     const controller = installPersistentSpawnMock();
 
     await executePreparedCliRun(
@@ -593,11 +580,47 @@ describe("claude-cli-streaming persistent process runner", () => {
         clearEnv: ["CLAUDE_BAR"],
       }),
     );
-    await executePreparedCliRun(
+    const second = await executePreparedCliRun(
       buildPersistentContext({
         backendEnv: { CLAUDE_FOO: "beta" },
         clearEnv: ["CLAUDE_BAZ"],
         reusableCliSessionId: "claude-session-1",
+      }),
+      "claude-session-1",
+    );
+
+    expect(second.text).toBe("turn-1-2");
+    expect(controller.getSpawnCount()).toBe(1);
+  });
+
+  it("does not reap the main runtime while the gateway remains alive", async () => {
+    const controller = installPersistentSpawnMock();
+
+    await executePreparedCliRun(buildPersistentContext({ prompt: "first prompt" }));
+    await reapPersistentCliRuntimesForTest(Date.now() + 24 * 60 * 60 * 1000);
+    const second = await executePreparedCliRun(
+      buildPersistentContext({ prompt: "second prompt" }),
+      "claude-session-1",
+    );
+
+    expect(second.text).toBe("turn-1-2");
+    expect(controller.getSpawnCount()).toBe(1);
+  });
+
+  it("reaps idle non-main runtimes and relaunches with the stored Claude session id", async () => {
+    const controller = installPersistentSpawnMock();
+
+    await executePreparedCliRun(
+      buildPersistentContext({
+        prompt: "first prompt",
+        sessionKey: "agent:main:worker",
+      }),
+    );
+    await reapPersistentCliRuntimesForTest(Date.now() + 24 * 60 * 60 * 1000);
+    await executePreparedCliRun(
+      buildPersistentContext({
+        prompt: "second prompt",
+        sessionKey: "agent:main:worker",
       }),
       "claude-session-1",
     );
@@ -607,19 +630,26 @@ describe("claude-cli-streaming persistent process runner", () => {
     expect(controller.spawnInputs[1]?.argv).toContain("claude-session-1");
   });
 
-  it("reaps idle runtimes and relaunches with the stored Claude session id", async () => {
+  it("relaunches fresh when the OpenClaw session rolls over", async () => {
     const controller = installPersistentSpawnMock();
 
-    await executePreparedCliRun(buildPersistentContext({ prompt: "first prompt" }));
-    await reapPersistentCliRuntimesForTest(Date.now() + 24 * 60 * 60 * 1000);
     await executePreparedCliRun(
-      buildPersistentContext({ prompt: "second prompt" }),
-      "claude-session-1",
+      buildPersistentContext({
+        prompt: "first prompt",
+        sessionId: "session-before-rollover",
+      }),
+    );
+    const second = await executePreparedCliRun(
+      buildPersistentContext({
+        prompt: "second prompt",
+        sessionId: "session-after-rollover",
+      }),
     );
 
+    expect(second.text).toBe("turn-2-1");
     expect(controller.getSpawnCount()).toBe(2);
-    expect(controller.spawnInputs[1]?.argv).toContain("--resume");
-    expect(controller.spawnInputs[1]?.argv).toContain("claude-session-1");
+    expect(controller.spawnInputs[1]?.argv).toContain("--session-id");
+    expect(controller.spawnInputs[1]?.argv).not.toContain("--resume");
   });
 
   it("does not reap a runtime that became busy after the sweep snapshot", async () => {

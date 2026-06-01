@@ -477,9 +477,6 @@ export function resolveSessionIdToSend(params: {
 }): { sessionId?: string; isNew: boolean } {
   const mode = params.backend.sessionMode ?? "always";
   const existing = params.cliSessionId?.trim();
-  if (mode === "none") {
-    return { sessionId: undefined, isNew: !existing };
-  }
   if (mode === "existing") {
     return { sessionId: existing, isNew: !existing };
   }

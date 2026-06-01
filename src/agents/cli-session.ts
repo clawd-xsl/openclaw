@@ -10,7 +10,7 @@ import { normalizeProviderId } from "./model-selection.js";
 
 const CLAUDE_CLI_BACKEND_ID = "claude-cli";
 
-export type CliSessionInvalidationReason = "auth-profile" | "auth-epoch" | "system-prompt" | "mcp";
+export type CliSessionInvalidationReason = "auth-profile" | "system-prompt" | "mcp";
 
 export type CliSessionContinuityBreakReason = CliSessionInvalidationReason | "session_expired";
 
@@ -108,7 +108,6 @@ export function getCliSessionBinding(
     return {
       sessionId: bindingSessionId,
       authProfileId: normalizeOptionalString(fromBindings?.authProfileId),
-      authEpoch: normalizeOptionalString(fromBindings?.authEpoch),
       extraSystemPromptHash: normalizeOptionalString(fromBindings?.extraSystemPromptHash),
       mcpConfigHash: normalizeOptionalString(fromBindings?.mcpConfigHash),
       ...(lastUsage ? { lastUsage } : {}),
@@ -156,9 +155,6 @@ export function setCliSessionBinding(
       sessionId: trimmed,
       ...(normalizeOptionalString(binding.authProfileId)
         ? { authProfileId: normalizeOptionalString(binding.authProfileId) }
-        : {}),
-      ...(normalizeOptionalString(binding.authEpoch)
-        ? { authEpoch: normalizeOptionalString(binding.authEpoch) }
         : {}),
       ...(normalizeOptionalString(binding.extraSystemPromptHash)
         ? { extraSystemPromptHash: normalizeOptionalString(binding.extraSystemPromptHash) }
@@ -327,7 +323,6 @@ export function clearAllCliCompactionOverlays(entry: SessionEntry): void {
 export function resolveCliSessionReuse(params: {
   binding?: CliSessionBinding;
   authProfileId?: string;
-  authEpoch?: string;
   extraSystemPromptHash?: string;
   mcpConfigHash?: string;
 }): {
@@ -340,16 +335,11 @@ export function resolveCliSessionReuse(params: {
     return {};
   }
   const currentAuthProfileId = normalizeOptionalString(params.authProfileId);
-  const currentAuthEpoch = normalizeOptionalString(params.authEpoch);
   const currentExtraSystemPromptHash = normalizeOptionalString(params.extraSystemPromptHash);
   const currentMcpConfigHash = normalizeOptionalString(params.mcpConfigHash);
   const storedAuthProfileId = normalizeOptionalString(binding?.authProfileId);
   if (storedAuthProfileId !== currentAuthProfileId) {
     return { invalidatedReason: "auth-profile" };
-  }
-  const storedAuthEpoch = normalizeOptionalString(binding?.authEpoch);
-  if (storedAuthEpoch !== currentAuthEpoch) {
-    return { invalidatedReason: "auth-epoch" };
   }
   const storedExtraSystemPromptHash = normalizeOptionalString(binding?.extraSystemPromptHash);
   // Some callers persist prompt hashes only for observability. Treat an

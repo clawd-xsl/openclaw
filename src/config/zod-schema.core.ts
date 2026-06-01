@@ -543,9 +543,7 @@ export const CliBackendSchema = z
     sessionArg: z.string().optional(),
     sessionArgs: z.array(z.string()).optional(),
     resumeArgs: z.array(z.string()).optional(),
-    sessionMode: z
-      .union([z.literal("always"), z.literal("existing"), z.literal("none")])
-      .optional(),
+    sessionMode: z.union([z.literal("always"), z.literal("existing")]).optional(),
     sessionIdFields: z.array(z.string()).optional(),
     systemPromptArg: z.string().optional(),
     systemPromptFileConfigArg: z.string().optional(),

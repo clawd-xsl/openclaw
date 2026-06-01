@@ -80,7 +80,6 @@ export type CliSessionUsageSnapshot = {
 export type CliSessionBinding = {
   sessionId: string;
   authProfileId?: string;
-  authEpoch?: string;
   extraSystemPromptHash?: string;
   mcpConfigHash?: string;
   lastUsage?: CliSessionUsageSnapshot;

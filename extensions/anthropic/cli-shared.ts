@@ -123,7 +123,42 @@ const CLAUDE_BYPASS_PERMISSIONS_MODE = "bypassPermissions";
 const CLAUDE_SETTING_SOURCES_ARG = "--setting-sources";
 const CLAUDE_ISOLATED_SETTING_SOURCES = "";
 const CLAUDE_TOOLS_ARG = "--tools";
-const CLAUDE_DISABLE_BUILTINS_VALUE = "";
+const CLAUDE_DISALLOWED_TOOLS_ARG = "--disallowedTools";
+const CLAUDE_DISALLOWED_TOOLS_ALIAS_ARG = "--disallowed-tools";
+// Keep ToolSearch available so Claude Code can discover OpenClaw MCP tools,
+// but block native file/shell/network tools from being executed directly.
+export const CLAUDE_NATIVE_TOOL_DENYLIST_VALUE = [
+  "AskUserQuestion",
+  "Bash",
+  "CronCreate",
+  "CronDelete",
+  "CronList",
+  "Edit",
+  "EnterPlanMode",
+  "EnterWorktree",
+  "ExitPlanMode",
+  "ExitWorktree",
+  "Glob",
+  "Grep",
+  "Monitor",
+  "NotebookEdit",
+  "PushNotification",
+  "Read",
+  "RemoteTrigger",
+  "ScheduleWakeup",
+  "Skill",
+  "Task",
+  "TaskCreate",
+  "TaskGet",
+  "TaskList",
+  "TaskOutput",
+  "TaskStop",
+  "TaskUpdate",
+  "WebFetch",
+  "WebSearch",
+  "Workflow",
+  "Write",
+].join(",");
 const CLAUDE_SETTINGS_ARG = "--settings";
 const CLAUDE_DISABLE_ALL_HOOKS_SETTINGS = JSON.stringify({ disableAllHooks: true });
 const CLAUDE_SYSTEM_PROMPT_ARG = "--system-prompt";
@@ -144,29 +179,40 @@ export function normalizeClaudeIsolationArgs(args?: string[]): string[] | undefi
     return args;
   }
   const normalized: string[] = [];
-  let hasTools = false;
+  let hasDisallowedTools = false;
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
     if (arg === CLAUDE_TOOLS_ARG) {
-      hasTools = true;
       const maybeValue = args[i + 1];
       if (typeof maybeValue === "string" && !maybeValue.startsWith("-")) {
-        normalized.push(arg, CLAUDE_DISABLE_BUILTINS_VALUE);
         i += 1;
-      } else {
-        normalized.push(arg, CLAUDE_DISABLE_BUILTINS_VALUE);
       }
       continue;
     }
     if (arg.startsWith(`${CLAUDE_TOOLS_ARG}=`)) {
-      hasTools = true;
-      normalized.push(CLAUDE_TOOLS_ARG, CLAUDE_DISABLE_BUILTINS_VALUE);
+      continue;
+    }
+    if (arg === CLAUDE_DISALLOWED_TOOLS_ARG || arg === CLAUDE_DISALLOWED_TOOLS_ALIAS_ARG) {
+      hasDisallowedTools = true;
+      const maybeValue = args[i + 1];
+      if (typeof maybeValue === "string" && !maybeValue.startsWith("-")) {
+        i += 1;
+      }
+      normalized.push(CLAUDE_DISALLOWED_TOOLS_ARG, CLAUDE_NATIVE_TOOL_DENYLIST_VALUE);
+      continue;
+    }
+    if (
+      arg.startsWith(`${CLAUDE_DISALLOWED_TOOLS_ARG}=`) ||
+      arg.startsWith(`${CLAUDE_DISALLOWED_TOOLS_ALIAS_ARG}=`)
+    ) {
+      hasDisallowedTools = true;
+      normalized.push(CLAUDE_DISALLOWED_TOOLS_ARG, CLAUDE_NATIVE_TOOL_DENYLIST_VALUE);
       continue;
     }
     normalized.push(arg);
   }
-  if (!hasTools) {
-    normalized.push(CLAUDE_TOOLS_ARG, CLAUDE_DISABLE_BUILTINS_VALUE);
+  if (!hasDisallowedTools) {
+    normalized.push(CLAUDE_DISALLOWED_TOOLS_ARG, CLAUDE_NATIVE_TOOL_DENYLIST_VALUE);
   }
   return normalized;
 }
@@ -351,6 +397,7 @@ export function normalizeClaudeBackendConfig(config: CliBackendConfig): CliBacke
       ),
     ),
     env: normalizeClaudeEnv(config.env),
+    invalidateOnSystemPromptChange: config.invalidateOnSystemPromptChange ?? false,
     systemPromptArg: CLAUDE_SYSTEM_PROMPT_ARG,
     systemPromptFileConfigArg: CLAUDE_SYSTEM_PROMPT_FILE_ARG,
     systemPromptMode: "replace",

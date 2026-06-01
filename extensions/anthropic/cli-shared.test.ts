@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { buildAnthropicCliBackend } from "./cli-backend.js";
+import { buildAnthropicCliBackend, buildAnthropicStreamingCliBackend } from "./cli-backend.js";
 import {
   CLAUDE_CLI_CLEAR_ENV,
   CLAUDE_CLI_DEFAULT_MODEL_REF,
   CLAUDE_CLI_MODEL_ALIASES,
+  CLAUDE_NATIVE_TOOL_DENYLIST_VALUE,
   normalizeClaudeBackendConfig,
   normalizeClaudeIsolationArgs,
   normalizeClaudePermissionArgs,
@@ -92,19 +93,30 @@ describe("normalizeClaudeSettingSourcesArgs", () => {
 });
 
 describe("normalizeClaudeIsolationArgs", () => {
-  it("disables built-in tools when args omit the flag", () => {
+  it("disallows native Claude tools when args omit the flag", () => {
     expect(
       normalizeClaudeIsolationArgs(["-p", "--output-format", "stream-json", "--verbose"]),
-    ).toEqual(["-p", "--output-format", "stream-json", "--verbose", "--tools", ""]);
+    ).toEqual([
+      "-p",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--disallowedTools",
+      CLAUDE_NATIVE_TOOL_DENYLIST_VALUE,
+    ]);
   });
 
-  it("forces any explicit --tools override back to an empty built-in set", () => {
+  it("removes legacy --tools overrides and keeps the native denylist", () => {
     expect(normalizeClaudeIsolationArgs(["-p", "--tools", "Bash,Edit"])).toEqual([
       "-p",
-      "--tools",
-      "",
+      "--disallowedTools",
+      CLAUDE_NATIVE_TOOL_DENYLIST_VALUE,
     ]);
-    expect(normalizeClaudeIsolationArgs(["-p", "--tools=default"])).toEqual(["-p", "--tools", ""]);
+    expect(normalizeClaudeIsolationArgs(["-p", "--tools=default"])).toEqual([
+      "-p",
+      "--disallowedTools",
+      CLAUDE_NATIVE_TOOL_DENYLIST_VALUE,
+    ]);
   });
 });
 
@@ -161,8 +173,8 @@ describe("normalizeClaudeBackendConfig", () => {
       "--output-format",
       "stream-json",
       "--verbose",
-      "--tools",
-      "",
+      "--disallowedTools",
+      CLAUDE_NATIVE_TOOL_DENYLIST_VALUE,
       "--disable-slash-commands",
       "--setting-sources",
       "",
@@ -178,8 +190,8 @@ describe("normalizeClaudeBackendConfig", () => {
       "--verbose",
       "--resume",
       "{sessionId}",
-      "--tools",
-      "",
+      "--disallowedTools",
+      CLAUDE_NATIVE_TOOL_DENYLIST_VALUE,
       "--disable-slash-commands",
       "--setting-sources",
       "",
@@ -195,6 +207,7 @@ describe("normalizeClaudeBackendConfig", () => {
     expect(normalized.systemPromptFileConfigArg).toBe("--system-prompt-file");
     expect(normalized.systemPromptMode).toBe("replace");
     expect(normalized.systemPromptWhen).toBe("always");
+    expect(normalized.invalidateOnSystemPromptChange).toBe(false);
   });
 
   it("preserves an explicit never system prompt policy", () => {
@@ -204,6 +217,15 @@ describe("normalizeClaudeBackendConfig", () => {
     });
 
     expect(normalized.systemPromptWhen).toBe("never");
+  });
+
+  it("preserves explicit prompt invalidation opt-in", () => {
+    const normalized = normalizeClaudeBackendConfig({
+      command: "claude",
+      invalidateOnSystemPromptChange: true,
+    });
+
+    expect(normalized.invalidateOnSystemPromptChange).toBe(true);
   });
 
   it("is wired through the anthropic cli backend normalize hook", () => {
@@ -220,16 +242,16 @@ describe("normalizeClaudeBackendConfig", () => {
 
     expect(normalized?.args).toContain("--permission-mode");
     expect(normalized?.args).toContain("bypassPermissions");
-    expect(normalized?.args).toContain("--tools");
-    expect(normalized?.args).toContain("");
+    expect(normalized?.args).toContain("--disallowedTools");
+    expect(normalized?.args).toContain(CLAUDE_NATIVE_TOOL_DENYLIST_VALUE);
     expect(normalized?.args).toContain("--disable-slash-commands");
     expect(normalized?.args).toContain("--setting-sources");
     expect(normalized?.args).toContain("--settings");
     expect(normalized?.args).toContain('{"disableAllHooks":true}');
     expect(normalized?.resumeArgs).toContain("--permission-mode");
     expect(normalized?.resumeArgs).toContain("bypassPermissions");
-    expect(normalized?.resumeArgs).toContain("--tools");
-    expect(normalized?.resumeArgs).toContain("");
+    expect(normalized?.resumeArgs).toContain("--disallowedTools");
+    expect(normalized?.resumeArgs).toContain(CLAUDE_NATIVE_TOOL_DENYLIST_VALUE);
     expect(normalized?.resumeArgs).toContain("--disable-slash-commands");
     expect(normalized?.resumeArgs).toContain("--setting-sources");
     expect(normalized?.resumeArgs).toContain("--settings");
@@ -240,16 +262,17 @@ describe("normalizeClaudeBackendConfig", () => {
     expect(normalized?.systemPromptArg).toBe("--system-prompt");
     expect(normalized?.systemPromptMode).toBe("replace");
     expect(normalized?.systemPromptWhen).toBe("always");
+    expect(normalized?.invalidateOnSystemPromptChange).toBe(false);
   });
 
-  it("leaves claude cli subscription-managed, disables stock context/tooling, and clears inherited env overrides", () => {
+  it("leaves claude cli subscription-managed, blocks native tools, and clears inherited env overrides", () => {
     const backend = buildAnthropicCliBackend();
 
     expect(backend.config.env).toEqual({
       CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1",
     });
-    expect(backend.config.args).toContain("--tools");
-    expect(backend.config.args).toContain("");
+    expect(backend.config.args).toContain("--disallowedTools");
+    expect(backend.config.args).toContain(CLAUDE_NATIVE_TOOL_DENYLIST_VALUE);
     expect(backend.config.args).toContain("--disable-slash-commands");
     expect(backend.config.args).toContain("--setting-sources");
     expect(backend.config.args).toContain("--settings");
@@ -257,12 +280,13 @@ describe("normalizeClaudeBackendConfig", () => {
     expect(backend.config.resumeArgs).toContain("--setting-sources");
     expect(backend.config.resumeArgs).toContain("--settings");
     expect(backend.config.resumeArgs).toContain('{"disableAllHooks":true}');
-    expect(backend.config.resumeArgs).toContain("--tools");
-    expect(backend.config.resumeArgs).toContain("");
+    expect(backend.config.resumeArgs).toContain("--disallowedTools");
+    expect(backend.config.resumeArgs).toContain(CLAUDE_NATIVE_TOOL_DENYLIST_VALUE);
     expect(backend.config.resumeArgs).toContain("--disable-slash-commands");
     expect(backend.config.systemPromptArg).toBe("--system-prompt");
     expect(backend.config.systemPromptMode).toBe("replace");
     expect(backend.config.systemPromptWhen).toBe("always");
+    expect(backend.config.invalidateOnSystemPromptChange).toBe(false);
     expect(backend.config.clearEnv).toEqual([...CLAUDE_CLI_CLEAR_ENV]);
     expect(backend.config.clearEnv).toContain("ANTHROPIC_API_TOKEN");
     expect(backend.config.clearEnv).toContain("ANTHROPIC_BASE_URL");
@@ -278,5 +302,18 @@ describe("normalizeClaudeBackendConfig", () => {
     expect(backend.config.clearEnv).toContain("OTEL_METRICS_EXPORTER");
     expect(backend.config.clearEnv).toContain("OTEL_EXPORTER_OTLP_PROTOCOL");
     expect(backend.config.clearEnv).toContain("OTEL_SDK_DISABLED");
+  });
+
+  it("keeps streaming Claude sessions resumable across gateway restarts", () => {
+    const backend = buildAnthropicStreamingCliBackend();
+
+    expect(backend.config.args).toContain("--include-partial-messages");
+    expect(backend.config.args).toContain("--disallowedTools");
+    expect(backend.config.args).toContain(CLAUDE_NATIVE_TOOL_DENYLIST_VALUE);
+    expect(backend.config.args).not.toContain("--tools");
+    expect(backend.config.resumeArgs).toContain("--resume");
+    expect(backend.config.resumeArgs).toContain("{sessionId}");
+    expect(backend.config.sessionMode).toBe("always");
+    expect(backend.config.invalidateOnSystemPromptChange).toBe(false);
   });
 });

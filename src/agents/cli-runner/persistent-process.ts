@@ -51,6 +51,7 @@ type PersistentTurnState = {
 type PersistentRuntime = {
   key: string;
   signature: string;
+  openClawSessionId: string;
   backend: CliBackendConfig;
   providerId: string;
   modelId: string;
@@ -123,17 +124,8 @@ function buildPersistentRuntimeSignature(params: {
   context: PreparedCliRunContext;
   backend: CliBackendConfig;
 }): string {
-  // preparedBackend.env contains launch-scoped Claude/MCP env. Values like
-  // OPENCLAW_MCP_SENDER_IS_OWNER intentionally participate in the signature:
-  // Claude snapshots them at process start and later MCP tool calls reuse that
-  // process env, so identity changes must relaunch instead of silently using
-  // stale request headers.
-  const envEntries = Object.entries({
-    ...params.backend.env,
-    ...params.context.preparedBackend.env,
-  })
-    .filter(([, value]) => typeof value === "string" && value.length > 0)
-    .toSorted(([left], [right]) => left.localeCompare(right));
+  // The live persistent process owns its launch context for the lifetime of the
+  // OpenClaw session. Per-turn prompt/MCP/env churn must not kill the process.
   return crypto
     .createHash("sha256")
     .update(
@@ -141,21 +133,9 @@ function buildPersistentRuntimeSignature(params: {
         openClawSessionId: params.context.params.sessionId,
         backendId: params.context.backendResolved.id,
         command: params.backend.command,
-        args: params.backend.args ?? [],
-        resumeArgs: params.backend.resumeArgs ?? [],
         executionMode: params.backend.executionMode ?? "spawn-per-turn",
         sessionMode: params.backend.sessionMode ?? "always",
-        model: params.context.normalizedModel,
-        thinkLevel: params.context.params.thinkLevel ?? null,
-        fastMode: params.context.params.fastMode ?? null,
-        systemPrompt: params.context.systemPrompt,
-        mcpConfigHash: params.context.preparedBackend.mcpConfigHash ?? null,
-        authProfileId: params.context.params.authProfileId ?? null,
-        authEpoch: params.context.authEpoch ?? null,
-        skillsSignature: params.context.preparedBackend.claudeSkillsPluginSpec?.signature ?? null,
         workspaceDir: params.context.workspaceDir,
-        clearEnv: [...(params.backend.clearEnv ?? [])].toSorted(),
-        env: envEntries,
       }),
     )
     .digest("hex");
@@ -288,8 +268,15 @@ function clearPersistentRuntimeSessionId(runtimeKey: string): void {
   PERSISTENT_RUNTIME_SESSION_IDS.delete(runtimeKey);
 }
 
+function isMainPersistentRuntime(runtime: PersistentRuntime): boolean {
+  return runtime.key === `${runtime.providerId}:agent:main:main`;
+}
+
 function isPersistentRuntimeStale(runtime: PersistentRuntime, nowMs: number): boolean {
   if (runtime.activeTurn) {
+    return false;
+  }
+  if (isMainPersistentRuntime(runtime)) {
     return false;
   }
   const idleMs = nowMs - runtime.lastActivityAtMs;
@@ -791,6 +778,7 @@ async function launchPersistentRuntime(params: {
     const runtime: PersistentRuntime = {
       key: params.runtimeKey,
       signature: params.signature,
+      openClawSessionId: params.context.params.sessionId,
       backend,
       providerId: params.context.params.provider,
       modelId: params.context.modelId,
@@ -987,6 +975,7 @@ export async function executePersistentCliTurn(
     backend: params.backend,
   });
   const explicitResumeSessionId = normalizeOptionalString(params.resumeSessionId);
+  let resumeSessionIdForLaunch = explicitResumeSessionId;
   let runtime = RUNTIMES.get(runtimeKey);
   trace(
     "resolve-start",
@@ -996,47 +985,54 @@ export async function executePersistentCliTurn(
     noteRuntimeActivity(runtime);
   }
 
-  if (runtime && !explicitResumeSessionId) {
-    trace("relaunch-start", "reason=openclaw-cold-start");
+  if (runtime && runtime.openClawSessionId !== params.context.params.sessionId) {
+    trace(
+      "relaunch-start",
+      `reason=openclaw-session-rollover previous=${runtime.openClawSessionId} current=${params.context.params.sessionId}`,
+    );
     cliBackendLog.info(
-      `cli persistent relaunch: provider=${params.context.params.provider} reason=openclaw-cold-start session=${runtimeKey}`,
+      `cli persistent relaunch: provider=${params.context.params.provider} reason=openclaw-session-rollover session=${runtimeKey}`,
     );
     clearPersistentRuntimeSessionId(runtimeKey);
     await closePersistentRuntime(runtime, "manual-cancel");
     runtime = undefined;
-    trace("relaunch-done", "reason=openclaw-cold-start");
+    resumeSessionIdForLaunch = undefined;
+    trace("relaunch-done", "reason=openclaw-session-rollover");
+  }
+
+  if (runtime && runtime.signature !== signature) {
+    trace("relaunch-start", "reason=runtime-boundary-drift");
+    cliBackendLog.info(
+      `cli persistent relaunch: provider=${params.context.params.provider} reason=runtime-boundary-drift session=${runtimeKey}`,
+    );
+    await closePersistentRuntime(runtime, "manual-cancel");
+    runtime = undefined;
+    trace("relaunch-done", "reason=runtime-boundary-drift");
   }
 
   if (
     runtime &&
-    explicitResumeSessionId &&
+    !explicitResumeSessionId &&
+    params.resolvedSessionId &&
     runtime.sessionId &&
-    runtime.sessionId !== explicitResumeSessionId
+    runtime.sessionId !== params.resolvedSessionId
   ) {
     trace(
       "relaunch-start",
-      `reason=session-binding-drift runtimeSession=${runtime.sessionId} explicitResume=${explicitResumeSessionId}`,
+      `reason=cli-session-reset previous=${runtime.sessionId} current=${params.resolvedSessionId}`,
     );
     cliBackendLog.info(
-      `cli persistent relaunch: provider=${params.context.params.provider} reason=session-binding-drift session=${runtimeKey}`,
+      `cli persistent relaunch: provider=${params.context.params.provider} reason=cli-session-reset session=${runtimeKey}`,
     );
+    clearPersistentRuntimeSessionId(runtimeKey);
     await closePersistentRuntime(runtime, "manual-cancel");
     runtime = undefined;
-    trace("relaunch-done", "reason=session-binding-drift");
-  }
-
-  if (runtime && runtime.signature !== signature) {
-    trace("relaunch-start", "reason=launch-context-drift");
-    cliBackendLog.info(
-      `cli persistent relaunch: provider=${params.context.params.provider} reason=launch-context-drift session=${runtimeKey}`,
-    );
-    await closePersistentRuntime(runtime, "manual-cancel");
-    runtime = undefined;
-    trace("relaunch-done", "reason=launch-context-drift");
+    resumeSessionIdForLaunch = undefined;
+    trace("relaunch-done", "reason=cli-session-reset");
   }
 
   if (!runtime) {
-    if (!explicitResumeSessionId) {
+    if (!resumeSessionIdForLaunch) {
       clearPersistentRuntimeSessionId(runtimeKey);
     }
     trace("launch-needed");
@@ -1047,7 +1043,7 @@ export async function executePersistentCliTurn(
       supervisor: params.supervisor,
       runtimeKey,
       signature,
-      resumeSessionId: explicitResumeSessionId,
+      resumeSessionId: resumeSessionIdForLaunch,
       initialSessionId: params.resolvedSessionId,
       logOutputText: params.logOutputText,
     });

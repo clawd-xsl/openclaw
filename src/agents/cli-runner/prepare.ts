@@ -18,7 +18,6 @@ import {
   makeBootstrapWarn as makeBootstrapWarnImpl,
   resolveBootstrapContextForRun as resolveBootstrapContextForRunImpl,
 } from "../bootstrap-files.js";
-import { resolveCliAuthEpoch } from "../cli-auth-epoch.js";
 import { resolveCliBackendConfig } from "../cli-backends.js";
 import { hashCliSessionText, resolveCliSessionReuse } from "../cli-session.js";
 import { resolveContextTokensForModel } from "../context.js";
@@ -138,11 +137,6 @@ export async function prepareCliRunContext(
   if (!backendResolved) {
     throw new Error(`Unknown CLI backend: ${params.provider}`);
   }
-  const authEpoch = await resolveCliAuthEpoch({
-    provider: params.provider,
-    authProfileId: params.authProfileId,
-  });
-  trace("auth-epoch-done");
   const extraSystemPrompt = params.extraSystemPrompt?.trim() ?? "";
   const extraSystemPromptHash = hashCliSessionText(extraSystemPrompt);
   const modelId = (params.model ?? "default").trim() || "default";
@@ -249,7 +243,6 @@ export async function prepareCliRunContext(
     ? resolveCliSessionReuse({
         binding: params.cliSessionBinding,
         authProfileId: params.authProfileId,
-        authEpoch,
         ...(resolvedBackend.config.invalidateOnSystemPromptChange !== false
           ? { extraSystemPromptHash }
           : {}),
@@ -273,15 +266,13 @@ export async function prepareCliRunContext(
   if (reusableCliSession.invalidatedReason) {
     const binding = params.cliSessionBinding;
     const resetDetails =
-      reusableCliSession.invalidatedReason === "auth-epoch"
-        ? ` storedAuthEpoch=${normalizeOptionalString(binding?.authEpoch) ?? "none"} currentAuthEpoch=${authEpoch ?? "none"} storedSessionId=${normalizeOptionalString(binding?.sessionId) ?? "none"}`
-        : reusableCliSession.invalidatedReason === "auth-profile"
-          ? ` storedAuthProfile=${normalizeOptionalString(binding?.authProfileId) ?? "none"} currentAuthProfile=${params.authProfileId ?? "none"} storedSessionId=${normalizeOptionalString(binding?.sessionId) ?? "none"}`
-          : reusableCliSession.invalidatedReason === "mcp"
-            ? ` storedMcpHash=${normalizeOptionalString(binding?.mcpConfigHash) ?? "none"} currentMcpHash=${preparedBackend.mcpConfigHash ?? "none"} storedSessionId=${normalizeOptionalString(binding?.sessionId) ?? "none"}`
-            : reusableCliSession.invalidatedReason === "system-prompt"
-              ? ` storedPromptHash=${normalizeOptionalString(binding?.extraSystemPromptHash) ?? "none"} currentPromptHash=${extraSystemPromptHash ?? "none"} storedSessionId=${normalizeOptionalString(binding?.sessionId) ?? "none"}`
-              : "";
+      reusableCliSession.invalidatedReason === "auth-profile"
+        ? ` storedAuthProfile=${normalizeOptionalString(binding?.authProfileId) ?? "none"} currentAuthProfile=${params.authProfileId ?? "none"} storedSessionId=${normalizeOptionalString(binding?.sessionId) ?? "none"}`
+        : reusableCliSession.invalidatedReason === "mcp"
+          ? ` storedMcpHash=${normalizeOptionalString(binding?.mcpConfigHash) ?? "none"} currentMcpHash=${preparedBackend.mcpConfigHash ?? "none"} storedSessionId=${normalizeOptionalString(binding?.sessionId) ?? "none"}`
+          : reusableCliSession.invalidatedReason === "system-prompt"
+            ? ` storedPromptHash=${normalizeOptionalString(binding?.extraSystemPromptHash) ?? "none"} currentPromptHash=${extraSystemPromptHash ?? "none"} storedSessionId=${normalizeOptionalString(binding?.sessionId) ?? "none"}`
+            : "";
     cliBackendLog.info(
       `cli session reset: provider=${params.provider} reason=${reusableCliSession.invalidatedReason}${resetDetails}`,
     );
@@ -389,7 +380,6 @@ export async function prepareCliRunContext(
     systemPromptReport,
     bootstrapPromptWarningLines: bootstrapPromptWarning.lines,
     heartbeatPrompt,
-    authEpoch,
     extraSystemPromptHash,
   };
 }

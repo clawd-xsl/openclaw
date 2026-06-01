@@ -1699,7 +1699,6 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
         },
         "claude-cli-streaming": {
           sessionId: "cli-stream-session-456",
-          authEpoch: "epoch-456",
         },
       },
       claudeCliSessionId: "cli-session-123",

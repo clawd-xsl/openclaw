@@ -256,8 +256,7 @@ WRAP
         --permission-mode bypassPermissions \
         --setting-sources user \
         --strict-mcp-config \
-        --mcp-config '{"mcpServers":{}}' \
-        --no-session-persistence
+        --mcp-config '{"mcpServers":{}}'
     )"
     if [[ "$direct_output" != *"$direct_token"* ]]; then
       echo "ERROR: direct Claude subscription probe did not return expected token." >&2

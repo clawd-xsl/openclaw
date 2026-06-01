@@ -1,7 +1,7 @@
 import type { CliSessionUsageSnapshot } from "../config/sessions.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { createTimingTrace } from "../infra/timing-trace.js";
-import type { CliUsage } from "./cli-output.js";
+import { normalizeCliAssistantVisibleText, type CliUsage } from "./cli-output.js";
 import type { PreparedCliRunContext, RunCliAgentParams } from "./cli-runner/types.js";
 import { CliSessionContinuityError } from "./cli-session.js";
 import { FailoverError, isFailoverError, resolveFailoverStatus } from "./failover-error.js";
@@ -41,11 +41,16 @@ export async function runCliAgent(params: RunCliAgentParams): Promise<EmbeddedPi
     channel: "reply-trace",
     label: params.runId ?? params.sessionKey ?? params.sessionId ?? "unknown",
     scope: "runCliAgent",
+    sink: "stderr",
   });
-  trace("prepare-start", `provider=${params.provider} model=${params.model}`);
+  trace("start", `provider=${params.provider} model=${params.model}`);
+  trace("prepare-runtime-import-start");
   const { prepareCliRunContext } = await import("./cli-runner/prepare.runtime.js");
+  trace("prepare-runtime-import-done");
+  trace("prepare-context-start");
   const context = await prepareCliRunContext(params);
-  trace("prepare-done");
+  trace("prepare-context-done");
+  trace("prepared-run-start");
   return runPreparedCliAgent(context);
 }
 
@@ -57,31 +62,32 @@ export async function runPreparedCliAgent(
     label:
       context.params.runId ?? context.params.sessionKey ?? context.params.sessionId ?? "unknown",
     scope: "runPreparedCliAgent",
+    sink: "stderr",
   });
+  trace("start");
+  trace("execute-runtime-import-start");
   const { executePreparedCliRun } = await import("./cli-runner/execute.runtime.js");
+  trace("execute-runtime-import-done");
   const { params } = context;
   const buildCliRunResult = (resultParams: {
     output: Awaited<ReturnType<typeof executePreparedCliRun>>;
     effectiveCliSessionId?: string;
   }): EmbeddedPiRunResult => {
-    const text = resultParams.output.text?.trim();
+    const text = normalizeCliAssistantVisibleText(resultParams.output.text);
     const rawText = resultParams.output.rawText?.trim();
     const normalizedPayloads =
       resultParams.output.payloads
         ?.map((payload) => {
-          const payloadText = payload.text?.trim();
+          const payloadText = normalizeCliAssistantVisibleText(payload.text);
           return payloadText ? { text: payloadText } : null;
         })
         .filter((payload): payload is { text: string } => payload !== null) ?? [];
+    const streamedAssistantTexts =
+      resultParams.output.streamedAssistantTexts
+        ?.map((entry) => normalizeCliAssistantVisibleText(entry))
+        .filter((entry): entry is string => Boolean(entry)) ?? [];
     const payloads =
       normalizedPayloads.length > 0 ? normalizedPayloads : text ? [{ text }] : undefined;
-    const hasVisibleCliOutput =
-      Boolean(text) ||
-      normalizedPayloads.length > 0 ||
-      (resultParams.output.streamedAssistantTexts ?? []).some((entry) => Boolean(entry.trim()));
-    const shouldClearCliSession = Boolean(
-      resultParams.effectiveCliSessionId && !hasVisibleCliOutput,
-    );
     const previousCliSessionBinding = params.cliSessionBinding;
     const cliSessionUsage =
       toCliSessionUsageSnapshot(resultParams.output.usage) ??
@@ -103,8 +109,8 @@ export async function runPreparedCliAgent(
               ...(rawText ? { finalAssistantRawText: rawText } : {}),
             }
           : {}),
-        ...(resultParams.output.streamedAssistantTexts?.length
-          ? { streamedAssistantTexts: [...resultParams.output.streamedAssistantTexts] }
+        ...(streamedAssistantTexts.length
+          ? { streamedAssistantTexts: [...streamedAssistantTexts] }
           : {}),
         systemPromptReport: context.systemPromptReport,
         executionTrace: {
@@ -135,13 +141,11 @@ export async function runPreparedCliAgent(
           provider: params.provider,
           model: context.modelId,
           usage: resultParams.output.usage,
-          ...(shouldClearCliSession ? { clearCliSession: true } : {}),
-          ...(resultParams.effectiveCliSessionId && !shouldClearCliSession
+          ...(resultParams.effectiveCliSessionId
             ? {
                 cliSessionBinding: {
                   sessionId: resultParams.effectiveCliSessionId,
                   ...(params.authProfileId ? { authProfileId: params.authProfileId } : {}),
-                  ...(context.authEpoch ? { authEpoch: context.authEpoch } : {}),
                   ...(context.extraSystemPromptHash
                     ? { extraSystemPromptHash: context.extraSystemPromptHash }
                     : {}),

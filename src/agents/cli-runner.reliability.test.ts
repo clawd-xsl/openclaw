@@ -9,13 +9,12 @@ import {
 import { executePreparedCliRun } from "./cli-runner/execute.js";
 import { resolveCliNoOutputTimeoutMs } from "./cli-runner/helpers.js";
 import type { PreparedCliRunContext } from "./cli-runner/types.js";
-import { CliSessionContinuityError } from "./cli-session.js";
 
 function buildPreparedContext(params?: {
   sessionKey?: string;
   cliSessionId?: string;
   runId?: string;
-  invalidatedReason?: "auth-profile" | "auth-epoch" | "system-prompt" | "mcp";
+  invalidatedReason?: "auth-profile" | "system-prompt" | "mcp";
   continuityBreakMode?: "internal-retry" | "throw";
 }): PreparedCliRunContext {
   const backend = {
@@ -163,7 +162,7 @@ describe("runCliAgent reliability", () => {
           continuityBreakMode: "throw",
         }),
       ),
-    ).rejects.toMatchObject<CliSessionContinuityError>({
+    ).rejects.toMatchObject({
       name: "CliSessionContinuityError",
       reason: "mcp",
       previousCliSessionId: "thread-123",
@@ -195,7 +194,7 @@ describe("runCliAgent reliability", () => {
           continuityBreakMode: "throw",
         }),
       ),
-    ).rejects.toMatchObject<CliSessionContinuityError>({
+    ).rejects.toMatchObject({
       name: "CliSessionContinuityError",
       reason: "session_expired",
       previousCliSessionId: "thread-123",
@@ -378,7 +377,7 @@ describe("runCliAgent reliability", () => {
     expect(result.meta.finalAssistantVisibleText).toBe("Second reply");
   });
 
-  it("marks empty structured Claude CLI sessions for clearing", async () => {
+  it("keeps empty structured Claude CLI sessions bound for continuity", async () => {
     supervisorSpawnMock.mockResolvedValueOnce(
       createManagedRun({
         reason: "exit",
@@ -436,9 +435,11 @@ describe("runCliAgent reliability", () => {
     expect(result.meta.agentMeta).toMatchObject({
       sessionId: "empty-session",
       provider: "claude-cli-streaming",
-      clearCliSession: true,
     });
-    expect(result.meta.agentMeta?.cliSessionBinding).toBeUndefined();
+    expect(result.meta.agentMeta?.clearCliSession).toBeUndefined();
+    expect(result.meta.agentMeta?.cliSessionBinding).toEqual({
+      sessionId: "empty-session",
+    });
   });
 });
 

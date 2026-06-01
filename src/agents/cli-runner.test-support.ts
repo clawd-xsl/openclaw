@@ -12,7 +12,6 @@ import {
 import { createEmptyPluginRegistry } from "../plugins/registry.js";
 import { setActivePluginRegistry } from "../plugins/runtime.js";
 import type { getProcessSupervisor } from "../process/supervisor/index.js";
-import { setCliAuthEpochTestDeps } from "./cli-auth-epoch.js";
 import { setCliRunnerExecuteTestDeps } from "./cli-runner/execute.js";
 import { setCliRunnerPrepareTestDeps } from "./cli-runner/prepare.js";
 import type { EmbeddedContextFile } from "./pi-embedded-helpers.js";
@@ -203,10 +202,9 @@ function buildAnthropicCliBackendFixture(): CliBackendPlugin {
         "-p",
         "--output-format",
         "stream-json",
-        "--include-partial-messages",
         "--verbose",
-        "--tools",
-        "",
+        "--disallowedTools",
+        "Bash,Read,Edit,Write",
         "--setting-sources",
         "",
         "--settings",
@@ -218,10 +216,9 @@ function buildAnthropicCliBackendFixture(): CliBackendPlugin {
         "-p",
         "--output-format",
         "stream-json",
-        "--include-partial-messages",
         "--verbose",
-        "--tools",
-        "",
+        "--disallowedTools",
+        "Bash,Read,Edit,Write",
         "--setting-sources",
         "",
         "--settings",
@@ -349,11 +346,6 @@ export async function setupCliRunnerTestModule() {
 }
 
 export function setupCliRunnerTestRegistry() {
-  setCliAuthEpochTestDeps({
-    readClaudeCliCredentialsCached: () => null,
-    readCodexCliCredentialsCached: () => null,
-    loadAuthProfileStoreForRuntime: () => ({ version: 1, profiles: {} }),
-  });
   const registry = createEmptyPluginRegistry();
   registry.cliBackends = [
     {

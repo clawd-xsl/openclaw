@@ -3525,10 +3525,6 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
                           type: "string",
                           const: "existing",
                         },
-                        {
-                          type: "string",
-                          const: "none",
-                        },
                       ],
                     },
                     sessionIdFields: {

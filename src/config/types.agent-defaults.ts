@@ -97,7 +97,7 @@ export type CliBackendConfig = {
   /** Alternate args to use when resuming a session (use {sessionId} placeholder). */
   resumeArgs?: string[];
   /** When to pass session ids. */
-  sessionMode?: "always" | "existing" | "none";
+  sessionMode?: "always" | "existing";
   /** JSON fields to read session id from (in order). */
   sessionIdFields?: string[];
   /** Flag used to pass system prompt. */

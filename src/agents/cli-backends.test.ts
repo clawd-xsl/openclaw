@@ -89,12 +89,45 @@ function createClaudeCliOverrideConfig(config: CliBackendConfig): OpenClawConfig
   } satisfies OpenClawConfig;
 }
 
+const TEST_CLAUDE_NATIVE_TOOL_DENYLIST_VALUE = [
+  "AskUserQuestion",
+  "Bash",
+  "CronCreate",
+  "CronDelete",
+  "CronList",
+  "Edit",
+  "EnterPlanMode",
+  "EnterWorktree",
+  "ExitPlanMode",
+  "ExitWorktree",
+  "Glob",
+  "Grep",
+  "Monitor",
+  "NotebookEdit",
+  "PushNotification",
+  "Read",
+  "RemoteTrigger",
+  "ScheduleWakeup",
+  "Skill",
+  "Task",
+  "TaskCreate",
+  "TaskGet",
+  "TaskList",
+  "TaskOutput",
+  "TaskStop",
+  "TaskUpdate",
+  "WebFetch",
+  "WebSearch",
+  "Workflow",
+  "Write",
+].join(",");
+
 const NORMALIZED_CLAUDE_FALLBACK_ARGS = [
   "-p",
   "--output-format",
   "stream-json",
-  "--tools",
-  "",
+  "--disallowedTools",
+  TEST_CLAUDE_NATIVE_TOOL_DENYLIST_VALUE,
   "--disable-slash-commands",
   "--setting-sources",
   "",
@@ -108,8 +141,8 @@ const NORMALIZED_CLAUDE_FALLBACK_RESUME_ARGS = [
   "-p",
   "--resume",
   "{sessionId}",
-  "--tools",
-  "",
+  "--disallowedTools",
+  TEST_CLAUDE_NATIVE_TOOL_DENYLIST_VALUE,
   "--disable-slash-commands",
   "--setting-sources",
   "",
@@ -124,7 +157,7 @@ function normalizeTestClaudeArgs(args?: string[]): string[] | undefined {
     return args;
   }
   const normalized: string[] = [];
-  let hasTools = false;
+  let hasDisallowedTools = false;
   let hasDisableSlashCommands = false;
   let hasSettingSources = false;
   let hasSettings = false;
@@ -135,19 +168,27 @@ function normalizeTestClaudeArgs(args?: string[]): string[] | undefined {
       continue;
     }
     if (arg === "--tools") {
-      hasTools = true;
       const maybeValue = args[i + 1];
       if (typeof maybeValue === "string" && !maybeValue.startsWith("-")) {
-        normalized.push(arg, "");
         i += 1;
-      } else {
-        normalized.push(arg, "");
       }
       continue;
     }
     if (arg.startsWith("--tools=")) {
-      hasTools = true;
-      normalized.push("--tools", "");
+      continue;
+    }
+    if (arg === "--disallowedTools" || arg === "--disallowed-tools") {
+      hasDisallowedTools = true;
+      const maybeValue = args[i + 1];
+      if (typeof maybeValue === "string" && !maybeValue.startsWith("-")) {
+        i += 1;
+      }
+      normalized.push("--disallowedTools", TEST_CLAUDE_NATIVE_TOOL_DENYLIST_VALUE);
+      continue;
+    }
+    if (arg.startsWith("--disallowedTools=") || arg.startsWith("--disallowed-tools=")) {
+      hasDisallowedTools = true;
+      normalized.push("--disallowedTools", TEST_CLAUDE_NATIVE_TOOL_DENYLIST_VALUE);
       continue;
     }
     if (arg === "--disable-slash-commands") {
@@ -202,8 +243,8 @@ function normalizeTestClaudeArgs(args?: string[]): string[] | undefined {
     }
     normalized.push(arg);
   }
-  if (!hasTools) {
-    normalized.push("--tools", "");
+  if (!hasDisallowedTools) {
+    normalized.push("--disallowedTools", TEST_CLAUDE_NATIVE_TOOL_DENYLIST_VALUE);
   }
   if (!hasDisableSlashCommands) {
     normalized.push("--disable-slash-commands");
@@ -250,10 +291,9 @@ beforeEach(() => {
         command: "claude",
         args: [
           "stream-json",
-          "--include-partial-messages",
           "--verbose",
-          "--tools",
-          "",
+          "--disallowedTools",
+          TEST_CLAUDE_NATIVE_TOOL_DENYLIST_VALUE,
           "--setting-sources",
           "",
           "--settings",
@@ -263,10 +303,9 @@ beforeEach(() => {
         ],
         resumeArgs: [
           "stream-json",
-          "--include-partial-messages",
           "--verbose",
-          "--tools",
-          "",
+          "--disallowedTools",
+          TEST_CLAUDE_NATIVE_TOOL_DENYLIST_VALUE,
           "--setting-sources",
           "",
           "--settings",
@@ -482,10 +521,9 @@ describe("resolveCliBackendConfig claude-cli defaults", () => {
     expect(resolved?.bundleMcpMode).toBe("claude-config-file");
     expect(resolved?.config.output).toBe("jsonl");
     expect(resolved?.config.args).toContain("stream-json");
-    expect(resolved?.config.args).toContain("--include-partial-messages");
     expect(resolved?.config.args).toContain("--verbose");
-    expect(resolved?.config.args).toContain("--tools");
-    expect(resolved?.config.args).toContain("");
+    expect(resolved?.config.args).toContain("--disallowedTools");
+    expect(resolved?.config.args).toContain(TEST_CLAUDE_NATIVE_TOOL_DENYLIST_VALUE);
     expect(resolved?.config.args).toContain("--disable-slash-commands");
     expect(resolved?.config.args).toContain("--setting-sources");
     expect(resolved?.config.args).toContain("--settings");
@@ -495,10 +533,9 @@ describe("resolveCliBackendConfig claude-cli defaults", () => {
     expect(resolved?.config.args).not.toContain("--dangerously-skip-permissions");
     expect(resolved?.config.input).toBe("stdin");
     expect(resolved?.config.resumeArgs).toContain("stream-json");
-    expect(resolved?.config.resumeArgs).toContain("--include-partial-messages");
     expect(resolved?.config.resumeArgs).toContain("--verbose");
-    expect(resolved?.config.resumeArgs).toContain("--tools");
-    expect(resolved?.config.resumeArgs).toContain("");
+    expect(resolved?.config.resumeArgs).toContain("--disallowedTools");
+    expect(resolved?.config.resumeArgs).toContain(TEST_CLAUDE_NATIVE_TOOL_DENYLIST_VALUE);
     expect(resolved?.config.resumeArgs).toContain("--disable-slash-commands");
     expect(resolved?.config.resumeArgs).toContain("--setting-sources");
     expect(resolved?.config.resumeArgs).toContain("--settings");
@@ -535,16 +572,16 @@ describe("resolveCliBackendConfig claude-cli defaults", () => {
     expect(resolved?.config.args).toContain('{"disableAllHooks":true}');
     expect(resolved?.config.args).toContain("--permission-mode");
     expect(resolved?.config.args).toContain("bypassPermissions");
-    expect(resolved?.config.args).toContain("--tools");
-    expect(resolved?.config.args).toContain("");
+    expect(resolved?.config.args).toContain("--disallowedTools");
+    expect(resolved?.config.args).toContain(TEST_CLAUDE_NATIVE_TOOL_DENYLIST_VALUE);
     expect(resolved?.config.args).toContain("--disable-slash-commands");
     expect(resolved?.config.resumeArgs).toContain("--setting-sources");
     expect(resolved?.config.resumeArgs).toContain("--settings");
     expect(resolved?.config.resumeArgs).toContain('{"disableAllHooks":true}');
     expect(resolved?.config.resumeArgs).toContain("--permission-mode");
     expect(resolved?.config.resumeArgs).toContain("bypassPermissions");
-    expect(resolved?.config.resumeArgs).toContain("--tools");
-    expect(resolved?.config.resumeArgs).toContain("");
+    expect(resolved?.config.resumeArgs).toContain("--disallowedTools");
+    expect(resolved?.config.resumeArgs).toContain(TEST_CLAUDE_NATIVE_TOOL_DENYLIST_VALUE);
     expect(resolved?.config.resumeArgs).toContain("--disable-slash-commands");
     expect(resolved?.config.env).toEqual({
       CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1",
@@ -623,8 +660,8 @@ describe("resolveCliBackendConfig claude-cli defaults", () => {
       "-p",
       "--permission-mode",
       "acceptEdits",
-      "--tools",
-      "",
+      "--disallowedTools",
+      TEST_CLAUDE_NATIVE_TOOL_DENYLIST_VALUE,
       "--disable-slash-commands",
       "--setting-sources",
       "",
@@ -637,8 +674,8 @@ describe("resolveCliBackendConfig claude-cli defaults", () => {
       "--permission-mode=acceptEdits",
       "--resume",
       "{sessionId}",
-      "--tools",
-      "",
+      "--disallowedTools",
+      TEST_CLAUDE_NATIVE_TOOL_DENYLIST_VALUE,
       "--disable-slash-commands",
       "--setting-sources",
       "",
@@ -679,8 +716,8 @@ describe("resolveCliBackendConfig claude-cli defaults", () => {
       "",
       "--permission-mode",
       "acceptEdits",
-      "--tools",
-      "",
+      "--disallowedTools",
+      TEST_CLAUDE_NATIVE_TOOL_DENYLIST_VALUE,
       "--disable-slash-commands",
       "--settings",
       '{"disableAllHooks":true}',
@@ -691,8 +728,8 @@ describe("resolveCliBackendConfig claude-cli defaults", () => {
       "--resume",
       "{sessionId}",
       "--permission-mode=acceptEdits",
-      "--tools",
-      "",
+      "--disallowedTools",
+      TEST_CLAUDE_NATIVE_TOOL_DENYLIST_VALUE,
       "--disable-slash-commands",
       "--settings",
       '{"disableAllHooks":true}',
@@ -715,8 +752,8 @@ describe("resolveCliBackendConfig claude-cli defaults", () => {
       "",
       "--output-format",
       "stream-json",
-      "--tools",
-      "",
+      "--disallowedTools",
+      TEST_CLAUDE_NATIVE_TOOL_DENYLIST_VALUE,
       "--disable-slash-commands",
       "--settings",
       '{"disableAllHooks":true}',
@@ -729,8 +766,8 @@ describe("resolveCliBackendConfig claude-cli defaults", () => {
       "",
       "--resume",
       "{sessionId}",
-      "--tools",
-      "",
+      "--disallowedTools",
+      TEST_CLAUDE_NATIVE_TOOL_DENYLIST_VALUE,
       "--disable-slash-commands",
       "--settings",
       '{"disableAllHooks":true}',
@@ -783,15 +820,15 @@ describe("resolveCliBackendConfig claude-cli defaults", () => {
     expect(resolved?.config.args).toContain('{"disableAllHooks":true}');
     expect(resolved?.config.args).toContain("--permission-mode");
     expect(resolved?.config.args).toContain("bypassPermissions");
-    expect(resolved?.config.args).toContain("--tools");
-    expect(resolved?.config.args).toContain("");
+    expect(resolved?.config.args).toContain("--disallowedTools");
+    expect(resolved?.config.args).toContain(TEST_CLAUDE_NATIVE_TOOL_DENYLIST_VALUE);
     expect(resolved?.config.resumeArgs).toContain("--setting-sources");
     expect(resolved?.config.resumeArgs).toContain("--settings");
     expect(resolved?.config.resumeArgs).toContain('{"disableAllHooks":true}');
     expect(resolved?.config.resumeArgs).toContain("--permission-mode");
     expect(resolved?.config.resumeArgs).toContain("bypassPermissions");
-    expect(resolved?.config.resumeArgs).toContain("--tools");
-    expect(resolved?.config.resumeArgs).toContain("");
+    expect(resolved?.config.resumeArgs).toContain("--disallowedTools");
+    expect(resolved?.config.resumeArgs).toContain(TEST_CLAUDE_NATIVE_TOOL_DENYLIST_VALUE);
   });
 
   it("keeps hardened clearEnv defaults when custom claude env overrides are merged", () => {
@@ -857,8 +894,8 @@ describe("resolveCliBackendConfig claude-cli defaults", () => {
       "-p",
       "--output-format",
       "json",
-      "--tools",
-      "",
+      "--disallowedTools",
+      TEST_CLAUDE_NATIVE_TOOL_DENYLIST_VALUE,
       "--disable-slash-commands",
       "--setting-sources",
       "",
@@ -873,8 +910,8 @@ describe("resolveCliBackendConfig claude-cli defaults", () => {
       "json",
       "--resume",
       "{sessionId}",
-      "--tools",
-      "",
+      "--disallowedTools",
+      TEST_CLAUDE_NATIVE_TOOL_DENYLIST_VALUE,
       "--disable-slash-commands",
       "--setting-sources",
       "",
