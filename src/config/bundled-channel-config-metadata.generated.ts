@@ -9648,6 +9648,13 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
         accountUuid: {
           type: "string",
         },
+        backend: {
+          type: "string",
+          enum: ["signal-cli", "signal-ts"],
+        },
+        signalTsStatePath: {
+          type: "string",
+        },
         httpUrl: {
           type: "string",
         },
@@ -9989,6 +9996,13 @@ export const GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA = [
                 type: "string",
               },
               accountUuid: {
+                type: "string",
+              },
+              backend: {
+                type: "string",
+                enum: ["signal-cli", "signal-ts"],
+              },
+              signalTsStatePath: {
                 type: "string",
               },
               httpUrl: {

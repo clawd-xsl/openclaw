@@ -18,6 +18,10 @@ export type SignalAccountConfig = CommonChannelMessagingConfig & {
   account?: string;
   /** Optional account UUID for signal-cli (used for loop protection). */
   accountUuid?: string;
+  /** Signal runtime backend. Defaults to signal-cli. */
+  backend?: "signal-cli" | "signal-ts";
+  /** Durable signal-ts state file path when backend is signal-ts. */
+  signalTsStatePath?: string;
   /** Optional full base URL for signal-cli HTTP daemon. */
   httpUrl?: string;
   /** HTTP host for signal-cli daemon (default 127.0.0.1). */

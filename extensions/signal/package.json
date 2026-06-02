@@ -4,6 +4,9 @@
   "private": true,
   "description": "OpenClaw Signal channel plugin",
   "type": "module",
+  "dependencies": {
+    "@openclaw/signal-ts": "file:../../../signal-ts"
+  },
   "devDependencies": {
     "@openclaw/plugin-sdk": "workspace:*"
   },
@@ -22,6 +25,9 @@
       "blurb": "signal-cli linked device; more setup (David Reagans: \"Hop on Discord.\").",
       "systemImage": "antenna.radiowaves.left.and.right",
       "markdownCapable": true
+    },
+    "bundle": {
+      "stageRuntimeDependencies": true
     }
   }
 }

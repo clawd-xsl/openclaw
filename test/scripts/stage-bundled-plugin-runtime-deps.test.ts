@@ -189,6 +189,64 @@ describe("stageBundledPluginRuntimeDeps", () => {
     ).toBe("module.exports = 'transitive';\n");
   });
 
+  it("stages local file runtime deps from the root node_modules", () => {
+    const { pluginDir, repoRoot } = createBundledPluginFixture({
+      packageJson: {
+        name: "@openclaw/fixture-plugin",
+        version: "1.0.0",
+        dependencies: { "@openclaw/local-runtime": "file:../../../local-runtime" },
+        openclaw: { bundle: { stageRuntimeDependencies: true } },
+      },
+    });
+    const directDir = path.join(repoRoot, "node_modules", "@openclaw", "local-runtime");
+    const staleRootTransitiveDir = path.join(repoRoot, "node_modules", "native-child");
+    const nestedTransitiveDir = path.join(directDir, "node_modules", "native-child");
+    fs.mkdirSync(directDir, { recursive: true });
+    fs.mkdirSync(staleRootTransitiveDir, { recursive: true });
+    fs.mkdirSync(nestedTransitiveDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(directDir, "package.json"),
+      '{ "name": "@openclaw/local-runtime", "version": "0.0.0", "dependencies": { "native-child": "^1.0.0" } }\n',
+      "utf8",
+    );
+    fs.writeFileSync(path.join(directDir, "index.js"), "module.exports = 'local';\n", "utf8");
+    fs.writeFileSync(
+      path.join(staleRootTransitiveDir, "package.json"),
+      '{ "name": "native-child", "version": "0.5.0" }\n',
+      "utf8",
+    );
+    fs.writeFileSync(
+      path.join(nestedTransitiveDir, "package.json"),
+      '{ "name": "native-child", "version": "1.0.1" }\n',
+      "utf8",
+    );
+    fs.writeFileSync(path.join(nestedTransitiveDir, "binding.node"), "native\n", "utf8");
+
+    stageBundledPluginRuntimeDeps({ cwd: repoRoot });
+
+    expect(
+      fs.readFileSync(
+        path.join(pluginDir, "node_modules", "@openclaw", "local-runtime", "index.js"),
+        "utf8",
+      ),
+    ).toBe("module.exports = 'local';\n");
+    expect(
+      fs.readFileSync(
+        path.join(
+          pluginDir,
+          "node_modules",
+          "@openclaw",
+          "local-runtime",
+          "node_modules",
+          "native-child",
+          "binding.node",
+        ),
+        "utf8",
+      ),
+    ).toBe("native\n");
+    expect(fs.existsSync(path.join(pluginDir, "node_modules", "native-child"))).toBe(false);
+  });
+
   it("removes global non-runtime suffixes from staged runtime dependencies", () => {
     const { pluginDir, repoRoot } = createBundledPluginFixture({
       packageJson: {

@@ -46,6 +46,8 @@ export function resolveSignalAccount(params: {
   const baseUrl = normalizeOptionalString(merged.httpUrl) ?? `http://${host}:${port}`;
   const configured = Boolean(
     normalizeOptionalString(merged.account) ||
+    normalizeOptionalString(merged.backend) ||
+    normalizeOptionalString(merged.signalTsStatePath) ||
     normalizeOptionalString(merged.httpUrl) ||
     normalizeOptionalString(merged.cliPath) ||
     normalizeOptionalString(merged.httpHost) ||

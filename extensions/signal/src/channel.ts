@@ -18,7 +18,10 @@ import {
   createComputedAccountStatusAdapter,
   createDefaultChannelRuntimeState,
 } from "openclaw/plugin-sdk/status-helpers";
-import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/text-runtime";
+import {
+  normalizeLowercaseStringOrEmpty,
+  normalizeOptionalString,
+} from "openclaw/plugin-sdk/text-runtime";
 import { resolveSignalAccount, type ResolvedSignalAccount } from "./accounts.js";
 import { signalApprovalAuth } from "./approval-auth.js";
 import { markdownToSignalTextChunks } from "./format.js";
@@ -53,6 +56,28 @@ async function loadSignalProbeModule() {
 async function loadSignalSendRuntime() {
   signalSendRuntimePromise ??= import("./send.runtime.js");
   return await signalSendRuntimePromise;
+}
+
+function resolveSignalBackend(account: ResolvedSignalAccount): "signal-cli" | "signal-ts" {
+  return account.config?.backend ?? "signal-cli";
+}
+
+function hasSignalTsStatePath(account: ResolvedSignalAccount): boolean {
+  return Boolean(
+    normalizeOptionalString(account.config?.signalTsStatePath) ??
+    normalizeOptionalString(process.env["OPENCLAW_SIGNAL_TS_STATE"]),
+  );
+}
+
+function probeSignalTsAccount(account: ResolvedSignalAccount): SignalProbe {
+  const configured = account.configured && hasSignalTsStatePath(account);
+  return {
+    ok: configured,
+    status: null,
+    error: configured ? null : "signal-ts state path is not configured",
+    elapsedMs: 0,
+    version: "signal-ts",
+  };
 }
 
 async function resolveSignalSendContext(params: {
@@ -292,13 +317,23 @@ export const signalPlugin: ChannelPlugin<ResolvedSignalAccount, SignalProbe> =
       status: createComputedAccountStatusAdapter<ResolvedSignalAccount, SignalProbe>({
         defaultRuntime: createDefaultChannelRuntimeState(DEFAULT_ACCOUNT_ID),
         collectStatusIssues: (accounts) => collectStatusIssuesFromLastError("signal", accounts),
-        buildChannelSummary: ({ snapshot }) =>
-          buildBaseChannelStatusSummary(snapshot, {
-            baseUrl: snapshot.baseUrl ?? null,
+        buildChannelSummary: ({ snapshot }) => {
+          const signalSnapshot = snapshot as typeof snapshot & {
+            backend?: "signal-cli" | "signal-ts";
+            baseUrl?: string | null;
+          };
+          const backend = signalSnapshot.backend ?? "signal-cli";
+          return buildBaseChannelStatusSummary(snapshot, {
+            backend,
+            baseUrl: backend === "signal-ts" ? null : (signalSnapshot.baseUrl ?? null),
             probe: snapshot.probe,
             lastProbeAt: snapshot.lastProbeAt ?? null,
-          }),
+          });
+        },
         probeAccount: async ({ account, timeoutMs }) => {
+          if (resolveSignalBackend(account) === "signal-ts") {
+            return probeSignalTsAccount(account);
+          }
           const baseUrl = account.baseUrl;
           const { probeSignal } = await loadSignalProbeModule();
           return await probeSignal(baseUrl, timeoutMs);
@@ -311,7 +346,8 @@ export const signalPlugin: ChannelPlugin<ResolvedSignalAccount, SignalProbe> =
           enabled: account.enabled,
           configured: account.configured,
           extra: {
-            baseUrl: account.baseUrl,
+            backend: resolveSignalBackend(account),
+            ...(resolveSignalBackend(account) === "signal-ts" ? {} : { baseUrl: account.baseUrl }),
           },
         }),
       }),

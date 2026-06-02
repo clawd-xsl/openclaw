@@ -46,10 +46,16 @@ import { runSignalSseLoop } from "./sse-reconnect.js";
 let sessionTranscriptRuntimePromise:
   | Promise<typeof import("openclaw/plugin-sdk/session-transcript-runtime")>
   | undefined;
+let signalTsRuntimePromise: Promise<typeof import("./signal-ts-runtime.js")> | undefined;
 
 async function loadSessionTranscriptRuntime() {
   sessionTranscriptRuntimePromise ??= import("openclaw/plugin-sdk/session-transcript-runtime");
   return await sessionTranscriptRuntimePromise;
+}
+
+async function loadSignalTsRuntime() {
+  signalTsRuntimePromise ??= import("./signal-ts-runtime.js");
+  return await signalTsRuntimePromise;
 }
 
 export type MonitorSignalOpts = {
@@ -522,8 +528,11 @@ export async function monitorSignalProvider(opts: MonitorSignalOpts = {}): Promi
   const ignoreAttachments = opts.ignoreAttachments ?? accountInfo.config.ignoreAttachments ?? false;
   const sendReadReceipts = Boolean(opts.sendReadReceipts ?? accountInfo.config.sendReadReceipts);
   const waitForTransportReadyFn = opts.waitForTransportReady ?? waitForTransportReady;
+  const signalTsBackend = accountInfo.config.backend === "signal-ts";
 
-  const autoStart = opts.autoStart ?? accountInfo.config.autoStart ?? !accountInfo.config.httpUrl;
+  const autoStart = signalTsBackend
+    ? false
+    : (opts.autoStart ?? accountInfo.config.autoStart ?? !accountInfo.config.httpUrl);
   const startupTimeoutMs = Math.min(
     120_000,
     Math.max(1_000, opts.startupTimeoutMs ?? accountInfo.config.startupTimeoutMs ?? 30_000),
@@ -593,13 +602,36 @@ export async function monitorSignalProvider(opts: MonitorSignalOpts = {}): Promi
       ignoreAttachments,
       sendReadReceipts,
       readReceiptsViaDaemon,
-      fetchAttachment,
+      fetchAttachment: signalTsBackend
+        ? async (params) => {
+            const signalTsRuntime = await loadSignalTsRuntime();
+            return await signalTsRuntime.fetchSignalTsAttachment({
+              accountInfo,
+              attachment: params.attachment,
+              maxBytes: params.maxBytes,
+            });
+          }
+        : fetchAttachment,
       deliverReplies: (params) => deliverReplies({ ...params, chunkMode }),
       resolveSignalReactionTargets,
       isSignalReactionMessage,
       shouldEmitSignalReactionNotification,
       buildSignalReactionSystemEventText,
     });
+
+    if (signalTsBackend) {
+      const signalTsRuntime = await loadSignalTsRuntime();
+      await signalTsRuntime.monitorSignalTsProvider({
+        accountInfo,
+        runtime,
+        abortSignal: opts.abortSignal,
+        reconnectPolicy: opts.reconnectPolicy,
+        onEvent: async (event) => {
+          await handleEvent(event);
+        },
+      });
+      return;
+    }
 
     await runSignalSseLoop({
       baseUrl,

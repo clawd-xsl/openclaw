@@ -50,16 +50,22 @@ type SignalTarget =
 let signalConfigRuntimePromise:
   | Promise<typeof import("openclaw/plugin-sdk/config-runtime")>
   | undefined;
+let signalTsRuntimePromise: Promise<typeof import("./signal-ts-runtime.js")> | undefined;
 
 async function loadSignalConfigRuntime() {
   signalConfigRuntimePromise ??= import("openclaw/plugin-sdk/config-runtime");
   return await signalConfigRuntimePromise;
 }
 
+async function loadSignalTsRuntime() {
+  signalTsRuntimePromise ??= import("./signal-ts-runtime.js");
+  return await signalTsRuntimePromise;
+}
+
 async function resolveSignalRpcAccountInfo(
   opts: Pick<SignalSendOpts, "cfg" | "baseUrl" | "account" | "accountId">,
 ) {
-  if (opts.baseUrl?.trim() && opts.account?.trim()) {
+  if (!opts.cfg && !opts.accountId?.trim() && opts.baseUrl?.trim() && opts.account?.trim()) {
     return undefined;
   }
   const cfg = opts.cfg ?? (await loadSignalConfigRuntime()).loadConfig();
@@ -169,6 +175,12 @@ export async function sendMessageSignal(
   })();
 
   let attachments: string[] | undefined;
+  let signalTsAttachments:
+    | Array<{
+        path: string;
+        contentType?: string;
+      }>
+    | undefined;
   if (opts.mediaUrl?.trim()) {
     const resolved = await resolveOutboundAttachmentFromUrl(opts.mediaUrl.trim(), maxBytes, {
       mediaAccess: opts.mediaAccess,
@@ -176,6 +188,12 @@ export async function sendMessageSignal(
       readFile: opts.mediaReadFile,
     });
     attachments = [resolved.path];
+    signalTsAttachments = [
+      {
+        path: resolved.path,
+        ...(resolved.contentType ? { contentType: resolved.contentType } : {}),
+      },
+    ];
     const kind = kindFromMime(resolved.contentType ?? undefined);
     if (!message && kind) {
       // Avoid sending an empty body when only attachments exist.
@@ -201,6 +219,20 @@ export async function sendMessageSignal(
 
   if (!message.trim() && (!attachments || attachments.length === 0)) {
     throw new Error("Signal send requires text or media");
+  }
+
+  if (accountInfo.config.backend === "signal-ts") {
+    const signalTsRuntime = await loadSignalTsRuntime();
+    return await signalTsRuntime.sendMessageSignalTs({
+      cfg,
+      accountInfo,
+      to,
+      message,
+      textStyles,
+      attachments: signalTsAttachments,
+      timeoutMs: opts.timeoutMs,
+      abortSignal: opts.abortSignal,
+    });
   }
 
   const params: Record<string, unknown> = { message };
@@ -264,6 +296,16 @@ export async function sendTypingSignal(
       })
     : (_stage: string, _details?: string) => {};
   const accountInfo = await resolveSignalRpcAccountInfo(opts);
+  if (accountInfo?.config.backend === "signal-ts") {
+    const signalTsRuntime = await loadSignalTsRuntime();
+    return await signalTsRuntime.sendTypingSignalTs({
+      accountInfo,
+      to,
+      stop: opts.stop,
+      timeoutMs: opts.timeoutMs,
+      abortSignal: opts.abortSignal,
+    });
+  }
   const { baseUrl, account } = resolveSignalRpcContext(opts, accountInfo);
   const target = parseTarget(to);
   const targetParams = buildTargetParams(target, {
@@ -303,6 +345,9 @@ export async function sendStickerSignal(
     throw new Error("Signal sticker id is required");
   }
   const accountInfo = await resolveSignalRpcAccountInfo(opts);
+  if (accountInfo?.config.backend === "signal-ts") {
+    throw new Error("Signal stickers are not supported by signal-ts backend yet");
+  }
   const { baseUrl, account } = resolveSignalRpcContext(opts, accountInfo);
   const target = parseTarget(to);
   const params: Record<string, unknown> = {
@@ -342,6 +387,17 @@ export async function sendReadReceiptSignal(
     return false;
   }
   const accountInfo = await resolveSignalRpcAccountInfo(opts);
+  if (accountInfo?.config.backend === "signal-ts") {
+    const signalTsRuntime = await loadSignalTsRuntime();
+    return await signalTsRuntime.sendReadReceiptSignalTs({
+      accountInfo,
+      to,
+      targetTimestamp,
+      type: opts.type,
+      timeoutMs: opts.timeoutMs,
+      abortSignal: opts.abortSignal,
+    });
+  }
   const { baseUrl, account } = resolveSignalRpcContext(opts, accountInfo);
   const targetParams = buildTargetParams(parseTarget(to), {
     recipient: true,

@@ -109,6 +109,35 @@ describe("probeSignal", () => {
     );
   });
 
+  it("treats signal-ts backend as a local runtime probe", async () => {
+    const signalCheck = vi.spyOn(clientModule, "signalCheck");
+    signalCheck.mockClear();
+
+    const res = await signalPlugin.status!.probeAccount!({
+      cfg: {} as never,
+      account: {
+        accountId: "default",
+        enabled: true,
+        configured: true,
+        baseUrl: "http://127.0.0.1:8080",
+        config: {
+          backend: "signal-ts",
+          signalTsStatePath: "/tmp/signal-ts-state.json",
+        },
+      } as never,
+      timeoutMs: 1000,
+    });
+
+    expect(res).toEqual({
+      ok: true,
+      status: null,
+      error: null,
+      elapsedMs: 0,
+      version: "signal-ts",
+    });
+    expect(signalCheck).not.toHaveBeenCalled();
+  });
+
   it("extracts version from {version} result", async () => {
     vi.spyOn(clientModule, "signalCheck").mockResolvedValueOnce({
       ok: true,
