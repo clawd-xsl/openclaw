@@ -412,9 +412,9 @@ function describeSignalTsDisconnectError(err: unknown): string {
   if (err instanceof Error) {
     const cause =
       "cause" in err && err.cause !== undefined
-        ? ` ${describeSignalTsDisconnectError(err.cause)}`
+        ? `; cause: ${describeSignalTsDisconnectError(err.cause)}`
         : "";
-    return `${err.name} ${err.message}${cause}`;
+    return `${err.name}: ${err.message}${cause}`;
   }
   if (typeof err === "string") {
     return err;
