@@ -52,6 +52,26 @@ function normalizeComparablePromptText(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
+function stripLeadingUntrustedMetadataBlocks(text: string): string {
+  let rest = text.trimStart();
+  while (true) {
+    const match = rest.match(/^[^\n]*\(untrusted metadata\):\n```[^\n]*\n[\s\S]*?\n```\s*/);
+    if (!match) {
+      return rest.trim();
+    }
+    rest = rest.slice(match[0].length).trimStart();
+  }
+}
+
+function normalizeComparableCurrentPromptTexts(currentPrompt: string): Set<string> {
+  const candidates = [currentPrompt, stripLeadingUntrustedMetadataBlocks(currentPrompt)];
+  return new Set(
+    candidates
+      .map((candidate) => normalizeComparablePromptText(candidate))
+      .filter((candidate) => candidate.length > 0),
+  );
+}
+
 function readTranscriptBootstrapTurns(params: {
   sessionId: string;
   sessionFile: string;
@@ -106,14 +126,14 @@ function dropTrailingCurrentPrompt(turns: TranscriptBootstrapTurn[], currentProm
   if (turns.length === 0) {
     return turns;
   }
-  const normalizedCurrentPrompt = normalizeComparablePromptText(currentPrompt);
-  if (!normalizedCurrentPrompt) {
+  const normalizedCurrentPrompts = normalizeComparableCurrentPromptTexts(currentPrompt);
+  if (normalizedCurrentPrompts.size === 0) {
     return turns;
   }
   const lastTurn = turns[turns.length - 1];
   if (
     lastTurn?.role === "user" &&
-    normalizeComparablePromptText(lastTurn.text) === normalizedCurrentPrompt
+    normalizedCurrentPrompts.has(normalizeComparablePromptText(lastTurn.text))
   ) {
     return turns.slice(0, -1);
   }

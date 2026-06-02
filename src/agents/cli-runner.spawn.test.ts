@@ -1438,6 +1438,65 @@ describe("runCliAgent spawn path", () => {
     expect(promptCarrier).toContain("current ask");
   });
 
+  it("drops the current transcript turn when the CLI prompt includes channel metadata", async () => {
+    const sessionDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-cli-metadata-tail-"));
+    const sessionFile = path.join(sessionDir, "session.jsonl");
+    await fs.writeFile(
+      sessionFile,
+      [
+        JSON.stringify({
+          id: "m1",
+          message: { role: "user", content: [{ type: "text", text: "older question" }] },
+        }),
+        JSON.stringify({
+          id: "m2",
+          message: { role: "assistant", content: [{ type: "text", text: "older answer" }] },
+        }),
+        JSON.stringify({
+          id: "m3",
+          message: { role: "user", content: [{ type: "text", text: "测试测试" }] },
+        }),
+      ].join("\n") + "\n",
+      "utf-8",
+    );
+
+    mockSuccessfulCliRun();
+    const context = buildPreparedCliRunContext({
+      provider: "claude-cli",
+      model: "sonnet",
+      runId: "run-transcript-bootstrap-metadata-current",
+      prompt: [
+        "Conversation info (untrusted metadata):",
+        "```json",
+        '{"message_id":"1780353935208"}',
+        "```",
+        "",
+        "Sender (untrusted metadata):",
+        "```json",
+        '{"name":"Shanli"}',
+        "```",
+        "",
+        "测试测试",
+      ].join("\n"),
+    });
+    context.params.sessionId = "session-existing";
+    context.params.sessionFile = sessionFile;
+
+    await executePreparedCliRun(context);
+
+    const input = supervisorSpawnMock.mock.calls[0]?.[0] as {
+      argv?: string[];
+      input?: string;
+    };
+    const promptCarrier = [input.input ?? "", ...(input.argv ?? [])].join("\n");
+    expect(promptCarrier).toContain("[OpenClaw session continuity bootstrap]");
+    expect(promptCarrier).toContain("User: older question");
+    expect(promptCarrier).toContain("Assistant: older answer");
+    expect(promptCarrier).not.toContain("User: 测试测试");
+    expect(promptCarrier).toContain("[Current user message]");
+    expect(promptCarrier).toContain("测试测试");
+  });
+
   it("bootstraps fresh CLI runs from provider compaction overlays when present", async () => {
     const sessionDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-cli-overlay-tail-"));
     const sessionFile = path.join(sessionDir, "session.jsonl");
