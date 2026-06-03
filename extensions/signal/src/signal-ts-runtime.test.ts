@@ -25,6 +25,11 @@ const mocks = vi.hoisted(() => {
     })),
     normalizeDecryptedIncomingMessage: vi.fn(),
     openRepository: vi.fn(),
+    sendReactionMessage: vi.fn(async (..._args: unknown[]) => ({ timestamp: 765 })),
+    sendGroupReactionMessage: vi.fn(async (..._args: unknown[]) => ({
+      timestamp: 876,
+      recipients: 2,
+    })),
     sendMessage: vi.fn(async (..._args: unknown[]) => ({ timestamp: 123 })),
     sendStickerMessage: vi.fn(async (..._args: unknown[]) => ({ timestamp: 321 })),
     sendGroupStickerMessage: vi.fn(async (..._args: unknown[]) => ({
@@ -110,6 +115,17 @@ vi.mock("@openclaw/signal-ts", () => {
       return await mocks.sendMessage(...args);
     }
 
+    async sendReactionMessage(...args: unknown[]): Promise<{ timestamp: number }> {
+      return await mocks.sendReactionMessage(...args);
+    }
+
+    async sendGroupReactionMessage(...args: unknown[]): Promise<{
+      timestamp: number;
+      recipients: number;
+    }> {
+      return await mocks.sendGroupReactionMessage(...args);
+    }
+
     async sendStickerMessage(...args: unknown[]): Promise<{ timestamp: number }> {
       return await mocks.sendStickerMessage(...args);
     }
@@ -151,7 +167,22 @@ vi.mock("@openclaw/signal-ts", () => {
     downloadSignalAttachment: mocks.downloadSignalAttachment,
     hexToBytes: vi.fn((value: string) => new Uint8Array(Buffer.from(value, "hex"))),
     normalizeDecryptedIncomingMessage: mocks.normalizeDecryptedIncomingMessage,
-    parseSignalRecipientTarget: vi.fn((value: string) => ({ kind: "raw", value })),
+    parseSignalRecipientTarget: vi.fn((raw: string) => {
+      let value = raw.trim();
+      if (/^signal:/i.test(value)) {
+        value = value.slice("signal:".length).trim();
+      }
+      if (/^uuid:/i.test(value)) {
+        return { kind: "aci", aci: value.slice("uuid:".length).trim() };
+      }
+      if (/^\+[1-9]\d{6,14}$/.test(value)) {
+        return { kind: "e164", e164: value };
+      }
+      if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) {
+        return { kind: "aci", aci: value };
+      }
+      return { kind: "username", username: value };
+    }),
     preKeyAuthFromBase64: vi.fn(() => ({})),
   };
 });
@@ -221,6 +252,8 @@ describe("signal-ts runtime monitor", () => {
       ),
       setRecipient: vi.fn(async () => undefined),
     });
+    mocks.sendReactionMessage.mockClear().mockResolvedValue({ timestamp: 765 });
+    mocks.sendGroupReactionMessage.mockClear().mockResolvedValue({ timestamp: 876, recipients: 2 });
     mocks.sendMessage.mockClear().mockResolvedValue({ timestamp: 123 });
     mocks.sendStickerMessage.mockClear().mockResolvedValue({ timestamp: 321 });
     mocks.sendGroupStickerMessage.mockClear().mockResolvedValue({ timestamp: 654, recipients: 2 });
@@ -356,6 +389,96 @@ describe("signal-ts runtime monitor", () => {
       vi.unstubAllGlobals();
       await rm(tempDir, { force: true, recursive: true });
     }
+  });
+
+  it("attaches Signal quote metadata for direct signal-ts replies", async () => {
+    const { sendMessageSignalTs } = await import("./signal-ts-runtime.js");
+
+    await sendMessageSignalTs({
+      cfg: {},
+      accountInfo: createSignalTsAccountInfo(),
+      to: "signal:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      message: "reply",
+      replyToId: "1700000000000",
+    });
+
+    expect(mocks.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        quote: {
+          id: 1700000000000,
+          authorAci: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        },
+      }),
+    );
+  });
+
+  it("sends direct reactions through signal-ts", async () => {
+    const { sendReactionSignalTs } = await import("./signal-ts-runtime.js");
+
+    const result = await sendReactionSignalTs({
+      accountInfo: createSignalTsAccountInfo(),
+      to: "signal:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      targetTimestamp: 1700000000000,
+      emoji: "🔥",
+    });
+
+    expect(result).toEqual({ messageId: "765", timestamp: 765 });
+    expect(mocks.sendReactionMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        destination: "signal:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        reaction: {
+          emoji: "🔥",
+          targetAuthorAci: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          targetSentTimestamp: 1700000000000,
+        },
+      }),
+    );
+  });
+
+  it("sends group reactions through signal-ts group state", async () => {
+    const { sendReactionSignalTs } = await import("./signal-ts-runtime.js");
+    mocks.openRepository.mockResolvedValueOnce({
+      getAccount: vi.fn(async () => ({
+        account: {
+          device: {
+            aci: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            deviceId: 2,
+          },
+        },
+      })),
+      getGroup: vi.fn(async () => ({
+        id: "group-id",
+        masterKey: Buffer.from([1, 2, 3]).toString("base64"),
+        distributionId: "44444444-4444-4444-8444-444444444444",
+        members: ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"],
+      })),
+      getRecipientByAci: vi.fn(async () => undefined),
+      getRecipientByE164: vi.fn(async () => undefined),
+      setRecipient: vi.fn(async () => undefined),
+    });
+
+    const result = await sendReactionSignalTs({
+      accountInfo: createSignalTsAccountInfo(),
+      to: "signal:group:group-id",
+      groupId: "group-id",
+      targetAuthorUuid: "uuid:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      targetTimestamp: 1700000000000,
+      emoji: "❌",
+      remove: true,
+    });
+
+    expect(result).toEqual({ messageId: "876", timestamp: 876 });
+    expect(mocks.sendGroupReactionMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        members: ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"],
+        reaction: {
+          emoji: "❌",
+          remove: true,
+          targetAuthorAci: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          targetSentTimestamp: 1700000000000,
+        },
+      }),
+    );
   });
 
   it("uploads and sends migrated sticker files through signal-ts", async () => {

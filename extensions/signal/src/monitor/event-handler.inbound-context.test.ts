@@ -1,3 +1,6 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import type { MsgContext } from "openclaw/plugin-sdk/reply-runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { expectChannelInboundContextContract as expectInboundContextContract } from "../../../../src/channels/plugins/contracts/test-helpers.js";
@@ -416,6 +419,48 @@ describe("signal createSignalEventHandler inbound context", () => {
     expect(capture.ctx?.MediaPaths).toEqual(["/tmp/a1.dat", "/tmp/a2.dat"]);
     expect(capture.ctx?.MediaUrls).toEqual(["/tmp/a1.dat", "/tmp/a2.dat"]);
     expect(capture.ctx?.MediaTypes).toEqual(["image/jpeg", "application/octet-stream"]);
+  });
+
+  it("uses fetched Signal long-text attachments as the full inbound body", async () => {
+    const tmpDir = await mkdtemp(path.join(os.tmpdir(), "openclaw-signal-text-"));
+    const textPath = path.join(tmpDir, "long.txt");
+    const fullText = "prefix body\n\n完整后半段";
+    await writeFile(textPath, fullText, "utf8");
+
+    try {
+      const handler = createSignalEventHandler(
+        createBaseSignalEventHandlerDeps({
+          cfg: {
+            messages: { inbound: { debounceMs: 0 } },
+            channels: { signal: { dmPolicy: "open", allowFrom: ["*"] } },
+          },
+          ignoreAttachments: false,
+          fetchAttachment: async () => ({
+            path: textPath,
+            contentType: "text/x-signal-plain",
+          }),
+          historyLimit: 0,
+        }),
+      );
+
+      await handler(
+        createSignalReceiveEvent({
+          dataMessage: {
+            message: "prefix body",
+            attachments: [{ id: "a1", contentType: "text/x-signal-plain" }],
+          },
+        }),
+      );
+
+      expect(capture.ctx).toBeTruthy();
+      expect(capture.ctx?.BodyForAgent).toBe(fullText);
+      expect(capture.ctx?.RawBody).toBe(fullText);
+      expect(capture.ctx?.CommandBody).toBe(fullText);
+      expect(capture.ctx?.MediaPaths).toBeUndefined();
+      expect(capture.ctx?.MediaTypes).toBeUndefined();
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it("uses sticker placeholders for sticker-only inbound messages before generic attachments", async () => {

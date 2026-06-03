@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveSignalAccount } from "./accounts.js";
+import { resolveSignalAccount, resolveSignalBlockStreamingEnabled } from "./accounts.js";
 
 describe("resolveSignalAccount", () => {
   it("uses configured defaultAccount when accountId is omitted", () => {
@@ -25,5 +25,20 @@ describe("resolveSignalAccount", () => {
     expect(resolved.baseUrl).toBe("http://127.0.0.1:9999");
     expect(resolved.config.account).toBe("+15555550123");
     expect(resolved.configured).toBe(true);
+  });
+});
+
+describe("resolveSignalBlockStreamingEnabled", () => {
+  it("uses canonical nested streaming block config before legacy blockStreaming", () => {
+    const resolved = resolveSignalBlockStreamingEnabled({
+      blockStreaming: false,
+      streaming: {
+        block: {
+          enabled: true,
+        },
+      },
+    } as never);
+
+    expect(resolved).toBe(true);
   });
 });

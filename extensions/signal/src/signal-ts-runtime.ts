@@ -23,6 +23,8 @@ import {
   type SignalBodyRange,
   type SignalEnvelope as SignalTsEnvelope,
   type SignalIncomingMessage,
+  type SignalQuote,
+  type SignalReaction,
   type SignalRecipientTarget,
   type SignalSticker,
 } from "@openclaw/signal-ts";
@@ -68,6 +70,7 @@ export type SignalTsSendParams = {
   message: string;
   textStyles?: SignalTextStyleRange[];
   attachments?: SignalTsAttachmentInput[];
+  replyToId?: string;
   timeoutMs?: number;
   abortSignal?: AbortSignal;
 };
@@ -81,6 +84,15 @@ export type SignalTsRpcLikeParams = {
 
 export type SignalTsStickerParams = SignalTsRpcLikeParams & {
   sticker: string;
+};
+
+export type SignalTsReactionParams = SignalTsRpcLikeParams & {
+  targetTimestamp: number;
+  emoji: string;
+  remove?: boolean;
+  targetAuthor?: string;
+  targetAuthorUuid?: string;
+  groupId?: string;
 };
 
 export type SignalTsMonitorParams = {
@@ -145,6 +157,11 @@ export async function sendMessageSignalTs(params: SignalTsSendParams): Promise<{
       abortSignal,
     });
     const bodyRanges = mapTextStyles(params.textStyles ?? []);
+    const quote = await resolveSignalTsQuote({
+      to: params.to,
+      replyToId: params.replyToId,
+      repository,
+    });
     const group = await resolveSignalTsGroup(params.to, repository);
     if (group) {
       const result = await sendSignalTsGroupMessage({
@@ -154,6 +171,7 @@ export async function sendMessageSignalTs(params: SignalTsSendParams): Promise<{
         body: params.message,
         attachments,
         bodyRanges,
+        quote,
         abortSignal,
       });
       return {
@@ -168,6 +186,7 @@ export async function sendMessageSignalTs(params: SignalTsSendParams): Promise<{
       body: params.message,
       attachments,
       bodyRanges,
+      ...(quote ? { quote } : {}),
       stores: createLibsignalStores(repository),
       ...(preKeyAuth ? { preKeyAuth } : {}),
       abortSignal,
@@ -209,6 +228,60 @@ export async function sendStickerSignalTs(params: SignalTsStickerParams): Promis
     const result = await client.sendStickerMessage({
       destination: target,
       sticker,
+      stores: createLibsignalStores(repository),
+      ...(preKeyAuth ? { preKeyAuth } : {}),
+      abortSignal,
+    });
+    return {
+      messageId: String(result.timestamp),
+      timestamp: result.timestamp,
+    };
+  });
+}
+
+export async function sendReactionSignalTs(params: SignalTsReactionParams): Promise<{
+  messageId: string;
+  timestamp: number;
+}> {
+  if (!Number.isFinite(params.targetTimestamp) || params.targetTimestamp <= 0) {
+    throw new Error("Valid targetTimestamp is required for Signal reaction");
+  }
+  const emoji = params.emoji.trim();
+  if (!emoji) {
+    throw new Error("Emoji is required for Signal reaction");
+  }
+  return await withSignalTsClient(params, async ({ client, repository, abortSignal }) => {
+    const reaction = await resolveSignalTsReaction({
+      recipient: params.to,
+      targetTimestamp: params.targetTimestamp,
+      emoji,
+      remove: params.remove,
+      targetAuthor: params.targetAuthor,
+      targetAuthorUuid: params.targetAuthorUuid,
+      repository,
+    });
+    const groupTarget = params.groupId?.trim()
+      ? `signal:group:${params.groupId.trim()}`
+      : params.to;
+    const group = await resolveSignalTsGroup(groupTarget, repository);
+    if (group) {
+      const result = await sendSignalTsGroupReactionMessage({
+        client,
+        repository,
+        group,
+        reaction,
+        abortSignal,
+      });
+      return {
+        messageId: String(result.timestamp),
+        timestamp: result.timestamp,
+      };
+    }
+    const target = await resolveSignalTsTarget(params.to, repository);
+    const preKeyAuth = await resolveSignalTsPreKeyAuth(params.to, repository);
+    const result = await client.sendReactionMessage({
+      destination: target,
+      reaction,
       stores: createLibsignalStores(repository),
       ...(preKeyAuth ? { preKeyAuth } : {}),
       abortSignal,
@@ -721,6 +794,7 @@ async function sendSignalTsGroupMessage({
   body,
   attachments,
   bodyRanges,
+  quote,
   abortSignal,
 }: {
   client: SignalTsClient;
@@ -729,6 +803,7 @@ async function sendSignalTsGroupMessage({
   body: string;
   attachments?: SignalAttachmentPointer[];
   bodyRanges?: SignalBodyRange[];
+  quote?: SignalQuote;
   abortSignal: AbortSignal;
 }): Promise<{ timestamp: number }> {
   const members = group.members ?? [];
@@ -745,6 +820,7 @@ async function sendSignalTsGroupMessage({
     body,
     attachments,
     bodyRanges,
+    ...(quote ? { quote } : {}),
     stores: createLibsignalStores(repository),
     abortSignal,
   });
@@ -776,6 +852,37 @@ async function sendSignalTsGroupStickerMessage({
       ...(group.revision !== undefined ? { revision: group.revision } : {}),
     },
     sticker,
+    stores: createLibsignalStores(repository),
+    abortSignal,
+  });
+  return { timestamp: result.timestamp };
+}
+
+async function sendSignalTsGroupReactionMessage({
+  client,
+  repository,
+  group,
+  reaction,
+  abortSignal,
+}: {
+  client: SignalTsClient;
+  repository: FileSignalRepository;
+  group: FileSignalGroupState;
+  reaction: SignalReaction;
+  abortSignal: AbortSignal;
+}): Promise<{ timestamp: number }> {
+  const members = group.members ?? [];
+  if (members.length === 0) {
+    throw new Error(`Signal-ts state is missing members for group ${group.id}`);
+  }
+  const result = await client.sendGroupReactionMessage({
+    members,
+    group: {
+      masterKey: base64ToBytes(group.masterKey),
+      distributionId: group.distributionId,
+      ...(group.revision !== undefined ? { revision: group.revision } : {}),
+    },
+    reaction,
     stores: createLibsignalStores(repository),
     abortSignal,
   });
@@ -858,6 +965,107 @@ async function resolveSignalTsPreKeyAuth(
     return preKeyAuthFromBase64(accessKey);
   }
   return undefined;
+}
+
+async function resolveSignalTsQuote({
+  to,
+  replyToId,
+  repository,
+}: {
+  to: string;
+  replyToId?: string;
+  repository: FileSignalRepository;
+}): Promise<SignalQuote | undefined> {
+  const id = parseSignalTimestamp(replyToId);
+  if (id === undefined) {
+    return undefined;
+  }
+  if (parseSignalTsGroupTarget(to)) {
+    return undefined;
+  }
+  const authorAci = await resolveSignalTsAuthorAci(to, repository);
+  if (!authorAci) {
+    throw new Error("Signal-ts quote reply requires a known author ACI for the target message");
+  }
+  return { id, authorAci };
+}
+
+async function resolveSignalTsReaction({
+  recipient,
+  targetTimestamp,
+  emoji,
+  remove,
+  targetAuthor,
+  targetAuthorUuid,
+  repository,
+}: {
+  recipient: string;
+  targetTimestamp: number;
+  emoji: string;
+  remove?: boolean;
+  targetAuthor?: string;
+  targetAuthorUuid?: string;
+  repository: FileSignalRepository;
+}): Promise<SignalReaction> {
+  const authorAci =
+    (await resolveSignalTsAuthorAci(targetAuthorUuid, repository)) ??
+    (await resolveSignalTsAuthorAci(targetAuthor, repository)) ??
+    (await resolveSignalTsAuthorAci(recipient, repository));
+  if (!authorAci) {
+    throw new Error("Signal-ts reaction requires a known target author ACI");
+  }
+  return {
+    emoji,
+    targetAuthorAci: authorAci,
+    targetSentTimestamp: targetTimestamp,
+    ...(remove ? { remove: true } : {}),
+  };
+}
+
+async function resolveSignalTsAuthorAci(
+  raw: string | undefined,
+  repository: FileSignalRepository,
+): Promise<string | undefined> {
+  const normalized = normalizeSignalTsAci(raw);
+  if (normalized) {
+    return normalized;
+  }
+  const value = raw?.trim();
+  if (!value) {
+    return undefined;
+  }
+  const recipient = await resolveKnownSignalTsRecipient(value, repository);
+  return normalizeSignalTsAci(recipient?.aci);
+}
+
+function parseSignalTimestamp(raw: string | undefined): number | undefined {
+  const value = raw?.trim();
+  if (!value) {
+    return undefined;
+  }
+  const timestamp = Number(value);
+  if (!Number.isFinite(timestamp) || timestamp <= 0) {
+    return undefined;
+  }
+  return timestamp;
+}
+
+function normalizeSignalTsAci(raw: string | undefined): string | undefined {
+  let value = raw?.trim();
+  if (!value) {
+    return undefined;
+  }
+  if (/^signal:/i.test(value)) {
+    value = value.slice("signal:".length).trim();
+  }
+  if (/^uuid:/i.test(value)) {
+    value = value.slice("uuid:".length).trim();
+  } else if (/^aci:/i.test(value)) {
+    value = value.slice("aci:".length).trim();
+  }
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
+    ? value
+    : undefined;
 }
 
 async function resolveKnownSignalTsRecipient(

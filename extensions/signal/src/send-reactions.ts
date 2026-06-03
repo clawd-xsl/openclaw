@@ -34,10 +34,16 @@ type SignalReactionErrorMessages = {
 let signalConfigRuntimePromise:
   | Promise<typeof import("openclaw/plugin-sdk/config-runtime")>
   | undefined;
+let signalTsRuntimePromise: Promise<typeof import("./signal-ts-runtime.js")> | undefined;
 
 async function loadSignalConfigRuntime() {
   signalConfigRuntimePromise ??= import("openclaw/plugin-sdk/config-runtime");
   return await signalConfigRuntimePromise;
+}
+
+async function loadSignalTsRuntime() {
+  signalTsRuntimePromise ??= import("./signal-ts-runtime.js");
+  return await signalTsRuntimePromise;
 }
 
 function normalizeSignalId(raw: string): string {
@@ -91,7 +97,6 @@ async function sendReactionSignalCore(params: {
     cfg,
     accountId: params.opts.accountId,
   });
-  const { baseUrl, account } = resolveSignalRpcContext(params.opts, accountInfo);
 
   const normalizedRecipient = normalizeSignalUuid(params.recipient);
   const groupId = params.opts.groupId?.trim();
@@ -114,6 +119,27 @@ async function sendReactionSignalCore(params: {
   if (groupId && !targetAuthorParams.targetAuthor) {
     throw new Error(params.errors.missingTargetAuthor);
   }
+
+  if (accountInfo.config.backend === "signal-ts") {
+    const signalTsRuntime = await loadSignalTsRuntime();
+    const result = await signalTsRuntime.sendReactionSignalTs({
+      accountInfo,
+      to: groupId ? `signal:group:${groupId}` : normalizedRecipient,
+      targetTimestamp: params.targetTimestamp,
+      emoji: normalizedEmoji,
+      remove: params.remove,
+      targetAuthor: params.opts.targetAuthor,
+      targetAuthorUuid: params.opts.targetAuthorUuid,
+      groupId,
+      timeoutMs: params.opts.timeoutMs,
+    });
+    return {
+      ok: true,
+      timestamp: result.timestamp,
+    };
+  }
+
+  const { baseUrl, account } = resolveSignalRpcContext(params.opts, accountInfo);
 
   const requestParams: Record<string, unknown> = {
     emoji: normalizedEmoji,

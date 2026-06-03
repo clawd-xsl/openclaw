@@ -119,6 +119,7 @@ describe("signal send helpers", () => {
       {
         accountId: "work",
         textMode: "plain",
+        replyToId: "1700000000000",
         abortSignal: abortController.signal,
       },
     );
@@ -129,6 +130,7 @@ describe("signal send helpers", () => {
       expect.objectContaining({
         to: "signal:uuid:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         message: "reply",
+        replyToId: "1700000000000",
         abortSignal: abortController.signal,
         accountInfo: expect.objectContaining({
           accountId: "work",

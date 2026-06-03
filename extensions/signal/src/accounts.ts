@@ -4,6 +4,7 @@ import {
   resolveMergedAccountConfig,
   type OpenClawConfig,
 } from "openclaw/plugin-sdk/account-resolution";
+import { resolveChannelStreamingBlockEnabled } from "openclaw/plugin-sdk/channel-streaming";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/text-runtime";
 import type { SignalAccountConfig } from "./account-types.js";
 
@@ -28,6 +29,12 @@ function mergeSignalAccountConfig(cfg: OpenClawConfig, accountId: string): Signa
       | undefined,
     accountId,
   });
+}
+
+export function resolveSignalBlockStreamingEnabled(
+  config: SignalAccountConfig,
+): boolean | undefined {
+  return resolveChannelStreamingBlockEnabled(config);
 }
 
 export function resolveSignalAccount(params: {

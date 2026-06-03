@@ -230,6 +230,7 @@ export async function sendMessageSignal(
       message,
       textStyles,
       attachments: signalTsAttachments,
+      replyToId: opts.replyToId,
       timeoutMs: opts.timeoutMs,
       abortSignal: opts.abortSignal,
     });

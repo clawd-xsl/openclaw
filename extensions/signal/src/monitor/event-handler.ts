@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { resolveHumanDelayConfig } from "openclaw/plugin-sdk/agent-runtime";
 import { logTypingFailure } from "openclaw/plugin-sdk/channel-feedback";
 import {
@@ -72,6 +73,8 @@ import type {
 import { resolveSignalQuoteContext } from "./inbound-context.js";
 import { renderSignalMentions } from "./mentions.js";
 
+const SIGNAL_PLAIN_TEXT_ATTACHMENT_MIME = "text/x-signal-plain";
+
 function formatAttachmentKindCount(kind: string, count: number): string {
   if (kind === "attachment") {
     return `${count} file${count > 1 ? "s" : ""}`;
@@ -105,6 +108,44 @@ function formatSignalQuotedBody(params: {
     return `[Replying to: "${params.quoteText}"]\n\n${params.messageText}`;
   }
   return params.messageText || params.fallbackText || params.quoteText || "";
+}
+
+function normalizeMimeBase(value: string | null | undefined): string {
+  return value?.split(";")[0]?.trim().toLowerCase() ?? "";
+}
+
+function isSignalPlainTextAttachmentMime(value: string | null | undefined): boolean {
+  return normalizeMimeBase(value) === SIGNAL_PLAIN_TEXT_ATTACHMENT_MIME;
+}
+
+async function readSignalPlainTextAttachment(path: string): Promise<string | undefined> {
+  const text = await readFile(path, "utf8");
+  const trimmed = text.trim();
+  return trimmed || undefined;
+}
+
+function mergeSignalPlainTextAttachmentBody(params: {
+  inlineText: string;
+  attachmentTexts: string[];
+}): string {
+  let body = params.inlineText;
+  for (const attachmentText of params.attachmentTexts) {
+    if (!body) {
+      body = attachmentText;
+      continue;
+    }
+    if (attachmentText.length > body.length && attachmentText.startsWith(body)) {
+      body = attachmentText;
+      continue;
+    }
+    if (body.length > attachmentText.length && body.startsWith(attachmentText)) {
+      continue;
+    }
+    if (!body.includes(attachmentText)) {
+      body = `${body}\n\n${attachmentText}`;
+    }
+  }
+  return body;
 }
 
 function resolveSignalInboundRoute(params: {
@@ -902,6 +943,7 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
     let mediaType: string | undefined;
     const mediaPaths: string[] = [];
     const mediaTypes: string[] = [];
+    const signalPlainTextAttachmentBodies: string[] = [];
     let placeholder = "";
     const attachments = dataMessage.attachments ?? [];
     attachmentTrace(
@@ -930,19 +972,27 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
             maxBytes: deps.mediaMaxBytes,
           });
           if (fetched) {
+            const fetchedContentType =
+              fetched.contentType ?? attachment.contentType ?? "application/octet-stream";
+            if (isSignalPlainTextAttachmentMime(fetchedContentType)) {
+              const attachmentText = await readSignalPlainTextAttachment(fetched.path);
+              if (attachmentText) {
+                signalPlainTextAttachmentBodies.push(attachmentText);
+                attachmentTrace("fetch-text-body", `index=${index} chars=${attachmentText.length}`);
+              } else {
+                attachmentTrace("fetch-text-empty", `index=${index}`);
+              }
+              continue;
+            }
             mediaPaths.push(fetched.path);
-            mediaTypes.push(
-              fetched.contentType ?? attachment.contentType ?? "application/octet-stream",
-            );
+            mediaTypes.push(fetchedContentType);
             attachmentTrace(
               "fetch-done",
-              `index=${index} path=${fetched.path} type=${
-                fetched.contentType ?? attachment.contentType ?? "unknown"
-              }`,
+              `index=${index} path=${fetched.path} type=${fetchedContentType}`,
             );
             if (!mediaPath) {
               mediaPath = fetched.path;
-              mediaType = fetched.contentType ?? attachment.contentType ?? undefined;
+              mediaType = fetchedContentType;
             }
           } else {
             attachmentTrace("fetch-empty", `index=${index} id=${attachment.id}`);
@@ -959,6 +1009,10 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
       }
     }
 
+    const effectiveMessageText = mergeSignalPlainTextAttachmentBody({
+      inlineText: messageText,
+      attachmentTexts: signalPlainTextAttachmentBodies,
+    });
     const stickerPlaceholder = formatStickerPlaceholder(dataMessage.sticker);
     if (stickerPlaceholder) {
       placeholder = stickerPlaceholder;
@@ -974,7 +1028,7 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
     }
 
     const bodyText = formatSignalQuotedBody({
-      messageText,
+      messageText: effectiveMessageText,
       quoteText: visibleQuoteText,
       fallbackText: placeholder,
     });
@@ -1023,7 +1077,7 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
       groupName,
       isGroup,
       bodyText,
-      commandBody: messageText,
+      commandBody: effectiveMessageText,
       timestamp: envelope.timestamp ?? undefined,
       messageId,
       mediaPath,
