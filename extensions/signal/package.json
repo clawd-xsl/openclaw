@@ -5,7 +5,8 @@
   "description": "OpenClaw Signal channel plugin",
   "type": "module",
   "dependencies": {
-    "@openclaw/signal-ts": "file:../../../signal-ts"
+    "@openclaw/signal-ts": "file:../../../signal-ts",
+    "undici": "8.0.2"
   },
   "devDependencies": {
     "@openclaw/plugin-sdk": "workspace:*"

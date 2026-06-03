@@ -4,6 +4,7 @@ const rpcMock = vi.fn();
 const signalTsSendMock = vi.fn();
 const signalTsTypingMock = vi.fn();
 const signalTsReceiptMock = vi.fn();
+const signalTsStickerMock = vi.fn();
 let accountConfig: Record<string, unknown> = { account: "+15550001111" };
 
 vi.mock("openclaw/plugin-sdk/config-runtime", async () => {
@@ -34,6 +35,7 @@ vi.mock("./signal-ts-runtime.js", () => ({
   sendMessageSignalTs: (...args: unknown[]) => signalTsSendMock(...args),
   sendTypingSignalTs: (...args: unknown[]) => signalTsTypingMock(...args),
   sendReadReceiptSignalTs: (...args: unknown[]) => signalTsReceiptMock(...args),
+  sendStickerSignalTs: (...args: unknown[]) => signalTsStickerMock(...args),
 }));
 
 let sendMessageSignal: typeof import("./send.js").sendMessageSignal;
@@ -53,6 +55,7 @@ describe("signal send helpers", () => {
     signalTsSendMock.mockReset().mockResolvedValue({ messageId: "789", timestamp: 789 });
     signalTsTypingMock.mockReset().mockResolvedValue(true);
     signalTsReceiptMock.mockReset().mockResolvedValue(true);
+    signalTsStickerMock.mockReset().mockResolvedValue({ messageId: "987", timestamp: 987 });
   });
 
   it("encodes DM replyToId as kebab-case quote params", async () => {
@@ -220,6 +223,36 @@ describe("signal send helpers", () => {
         timeoutMs: undefined,
         abortSignal: undefined,
       },
+    );
+  });
+
+  it("routes stickers through signal-ts when configured", async () => {
+    accountConfig = {
+      account: "+15550001111",
+      backend: "signal-ts",
+      signalTsStatePath: "/tmp/signal-ts-state.json",
+    };
+    const abortController = new AbortController();
+
+    const result = await sendStickerSignal("signal:group:group-id", "aabbccdd:5", {
+      accountId: "work",
+      abortSignal: abortController.signal,
+    });
+
+    expect(result).toEqual({ messageId: "987", timestamp: 987 });
+    expect(rpcMock).not.toHaveBeenCalled();
+    expect(signalTsStickerMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "signal:group:group-id",
+        sticker: "aabbccdd:5",
+        abortSignal: abortController.signal,
+        accountInfo: expect.objectContaining({
+          accountId: "work",
+          config: expect.objectContaining({
+            backend: "signal-ts",
+          }),
+        }),
+      }),
     );
   });
 });

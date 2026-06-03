@@ -1045,6 +1045,9 @@ importers:
       '@openclaw/signal-ts':
         specifier: file:../../../signal-ts
         version: file:../signal-ts
+      undici:
+        specifier: 8.0.2
+        version: 8.0.2
     devDependencies:
       '@openclaw/plugin-sdk':
         specifier: workspace:*

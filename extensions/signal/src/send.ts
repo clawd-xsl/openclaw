@@ -346,7 +346,14 @@ export async function sendStickerSignal(
   }
   const accountInfo = await resolveSignalRpcAccountInfo(opts);
   if (accountInfo?.config.backend === "signal-ts") {
-    throw new Error("Signal stickers are not supported by signal-ts backend yet");
+    const signalTsRuntime = await loadSignalTsRuntime();
+    return await signalTsRuntime.sendStickerSignalTs({
+      accountInfo,
+      to,
+      sticker,
+      timeoutMs: opts.timeoutMs,
+      abortSignal: opts.abortSignal,
+    });
   }
   const { baseUrl, account } = resolveSignalRpcContext(opts, accountInfo);
   const target = parseTarget(to);

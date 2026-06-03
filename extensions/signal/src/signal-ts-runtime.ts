@@ -12,6 +12,7 @@ import {
   decryptIncomingEnvelope,
   deriveAccessKeyBase64FromProfileKeyBase64,
   downloadSignalAttachment,
+  hexToBytes,
   normalizeDecryptedIncomingMessage,
   parseSignalRecipientTarget,
   preKeyAuthFromBase64,
@@ -23,6 +24,7 @@ import {
   type SignalEnvelope as SignalTsEnvelope,
   type SignalIncomingMessage,
   type SignalRecipientTarget,
+  type SignalSticker,
 } from "@openclaw/signal-ts";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
 import { saveMediaBuffer } from "openclaw/plugin-sdk/media-runtime";
@@ -33,6 +35,7 @@ import {
   type RuntimeEnv,
 } from "openclaw/plugin-sdk/runtime-env";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/text-runtime";
+import { Agent, fetch as undiciFetch, type RequestInit as UndiciRequestInit } from "undici";
 import type { ResolvedSignalAccount } from "./accounts.js";
 import type { SignalTextStyleRange } from "./format.js";
 import type {
@@ -41,6 +44,16 @@ import type {
   SignalEnvelope,
   SignalReceivePayload,
 } from "./monitor/event-handler.types.js";
+
+type SignalAttachmentFetch = NonNullable<Parameters<typeof downloadSignalAttachment>[0]["fetch"]>;
+type SignalAttachmentUploadFetch = NonNullable<
+  Parameters<SignalTsClient["uploadAttachment"]>[0]["fetch"]
+>;
+type RequestInitWithDispatcher = UndiciRequestInit & { dispatcher?: Agent };
+
+const SIGNAL_CDN_HOSTS = new Set(["cdn.signal.org", "cdn2.signal.org", "cdn3.signal.org"]);
+
+let signalCdnTlsFallbackAgent: Agent | undefined;
 
 export type SignalTsAttachmentInput = {
   path: string;
@@ -64,6 +77,10 @@ export type SignalTsRpcLikeParams = {
   to: string;
   timeoutMs?: number;
   abortSignal?: AbortSignal;
+};
+
+export type SignalTsStickerParams = SignalTsRpcLikeParams & {
+  sticker: string;
 };
 
 export type SignalTsMonitorParams = {
@@ -162,6 +179,47 @@ export async function sendMessageSignalTs(params: SignalTsSendParams): Promise<{
   });
 }
 
+export async function sendStickerSignalTs(params: SignalTsStickerParams): Promise<{
+  messageId: string;
+  timestamp: number;
+}> {
+  return await withSignalTsClient(params, async ({ client, repository, abortSignal }) => {
+    const sticker = await resolveSignalTsSticker({
+      client,
+      repository,
+      stickerSpec: params.sticker,
+      abortSignal,
+    });
+    const group = await resolveSignalTsGroup(params.to, repository);
+    if (group) {
+      const result = await sendSignalTsGroupStickerMessage({
+        client,
+        repository,
+        group,
+        sticker,
+        abortSignal,
+      });
+      return {
+        messageId: String(result.timestamp),
+        timestamp: result.timestamp,
+      };
+    }
+    const target = await resolveSignalTsTarget(params.to, repository);
+    const preKeyAuth = await resolveSignalTsPreKeyAuth(params.to, repository);
+    const result = await client.sendStickerMessage({
+      destination: target,
+      sticker,
+      stores: createLibsignalStores(repository),
+      ...(preKeyAuth ? { preKeyAuth } : {}),
+      abortSignal,
+    });
+    return {
+      messageId: String(result.timestamp),
+      timestamp: result.timestamp,
+    };
+  });
+}
+
 export async function fetchSignalTsAttachment(
   params: SignalTsFetchAttachmentParams,
 ): Promise<{ path: string; contentType?: string } | null> {
@@ -179,6 +237,7 @@ export async function fetchSignalTsAttachment(
   }
   const data = await downloadSignalAttachment({
     pointer,
+    fetch: fetchSignalCdnAttachment,
     abortSignal: params.abortSignal,
   });
   if (data.byteLength > params.maxBytes) {
@@ -197,6 +256,71 @@ export async function fetchSignalTsAttachment(
   );
   return { path: saved.path, contentType: saved.contentType };
 }
+
+function isSignalCdnRequest(input: string | URL): boolean {
+  try {
+    const url = typeof input === "string" ? new URL(input) : input;
+    return url.protocol === "https:" && SIGNAL_CDN_HOSTS.has(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function isHttpsRequest(input: RequestInfo | URL): boolean {
+  try {
+    const url =
+      input instanceof URL
+        ? input
+        : typeof input === "string"
+          ? new URL(input)
+          : new URL(input.url);
+    return url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function getSignalCdnTlsFallbackAgent(): Agent {
+  signalCdnTlsFallbackAgent ??= new Agent({
+    allowH2: false,
+    connect: { rejectUnauthorized: false },
+  });
+  return signalCdnTlsFallbackAgent;
+}
+
+const fetchSignalCdnAttachment: SignalAttachmentFetch = async (input, init) => {
+  try {
+    return await globalThis.fetch(input, init);
+  } catch (err) {
+    if (!isSignalCdnRequest(input)) {
+      throw err;
+    }
+    // Signal attachment ciphertext is still authenticated by the pointer key/digest
+    // after download. This fallback is scoped to Signal CDN requests for hosts where
+    // the local runtime's CA bundle rejects the CDN chain.
+    return (await undiciFetch(input, {
+      ...(init as UndiciRequestInit | undefined),
+      dispatcher: getSignalCdnTlsFallbackAgent(),
+    } satisfies RequestInitWithDispatcher)) as unknown as Response;
+  }
+};
+
+const fetchSignalAttachmentUpload: SignalAttachmentUploadFetch = async (input, init) => {
+  try {
+    return await globalThis.fetch(input, init);
+  } catch (err) {
+    if (!isHttpsRequest(input)) {
+      throw err;
+    }
+    // Attachments are encrypted and authenticated before upload. This mirrors the
+    // scoped download fallback for runtimes whose local CA bundle rejects Signal's
+    // upload endpoint chain.
+    return (await undiciFetch(input as Parameters<typeof undiciFetch>[0], {
+      ...(init as UndiciRequestInit | undefined),
+      dispatcher: getSignalCdnTlsFallbackAgent(),
+    } satisfies RequestInitWithDispatcher)) as unknown as Response;
+  }
+};
 
 export async function sendTypingSignalTs(
   params: SignalTsRpcLikeParams & { stop?: boolean },
@@ -627,6 +751,96 @@ async function sendSignalTsGroupMessage({
   return { timestamp: result.timestamp };
 }
 
+async function sendSignalTsGroupStickerMessage({
+  client,
+  repository,
+  group,
+  sticker,
+  abortSignal,
+}: {
+  client: SignalTsClient;
+  repository: FileSignalRepository;
+  group: FileSignalGroupState;
+  sticker: SignalSticker;
+  abortSignal: AbortSignal;
+}): Promise<{ timestamp: number }> {
+  const members = group.members ?? [];
+  if (members.length === 0) {
+    throw new Error(`Signal-ts state is missing members for group ${group.id}`);
+  }
+  const result = await client.sendGroupStickerMessage({
+    members,
+    group: {
+      masterKey: base64ToBytes(group.masterKey),
+      distributionId: group.distributionId,
+      ...(group.revision !== undefined ? { revision: group.revision } : {}),
+    },
+    sticker,
+    stores: createLibsignalStores(repository),
+    abortSignal,
+  });
+  return { timestamp: result.timestamp };
+}
+
+async function resolveSignalTsSticker({
+  client,
+  repository,
+  stickerSpec,
+  abortSignal,
+}: {
+  client: SignalTsClient;
+  repository: FileSignalRepository;
+  stickerSpec: string;
+  abortSignal: AbortSignal;
+}): Promise<SignalSticker> {
+  const { packId, stickerId } = parseSignalTsStickerSpec(stickerSpec);
+  const pack = await repository.getStickerPack(packId);
+  if (!pack || pack.installed === false) {
+    throw new Error(`Signal-ts state is missing installed sticker pack ${packId}`);
+  }
+  const stickerState = pack.stickers[String(stickerId)];
+  if (!stickerState) {
+    throw new Error(`Signal-ts sticker pack ${packId} is missing sticker ${stickerId}`);
+  }
+  const data = new Uint8Array(
+    await readFile(repository.getStickerFilePath(pack.id, stickerState.fileName)),
+  );
+  const uploaded = await client.uploadAttachment({
+    attachment: {
+      data,
+      contentType: stickerState.contentType ?? "image/webp",
+    },
+    fetch: fetchSignalAttachmentUpload,
+    abortSignal,
+  });
+  const sticker: SignalSticker = {
+    packId: hexToBytes(pack.id),
+    packKey: base64ToBytes(pack.key),
+    stickerId,
+    data: uploaded.pointer,
+  };
+  if (stickerState.emoji) {
+    sticker.emoji = stickerState.emoji;
+  }
+  return sticker;
+}
+
+function parseSignalTsStickerSpec(raw: string): { packId: string; stickerId: number } {
+  const match = /^\s*([0-9a-fA-F]+):(\d+)\s*$/.exec(raw);
+  if (!match) {
+    throw new Error("Signal sticker id must be pack-id:sticker-id");
+  }
+  const packId = match[1].toLowerCase();
+  if (packId.length % 2 !== 0) {
+    throw new Error("Signal sticker pack id must be even-length hex");
+  }
+  const stickerId = Number(match[2]);
+  if (!Number.isSafeInteger(stickerId) || stickerId < 0) {
+    throw new Error("Signal sticker id must be a non-negative integer");
+  }
+  return { packId, stickerId };
+}
+
 async function resolveSignalTsPreKeyAuth(
   raw: string,
   repository: FileSignalRepository,
@@ -722,6 +936,7 @@ async function uploadSignalTsAttachments({
         ...(attachment.contentType ? { contentType: attachment.contentType } : {}),
         fileName,
       },
+      fetch: fetchSignalAttachmentUpload,
       abortSignal,
     });
     uploaded.push(result.pointer);
@@ -830,6 +1045,13 @@ function signalTsDataMessageToSignalCli(
       targetAuthorUuid: incoming.message.reaction.targetAuthorAci,
       targetSentTimestamp: incoming.message.reaction.targetSentTimestamp,
       groupInfo: incoming.group?.id ? { groupId: incoming.group.id } : undefined,
+    };
+  }
+  if (incoming.message.sticker) {
+    dataMessage.sticker = {
+      packId: bytesToBase64OrUndefined(incoming.message.sticker.packId) ?? null,
+      packKey: bytesToBase64OrUndefined(incoming.message.sticker.packKey) ?? null,
+      stickerId: incoming.message.sticker.stickerId ?? null,
     };
   }
   if (incoming.group?.masterKey && !dataMessage.groupInfo?.groupId) {
