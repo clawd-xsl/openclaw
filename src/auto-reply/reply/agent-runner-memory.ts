@@ -67,6 +67,13 @@ async function compactEmbeddedPiSessionDefault(
   return await compactEmbeddedPiSession(...args);
 }
 
+async function runCliAgentDefault(
+  ...args: Parameters<typeof import("../../agents/cli-runner.js").runCliAgent>
+): Promise<Awaited<ReturnType<typeof import("../../agents/cli-runner.js").runCliAgent>>> {
+  const { runCliAgent } = await import("../../agents/cli-runner.js");
+  return await runCliAgent(...args);
+}
+
 async function runEmbeddedPiAgentDefault(
   ...args: Parameters<typeof import("../../agents/pi-embedded.js").runEmbeddedPiAgent>
 ): Promise<Awaited<ReturnType<typeof import("../../agents/pi-embedded.js").runEmbeddedPiAgent>>> {
@@ -76,6 +83,7 @@ async function runEmbeddedPiAgentDefault(
 
 const memoryDeps = {
   compactEmbeddedPiSession: compactEmbeddedPiSessionDefault,
+  runCliAgent: runCliAgentDefault,
   runWithModelFallback,
   runEmbeddedPiAgent: runEmbeddedPiAgentDefault,
   registerAgentRunContext,
@@ -90,6 +98,7 @@ export function setAgentRunnerMemoryTestDeps(overrides?: Partial<typeof memoryDe
   Object.assign(memoryDeps, {
     runWithModelFallback,
     compactEmbeddedPiSession: compactEmbeddedPiSessionDefault,
+    runCliAgent: runCliAgentDefault,
     runEmbeddedPiAgent: runEmbeddedPiAgentDefault,
     registerAgentRunContext,
     refreshQueuedFollowupSession,
@@ -430,23 +439,263 @@ async function readCliNativePromptUsageSnapshot(params: {
   }
 }
 
-async function writeCliCompactionSessionFileFromClaudeHistory(params: {
-  tempSessionFile: string;
+type CliCompactionHistorySource =
+  | { ok: true; messageCount: number; prompt: string }
+  | { ok: false; reason: string };
+
+const CLI_COMPACTION_SYSTEM_PROMPT = [
+  "You summarize Claude Code session history for OpenClaw continuity.",
+  "Use only the transcript provided in the user prompt.",
+  "Do not call tools, inspect files, or infer unstated facts.",
+  "Omit hidden reasoning and internal tool mechanics unless the result is needed for continuity.",
+  "Output only the compaction summary.",
+].join("\n");
+
+function stringifyCompactionValue(value: unknown): string {
+  if (value === undefined) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return "[unserializable value]";
+  }
+}
+
+function formatCompactionContentBlock(block: unknown): string {
+  if (!block || typeof block !== "object") {
+    return stringifyCompactionValue(block).trim();
+  }
+  const record = block as Record<string, unknown>;
+  const type = typeof record.type === "string" ? record.type : "";
+  if (type === "thinking" || type === "reasoning") {
+    return "";
+  }
+  if (type === "text") {
+    return typeof record.text === "string" ? record.text.trim() : "";
+  }
+  if (type === "toolcall" || type === "toolCall" || type === "tool_use" || type === "toolUse") {
+    const name =
+      normalizeOptionalString(record.name) ??
+      normalizeOptionalString(record.toolName) ??
+      normalizeOptionalString(record.tool);
+    const args =
+      record.arguments !== undefined
+        ? record.arguments
+        : record.input !== undefined
+          ? record.input
+          : undefined;
+    const argsText = stringifyCompactionValue(args).trim();
+    return [`[tool call${name ? `: ${name}` : ""}]`, argsText].filter(Boolean).join("\n");
+  }
+  if (type === "tool_result" || type === "toolResult") {
+    const name =
+      normalizeOptionalString(record.name) ??
+      normalizeOptionalString(record.toolName) ??
+      normalizeOptionalString(record.tool);
+    const resultText =
+      typeof record.text === "string"
+        ? record.text
+        : record.content !== undefined
+          ? stringifyCompactionValue(record.content)
+          : stringifyCompactionValue(record);
+    return [`[tool result${name ? `: ${name}` : ""}]`, resultText.trim()]
+      .filter(Boolean)
+      .join("\n");
+  }
+  const text =
+    typeof record.text === "string"
+      ? record.text
+      : record.content !== undefined
+        ? stringifyCompactionValue(record.content)
+        : stringifyCompactionValue(record);
+  return [`[${type || "block"}]`, text.trim()].filter(Boolean).join(" ");
+}
+
+function formatCompactionMessageContent(content: unknown): string {
+  if (typeof content === "string") {
+    return content.trim();
+  }
+  if (!Array.isArray(content)) {
+    return stringifyCompactionValue(content).trim();
+  }
+  return content
+    .map(formatCompactionContentBlock)
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function formatClaudeCliCompactionMessage(message: unknown, index: number): string | undefined {
+  if (!message || typeof message !== "object") {
+    return undefined;
+  }
+  const record = message as Record<string, unknown>;
+  const role = record.role === "user" || record.role === "assistant" ? record.role : undefined;
+  if (!role) {
+    return undefined;
+  }
+  const content = formatCompactionMessageContent(record.content);
+  if (!content) {
+    return undefined;
+  }
+  const timestamp =
+    typeof record.timestamp === "number" && Number.isFinite(record.timestamp)
+      ? new Date(record.timestamp).toISOString()
+      : undefined;
+  const heading = [
+    `### Message ${index + 1}`,
+    `role: ${role}`,
+    timestamp ? `timestamp: ${timestamp}` : undefined,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return `${heading}\n${content}`;
+}
+
+function buildCliCompactionPrompt(params: {
   cliSessionId: string;
-}): Promise<{ ok: true; messageCount: number } | { ok: false; reason: string }> {
+  formattedMessages: string[];
+}): string {
+  return [
+    "Summarize the Claude Code session history below so OpenClaw can continue the same conversation in a fresh CLI session.",
+    "",
+    "Requirements:",
+    "- Preserve concrete decisions, user preferences, durable constraints/rules, pending user asks, exact identifiers, file paths, commands, errors, and current debugging state.",
+    "- Preserve recent unresolved context with enough detail for the next assistant turn.",
+    "- Do not include hidden thinking/reasoning traces.",
+    "- Do not include a preamble, apology, or explanation of the task.",
+    "- If a section has no content, write `None`.",
+    "",
+    "Use this Markdown shape exactly:",
+    "## Decisions",
+    "## Open TODOs",
+    "## Constraints/Rules",
+    "## Pending user asks",
+    "## Exact identifiers",
+    "## Useful recent context",
+    "",
+    `[Claude Code session id: ${params.cliSessionId}]`,
+    "",
+    "[Claude Code session history]",
+    params.formattedMessages.join("\n\n---\n\n"),
+  ].join("\n");
+}
+
+function buildCliCompactionHistorySource(params: {
+  cliSessionId: string;
+}): CliCompactionHistorySource {
   const messages = readClaudeCliSessionMessages({ cliSessionId: params.cliSessionId });
   if (messages.length === 0) {
     return { ok: false, reason: "claude_cli_transcript_empty" };
   }
 
-  const { SessionManager } = await import("@mariozechner/pi-coding-agent");
-  const sessionManager = SessionManager.open(params.tempSessionFile) as unknown as {
-    appendMessage(message: Record<string, unknown>): string;
-  };
-  for (const message of messages) {
-    sessionManager.appendMessage(message);
+  const formattedMessages = messages
+    .map(formatClaudeCliCompactionMessage)
+    .filter((message): message is string => Boolean(message));
+  if (formattedMessages.length === 0) {
+    return { ok: false, reason: "claude_cli_transcript_no_messages" };
   }
-  return { ok: true, messageCount: messages.length };
+  return {
+    ok: true,
+    messageCount: formattedMessages.length,
+    prompt: buildCliCompactionPrompt({
+      cliSessionId: params.cliSessionId,
+      formattedMessages,
+    }),
+  };
+}
+
+function extractCliCompactionSummary(
+  result: Awaited<ReturnType<typeof runCliAgentDefault>>,
+): string | undefined {
+  const payloadText =
+    result.payloads
+      ?.map((payload) => payload.text?.trim())
+      .filter((text): text is string => Boolean(text))
+      .join("\n\n")
+      .trim() || undefined;
+  const finalText =
+    typeof result.meta?.finalAssistantVisibleText === "string"
+      ? result.meta.finalAssistantVisibleText.trim()
+      : undefined;
+  const text = payloadText ?? finalText;
+  if (!text) {
+    return undefined;
+  }
+  return text
+    .replace(/^```(?:markdown|md)?\s*/i, "")
+    .replace(/\s*```\s*$/i, "")
+    .trim();
+}
+
+async function runStandaloneCliCompaction(params: {
+  cfg: OpenClawConfig;
+  followupRun: FollowupRun;
+  provider: string;
+  model?: string;
+  cliSessionId: string;
+  workspaceDir: string;
+  abortSignal?: AbortSignal;
+}): Promise<
+  | {
+      ok: true;
+      summary: string;
+      tokensAfter?: number;
+      sourceMessageCount: number;
+    }
+  | { ok: false; reason: string }
+> {
+  const source = buildCliCompactionHistorySource({ cliSessionId: params.cliSessionId });
+  if (!source.ok) {
+    return source;
+  }
+
+  const tempDir = await fs.promises.mkdtemp(
+    path.join(os.tmpdir(), "openclaw-cli-standalone-compaction-"),
+  );
+  const tempSessionId = memoryDeps.randomUUID();
+  const tempSessionFile = path.join(tempDir, `${tempSessionId}.jsonl`);
+  try {
+    await fs.promises.writeFile(tempSessionFile, "", "utf8");
+    const result = await memoryDeps.runCliAgent({
+      sessionId: tempSessionId,
+      agentId: params.followupRun.run.agentId,
+      sessionFile: tempSessionFile,
+      workspaceDir: params.workspaceDir,
+      config: params.cfg,
+      prompt: source.prompt,
+      provider: params.provider,
+      model: params.model,
+      thinkLevel: params.followupRun.run.thinkLevel,
+      fastMode: params.followupRun.run.fastMode,
+      reasoningLevel: params.followupRun.run.reasoningLevel,
+      timeoutMs: params.followupRun.run.timeoutMs,
+      runId: `${tempSessionId}:cli-compaction`,
+      extraSystemPrompt: CLI_COMPACTION_SYSTEM_PROMPT,
+      authProfileId: params.followupRun.run.authProfileId,
+      senderIsOwner: params.followupRun.run.senderIsOwner,
+      abortSignal: params.abortSignal,
+    });
+    const summary = extractCliCompactionSummary(result);
+    if (!summary) {
+      return { ok: false, reason: "cli_compaction_empty_summary" };
+    }
+    const tokensAfter = estimatePromptTokensForMemoryFlush(summary);
+    return {
+      ok: true,
+      summary,
+      ...(typeof tokensAfter === "number" && tokensAfter > 0
+        ? { tokensAfter: Math.floor(tokensAfter) }
+        : {}),
+      sourceMessageCount: source.messageCount,
+    };
+  } finally {
+    await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 function resolveCliSessionUsageThreshold(params: {
@@ -623,112 +872,82 @@ async function runCliPreflightCompactionIfNeeded(params: {
   );
 
   params.replyOperation.setPhase("preflight_compacting");
-  const tempDir = await fs.promises.mkdtemp(
-    path.join(os.tmpdir(), "openclaw-cli-preflight-compaction-"),
-  );
-  const tempSessionFile = path.join(tempDir, path.basename(sessionFile));
-  try {
-    if (!cliNativeUsage.cliSessionId) {
-      logVerbose(
-        `preflightCompaction skipped: sessionKey=${params.sessionKey} reason=claude_cli_session_missing cli=true`,
-      );
-      return entry ?? params.sessionEntry;
-    }
-    const tempTranscript = await writeCliCompactionSessionFileFromClaudeHistory({
-      tempSessionFile,
-      cliSessionId: cliNativeUsage.cliSessionId,
-    });
-    if (!tempTranscript.ok) {
-      logVerbose(
-        `preflightCompaction skipped: sessionKey=${params.sessionKey} reason=${tempTranscript.reason} cli=true`,
-      );
-      return entry ?? params.sessionEntry;
-    }
-    const result = await memoryDeps.compactEmbeddedPiSession({
-      sessionId: entry.sessionId,
-      messageChannel: params.followupRun.run.messageProvider,
-      groupId: entry.groupId ?? params.followupRun.run.groupId,
-      groupChannel: entry.groupChannel ?? params.followupRun.run.groupChannel,
-      groupSpace: entry.space ?? params.followupRun.run.groupSpace,
-      senderId: params.followupRun.run.senderId,
-      senderName: params.followupRun.run.senderName,
-      senderUsername: params.followupRun.run.senderUsername,
-      senderE164: params.followupRun.run.senderE164,
-      authProfileId: params.followupRun.run.authProfileId,
-      sessionFile: tempSessionFile,
-      workspaceDir: params.followupRun.run.workspaceDir,
-      agentDir: params.followupRun.run.agentDir,
-      config: params.cfg,
-      skillsSnapshot: entry.skillsSnapshot ?? params.followupRun.run.skillsSnapshot,
-      provider,
-      model: params.followupRun.run.model,
-      thinkLevel: params.followupRun.run.thinkLevel,
-      reasoningLevel: params.followupRun.run.reasoningLevel,
-      bashElevated: params.followupRun.run.bashElevated,
-      trigger: "budget",
-      currentTokenCount:
-        effectiveTokenCountForCompaction > 0 ? effectiveTokenCountForCompaction : undefined,
-      senderIsOwner: params.followupRun.run.senderIsOwner,
-      ownerNumbers: params.followupRun.run.ownerNumbers,
-      extraSystemPrompt: params.followupRun.run.extraSystemPrompt,
-      abortSignal: params.replyOperation.abortSignal,
-    });
-
-    if (!result?.ok || !result.compacted || !result.result?.summary?.trim()) {
-      logVerbose(
-        `preflightCompaction skipped: sessionKey=${params.sessionKey} reason=${result?.reason ?? "not_compacted"} cli=true`,
-      );
-      return entry ?? params.sessionEntry;
-    }
-
-    const updatedAt = memoryDeps.now();
-    const nextOverlay = {
-      provider,
-      summary: result.result.summary.trim(),
-      // CLI compaction runs over a temporary Claude Code history transcript. Its entry
-      // ids do not exist in OpenClaw's visible transcript, so they cannot anchor tails there.
-      ...(typeof result.result.tokensBefore === "number" && result.result.tokensBefore > 0
-        ? { tokensBefore: Math.floor(result.result.tokensBefore) }
-        : {}),
-      ...(typeof result.result.tokensAfter === "number" && result.result.tokensAfter > 0
-        ? { tokensAfter: Math.floor(result.result.tokensAfter) }
-        : {}),
-      contextWindowTokens,
-      thresholdTokens: compactionGateThreshold,
-      createdAt: overlay?.createdAt ?? updatedAt,
-      updatedAt,
-    };
-    const compactedPrefix = buildCliColdStartPromptPrefix({
-      providerId: provider,
-      sessionId: entry.sessionId,
-      sessionFile: entry.sessionFile ?? params.followupRun.run.sessionFile,
-      currentPrompt: promptText,
-      overlay: nextOverlay,
-    }).promptPrefix;
-    const compactedAtPromptTokens = compactedPrefix
-      ? estimatePromptTokensForMemoryFlush(`${compactedPrefix}${promptText}`)
-      : undefined;
-
-    entry = await persistCliCompactionOverlayUpdate({
-      entry,
-      sessionStore: params.sessionStore,
-      sessionKey: params.sessionKey,
-      storePath: params.storePath,
-      mutate: (mutable) => {
-        clearCliSession(mutable, provider);
-        setCliCompactionOverlay(mutable, provider, {
-          ...nextOverlay,
-          ...(typeof compactedAtPromptTokens === "number" && compactedAtPromptTokens > 0
-            ? { compactedAtPromptTokens: Math.floor(compactedAtPromptTokens) }
-            : {}),
-        });
-      },
-    });
-
+  if (!cliNativeUsage.cliSessionId) {
+    logVerbose(
+      `preflightCompaction skipped: sessionKey=${params.sessionKey} reason=claude_cli_session_missing cli=true`,
+    );
     return entry ?? params.sessionEntry;
-  } finally {
-    await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
+  const result = await runStandaloneCliCompaction({
+    cfg: params.cfg,
+    followupRun: params.followupRun,
+    provider,
+    model: params.followupRun.run.model,
+    cliSessionId: cliNativeUsage.cliSessionId,
+    workspaceDir: params.followupRun.run.workspaceDir,
+    abortSignal: params.replyOperation.abortSignal,
+  });
+
+  if (!result.ok) {
+    logVerbose(
+      `preflightCompaction skipped: sessionKey=${params.sessionKey} reason=${result.reason} cli=true`,
+    );
+    return entry ?? params.sessionEntry;
+  }
+  if (!result.summary.trim()) {
+    logVerbose(
+      `preflightCompaction skipped: sessionKey=${params.sessionKey} reason=cli_compaction_empty_summary cli=true`,
+    );
+    return entry ?? params.sessionEntry;
+  }
+  logVerbose(
+    `preflightCompaction summarized: sessionKey=${params.sessionKey} cli=true ` +
+      `sourceMessages=${result.sourceMessageCount} summaryChars=${result.summary.length}`,
+  );
+
+  const updatedAt = memoryDeps.now();
+  const nextOverlay = {
+    provider,
+    summary: result.summary.trim(),
+    ...(effectiveTokenCountForCompaction > 0
+      ? { tokensBefore: Math.floor(effectiveTokenCountForCompaction) }
+      : {}),
+    ...(typeof result.tokensAfter === "number" && result.tokensAfter > 0
+      ? { tokensAfter: Math.floor(result.tokensAfter) }
+      : {}),
+    contextWindowTokens,
+    thresholdTokens: compactionGateThreshold,
+    createdAt: overlay?.createdAt ?? updatedAt,
+    updatedAt,
+  };
+  const compactedPrefix = buildCliColdStartPromptPrefix({
+    providerId: provider,
+    sessionId: entry.sessionId,
+    sessionFile: entry.sessionFile ?? params.followupRun.run.sessionFile,
+    currentPrompt: promptText,
+    overlay: nextOverlay,
+  }).promptPrefix;
+  const compactedAtPromptTokens = compactedPrefix
+    ? estimatePromptTokensForMemoryFlush(`${compactedPrefix}${promptText}`)
+    : undefined;
+
+  entry = await persistCliCompactionOverlayUpdate({
+    entry,
+    sessionStore: params.sessionStore,
+    sessionKey: params.sessionKey,
+    storePath: params.storePath,
+    mutate: (mutable) => {
+      clearCliSession(mutable, provider);
+      setCliCompactionOverlay(mutable, provider, {
+        ...nextOverlay,
+        ...(typeof compactedAtPromptTokens === "number" && compactedAtPromptTokens > 0
+          ? { compactedAtPromptTokens: Math.floor(compactedAtPromptTokens) }
+          : {}),
+      });
+    },
+  });
+
+  return entry ?? params.sessionEntry;
 }
 
 export async function runPreflightCompactionIfNeeded(params: {

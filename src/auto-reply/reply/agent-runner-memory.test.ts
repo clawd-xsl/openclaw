@@ -17,6 +17,7 @@ import type { FollowupRun } from "./queue.js";
 
 const runWithModelFallbackMock = vi.fn();
 const runEmbeddedPiAgentMock = vi.fn();
+const runCliAgentMock = vi.fn();
 const compactEmbeddedPiSessionMock = vi.fn();
 const refreshQueuedFollowupSessionMock = vi.fn();
 const incrementCompactionCountMock = vi.fn();
@@ -124,6 +125,10 @@ describe("runMemoryFlushIfNeeded", () => {
       attempts: [],
     }));
     runEmbeddedPiAgentMock.mockReset().mockResolvedValue({ payloads: [], meta: {} });
+    runCliAgentMock.mockReset().mockResolvedValue({
+      payloads: [{ text: "Condensed earlier context." }],
+      meta: {},
+    });
     compactEmbeddedPiSessionMock.mockReset();
     refreshQueuedFollowupSessionMock.mockReset();
     incrementCompactionCountMock.mockReset().mockImplementation(async (params) => {
@@ -169,6 +174,7 @@ describe("runMemoryFlushIfNeeded", () => {
     setAgentRunnerMemoryTestDeps({
       runWithModelFallback: runWithModelFallbackMock as never,
       runEmbeddedPiAgent: runEmbeddedPiAgentMock as never,
+      runCliAgent: runCliAgentMock as never,
       compactEmbeddedPiSession: compactEmbeddedPiSessionMock as never,
       refreshQueuedFollowupSession: refreshQueuedFollowupSessionMock as never,
       incrementCompactionCount: incrementCompactionCountMock as never,
@@ -367,21 +373,9 @@ describe("runMemoryFlushIfNeeded", () => {
     };
     const sessionStore = { [sessionKey]: sessionEntry };
     await writeSessionStore(storePath, sessionKey, sessionEntry);
-    compactEmbeddedPiSessionMock.mockImplementation(async (params: { sessionFile: string }) => {
-      const tempTranscript = await fs.readFile(params.sessionFile, "utf8");
-      expect(tempTranscript).toContain("ok");
-      expect(tempTranscript).not.toContain("older question");
-      expect(tempTranscript).not.toContain("older answer");
-      return {
-        ok: true,
-        compacted: true,
-        result: {
-          summary: "Condensed earlier context.",
-          firstKeptEntryId: "m2",
-          tokensBefore: 1_024,
-          tokensAfter: 256,
-        },
-      };
+    runCliAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "Condensed earlier context." }],
+      meta: {},
     });
 
     const entry = await runPreflightCompactionIfNeeded({
@@ -413,24 +407,29 @@ describe("runMemoryFlushIfNeeded", () => {
       replyOperation: createReplyOperation(),
     });
 
-    expect(compactEmbeddedPiSessionMock).toHaveBeenCalledTimes(1);
-    const compactionCall = compactEmbeddedPiSessionMock.mock.calls[0]?.[0] as {
+    expect(compactEmbeddedPiSessionMock).not.toHaveBeenCalled();
+    expect(runCliAgentMock).toHaveBeenCalledTimes(1);
+    const compactionCall = runCliAgentMock.mock.calls[0]?.[0] as {
+      cliSessionId?: string;
+      prompt?: string;
       sessionFile?: string;
-      sessionKey?: string;
-      currentTokenCount?: number;
+      sessionId?: string;
     };
+    expect(compactionCall.cliSessionId).toBeUndefined();
+    expect(compactionCall.sessionId).not.toBe("session");
     expect(compactionCall.sessionFile).not.toBe(sessionFile);
-    expect(compactionCall.sessionKey).toBeUndefined();
-    expect(compactionCall.currentTokenCount).toBeGreaterThan(0);
+    expect(compactionCall.prompt).toContain("[Claude Code session history]");
+    expect(compactionCall.prompt).toContain("ok");
+    expect(compactionCall.prompt).not.toContain("older question");
+    expect(compactionCall.prompt).not.toContain("older answer");
     expect(entry?.cliSessionBindings).toBeUndefined();
     expect(entry?.cliSessionIds).toBeUndefined();
     expect(entry?.cliCompactionOverlays?.["claude-cli"]).toMatchObject({
       provider: "claude-cli",
       summary: "Condensed earlier context.",
-      tokensBefore: 1024,
-      tokensAfter: 256,
       thresholdTokens: 290,
     });
+    expect(entry?.cliCompactionOverlays?.["claude-cli"]?.tokensBefore).toBeGreaterThan(0);
     expect(entry?.cliCompactionOverlays?.["claude-cli"]).not.toHaveProperty("firstKeptEntryId");
     expect(entry?.cliCompactionOverlays?.["claude-cli"]?.compactedAtPromptTokens).toBeGreaterThan(
       0,
@@ -493,20 +492,9 @@ describe("runMemoryFlushIfNeeded", () => {
     };
     const sessionStore = { [sessionKey]: sessionEntry };
     await writeSessionStore(storePath, sessionKey, sessionEntry);
-    compactEmbeddedPiSessionMock.mockImplementation(async (params: { sessionFile: string }) => {
-      const tempTranscript = await fs.readFile(params.sessionFile, "utf8");
-      expect(tempTranscript).toContain("ok");
-      expect(tempTranscript).not.toContain("short context");
-      return {
-        ok: true,
-        compacted: true,
-        result: {
-          summary: "Condensed hidden-usage context.",
-          firstKeptEntryId: "m1",
-          tokensBefore: 512,
-          tokensAfter: 128,
-        },
-      };
+    runCliAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "Condensed hidden-usage context." }],
+      meta: {},
     });
 
     const entry = await runPreflightCompactionIfNeeded({
@@ -538,20 +526,23 @@ describe("runMemoryFlushIfNeeded", () => {
       replyOperation: createReplyOperation(),
     });
 
-    expect(compactEmbeddedPiSessionMock).toHaveBeenCalledTimes(1);
-    const compactionCall = compactEmbeddedPiSessionMock.mock.calls[0]?.[0] as {
-      currentTokenCount?: number;
+    expect(compactEmbeddedPiSessionMock).not.toHaveBeenCalled();
+    expect(runCliAgentMock).toHaveBeenCalledTimes(1);
+    const compactionCall = runCliAgentMock.mock.calls[0]?.[0] as {
+      cliSessionId?: string;
+      prompt?: string;
       sessionFile?: string;
     };
-    expect(compactionCall.currentTokenCount).toBe(171_200);
+    expect(compactionCall.cliSessionId).toBeUndefined();
     expect(compactionCall.sessionFile).not.toBe(sessionFile);
+    expect(compactionCall.prompt).toContain("ok");
+    expect(compactionCall.prompt).not.toContain("short context");
     expect(entry?.cliSessionBindings).toBeUndefined();
     expect(entry?.cliSessionIds).toBeUndefined();
     expect(entry?.cliCompactionOverlays?.["claude-cli"]).toMatchObject({
       provider: "claude-cli",
       summary: "Condensed hidden-usage context.",
-      tokensBefore: 512,
-      tokensAfter: 128,
+      tokensBefore: 171_200,
       thresholdTokens: 160_000,
     });
     expect(entry?.cliCompactionOverlays?.["claude-cli"]).not.toHaveProperty("firstKeptEntryId");
@@ -635,6 +626,7 @@ describe("runMemoryFlushIfNeeded", () => {
     });
 
     expect(compactEmbeddedPiSessionMock).not.toHaveBeenCalled();
+    expect(runCliAgentMock).not.toHaveBeenCalled();
     expect(entry?.cliSessionBindings?.["claude-cli"]?.lastUsage?.cacheRead).toBe(170_000);
     expect(entry?.cliCompactionOverlays).toBeUndefined();
   });
