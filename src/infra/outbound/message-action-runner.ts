@@ -43,6 +43,7 @@ import type { OutboundSendDeps } from "./deliver.js";
 import { normalizeMessageActionInput } from "./message-action-normalization.js";
 import {
   hydrateAttachmentParamsForAction,
+  materializeSendBufferMedia,
   normalizeSandboxMediaList,
   normalizeSandboxMediaParams,
   parseButtonsParam,
@@ -476,6 +477,7 @@ async function handleSendAction(ctx: ResolvedActionContext): Promise<MessageActi
   throwIfAborted(abortSignal);
   const action: ChannelMessageActionName = "send";
   const to = readStringParam(params, "to", { required: true });
+  const hasBuffer = Boolean(readStringParam(params, "buffer", { trim: false }));
   // Support media, path, and filePath parameters for attachments
   const mediaHint =
     readStringParam(params, "media", { trim: false }) ??
@@ -494,7 +496,13 @@ async function handleSendAction(ctx: ResolvedActionContext): Promise<MessageActi
   let message =
     readStringParam(params, "message", {
       required:
-        !mediaHint && !hasButtons && !hasCard && !hasComponents && !hasInteractive && !hasBlocks,
+        !mediaHint &&
+        !hasBuffer &&
+        !hasButtons &&
+        !hasCard &&
+        !hasComponents &&
+        !hasInteractive &&
+        !hasBlocks,
       allowEmpty: true,
     }) ?? "";
   if (message.includes("\\n")) {
@@ -530,6 +538,14 @@ async function handleSendAction(ctx: ResolvedActionContext): Promise<MessageActi
   });
   mergedMediaUrls.length = 0;
   mergedMediaUrls.push(...normalizedMediaUrls);
+  const bufferMediaUrl = await materializeSendBufferMedia({
+    cfg,
+    channel,
+    accountId,
+    args: params,
+    dryRun,
+  });
+  pushMedia(bufferMediaUrl);
 
   message = parsed.text;
   params.message = message;

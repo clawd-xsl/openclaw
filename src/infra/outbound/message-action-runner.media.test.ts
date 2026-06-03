@@ -25,6 +25,10 @@ const channelResolutionMocks = vi.hoisted(() => ({
   executePollAction: vi.fn(),
 }));
 
+const mediaStoreMocks = vi.hoisted(() => ({
+  saveMediaBuffer: vi.fn(),
+}));
+
 vi.mock("./channel-resolution.js", () => ({
   resolveOutboundChannelPlugin: channelResolutionMocks.resolveOutboundChannelPlugin,
   resetOutboundChannelResolutionStateForTest: vi.fn(),
@@ -53,6 +57,15 @@ vi.mock("../../media/web-media.js", async () => {
   return {
     ...actual,
     loadWebMedia: vi.fn(actual.loadWebMedia),
+  };
+});
+
+vi.mock("../../media/store.js", async () => {
+  const actual =
+    await vi.importActual<typeof import("../../media/store.js")>("../../media/store.js");
+  return {
+    ...actual,
+    saveMediaBuffer: mediaStoreMocks.saveMediaBuffer,
   };
 });
 
@@ -201,6 +214,13 @@ describe("runMessageAction media behavior", () => {
     });
     vi.mocked(loadWebMedia).mockReset();
     vi.mocked(loadWebMedia).mockImplementation(actualLoadWebMedia);
+    mediaStoreMocks.saveMediaBuffer.mockReset();
+    mediaStoreMocks.saveMediaBuffer.mockResolvedValue({
+      id: "saved-buffer.png",
+      path: path.join(os.tmpdir(), "saved-buffer.png"),
+      size: 3,
+      contentType: "image/png",
+    });
   });
 
   describe("sendAttachment hydration", () => {
@@ -571,6 +591,71 @@ describe("runMessageAction media behavior", () => {
 
     afterEach(() => {
       setActivePluginRegistry(createTestRegistry([]));
+    });
+
+    it("materializes send buffer payloads as managed media", async () => {
+      const savedPath = path.join(os.tmpdir(), "captcha-buffer.png");
+      mediaStoreMocks.saveMediaBuffer.mockResolvedValueOnce({
+        id: "captcha-buffer.png",
+        path: savedPath,
+        size: 3,
+        contentType: "image/png",
+      });
+
+      const result = await runMessageAction({
+        cfg: slackConfig,
+        action: "send",
+        params: {
+          channel: "slack",
+          target: "#C12345678",
+          buffer: `data:image/png;base64,${Buffer.from("png").toString("base64")}`,
+          filename: "captcha.png",
+        },
+      });
+
+      expect(result.kind).toBe("send");
+      if (result.kind !== "send") {
+        throw new Error("expected send result");
+      }
+      expect(result.sendResult?.mediaUrl).toBe(savedPath);
+      expect(mediaStoreMocks.saveMediaBuffer).toHaveBeenCalledWith(
+        Buffer.from("png"),
+        "image/png",
+        "outbound",
+        undefined,
+        "captcha.png",
+      );
+      expect(channelResolutionMocks.executeSendAction).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: "",
+          mediaUrl: savedPath,
+          mediaUrls: [savedPath],
+        }),
+      );
+      const call = channelResolutionMocks.executeSendAction.mock.calls[0]?.[0] as
+        | { ctx?: { params?: Record<string, unknown> } }
+        | undefined;
+      expect(call?.ctx?.params?.buffer).toBeUndefined();
+      expect(call?.ctx?.params).toMatchObject({
+        media: savedPath,
+        filename: "captcha.png",
+        contentType: "image/png",
+      });
+    });
+
+    it("rejects invalid send buffer payloads", async () => {
+      await expect(
+        runMessageAction({
+          cfg: slackConfig,
+          action: "send",
+          params: {
+            channel: "slack",
+            target: "#C12345678",
+            buffer: "not base64!",
+          },
+        }),
+      ).rejects.toThrow(/valid base64/i);
+      expect(mediaStoreMocks.saveMediaBuffer).not.toHaveBeenCalled();
     });
 
     it.each([

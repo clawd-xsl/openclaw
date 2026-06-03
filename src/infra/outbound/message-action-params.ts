@@ -4,6 +4,7 @@ import type { ChannelId, ChannelMessageActionName } from "../../channels/plugins
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createRootScopedReadFile } from "../../infra/fs-safe.js";
 import { basenameFromMediaSource } from "../../infra/local-file-access.js";
+import { canonicalizeBase64, estimateBase64DecodedBytes } from "../../media/base64.js";
 import {
   buildOutboundMediaLoadOptions,
   resolveOutboundMediaAccess,
@@ -11,6 +12,7 @@ import {
   type OutboundMediaReadFile,
 } from "../../media/load-options.js";
 import { extensionForMime } from "../../media/mime.js";
+import { saveMediaBuffer } from "../../media/store.js";
 import { loadWebMedia } from "../../media/web-media.js";
 import { readBooleanParam as readBooleanParamShared } from "../../plugin-sdk/boolean-param.js";
 
@@ -87,6 +89,10 @@ function inferAttachmentFilename(params: {
   }
   const ext = params.contentType ? extensionForMime(params.contentType) : undefined;
   return ext ? `attachment${ext}` : "attachment";
+}
+
+function formatMediaLimitMb(maxBytes: number): string {
+  return `${(maxBytes / (1024 * 1024)).toFixed(0)}MB`;
 }
 
 function normalizeBase64Payload(params: { base64?: string; contentType?: string }): {
@@ -307,6 +313,66 @@ async function hydrateAttachmentActionPayload(params: {
     fileHint,
     mediaPolicy: params.mediaPolicy,
   });
+}
+
+export async function materializeSendBufferMedia(params: {
+  cfg: OpenClawConfig;
+  channel: ChannelId;
+  accountId?: string | null;
+  args: Record<string, unknown>;
+  dryRun?: boolean;
+}): Promise<string | undefined> {
+  const rawBuffer = readStringParam(params.args, "buffer", { trim: false });
+  if (!rawBuffer) {
+    return undefined;
+  }
+
+  const contentTypeParam =
+    readStringParam(params.args, "contentType") ?? readStringParam(params.args, "mimeType");
+  const normalized = normalizeBase64Payload({
+    base64: rawBuffer,
+    contentType: contentTypeParam ?? undefined,
+  });
+  const canonical = normalized.base64 ? canonicalizeBase64(normalized.base64) : undefined;
+  if (!canonical) {
+    throw new Error("send buffer must be valid base64");
+  }
+
+  const contentType = normalized.contentType ?? contentTypeParam ?? undefined;
+  if (normalized.contentType && !contentTypeParam) {
+    params.args.contentType = normalized.contentType;
+  }
+  const filename =
+    readStringParam(params.args, "filename") ??
+    inferAttachmentFilename({
+      contentType,
+    });
+  if (filename && !readStringParam(params.args, "filename")) {
+    params.args.filename = filename;
+  }
+
+  delete params.args.buffer;
+
+  if (params.dryRun) {
+    return filename ? `buffer://${filename}` : "buffer://attachment";
+  }
+
+  const maxBytes = resolveAttachmentMaxBytes({
+    cfg: params.cfg,
+    channel: params.channel,
+    accountId: params.accountId,
+  });
+  if (typeof maxBytes === "number" && estimateBase64DecodedBytes(canonical) > maxBytes) {
+    throw new Error(`Media exceeds ${formatMediaLimitMb(maxBytes)} limit`);
+  }
+  const saved = await saveMediaBuffer(
+    Buffer.from(canonical, "base64"),
+    contentType,
+    "outbound",
+    maxBytes,
+    filename,
+  );
+  return saved.path;
 }
 
 export async function hydrateAttachmentParamsForAction(params: {
