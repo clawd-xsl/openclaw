@@ -3,10 +3,17 @@ import {
   createCliJsonlStreamingParser,
   extractCliErrorMessage,
   hasStructuredCliOutput,
+  normalizeCliAssistantVisibleDelta,
   parseCliJson,
   parseCliJsonl,
   summarizeCliOutputForLog,
 } from "./cli-output.js";
+
+describe("normalizeCliAssistantVisibleDelta", () => {
+  it("preserves leading whitespace in streamed text deltas", () => {
+    expect(normalizeCliAssistantVisibleDelta(" world")).toBe(" world");
+  });
+});
 
 describe("parseCliJson", () => {
   it("recovers mixed-output Claude session metadata from embedded JSON objects", () => {
@@ -832,6 +839,34 @@ describe("createCliJsonlStreamingParser", () => {
     expect(deltas).toEqual([
       { text: "Hello world", delta: "Hello world", sessionId: "session-stale", usage: undefined },
     ]);
+  });
+
+  it("emits an assistant-message boundary after a text-bearing assistant record", () => {
+    const events: string[] = [];
+    const parser = createCliJsonlStreamingParser({
+      backend: {
+        command: "claude",
+        output: "jsonl",
+        sessionIdFields: ["session_id"],
+      },
+      providerId: "claude-cli",
+      onAssistantDelta: (delta) => events.push(`delta:${delta.delta}`),
+      onAssistantBoundary: (boundary) => events.push(`boundary:${boundary.type}`),
+    });
+
+    parser.push(
+      JSON.stringify({
+        type: "assistant",
+        session_id: "session-tool",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "First complete message." }],
+        },
+      }),
+    );
+    parser.finish();
+
+    expect(events).toEqual(["delta:First complete message.", "boundary:assistant_message"]);
   });
 });
 

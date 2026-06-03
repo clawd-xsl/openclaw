@@ -9,7 +9,10 @@ import {
   classifyOAuthRefreshFailure,
 } from "../../agents/auth-profiles/oauth-refresh-failure.js";
 import { resolveBootstrapWarningSignaturesSeen } from "../../agents/bootstrap-budget.js";
-import { normalizeCliAssistantVisibleText } from "../../agents/cli-output.js";
+import {
+  normalizeCliAssistantVisibleDelta,
+  normalizeCliAssistantVisibleText,
+} from "../../agents/cli-output.js";
 import { runCliAgent } from "../../agents/cli-runner.js";
 import {
   getCliCompactionOverlay,
@@ -75,6 +78,7 @@ import {
   resolveModelFallbackOptions,
 } from "./agent-runner-utils.js";
 import { type BlockReplyPipeline } from "./block-reply-pipeline.js";
+import type { BlockStreamingCoalescing } from "./block-streaming.js";
 import type { FollowupRun } from "./queue.js";
 import { createBlockReplyDeliveryHandler } from "./reply-delivery.js";
 import { createReplyMediaPathNormalizer } from "./reply-media-paths.runtime.js";
@@ -603,6 +607,7 @@ export async function runAgentTurnWithFallback(params: {
     breakPreference: "paragraph" | "newline" | "sentence";
     flushOnParagraph?: boolean;
   };
+  blockReplyCoalescing?: BlockStreamingCoalescing;
   resolvedBlockStreamingBreak: "text_end" | "message_end";
   applyReplyToMode: (payload: ReplyPayload) => ReplyPayload;
   shouldEmitToolResult: () => boolean;
@@ -849,6 +854,85 @@ export async function runAgentTurnWithFallback(params: {
             directlySentBlockKeys,
           })
         : undefined;
+      const cliBlockReplyCoalescing =
+        params.blockStreamingEnabled && blockReplyHandler && blockReplyPipeline
+          ? {
+              minChars: Math.max(
+                1,
+                Math.floor(
+                  params.blockReplyCoalescing?.minChars ??
+                    params.blockReplyChunking?.minChars ??
+                    800,
+                ),
+              ),
+              maxChars: Math.max(
+                1,
+                Math.floor(
+                  params.blockReplyCoalescing?.maxChars ??
+                    params.blockReplyChunking?.maxChars ??
+                    1200,
+                ),
+              ),
+              idleMs: Math.max(0, Math.floor(params.blockReplyCoalescing?.idleMs ?? 1000)),
+            }
+          : null;
+      let cliBlockReplyBuffer = "";
+      let cliBlockReplyIdleTimer: ReturnType<typeof setTimeout> | undefined;
+      let cliBlockReplyFlushChain: Promise<void> = Promise.resolve();
+      const clearCliBlockReplyIdleTimer = () => {
+        if (!cliBlockReplyIdleTimer) {
+          return;
+        }
+        clearTimeout(cliBlockReplyIdleTimer);
+        cliBlockReplyIdleTimer = undefined;
+      };
+      const flushCliBlockReplyBuffer = async (options?: { force?: boolean }) => {
+        clearCliBlockReplyIdleTimer();
+        const text = cliBlockReplyBuffer;
+        if (!text) {
+          await cliBlockReplyFlushChain;
+          return;
+        }
+        if (
+          !options?.force &&
+          cliBlockReplyCoalescing &&
+          text.length < cliBlockReplyCoalescing.minChars
+        ) {
+          scheduleCliBlockReplyFlush();
+          await cliBlockReplyFlushChain;
+          return;
+        }
+        cliBlockReplyBuffer = "";
+        cliBlockReplyFlushChain = cliBlockReplyFlushChain.then(async () => {
+          if (!blockReplyHandler || !blockReplyPipeline) {
+            return;
+          }
+          await blockReplyHandler({ text });
+          await blockReplyPipeline.flush({ force: true });
+        });
+        await cliBlockReplyFlushChain;
+      };
+      const scheduleCliBlockReplyFlush = () => {
+        if (!cliBlockReplyCoalescing || cliBlockReplyCoalescing.idleMs <= 0) {
+          return;
+        }
+        clearCliBlockReplyIdleTimer();
+        cliBlockReplyIdleTimer = setTimeout(() => {
+          void flushCliBlockReplyBuffer();
+        }, cliBlockReplyCoalescing.idleMs);
+      };
+      const enqueueCliBlockReplyDelta = (text: string): boolean => {
+        if (!cliBlockReplyCoalescing || !text) {
+          return false;
+        }
+        cliBlockReplyBuffer += text;
+        if (cliBlockReplyBuffer.length >= cliBlockReplyCoalescing.maxChars) {
+          void flushCliBlockReplyBuffer({ force: true });
+          return true;
+        }
+        scheduleCliBlockReplyFlush();
+        return true;
+      };
       const onToolResult = params.opts?.onToolResult;
       trace("runWithModelFallback-start");
       const fallbackResult = await runWithModelFallback({
@@ -962,7 +1046,15 @@ export async function runAgentTurnWithFallback(params: {
                     if (!visibleText) {
                       return;
                     }
-                    const textForTyping = await handlePartialForTyping({ text: visibleText });
+                    const visibleDelta = normalizeCliAssistantVisibleDelta(payload.delta);
+                    const sentBlockDelta =
+                      visibleDelta !== undefined ? enqueueCliBlockReplyDelta(visibleDelta) : false;
+                    const textForTyping = sentBlockDelta
+                      ? (() => {
+                          const { text, skip } = normalizeStreamingText({ text: visibleText });
+                          return skip ? undefined : text;
+                        })()
+                      : await handlePartialForTyping({ text: visibleText });
                     if (!params.opts?.onPartialReply || textForTyping === undefined) {
                       return;
                     }
@@ -970,7 +1062,11 @@ export async function runAgentTurnWithFallback(params: {
                       text: textForTyping,
                     });
                   },
+                  onAssistantBoundary: async () => {
+                    await flushCliBlockReplyBuffer({ force: true });
+                  },
                 });
+                await flushCliBlockReplyBuffer({ force: true });
                 const resultTextChars = (result.payloads ?? []).reduce(
                   (total, payload) => total + (normalizeOptionalString(payload.text)?.length ?? 0),
                   0,
@@ -1016,6 +1112,8 @@ export async function runAgentTurnWithFallback(params: {
                 trace("candidate-run-success-return");
                 return result;
               } catch (err) {
+                clearCliBlockReplyIdleTimer();
+                cliBlockReplyBuffer = "";
                 if (rollbackFallbackCandidateSelection) {
                   try {
                     await rollbackFallbackCandidateSelection();

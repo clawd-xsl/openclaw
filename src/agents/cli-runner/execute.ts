@@ -15,6 +15,7 @@ import {
   parseCliOutput,
   summarizeCliOutputForLog,
   type CliOutput,
+  type CliStreamingBoundary,
   type CliStreamingDelta,
 } from "../cli-output.js";
 import { buildCliColdStartPromptPrefix } from "../cli-session-context.js";
@@ -398,12 +399,22 @@ export async function executePreparedCliRun(
             );
           }
         };
+        const onAssistantBoundary = (boundary: CliStreamingBoundary) => {
+          if (context.params.onAssistantBoundary) {
+            void Promise.resolve(context.params.onAssistantBoundary(boundary)).catch((error) => {
+              cliBackendLog.warn(
+                `cli streamed assistant boundary callback failed: ${error instanceof Error ? error.message : String(error)}`,
+              );
+            });
+          }
+        };
         const streamingParser =
           !persistentExecution && backend.output === "jsonl"
             ? createCliJsonlStreamingParser({
                 backend,
                 providerId: context.backendResolved.id,
                 onAssistantDelta,
+                onAssistantBoundary,
               })
             : null;
         const supervisor = executeDeps.getProcessSupervisor();
@@ -422,6 +433,7 @@ export async function executePreparedCliRun(
             noOutputTimeoutMs,
             logOutputText,
             onAssistantDelta,
+            onAssistantBoundary,
           });
         } else {
           const scopeKey = buildCliSupervisorScopeKey({

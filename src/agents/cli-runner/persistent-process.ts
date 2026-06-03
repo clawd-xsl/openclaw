@@ -8,7 +8,11 @@ import type {
   TerminationReason,
 } from "../../process/supervisor/types.js";
 import { normalizeOptionalString } from "../../shared/string-coerce.js";
-import { createCliJsonlStreamingParser, type CliStreamingDelta } from "../cli-output.js";
+import {
+  createCliJsonlStreamingParser,
+  type CliStreamingBoundary,
+  type CliStreamingDelta,
+} from "../cli-output.js";
 import { FailoverError, resolveFailoverStatus } from "../failover-error.js";
 import { classifyFailoverReason } from "../pi-embedded-helpers.js";
 import { materializeCliBundleMcpConfig } from "./bundle-mcp.js";
@@ -79,6 +83,7 @@ type ExecutePersistentCliTurnParams = {
   noOutputTimeoutMs: number;
   logOutputText: boolean;
   onAssistantDelta: (delta: CliStreamingDelta) => void;
+  onAssistantBoundary: (boundary: CliStreamingBoundary) => void;
 };
 
 const RUNTIMES = new Map<string, PersistentRuntime>();
@@ -873,6 +878,7 @@ function beginPersistentTurn(params: {
   timeoutMs: number;
   noOutputTimeoutMs: number;
   onAssistantDelta: (delta: CliStreamingDelta) => void;
+  onAssistantBoundary: (boundary: CliStreamingBoundary) => void;
 }): Promise<PersistentCliTurnExit> {
   if (params.runtime.activeTurn) {
     throw new Error(`Persistent CLI runtime already has an active turn for ${params.runtime.key}`);
@@ -910,6 +916,7 @@ function beginPersistentTurn(params: {
           }
           params.onAssistantDelta(delta);
         },
+        onAssistantBoundary: params.onAssistantBoundary,
       }),
       resolve,
       reject,
@@ -1086,6 +1093,7 @@ export async function executePersistentCliTurn(
       timeoutMs: params.timeoutMs,
       noOutputTimeoutMs: params.noOutputTimeoutMs,
       onAssistantDelta: params.onAssistantDelta,
+      onAssistantBoundary: params.onAssistantBoundary,
     });
     trace("turn-begun");
     params.context.params.abortSignal?.addEventListener("abort", abortTurn, { once: true });

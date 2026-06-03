@@ -1870,6 +1870,202 @@ describe("runAgentTurnWithFallback", () => {
     });
   });
 
+  it("coalesces live CLI assistant deltas into block replies when block streaming is enabled", async () => {
+    state.isCliProviderMock.mockImplementation((provider: unknown) => provider === "claude-cli");
+    state.runWithModelFallbackMock.mockImplementation(
+      async (params: { run: (provider: string, model: string) => Promise<unknown> }) => ({
+        result: await params.run("claude-cli", "claude-sonnet-4-6"),
+        provider: "claude-cli",
+        model: "claude-sonnet-4-6",
+        attempts: [],
+      }),
+    );
+    state.runCliAgentMock.mockImplementationOnce(
+      async (params: {
+        onAssistantDelta?: (delta: { text: string; delta: string }) => unknown;
+      }) => {
+        await params.onAssistantDelta?.({
+          text: "Hello",
+          delta: "Hello",
+        });
+        await params.onAssistantDelta?.({
+          text: "Hello world",
+          delta: " world",
+        });
+        return {
+          payloads: [{ text: "Hello world" }],
+          meta: {
+            streamedAssistantTexts: ["Hello world"],
+            agentMeta: {
+              sessionId: "cli-session-1",
+              provider: "claude-cli",
+              model: "claude-sonnet-4-6",
+            },
+          },
+        };
+      },
+    );
+
+    const blockReplyPipeline = {
+      enqueue: vi.fn(),
+      flush: vi.fn(async () => {}),
+      stop: vi.fn(),
+      hasBuffered: vi.fn(() => false),
+      didStream: vi.fn(() => true),
+      isAborted: vi.fn(() => false),
+      hasSentPayload: vi.fn(() => false),
+    };
+    const { createBlockReplyDeliveryHandler } = await import("./reply-delivery.js");
+    vi.mocked(createBlockReplyDeliveryHandler).mockImplementationOnce((params) => {
+      return async (payload) => {
+        params.blockReplyPipeline?.enqueue(payload);
+      };
+    });
+    const runAgentTurnWithFallback = await getRunAgentTurnWithFallback();
+    await runAgentTurnWithFallback({
+      commandBody: "hello",
+      followupRun: createFollowupRun(),
+      sessionCtx: {
+        Provider: "signal",
+        MessageSid: "msg",
+      } as unknown as TemplateContext,
+      opts: { onBlockReply: vi.fn() },
+      typingSignals: createMockTypingSignaler(),
+      blockReplyPipeline,
+      blockStreamingEnabled: true,
+      blockReplyChunking: {
+        minChars: 1,
+        maxChars: 100,
+        breakPreference: "paragraph",
+      },
+      blockReplyCoalescing: {
+        minChars: 1,
+        maxChars: 100,
+        idleMs: 0,
+        joiner: "\n\n",
+      },
+      resolvedBlockStreamingBreak: "message_end",
+      applyReplyToMode: (payload) => payload,
+      shouldEmitToolResult: () => true,
+      shouldEmitToolOutput: () => false,
+      pendingToolTasks: new Set(),
+      resetSessionAfterCompactionFailure: async () => false,
+      resetSessionAfterRoleOrderingConflict: async () => false,
+      isHeartbeat: false,
+      sessionKey: "main",
+      getActiveSessionEntry: () => undefined,
+      resolvedVerboseLevel: "off",
+    });
+
+    expect(blockReplyPipeline.enqueue).toHaveBeenCalledTimes(1);
+    expect(blockReplyPipeline.enqueue).toHaveBeenCalledWith({
+      text: "Hello world",
+    });
+    expect(blockReplyPipeline.flush).toHaveBeenCalledWith({ force: true });
+  });
+
+  it("flushes live CLI block reply buffers at assistant message boundaries", async () => {
+    state.isCliProviderMock.mockImplementation((provider: unknown) => provider === "claude-cli");
+    state.runWithModelFallbackMock.mockImplementation(
+      async (params: { run: (provider: string, model: string) => Promise<unknown> }) => ({
+        result: await params.run("claude-cli", "claude-sonnet-4-6"),
+        provider: "claude-cli",
+        model: "claude-sonnet-4-6",
+        attempts: [],
+      }),
+    );
+    state.runCliAgentMock.mockImplementationOnce(
+      async (params: {
+        onAssistantDelta?: (delta: { text: string; delta: string }) => unknown;
+        onAssistantBoundary?: (boundary: { type: "assistant_message" }) => unknown;
+      }) => {
+        await params.onAssistantDelta?.({
+          text: "First text",
+          delta: "First text",
+        });
+        await params.onAssistantBoundary?.({ type: "assistant_message" });
+        await params.onAssistantDelta?.({
+          text: "First textSecond text",
+          delta: "Second text",
+        });
+        await params.onAssistantBoundary?.({ type: "assistant_message" });
+        await params.onAssistantDelta?.({
+          text: "First textSecond textFinal text",
+          delta: "Final text",
+        });
+        await params.onAssistantBoundary?.({ type: "assistant_message" });
+        return {
+          payloads: [{ text: "First textSecond textFinal text" }],
+          meta: {
+            streamedAssistantTexts: ["First textSecond textFinal text"],
+            agentMeta: {
+              sessionId: "cli-session-1",
+              provider: "claude-cli",
+              model: "claude-sonnet-4-6",
+            },
+          },
+        };
+      },
+    );
+
+    const blockReplyPipeline = {
+      enqueue: vi.fn(),
+      flush: vi.fn(async () => {}),
+      stop: vi.fn(),
+      hasBuffered: vi.fn(() => false),
+      didStream: vi.fn(() => true),
+      isAborted: vi.fn(() => false),
+      hasSentPayload: vi.fn(() => false),
+    };
+    const { createBlockReplyDeliveryHandler } = await import("./reply-delivery.js");
+    vi.mocked(createBlockReplyDeliveryHandler).mockImplementationOnce((params) => {
+      return async (payload) => {
+        params.blockReplyPipeline?.enqueue(payload);
+      };
+    });
+    const runAgentTurnWithFallback = await getRunAgentTurnWithFallback();
+    await runAgentTurnWithFallback({
+      commandBody: "hello",
+      followupRun: createFollowupRun(),
+      sessionCtx: {
+        Provider: "signal",
+        MessageSid: "msg",
+      } as unknown as TemplateContext,
+      opts: { onBlockReply: vi.fn() },
+      typingSignals: createMockTypingSignaler(),
+      blockReplyPipeline,
+      blockStreamingEnabled: true,
+      blockReplyChunking: {
+        minChars: 1,
+        maxChars: 100,
+        breakPreference: "paragraph",
+      },
+      blockReplyCoalescing: {
+        minChars: 1,
+        maxChars: 100,
+        idleMs: 0,
+        joiner: "\n\n",
+      },
+      resolvedBlockStreamingBreak: "message_end",
+      applyReplyToMode: (payload) => payload,
+      shouldEmitToolResult: () => true,
+      shouldEmitToolOutput: () => false,
+      pendingToolTasks: new Set(),
+      resetSessionAfterCompactionFailure: async () => false,
+      resetSessionAfterRoleOrderingConflict: async () => false,
+      isHeartbeat: false,
+      sessionKey: "main",
+      getActiveSessionEntry: () => undefined,
+      resolvedVerboseLevel: "off",
+    });
+
+    expect(blockReplyPipeline.enqueue.mock.calls.map(([payload]) => payload)).toEqual([
+      { text: "First text" },
+      { text: "Second text" },
+      { text: "Final text" },
+    ]);
+  });
+
   it("drops authProfileId when fallback switches providers", async () => {
     state.runWithModelFallbackMock.mockImplementation(
       async (params: { run: (provider: string, model: string) => Promise<unknown> }) => ({

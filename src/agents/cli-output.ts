@@ -3,7 +3,10 @@ import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
 } from "../shared/string-coerce.js";
-import { sanitizeAssistantVisibleText } from "../shared/text/assistant-visible-text.js";
+import {
+  sanitizeAssistantVisibleText,
+  sanitizeAssistantVisibleTextWithOptions,
+} from "../shared/text/assistant-visible-text.js";
 import { isRecord } from "../utils.js";
 import { extractAssistantText } from "./tools/chat-history-text.js";
 
@@ -31,6 +34,10 @@ export type CliStreamingDelta = {
   rawText?: string;
   sessionId?: string;
   usage?: CliUsage;
+};
+
+export type CliStreamingBoundary = {
+  type: "assistant_message";
 };
 
 type CliStreamingUpdate = CliStreamingDelta | { rawText: string };
@@ -301,6 +308,14 @@ export function normalizeCliAssistantVisibleText(text: unknown): string | undefi
   return normalizeOptionalString(sanitizeAssistantVisibleText(normalized));
 }
 
+export function normalizeCliAssistantVisibleDelta(text: unknown): string | undefined {
+  if (typeof text !== "string" || text.length === 0) {
+    return undefined;
+  }
+  const sanitized = sanitizeAssistantVisibleTextWithOptions(text, { trim: "none" });
+  return sanitized.length > 0 ? sanitized : undefined;
+}
+
 function pickCliSessionId(
   parsed: Record<string, unknown>,
   backend: CliBackendConfig,
@@ -407,6 +422,23 @@ function readClaudeContentBlockType(block: unknown): string | undefined {
   }
   const normalized = normalizeOptionalString(block.type);
   return normalized;
+}
+
+function readCliStreamingBoundary(params: {
+  backend: CliBackendConfig;
+  providerId: string;
+  parsed: Record<string, unknown>;
+}): CliStreamingBoundary | undefined {
+  if (!usesClaudeStreamJsonDialect(params)) {
+    return undefined;
+  }
+  if (params.parsed.type !== "assistant" || !isRecord(params.parsed.message)) {
+    return undefined;
+  }
+  if (normalizeCliAssistantVisibleText(readCliAssistantMessageText(params.parsed))) {
+    return { type: "assistant_message" };
+  }
+  return undefined;
 }
 
 function buildCliStreamingDeltaFromNextText(params: {
@@ -555,6 +587,7 @@ export function createCliJsonlStreamingParser(params: {
   backend: CliBackendConfig;
   providerId: string;
   onAssistantDelta: (delta: CliStreamingDelta) => void;
+  onAssistantBoundary?: (boundary: CliStreamingBoundary) => void;
 }) {
   let lineBuffer = "";
   let assistantRawText = "";
@@ -572,6 +605,11 @@ export function createCliJsonlStreamingParser(params: {
       usage = toCliUsage(parsed.usage) ?? usage;
     }
 
+    const boundary = readCliStreamingBoundary({
+      backend: params.backend,
+      providerId: params.providerId,
+      parsed,
+    });
     const update = parseClaudeCliStreamingDelta({
       backend: params.backend,
       providerId: params.providerId,
@@ -582,21 +620,23 @@ export function createCliJsonlStreamingParser(params: {
       sessionId,
       usage,
     });
-    if (!update) {
-      return;
+    if (update) {
+      if (!("delta" in update)) {
+        assistantRawText = update.rawText;
+      } else {
+        assistantRawText = update.rawText ?? update.text;
+        assistantVisibleText = update.text;
+        params.onAssistantDelta({
+          text: update.text,
+          delta: update.delta,
+          sessionId: update.sessionId,
+          usage: update.usage,
+        });
+      }
     }
-    if (!("delta" in update)) {
-      assistantRawText = update.rawText;
-      return;
+    if (boundary) {
+      params.onAssistantBoundary?.(boundary);
     }
-    assistantRawText = update.rawText ?? update.text;
-    assistantVisibleText = update.text;
-    params.onAssistantDelta({
-      text: update.text,
-      delta: update.delta,
-      sessionId: update.sessionId,
-      usage: update.usage,
-    });
   };
 
   const flushLines = (flushPartial: boolean) => {
