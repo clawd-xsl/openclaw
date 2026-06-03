@@ -693,7 +693,7 @@ describe("signal-ts runtime monitor", () => {
     });
   });
 
-  it("emits connected-elsewhere as a normal receive event and throws without reconnecting", async () => {
+  it("sends connected-elsewhere as a channel error without synthesizing an inbound message", async () => {
     const { monitorSignalTsProvider } = await import("./signal-ts-runtime.js");
     const abortController = new AbortController();
     mocks.abortController = abortController;
@@ -724,13 +724,22 @@ describe("signal-ts runtime monitor", () => {
       }),
     ).rejects.toThrow("ConnectedElsewhere");
 
-    expect(mocks.connectCount).toBe(1);
+    expect(mocks.connectCount).toBe(2);
     expect(mocks.computeBackoff).not.toHaveBeenCalled();
     expect(mocks.sleepWithAbort).not.toHaveBeenCalled();
-    expect(onEvent).toHaveBeenCalledTimes(2);
-    const diagnostic = JSON.parse(onEvent.mock.calls[1][0].data);
-    expect(diagnostic.envelope.sourceNumber).toBe("+15550002222");
-    expect(diagnostic.envelope.dataMessage.message).toContain("signal-ts monitor fatal");
+    expect(runtime.error).toHaveBeenCalledWith(expect.stringContaining("signal-ts monitor fatal"));
+    expect(onEvent).toHaveBeenCalledTimes(1);
+    expect(mocks.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        destination: "signal:uuid:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        body: expect.stringContaining("[OpenClaw channel error]"),
+      }),
+    );
+    expect(mocks.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.stringContaining("ConnectedElsewhere"),
+      }),
+    );
   });
 
   it("ignores server delivery receipt envelopes without logging inbound failure", async () => {

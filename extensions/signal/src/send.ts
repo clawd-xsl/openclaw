@@ -223,7 +223,11 @@ export async function sendMessageSignal(
 
   if (accountInfo.config.backend === "signal-ts") {
     const signalTsRuntime = await loadSignalTsRuntime();
-    return await signalTsRuntime.sendMessageSignalTs({
+    trace(
+      "signal-ts-start",
+      `targetType=${target.type} replyTo=${opts.replyToId ?? "none"} textChars=${message.length} attachments=${signalTsAttachments?.length ?? 0}`,
+    );
+    const result = await signalTsRuntime.sendMessageSignalTs({
       cfg,
       accountInfo,
       to,
@@ -234,6 +238,11 @@ export async function sendMessageSignal(
       timeoutMs: opts.timeoutMs,
       abortSignal: opts.abortSignal,
     });
+    trace(
+      "signal-ts-done",
+      `timestamp=${result.timestamp ?? "none"} messageId=${result.messageId}`,
+    );
+    return result;
   }
 
   const params: Record<string, unknown> = { message };

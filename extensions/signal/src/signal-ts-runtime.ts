@@ -4,6 +4,7 @@ import path from "node:path";
 import {
   FileSignalRepository,
   SignalTsClient,
+  SignalTsDecryptionError,
   base64ToBytes,
   bytesToBase64,
   createSignalLocalAddress,
@@ -453,7 +454,7 @@ export async function monitorSignalTsProvider(params: SignalTsMonitorParams): Pr
     if (result.fatalError) {
       const message = `signal-ts monitor fatal: ${describeSignalTsDisconnectError(result.fatalError)}`;
       params.runtime.error?.(message);
-      await emitSignalTsFatalDiagnostic({
+      await sendSignalTsFatalDiagnosticMessage({
         params,
         message,
         envelope: result.diagnosticEnvelope,
@@ -520,6 +521,13 @@ async function runSignalTsMonitorConnection(params: SignalTsMonitorParams): Prom
         if (isIgnorableSignalTsIncomingError(err, incoming.envelope)) {
           return;
         }
+        await maybeSendSignalTsRetryReceipt({
+          client,
+          repository,
+          err,
+          runtime: params.runtime,
+          abortSignal: params.abortSignal,
+        });
         params.runtime.error?.(
           `signal-ts inbound failed: ${String(err)} ${describeSignalTsIncomingEnvelope(
             incoming.envelope,
@@ -557,36 +565,49 @@ async function runSignalTsMonitorConnection(params: SignalTsMonitorParams): Prom
   }
 }
 
-async function emitSignalTsFatalDiagnostic({
+async function sendSignalTsFatalDiagnosticMessage({
   params,
   message,
   envelope,
 }: {
   params: SignalTsMonitorParams;
   message: string;
-  envelope: SignalEnvelope | undefined;
+  envelope?: SignalEnvelope;
 }): Promise<void> {
-  if (!envelope) {
-    params.runtime.error?.(`signal-ts fatal diagnostic skipped: no previous Signal envelope`);
+  const target = resolveSignalTsDiagnosticTarget(envelope);
+  if (!target) {
+    params.runtime.error?.("signal-ts fatal diagnostic skipped: no previous Signal target");
     return;
   }
-  const timestamp = Date.now();
-  const groupInfo = resolveSignalTsDiagnosticGroupInfo(envelope);
-  const diagnosticEnvelope: SignalEnvelope = {
-    sourceNumber: envelope.sourceNumber ?? null,
-    sourceUuid: envelope.sourceUuid ?? null,
-    sourceName: envelope.sourceName ?? null,
-    timestamp,
-    dataMessage: {
-      timestamp,
-      message,
-      ...(groupInfo ? { groupInfo } : {}),
-    },
-  };
-  await params.onEvent({
-    event: "receive",
-    data: JSON.stringify({ envelope: diagnosticEnvelope } satisfies SignalReceivePayload),
-  });
+  try {
+    await sendMessageSignalTs({
+      cfg: {},
+      accountInfo: params.accountInfo,
+      to: target,
+      message: `[OpenClaw channel error] ${message}`,
+      timeoutMs: DEFAULT_TIMEOUT_MS,
+    });
+  } catch (err) {
+    params.runtime.error?.(
+      `signal-ts fatal diagnostic send failed: ${describeSignalTsDisconnectError(err)}`,
+    );
+  }
+}
+
+function resolveSignalTsDiagnosticTarget(envelope?: SignalEnvelope): string | undefined {
+  if (!envelope) {
+    return undefined;
+  }
+  const groupId = resolveSignalTsDiagnosticGroupInfo(envelope)?.groupId?.trim();
+  if (groupId) {
+    return `signal:group:${groupId}`;
+  }
+  const sourceUuid = envelope.sourceUuid?.trim();
+  if (sourceUuid) {
+    return `signal:uuid:${sourceUuid}`;
+  }
+  const sourceNumber = envelope.sourceNumber?.trim();
+  return sourceNumber ? `signal:${sourceNumber}` : undefined;
 }
 
 function resolveSignalTsDiagnosticGroupInfo(
@@ -647,6 +668,37 @@ function isIgnorableSignalTsIncomingError(err: unknown, envelope: Uint8Array): b
     return Number(decoded.type) === 5 && !decoded.content;
   } catch {
     return false;
+  }
+}
+
+async function maybeSendSignalTsRetryReceipt({
+  client,
+  repository,
+  err,
+  runtime,
+  abortSignal,
+}: {
+  client: SignalTsClient;
+  repository: FileSignalRepository;
+  err: unknown;
+  runtime: RuntimeEnv;
+  abortSignal?: AbortSignal;
+}): Promise<void> {
+  if (!(err instanceof SignalTsDecryptionError) || !err.retryReceipt) {
+    return;
+  }
+  try {
+    await client.sendRetryReceiptMessage({
+      destination: err.retryReceipt.recipientServiceId,
+      retry: err.retryReceipt,
+      stores: createLibsignalStores(repository),
+      abortSignal,
+    });
+    runtime.log?.(
+      `signal-ts: sent retry receipt for ${err.retryReceipt.recipientServiceId}.${err.retryReceipt.senderDeviceId} timestamp=${err.retryReceipt.timestamp}`,
+    );
+  } catch (retryErr) {
+    runtime.error?.(`signal-ts retry receipt failed: ${describeSignalTsDisconnectError(retryErr)}`);
   }
 }
 
