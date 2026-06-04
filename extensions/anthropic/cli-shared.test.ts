@@ -21,6 +21,8 @@ describe("normalizeClaudePermissionArgs", () => {
     expect(CLAUDE_CLI_MODEL_ALIASES["claude-opus-4-8"]).toBe("claude-opus-4-8");
     expect(CLAUDE_CLI_MODEL_ALIASES["claude-opus-4-8[1m]"]).toBe("claude-opus-4-8[1m]");
     expect(CLAUDE_CLI_MODEL_ALIASES["claude-opus-4-7"]).toBe("claude-opus-4-7");
+    expect(CLAUDE_CLI_MODEL_ALIASES["opus-4.6"]).toBe("claude-opus-4-6[1m]");
+    expect(CLAUDE_CLI_MODEL_ALIASES["claude-opus-4-6"]).toBe("claude-opus-4-6[1m]");
   });
 
   it("injects bypassPermissions when args omit permission flags", () => {

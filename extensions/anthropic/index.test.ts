@@ -141,7 +141,8 @@ describe("anthropic provider replay hooks", () => {
           name: "Claude Opus 4.6",
           reasoning: true,
           input: ["text", "image"],
-          contextWindow: 200_000,
+          contextWindow: 1_048_576,
+          contextTokens: 1_048_576,
         }),
         expect.objectContaining({
           provider: "claude-cli",
@@ -186,6 +187,8 @@ describe("anthropic provider replay hooks", () => {
           provider: "claude-cli-streaming",
           id: "claude-opus-4-6",
           name: "Claude Opus 4.6",
+          contextWindow: 1_048_576,
+          contextTokens: 1_048_576,
         }),
       ]),
     );

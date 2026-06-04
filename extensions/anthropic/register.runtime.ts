@@ -405,11 +405,12 @@ function hasConfiguredModelContextOverride(
 
 function applyAnthropicOpusLongContextWindow<TModel extends object>(params: {
   config?: ProviderNormalizeResolvedModelContext["config"];
+  force?: boolean;
   provider: string;
   modelId: string;
   model: TModel;
 }): TModel | undefined {
-  if (!isAnthropicOpusLongContextModel(params.modelId)) {
+  if (!params.force && !isAnthropicOpusLongContextModel(params.modelId)) {
     return undefined;
   }
   if (hasConfiguredModelContextOverride(params.config, params.provider, params.modelId)) {
@@ -535,10 +536,11 @@ function buildAnthropicCliCatalogEntries(ctx: {
         name: spec.name,
       };
       return (
-        applyAnthropicOpusContextWindow({
+        applyAnthropicOpusLongContextWindow({
           provider: backendId,
           modelId: spec.id,
           model: entry,
+          force: spec.id === ANTHROPIC_OPUS_46_MODEL_ID,
         }) ?? entry
       );
     }).filter((entry): entry is NonNullable<typeof entry> => entry !== undefined),
