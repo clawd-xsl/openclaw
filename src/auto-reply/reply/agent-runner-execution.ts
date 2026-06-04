@@ -122,7 +122,45 @@ function resolveCliFinalAssistantPayloadTexts(params: {
   if (streamedAssistantTexts.size === 0) {
     return cliPayloadTexts;
   }
-  return cliPayloadTexts.filter((text) => !streamedAssistantTexts.has(text));
+  const cumulativeStreamedPayloadIndexes = resolveCumulativeCliStreamedPayloadIndexes({
+    payloadTexts: cliPayloadTexts,
+    streamedTexts: [...streamedAssistantTexts],
+  });
+  return cliPayloadTexts.filter(
+    (text, index) =>
+      !streamedAssistantTexts.has(text) && !cumulativeStreamedPayloadIndexes.has(index),
+  );
+}
+
+function resolveCumulativeCliStreamedPayloadIndexes(params: {
+  payloadTexts: string[];
+  streamedTexts: string[];
+}): Set<number> {
+  const covered = new Set<number>();
+  if (params.payloadTexts.length < 2) {
+    return covered;
+  }
+
+  for (const streamedText of params.streamedTexts) {
+    let offset = 0;
+    let coveredPrefixCount = 0;
+    for (const payloadText of params.payloadTexts) {
+      const index = streamedText.indexOf(payloadText, offset);
+      if (index < 0) {
+        break;
+      }
+      coveredPrefixCount += 1;
+      offset = index + payloadText.length;
+    }
+    if (coveredPrefixCount < 2) {
+      continue;
+    }
+    for (let index = 0; index < coveredPrefixCount; index += 1) {
+      covered.add(index);
+    }
+  }
+
+  return covered;
 }
 
 export type AgentRunLoopResult =

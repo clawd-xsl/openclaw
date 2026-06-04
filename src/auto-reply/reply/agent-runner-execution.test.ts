@@ -1806,6 +1806,65 @@ describe("runAgentTurnWithFallback", () => {
     ]);
   });
 
+  it("does not replay CLI final payloads covered by cumulative live stream text", async () => {
+    state.isCliProviderMock.mockImplementation((provider: unknown) => provider === "claude-cli");
+    state.runWithModelFallbackMock.mockImplementation(
+      async (params: { run: (provider: string, model: string) => Promise<unknown> }) => ({
+        result: await params.run("claude-cli", "claude-sonnet-4-6"),
+        provider: "claude-cli",
+        model: "claude-sonnet-4-6",
+        attempts: [],
+      }),
+    );
+    state.runCliAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "First text" }, { text: "Second text" }, { text: "Final text" }],
+      meta: {
+        streamedAssistantTexts: [
+          "First text",
+          "First textSecond text",
+          "First textSecond textFinal text",
+        ],
+        agentMeta: {
+          sessionId: "cli-session-1",
+          provider: "claude-cli",
+          model: "claude-sonnet-4-6",
+        },
+      },
+    });
+
+    const runAgentTurnWithFallback = await getRunAgentTurnWithFallback();
+    await runAgentTurnWithFallback({
+      commandBody: "hello",
+      followupRun: createFollowupRun(),
+      sessionCtx: {
+        Provider: "signal",
+        MessageSid: "msg",
+      } as unknown as TemplateContext,
+      opts: {},
+      typingSignals: createMockTypingSignaler(),
+      blockReplyPipeline: null,
+      blockStreamingEnabled: false,
+      resolvedBlockStreamingBreak: "message_end",
+      applyReplyToMode: (payload) => payload,
+      shouldEmitToolResult: () => true,
+      shouldEmitToolOutput: () => false,
+      pendingToolTasks: new Set(),
+      resetSessionAfterCompactionFailure: async () => false,
+      resetSessionAfterRoleOrderingConflict: async () => false,
+      isHeartbeat: false,
+      sessionKey: "main",
+      getActiveSessionEntry: () => undefined,
+      resolvedVerboseLevel: "off",
+    });
+
+    const assistantEvents = vi
+      .mocked(emitAgentEvent)
+      .mock.calls.map(([event]) => event)
+      .filter((event) => typeof event?.stream === "string" && event.stream === "assistant");
+
+    expect(assistantEvents).toEqual([]);
+  });
+
   it("forwards live CLI assistant deltas into onPartialReply", async () => {
     state.isCliProviderMock.mockImplementation((provider: unknown) => provider === "claude-cli");
     state.runWithModelFallbackMock.mockImplementation(

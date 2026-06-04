@@ -868,6 +868,59 @@ describe("createCliJsonlStreamingParser", () => {
 
     expect(events).toEqual(["delta:First complete message.", "boundary:assistant_message"]);
   });
+
+  it("resets streamed assistant text at Claude message starts", () => {
+    const deltas: Array<{ text: string; delta: string; sessionId?: string }> = [];
+    const parser = createCliJsonlStreamingParser({
+      backend: {
+        command: "claude",
+        output: "jsonl",
+        sessionIdFields: ["session_id"],
+      },
+      providerId: "claude-cli",
+      onAssistantDelta: (delta) => deltas.push(delta),
+    });
+
+    parser.push(
+      [
+        JSON.stringify({ type: "init", session_id: "session-message-start" }),
+        JSON.stringify({
+          type: "stream_event",
+          session_id: "session-message-start",
+          event: { type: "message_start" },
+        }),
+        JSON.stringify({
+          type: "stream_event",
+          session_id: "session-message-start",
+          event: { type: "content_block_delta", delta: { type: "text_delta", text: "First" } },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          session_id: "session-message-start",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "First" }],
+          },
+        }),
+        JSON.stringify({
+          type: "stream_event",
+          session_id: "session-message-start",
+          event: { type: "message_start" },
+        }),
+        JSON.stringify({
+          type: "stream_event",
+          session_id: "session-message-start",
+          event: { type: "content_block_delta", delta: { type: "text_delta", text: "Second" } },
+        }),
+      ].join("\n"),
+    );
+    parser.finish();
+
+    expect(deltas).toEqual([
+      { text: "First", delta: "First", sessionId: "session-message-start", usage: undefined },
+      { text: "Second", delta: "Second", sessionId: "session-message-start", usage: undefined },
+    ]);
+  });
 });
 
 describe("summarizeCliOutputForLog", () => {

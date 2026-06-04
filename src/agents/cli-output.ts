@@ -441,6 +441,20 @@ function readCliStreamingBoundary(params: {
   return undefined;
 }
 
+function isCliStreamingAssistantMessageStart(params: {
+  backend: CliBackendConfig;
+  providerId: string;
+  parsed: Record<string, unknown>;
+}): boolean {
+  if (!usesClaudeStreamJsonDialect(params)) {
+    return false;
+  }
+  if (params.parsed.type !== "stream_event" || !isRecord(params.parsed.event)) {
+    return false;
+  }
+  return params.parsed.event.type === "message_start";
+}
+
 function buildCliStreamingDeltaFromNextText(params: {
   nextText: string | undefined;
   textSoFar: string;
@@ -595,6 +609,11 @@ export function createCliJsonlStreamingParser(params: {
   const activeContentBlockTypes: CliStreamContentBlockTypes = new Map();
   let sessionId: string | undefined;
   let usage: CliUsage | undefined;
+  const resetAssistantMessageText = () => {
+    assistantRawText = "";
+    assistantVisibleText = "";
+    activeContentBlockTypes.clear();
+  };
 
   const handleParsedRecord = (parsed: Record<string, unknown>) => {
     sessionId = pickCliSessionId(parsed, params.backend) ?? sessionId;
@@ -603,6 +622,16 @@ export function createCliJsonlStreamingParser(params: {
     }
     if (isRecord(parsed.usage)) {
       usage = toCliUsage(parsed.usage) ?? usage;
+    }
+
+    if (
+      isCliStreamingAssistantMessageStart({
+        backend: params.backend,
+        providerId: params.providerId,
+        parsed,
+      })
+    ) {
+      resetAssistantMessageText();
     }
 
     const boundary = readCliStreamingBoundary({
