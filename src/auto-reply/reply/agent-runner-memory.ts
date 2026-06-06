@@ -40,6 +40,7 @@ import { logVerbose } from "../../globals.js";
 import { registerAgentRunContext } from "../../infra/agent-events.js";
 import { resolveMemoryFlushPlan } from "../../plugins/memory-state.js";
 import { normalizeOptionalString } from "../../shared/string-coerce.js";
+import { truncateUtf16Safe } from "../../utils.js";
 import type { TemplateContext } from "../templating.js";
 import type { VerboseLevel } from "../thinking.js";
 import type { GetReplyOptions } from "../types.js";
@@ -149,6 +150,11 @@ const CLI_MEMORY_FLUSH_RETRIGGER_TOKENS = 20_000;
 const CLI_PREFLIGHT_COMPACTION_RETRIGGER_TOKENS = 20_000;
 const CLI_HIDDEN_USAGE_CONTEXT_RATIO = 0.8;
 const CLAUDE_CLI_USAGE_PROVIDERS = new Set(["claude-cli", "claude-cli-streaming"]);
+const CLI_COMPACTION_TEXT_BLOCK_MAX_CHARS = 8_000;
+const CLI_COMPACTION_TOOL_ARGS_MAX_CHARS = 4_000;
+const CLI_COMPACTION_TOOL_RESULT_MAX_CHARS = 12_000;
+const CLI_COMPACTION_MESSAGE_MAX_CHARS = 24_000;
+const CLI_COMPACTION_HISTORY_MAX_CHARS = 500_000;
 
 type CliNativePromptUsageSnapshot = {
   promptTokens?: number;
@@ -465,17 +471,132 @@ function stringifyCompactionValue(value: unknown): string {
   }
 }
 
+function truncateCompactionText(text: string, maxChars: number, label: string): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= maxChars) {
+    return trimmed;
+  }
+  const omitted = trimmed.length - maxChars;
+  return `${truncateUtf16Safe(trimmed, maxChars).trimEnd()}\n[OpenClaw truncated ${omitted} chars from ${label}]`;
+}
+
+function redactCompactionBase64Text(text: string): string {
+  return text
+    .replace(
+      /data:(image\/[A-Za-z0-9.+-]+);base64,[A-Za-z0-9+/=]{256,}/g,
+      (_match, mimeType: string) => `[image ${mimeType} base64 omitted]`,
+    )
+    .replace(/"data":"[A-Za-z0-9+/=]{256,}"/g, '"data":"[base64 omitted]"');
+}
+
+function stringifyBoundedCompactionValue(value: unknown, maxChars: number, label: string): string {
+  const stringified = redactCompactionBase64Text(stringifyCompactionValue(value));
+  return truncateCompactionText(stringified, maxChars, label);
+}
+
+function readRecordString(record: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return undefined;
+}
+
+function readImageSourceRecord(
+  record: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  const source = record.source;
+  return source && typeof source === "object" && !Array.isArray(source)
+    ? (source as Record<string, unknown>)
+    : undefined;
+}
+
+function looksLikeImageBlock(record: Record<string, unknown>, type: string): boolean {
+  if (type === "image") {
+    return true;
+  }
+  const source = readImageSourceRecord(record);
+  return Boolean(
+    source &&
+    typeof source.data === "string" &&
+    (typeof source.media_type === "string" || typeof source.mimeType === "string"),
+  );
+}
+
+function formatImageCompactionBlock(record: Record<string, unknown>): string {
+  const source = readImageSourceRecord(record);
+  const mimeType =
+    readRecordString(record, ["mimeType", "mediaType", "media_type"]) ??
+    (source ? readRecordString(source, ["mimeType", "mediaType", "media_type"]) : undefined) ??
+    "unknown";
+  const data =
+    readRecordString(record, ["data", "base64"]) ??
+    (source ? readRecordString(source, ["data", "base64"]) : undefined);
+  const width =
+    typeof record.width === "number" && Number.isFinite(record.width) ? record.width : undefined;
+  const height =
+    typeof record.height === "number" && Number.isFinite(record.height) ? record.height : undefined;
+  const dimensions =
+    width && height ? ` dimensions=${Math.floor(width)}x${Math.floor(height)}` : "";
+  const approxBytes = data ? Math.floor((data.length * 3) / 4) : undefined;
+  const byteInfo = approxBytes ? ` approxBytes=${approxBytes}` : "";
+  const base64Info = data ? ` base64Chars=${data.length}` : "";
+  const file =
+    readRecordString(record, ["fileName", "filename", "name", "path", "url"]) ??
+    (source
+      ? readRecordString(source, ["fileName", "filename", "name", "path", "url"])
+      : undefined);
+  const fileInfo = file ? ` file=${truncateCompactionText(file, 240, "image file")}` : "";
+  return `[image omitted from compaction: mime=${mimeType}${dimensions}${base64Info}${byteInfo}${fileInfo}]`;
+}
+
+function formatNestedCompactionContent(value: unknown, label: string): string {
+  if (typeof value === "string") {
+    return truncateCompactionText(
+      redactCompactionBase64Text(value),
+      CLI_COMPACTION_TEXT_BLOCK_MAX_CHARS,
+      label,
+    );
+  }
+  if (!Array.isArray(value)) {
+    return stringifyBoundedCompactionValue(value, CLI_COMPACTION_TEXT_BLOCK_MAX_CHARS, label);
+  }
+  return value
+    .map((item) => formatCompactionContentBlock(item))
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 function formatCompactionContentBlock(block: unknown): string {
   if (!block || typeof block !== "object") {
-    return stringifyCompactionValue(block).trim();
+    return stringifyBoundedCompactionValue(
+      block,
+      CLI_COMPACTION_TEXT_BLOCK_MAX_CHARS,
+      "content block",
+    );
   }
   const record = block as Record<string, unknown>;
   const type = typeof record.type === "string" ? record.type : "";
   if (type === "thinking" || type === "reasoning") {
     return "";
   }
+  if (type === "redacted_thinking" || type === "redactedThinking") {
+    return "";
+  }
+  if (looksLikeImageBlock(record, type)) {
+    return formatImageCompactionBlock(record);
+  }
   if (type === "text") {
-    return typeof record.text === "string" ? record.text.trim() : "";
+    return typeof record.text === "string"
+      ? truncateCompactionText(
+          redactCompactionBase64Text(record.text),
+          CLI_COMPACTION_TEXT_BLOCK_MAX_CHARS,
+          "text block",
+        )
+      : "";
   }
   if (type === "toolcall" || type === "toolCall" || type === "tool_use" || type === "toolUse") {
     const name =
@@ -488,7 +609,11 @@ function formatCompactionContentBlock(block: unknown): string {
         : record.input !== undefined
           ? record.input
           : undefined;
-    const argsText = stringifyCompactionValue(args).trim();
+    const argsText = stringifyBoundedCompactionValue(
+      args,
+      CLI_COMPACTION_TOOL_ARGS_MAX_CHARS,
+      "tool arguments",
+    );
     return [`[tool call${name ? `: ${name}` : ""}]`, argsText].filter(Boolean).join("\n");
   }
   if (type === "tool_result" || type === "toolResult") {
@@ -500,9 +625,20 @@ function formatCompactionContentBlock(block: unknown): string {
       typeof record.text === "string"
         ? record.text
         : record.content !== undefined
-          ? stringifyCompactionValue(record.content)
-          : stringifyCompactionValue(record);
-    return [`[tool result${name ? `: ${name}` : ""}]`, resultText.trim()]
+          ? formatNestedCompactionContent(record.content, "tool result")
+          : stringifyBoundedCompactionValue(
+              record,
+              CLI_COMPACTION_TOOL_RESULT_MAX_CHARS,
+              "tool result",
+            );
+    return [
+      `[tool result${name ? `: ${name}` : ""}${record.is_error === true || record.isError === true ? " error=true" : ""}]`,
+      truncateCompactionText(
+        redactCompactionBase64Text(resultText),
+        CLI_COMPACTION_TOOL_RESULT_MAX_CHARS,
+        "tool result",
+      ),
+    ]
       .filter(Boolean)
       .join("\n");
   }
@@ -510,23 +646,45 @@ function formatCompactionContentBlock(block: unknown): string {
     typeof record.text === "string"
       ? record.text
       : record.content !== undefined
-        ? stringifyCompactionValue(record.content)
-        : stringifyCompactionValue(record);
-  return [`[${type || "block"}]`, text.trim()].filter(Boolean).join(" ");
+        ? formatNestedCompactionContent(record.content, "content")
+        : stringifyBoundedCompactionValue(
+            record,
+            CLI_COMPACTION_TEXT_BLOCK_MAX_CHARS,
+            "content block",
+          );
+  return [
+    `[${type || "block"}]`,
+    truncateCompactionText(
+      redactCompactionBase64Text(text),
+      CLI_COMPACTION_TEXT_BLOCK_MAX_CHARS,
+      "content block",
+    ),
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 function formatCompactionMessageContent(content: unknown): string {
   if (typeof content === "string") {
-    return content.trim();
+    return truncateCompactionText(
+      redactCompactionBase64Text(content),
+      CLI_COMPACTION_MESSAGE_MAX_CHARS,
+      "message content",
+    );
   }
   if (!Array.isArray(content)) {
-    return stringifyCompactionValue(content).trim();
+    return stringifyBoundedCompactionValue(
+      content,
+      CLI_COMPACTION_MESSAGE_MAX_CHARS,
+      "message content",
+    );
   }
-  return content
+  const formatted = content
     .map(formatCompactionContentBlock)
     .map((entry) => entry.trim())
     .filter(Boolean)
     .join("\n\n");
+  return truncateCompactionText(formatted, CLI_COMPACTION_MESSAGE_MAX_CHARS, "message content");
 }
 
 function formatClaudeCliCompactionMessage(message: unknown, index: number): string | undefined {
@@ -556,10 +714,44 @@ function formatClaudeCliCompactionMessage(message: unknown, index: number): stri
   return `${heading}\n${content}`;
 }
 
+function limitCliCompactionFormattedMessages(formattedMessages: string[]): string[] {
+  let chars = 0;
+  const kept: string[] = [];
+  for (let index = formattedMessages.length - 1; index >= 0; index -= 1) {
+    const message = formattedMessages[index] ?? "";
+    const separatorChars = kept.length === 0 ? 0 : "\n\n---\n\n".length;
+    if (
+      kept.length > 0 &&
+      chars + separatorChars + message.length > CLI_COMPACTION_HISTORY_MAX_CHARS
+    ) {
+      break;
+    }
+    if (kept.length === 0 && message.length > CLI_COMPACTION_HISTORY_MAX_CHARS) {
+      kept.unshift(
+        truncateCompactionText(message, CLI_COMPACTION_HISTORY_MAX_CHARS, "compaction history"),
+      );
+      chars = kept[0]?.length ?? 0;
+      break;
+    }
+    kept.unshift(message);
+    chars += separatorChars + message.length;
+  }
+
+  const omitted = Math.max(0, formattedMessages.length - kept.length);
+  if (omitted === 0) {
+    return kept;
+  }
+  return [
+    `[OpenClaw omitted ${omitted} older Claude Code message(s) to keep this compaction prompt bounded. Prioritize the preserved recent messages and mention that older details may be missing if relevant.]`,
+    ...kept,
+  ];
+}
+
 function buildCliCompactionPrompt(params: {
   cliSessionId: string;
   formattedMessages: string[];
 }): string {
+  const boundedMessages = limitCliCompactionFormattedMessages(params.formattedMessages);
   return [
     "Summarize the Claude Code session history below so OpenClaw can continue the same conversation in a fresh CLI session.",
     "",
@@ -581,7 +773,7 @@ function buildCliCompactionPrompt(params: {
     `[Claude Code session id: ${params.cliSessionId}]`,
     "",
     "[Claude Code session history]",
-    params.formattedMessages.join("\n\n---\n\n"),
+    boundedMessages.join("\n\n---\n\n"),
   ].join("\n");
 }
 

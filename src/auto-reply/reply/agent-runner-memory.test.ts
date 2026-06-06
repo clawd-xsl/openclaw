@@ -102,6 +102,22 @@ async function writeClaudeCliTranscript(params: {
   return transcriptPath;
 }
 
+async function writeClaudeCliTranscriptEntries(params: {
+  homeDir: string;
+  cliSessionId: string;
+  entries: unknown[];
+}): Promise<string> {
+  const projectDir = path.join(params.homeDir, ".claude", "projects", "test-workspace");
+  const transcriptPath = path.join(projectDir, `${params.cliSessionId}.jsonl`);
+  await fs.mkdir(projectDir, { recursive: true });
+  await fs.writeFile(
+    transcriptPath,
+    params.entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n",
+    "utf8",
+  );
+  return transcriptPath;
+}
+
 describe("runMemoryFlushIfNeeded", () => {
   let rootDir = "";
   let homeDir = "";
@@ -555,6 +571,165 @@ describe("runMemoryFlushIfNeeded", () => {
     expect(persisted.main.cliCompactionOverlays?.["claude-cli"]?.summary).toBe(
       "Condensed hidden-usage context.",
     );
+  });
+
+  it("omits Claude transcript image base64 from standalone CLI compaction prompts", async () => {
+    registerMemoryFlushPlanResolver(() => ({
+      softThresholdTokens: 10,
+      forceFlushTranscriptBytes: 1_000_000_000,
+      reserveTokensFloor: 100,
+      prompt: "Pre-compaction memory flush.\nNO_REPLY",
+      systemPrompt: "Write memory to memory/YYYY-MM-DD.md.",
+      relativePath: "memory/2023-11-14.md",
+    }));
+    const sessionDir = await fs.mkdtemp(path.join(rootDir, "openclaw-cli-image-history-"));
+    const sessionFile = path.join(sessionDir, "session.jsonl");
+    await fs.writeFile(
+      sessionFile,
+      [
+        JSON.stringify({
+          id: "m1",
+          message: {
+            role: "user",
+            content: [{ type: "text", text: "older ask" }],
+          },
+        }),
+        JSON.stringify({
+          id: "m2",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "older answer" }],
+          },
+        }),
+        JSON.stringify({
+          id: "m3",
+          message: {
+            role: "user",
+            content: [{ type: "text", text: "current ask" }],
+          },
+        }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+
+    const largeBase64 = "a".repeat(320_000);
+    await writeClaudeCliTranscriptEntries({
+      homeDir,
+      cliSessionId: "cli-session-images",
+      entries: [
+        {
+          type: "assistant",
+          sessionId: "cli-session-images",
+          timestamp: "2026-05-30T03:16:50.000Z",
+          message: {
+            role: "assistant",
+            content: [
+              {
+                type: "tool_use",
+                id: "toolu_read_image",
+                name: "mcp__openclaw__read",
+                input: { path: "/tmp/screenshot.png" },
+              },
+            ],
+          },
+        },
+        {
+          type: "user",
+          sessionId: "cli-session-images",
+          timestamp: "2026-05-30T03:16:51.000Z",
+          message: {
+            role: "user",
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "toolu_read_image",
+                content: [
+                  { type: "text", text: "Read image file [image/png]" },
+                  {
+                    type: "image",
+                    source: {
+                      type: "base64",
+                      media_type: "image/png",
+                      data: largeBase64,
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        },
+        {
+          type: "assistant",
+          sessionId: "cli-session-images",
+          timestamp: "2026-05-30T03:16:52.000Z",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "The screenshot showed a login QR." }],
+            usage: {
+              input_tokens: 120,
+              cache_read_input_tokens: 240,
+              output_tokens: 20,
+            },
+          },
+        },
+      ],
+    });
+    const storePath = path.join(rootDir, "sessions.json");
+    const sessionKey = "main";
+    const sessionEntry: SessionEntry = {
+      sessionId: "session",
+      updatedAt: Date.now(),
+      sessionFile,
+      cliSessionIds: { "claude-cli": "cli-session-images" },
+      cliSessionBindings: {
+        "claude-cli": {
+          sessionId: "cli-session-images",
+        },
+      },
+    };
+    const sessionStore = { [sessionKey]: sessionEntry };
+    await writeSessionStore(storePath, sessionKey, sessionEntry);
+    runCliAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "Condensed image context." }],
+      meta: {},
+    });
+
+    await runPreflightCompactionIfNeeded({
+      cfg: {
+        agents: {
+          defaults: {
+            cliBackends: {
+              "claude-cli": { command: "claude" },
+            },
+            compaction: {
+              reserveTokensFloor: 100,
+            },
+          },
+        },
+      },
+      followupRun: createFollowupRun({
+        provider: "claude-cli",
+        model: "sonnet",
+        sessionFile,
+      }),
+      promptForEstimate: "current ask",
+      defaultModel: "claude-cli/sonnet",
+      agentCfgContextTokens: 400,
+      sessionEntry,
+      sessionStore,
+      sessionKey,
+      storePath,
+      isHeartbeat: false,
+      replyOperation: createReplyOperation(),
+    });
+
+    expect(runCliAgentMock).toHaveBeenCalledTimes(1);
+    const compactionCall = runCliAgentMock.mock.calls[0]?.[0] as { prompt?: string };
+    expect(compactionCall.prompt).toContain("Read image file [image/png]");
+    expect(compactionCall.prompt).toContain("[image omitted from compaction: mime=image/png");
+    expect(compactionCall.prompt).toContain("base64Chars=320000");
+    expect(compactionCall.prompt).not.toContain(largeBase64.slice(0, 1024));
+    expect(compactionCall.prompt?.length ?? 0).toBeLessThan(30_000);
   });
 
   it("does not compact CLI sessions from OpenClaw-maintained usage when Claude transcript usage is unavailable", async () => {
