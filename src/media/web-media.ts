@@ -290,7 +290,12 @@ async function loadWebMediaInternal(
     const cap = maxBytes !== undefined ? maxBytes : maxBytesForKind(params.kind ?? "document");
     if (params.kind === "image") {
       const isGif = params.contentType === "image/gif";
-      if (isGif || !optimizeImages) {
+      if (
+        isGif ||
+        !optimizeImages ||
+        (params.buffer.length <= cap &&
+          !isHeicSource({ contentType: params.contentType, fileName: params.fileName }))
+      ) {
         if (params.buffer.length > cap) {
           throw new Error(formatCapLimit(isGif ? "GIF" : "Media", cap, params.buffer.length));
         }

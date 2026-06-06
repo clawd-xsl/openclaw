@@ -155,6 +155,15 @@ describe("loadWebMedia", () => {
     expect(result.buffer.length).toBeGreaterThan(0);
   });
 
+  it("does not re-encode local images that already fit under the size cap", async () => {
+    const original = await fs.readFile(tinyPngFile);
+    const result = await loadWebMedia(tinyPngFile, createLocalWebMediaOptions());
+
+    expect(result.kind).toBe("image");
+    expect(result.contentType).toBe("image/png");
+    expect(result.buffer).toEqual(original);
+  });
+
   it("rejects host-read text files outside local roots", async () => {
     const secretFile = path.join(fixtureRoot, "secret.txt");
     await fs.writeFile(secretFile, "secret", "utf8");
