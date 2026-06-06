@@ -350,6 +350,7 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
           baseUrl: deps.baseUrl,
           account: deps.account,
           accountId: deps.accountId,
+          runtime: deps.runtime,
           traceLabel,
         });
       };
@@ -1052,6 +1053,7 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
           baseUrl: deps.baseUrl,
           account: deps.account,
           accountId: deps.accountId,
+          runtime: deps.runtime,
         });
       } catch (err) {
         logVerbose(`signal read receipt failed for ${senderDisplay}: ${String(err)}`);

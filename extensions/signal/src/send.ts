@@ -2,7 +2,7 @@ import { loadConfig, type OpenClawConfig } from "openclaw/plugin-sdk/config-runt
 import { resolveMarkdownTableMode } from "openclaw/plugin-sdk/config-runtime";
 import { kindFromMime } from "openclaw/plugin-sdk/media-runtime";
 import { resolveOutboundAttachmentFromUrl } from "openclaw/plugin-sdk/media-runtime";
-import { createTimingTrace } from "openclaw/plugin-sdk/runtime-env";
+import { createTimingTrace, type RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/text-runtime";
 import { resolveSignalAccount } from "./accounts.js";
 import { signalRpcRequest } from "./client.js";
@@ -22,6 +22,7 @@ export type SignalSendOpts = {
   mediaLocalRoots?: readonly string[];
   mediaReadFile?: (filePath: string) => Promise<Buffer>;
   maxBytes?: number;
+  runtime?: RuntimeEnv;
   timeoutMs?: number;
   abortSignal?: AbortSignal;
   textMode?: "markdown" | "plain";
@@ -37,7 +38,7 @@ export type SignalSendResult = {
 
 export type SignalRpcOpts = Pick<
   SignalSendOpts,
-  "baseUrl" | "account" | "accountId" | "timeoutMs" | "abortSignal" | "traceLabel"
+  "baseUrl" | "account" | "accountId" | "runtime" | "timeoutMs" | "abortSignal" | "traceLabel"
 >;
 
 export type SignalReceiptType = "read" | "viewed";
@@ -232,6 +233,7 @@ export async function sendMessageSignal(
       accountInfo,
       to,
       message,
+      ...(opts.runtime ? { runtime: opts.runtime } : {}),
       textStyles,
       attachments: signalTsAttachments,
       replyToId: opts.replyToId,
@@ -311,6 +313,7 @@ export async function sendTypingSignal(
     return await signalTsRuntime.sendTypingSignalTs({
       accountInfo,
       to,
+      ...(opts.runtime ? { runtime: opts.runtime } : {}),
       stop: opts.stop,
       timeoutMs: opts.timeoutMs,
       abortSignal: opts.abortSignal,
@@ -347,7 +350,7 @@ export async function sendStickerSignal(
   stickerSpec: string,
   opts: Pick<
     SignalSendOpts,
-    "cfg" | "baseUrl" | "account" | "accountId" | "timeoutMs" | "abortSignal"
+    "cfg" | "baseUrl" | "account" | "accountId" | "timeoutMs" | "abortSignal" | "runtime"
   > = {},
 ): Promise<SignalSendResult> {
   const sticker = stickerSpec.trim();
@@ -360,6 +363,7 @@ export async function sendStickerSignal(
     return await signalTsRuntime.sendStickerSignalTs({
       accountInfo,
       to,
+      ...(opts.runtime ? { runtime: opts.runtime } : {}),
       sticker,
       timeoutMs: opts.timeoutMs,
       abortSignal: opts.abortSignal,
@@ -409,6 +413,7 @@ export async function sendReadReceiptSignal(
     return await signalTsRuntime.sendReadReceiptSignalTs({
       accountInfo,
       to,
+      ...(opts.runtime ? { runtime: opts.runtime } : {}),
       targetTimestamp,
       type: opts.type,
       timeoutMs: opts.timeoutMs,

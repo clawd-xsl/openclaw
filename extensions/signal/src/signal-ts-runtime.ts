@@ -1,3 +1,4 @@
+import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -69,6 +70,7 @@ export type SignalTsSendParams = {
   accountInfo: ResolvedSignalAccount;
   to: string;
   message: string;
+  runtime?: RuntimeEnv;
   textStyles?: SignalTextStyleRange[];
   attachments?: SignalTsAttachmentInput[];
   replyToId?: string;
@@ -79,6 +81,7 @@ export type SignalTsSendParams = {
 export type SignalTsRpcLikeParams = {
   accountInfo: ResolvedSignalAccount;
   to: string;
+  runtime?: RuntimeEnv;
   timeoutMs?: number;
   abortSignal?: AbortSignal;
 };
@@ -108,6 +111,7 @@ export type SignalTsFetchAttachmentParams = {
   accountInfo: ResolvedSignalAccount;
   attachment: SignalAttachment;
   maxBytes: number;
+  runtime?: RuntimeEnv;
   abortSignal?: AbortSignal;
 };
 
@@ -126,6 +130,9 @@ const SIGNAL_TS_ENVELOPE_TYPE_LABELS: Record<number, string> = {
   6: "UNIDENTIFIED_SENDER",
   8: "PLAINTEXT_CONTENT",
 };
+
+let signalTsRuntimeTraceSequence = 0;
+let signalTsLogDay: string | undefined;
 
 type ActiveSignalTsClient = {
   client: SignalTsClient;
@@ -147,14 +154,103 @@ export function resolveSignalTsStatePath(accountInfo: ResolvedSignalAccount): st
   return raw.startsWith("~/") ? path.join(os.homedir(), raw.slice(2)) : raw;
 }
 
+function createSignalTsRuntimeTraceId(prefix: string): string {
+  signalTsRuntimeTraceSequence = (signalTsRuntimeTraceSequence + 1) % Number.MAX_SAFE_INTEGER;
+  return `${prefix}-${Date.now().toString(36)}-${signalTsRuntimeTraceSequence.toString(36)}`;
+}
+
+function resolveSignalTsLogFile(): string {
+  return path.join(process.env["CODEX_LOG_DIR"] ?? "/root/.codex/logs", "signal-ts.log");
+}
+
+function formatLocalSignalTsLogDay(date = new Date()): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function ensureSignalTsLogFile(logFile: string): void {
+  const today = formatLocalSignalTsLogDay();
+  if (signalTsLogDay === today) {
+    return;
+  }
+  const dateFile = `${logFile}.date`;
+  try {
+    mkdirSync(path.dirname(logFile), { recursive: true });
+    const previousDay = readFileSync(dateFile, "utf8").trim();
+    if (previousDay !== today) {
+      rmSync(logFile, { force: true });
+      writeFileSync(dateFile, `${today}\n`);
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      appendFileSync(
+        logFile,
+        `${new Date().toISOString()} [signal-ts:error] log rollover check failed: ${String(err)}\n`,
+      );
+    }
+    rmSync(logFile, { force: true });
+    writeFileSync(dateFile, `${today}\n`);
+  }
+  signalTsLogDay = today;
+}
+
+function appendSignalTsLog(level: "debug" | "info" | "warn" | "error", message: string): void {
+  try {
+    const logFile = resolveSignalTsLogFile();
+    ensureSignalTsLogFile(logFile);
+    appendFileSync(logFile, `${new Date().toISOString()} [signal-ts:${level}] ${message}\n`);
+  } catch {
+    // Logging must not interfere with message delivery.
+  }
+}
+
+function logSignalTsInfo(message: string): void {
+  appendSignalTsLog("info", message);
+}
+
+function logSignalTsError(runtime: RuntimeEnv | undefined, message: string): void {
+  appendSignalTsLog("error", message);
+  runtime?.error?.(message);
+}
+
+function createSignalTsLogger(runtime: RuntimeEnv | undefined):
+  | {
+      debug: (message: string) => void;
+      info: (message: string) => void;
+      warn: (message: string) => void;
+      error: (message: string, err?: unknown) => void;
+    }
+  | undefined {
+  if (!runtime) {
+    return undefined;
+  }
+  return {
+    debug: (message) => appendSignalTsLog("debug", message),
+    info: (message) => appendSignalTsLog("info", message),
+    warn: (message) => {
+      appendSignalTsLog("warn", message);
+      runtime.error?.(`signal-ts: ${message}`);
+    },
+    error: (message, err) => {
+      const fullMessage = `${message}${err === undefined ? "" : `: ${describeSignalTsDisconnectError(err)}`}`;
+      appendSignalTsLog("error", fullMessage);
+      runtime.error?.(`signal-ts: ${fullMessage}`);
+    },
+  };
+}
+
 export async function sendMessageSignalTs(params: SignalTsSendParams): Promise<{
   messageId: string;
   timestamp: number;
 }> {
+  const traceId = createSignalTsRuntimeTraceId("openclaw-signal-message");
   return await withSignalTsClient(params, async ({ client, repository, abortSignal }) => {
     const attachments = await uploadSignalTsAttachments({
       client,
       attachments: params.attachments ?? [],
+      traceId,
       abortSignal,
     });
     const bodyRanges = mapTextStyles(params.textStyles ?? []);
@@ -169,9 +265,10 @@ export async function sendMessageSignalTs(params: SignalTsSendParams): Promise<{
         client,
         repository,
         group,
+        traceId,
         body: params.message,
         attachments,
-        bodyRanges,
+        ...(bodyRanges ? { bodyRanges } : {}),
         quote,
         abortSignal,
       });
@@ -183,10 +280,11 @@ export async function sendMessageSignalTs(params: SignalTsSendParams): Promise<{
     const target = await resolveSignalTsTarget(params.to, repository);
     const preKeyAuth = await resolveSignalTsPreKeyAuth(params.to, repository);
     const result = await client.sendMessage({
+      traceId,
       destination: target,
       body: params.message,
       attachments,
-      bodyRanges,
+      ...(bodyRanges ? { bodyRanges } : {}),
       ...(quote ? { quote } : {}),
       stores: createLibsignalStores(repository),
       ...(preKeyAuth ? { preKeyAuth } : {}),
@@ -203,11 +301,13 @@ export async function sendStickerSignalTs(params: SignalTsStickerParams): Promis
   messageId: string;
   timestamp: number;
 }> {
+  const traceId = createSignalTsRuntimeTraceId("openclaw-signal-sticker");
   return await withSignalTsClient(params, async ({ client, repository, abortSignal }) => {
     const sticker = await resolveSignalTsSticker({
       client,
       repository,
       stickerSpec: params.sticker,
+      traceId,
       abortSignal,
     });
     const group = await resolveSignalTsGroup(params.to, repository);
@@ -216,6 +316,7 @@ export async function sendStickerSignalTs(params: SignalTsStickerParams): Promis
         client,
         repository,
         group,
+        traceId,
         sticker,
         abortSignal,
       });
@@ -227,6 +328,7 @@ export async function sendStickerSignalTs(params: SignalTsStickerParams): Promis
     const target = await resolveSignalTsTarget(params.to, repository);
     const preKeyAuth = await resolveSignalTsPreKeyAuth(params.to, repository);
     const result = await client.sendStickerMessage({
+      traceId,
       destination: target,
       sticker,
       stores: createLibsignalStores(repository),
@@ -251,6 +353,7 @@ export async function sendReactionSignalTs(params: SignalTsReactionParams): Prom
   if (!emoji) {
     throw new Error("Emoji is required for Signal reaction");
   }
+  const traceId = createSignalTsRuntimeTraceId("openclaw-signal-reaction");
   return await withSignalTsClient(params, async ({ client, repository, abortSignal }) => {
     const reaction = await resolveSignalTsReaction({
       recipient: params.to,
@@ -270,6 +373,7 @@ export async function sendReactionSignalTs(params: SignalTsReactionParams): Prom
         client,
         repository,
         group,
+        traceId,
         reaction,
         abortSignal,
       });
@@ -281,6 +385,7 @@ export async function sendReactionSignalTs(params: SignalTsReactionParams): Prom
     const target = await resolveSignalTsTarget(params.to, repository);
     const preKeyAuth = await resolveSignalTsPreKeyAuth(params.to, repository);
     const result = await client.sendReactionMessage({
+      traceId,
       destination: target,
       reaction,
       stores: createLibsignalStores(repository),
@@ -297,10 +402,17 @@ export async function sendReactionSignalTs(params: SignalTsReactionParams): Prom
 export async function fetchSignalTsAttachment(
   params: SignalTsFetchAttachmentParams,
 ): Promise<{ path: string; contentType?: string } | null> {
+  const traceId = createSignalTsRuntimeTraceId("openclaw-signal-fetch-attachment");
   const pointer = deserializeSignalTsAttachmentPointer(params.attachment.signalTsPointer);
   if (!pointer) {
+    logSignalTsInfo(
+      `signal-ts ${traceId} attachment-fetch skipped: missing signal-ts pointer id=${params.attachment.id ?? "unknown"}`,
+    );
     return null;
   }
+  logSignalTsInfo(
+    `signal-ts ${traceId} attachment-fetch start id=${params.attachment.id ?? "unknown"} cdnKey=${pointer.cdnKey ?? "none"} cdnNumber=${pointer.cdnNumber ?? "none"} contentType=${pointer.contentType ?? params.attachment.contentType ?? "none"} size=${pointer.size ?? params.attachment.size ?? "none"} fileName=${pointer.fileName ?? params.attachment.filename ?? "none"} caption=${JSON.stringify(pointer.caption ?? null)}`,
+  );
   if (typeof pointer.size === "number" && pointer.size > params.maxBytes) {
     throw new Error(
       `Signal attachment ${params.attachment.id ?? pointer.cdnKey ?? "unknown"} exceeds ${(
@@ -314,6 +426,9 @@ export async function fetchSignalTsAttachment(
     fetch: fetchSignalCdnAttachment,
     abortSignal: params.abortSignal,
   });
+  logSignalTsInfo(
+    `signal-ts ${traceId} attachment-fetch downloaded bytes=${data.byteLength} id=${params.attachment.id ?? pointer.cdnKey ?? "unknown"}`,
+  );
   if (data.byteLength > params.maxBytes) {
     throw new Error(
       `Signal attachment ${params.attachment.id ?? pointer.cdnKey ?? "unknown"} exceeds ${(
@@ -327,6 +442,9 @@ export async function fetchSignalTsAttachment(
     pointer.contentType ?? params.attachment.contentType ?? undefined,
     "inbound",
     params.maxBytes,
+  );
+  logSignalTsInfo(
+    `signal-ts ${traceId} attachment-fetch saved path=${saved.path} contentType=${saved.contentType ?? "none"} bytes=${data.byteLength}`,
   );
   return { path: saved.path, contentType: saved.contentType };
 }
@@ -399,10 +517,12 @@ const fetchSignalAttachmentUpload: SignalAttachmentUploadFetch = async (input, i
 export async function sendTypingSignalTs(
   params: SignalTsRpcLikeParams & { stop?: boolean },
 ): Promise<boolean> {
+  const traceId = createSignalTsRuntimeTraceId("openclaw-signal-typing");
   return await withSignalTsClient(params, async ({ client, repository, abortSignal }) => {
     const target = await resolveSignalTsTarget(params.to, repository);
     const preKeyAuth = await resolveSignalTsPreKeyAuth(params.to, repository);
     await client.sendTypingMessage({
+      traceId,
       destination: target,
       typing: {
         timestamp: Date.now(),
@@ -419,10 +539,12 @@ export async function sendTypingSignalTs(
 export async function sendReadReceiptSignalTs(
   params: SignalTsRpcLikeParams & { targetTimestamp: number; type?: "read" | "viewed" },
 ): Promise<boolean> {
+  const traceId = createSignalTsRuntimeTraceId("openclaw-signal-read-receipt");
   return await withSignalTsClient(params, async ({ client, repository, abortSignal }) => {
     const target = await resolveSignalTsTarget(params.to, repository);
     const preKeyAuth = await resolveSignalTsPreKeyAuth(params.to, repository);
     await client.sendReceiptMessage({
+      traceId,
       destination: target,
       receipt: {
         type: params.type ?? "read",
@@ -453,7 +575,7 @@ export async function monitorSignalTsProvider(params: SignalTsMonitorParams): Pr
     }
     if (result.fatalError) {
       const message = `signal-ts monitor fatal: ${describeSignalTsDisconnectError(result.fatalError)}`;
-      params.runtime.error?.(message);
+      logSignalTsError(params.runtime, message);
       await sendSignalTsFatalDiagnosticMessage({
         params,
         message,
@@ -464,7 +586,8 @@ export async function monitorSignalTsProvider(params: SignalTsMonitorParams): Pr
     reconnectAttempts += 1;
     const delayMs = computeBackoff(reconnectPolicy, reconnectAttempts);
     const reason = result.error ? `: ${describeSignalTsDisconnectError(result.error)}` : "";
-    params.runtime.error?.(
+    logSignalTsError(
+      params.runtime,
       `signal-ts: connection lost${reason}; reconnecting in ${delayMs / 1000}s...`,
     );
     await sleepWithAbort(delayMs, params.abortSignal);
@@ -487,10 +610,10 @@ async function runSignalTsMonitorConnection(params: SignalTsMonitorParams): Prom
     account: account.account,
     environment: "production",
     userAgent: account.userAgent ?? "OpenClaw signal-ts",
-    logger: {
-      info: (message) => params.runtime.log?.(`signal-ts: ${message}`),
-      warn: (message) => params.runtime.error?.(`signal-ts: ${message}`),
-    },
+    ...(() => {
+      const logger = createSignalTsLogger(params.runtime);
+      return logger ? { logger } : {};
+    })(),
   });
   const activeClientKey = resolveSignalTsActiveClientKey(params.accountInfo);
   const activeClient: ActiveSignalTsClient = { client, repository };
@@ -498,6 +621,12 @@ async function runSignalTsMonitorConnection(params: SignalTsMonitorParams): Prom
   const offIncoming = client.on("incoming", (incoming) => {
     void (async () => {
       try {
+        logSignalTsInfo(
+          `signal-ts inbound decrypt start ${describeSignalTsIncomingEnvelope(
+            incoming.envelope,
+            incoming.timestamp,
+          )}`,
+        );
         const decrypted = await decryptIncomingEnvelope({
           envelope: incoming.envelope,
           localAddress,
@@ -508,17 +637,35 @@ async function runSignalTsMonitorConnection(params: SignalTsMonitorParams): Prom
           },
           stores,
         });
-        for (const message of normalizeDecryptedIncomingMessage(decrypted)) {
+        const messages = normalizeDecryptedIncomingMessage(decrypted);
+        logSignalTsInfo(`signal-ts inbound decrypt done normalized=${messages.length}`);
+        for (const message of messages) {
+          logSignalTsInfo(
+            `signal-ts inbound normalized ${describeSignalTsIncomingMessage(message)}`,
+          );
           const envelope = await toSignalCliEnvelope(message, repository);
           if (!envelope) {
+            logSignalTsInfo(`signal-ts inbound skipped signal-cli envelope kind=${message.kind}`);
             continue;
           }
           latestDiagnosticEnvelope = envelope;
           const payload: SignalReceivePayload = { envelope };
+          logSignalTsInfo(
+            `signal-ts inbound dispatch start kind=${message.kind} source=${envelope.sourceUuid ?? envelope.sourceNumber ?? "unknown"} timestamp=${envelope.timestamp ?? "none"}`,
+          );
           await params.onEvent({ event: "receive", data: JSON.stringify(payload) });
+          logSignalTsInfo(
+            `signal-ts inbound dispatch done kind=${message.kind} source=${envelope.sourceUuid ?? envelope.sourceNumber ?? "unknown"} timestamp=${envelope.timestamp ?? "none"}`,
+          );
         }
       } catch (err) {
         if (isIgnorableSignalTsIncomingError(err, incoming.envelope)) {
+          logSignalTsInfo(
+            `signal-ts inbound ignored ${describeSignalTsIncomingEnvelope(
+              incoming.envelope,
+              incoming.timestamp,
+            )}`,
+          );
           return;
         }
         await maybeSendSignalTsRetryReceipt({
@@ -528,7 +675,8 @@ async function runSignalTsMonitorConnection(params: SignalTsMonitorParams): Prom
           runtime: params.runtime,
           abortSignal: params.abortSignal,
         });
-        params.runtime.error?.(
+        logSignalTsError(
+          params.runtime,
           `signal-ts inbound failed: ${String(err)} ${describeSignalTsIncomingEnvelope(
             incoming.envelope,
             incoming.timestamp,
@@ -538,7 +686,7 @@ async function runSignalTsMonitorConnection(params: SignalTsMonitorParams): Prom
         try {
           await Promise.resolve((incoming.ack as () => unknown)());
         } catch (err) {
-          params.runtime.error?.(`signal-ts inbound ack failed: ${String(err)}`);
+          logSignalTsError(params.runtime, `signal-ts inbound ack failed: ${String(err)}`);
         }
       }
     })();
@@ -576,7 +724,10 @@ async function sendSignalTsFatalDiagnosticMessage({
 }): Promise<void> {
   const target = resolveSignalTsDiagnosticTarget(envelope);
   if (!target) {
-    params.runtime.error?.("signal-ts fatal diagnostic skipped: no previous Signal target");
+    logSignalTsError(
+      params.runtime,
+      "signal-ts fatal diagnostic skipped: no previous Signal target",
+    );
     return;
   }
   try {
@@ -585,10 +736,12 @@ async function sendSignalTsFatalDiagnosticMessage({
       accountInfo: params.accountInfo,
       to: target,
       message: `[OpenClaw channel error] ${message}`,
+      runtime: params.runtime,
       timeoutMs: DEFAULT_TIMEOUT_MS,
     });
   } catch (err) {
-    params.runtime.error?.(
+    logSignalTsError(
+      params.runtime,
       `signal-ts fatal diagnostic send failed: ${describeSignalTsDisconnectError(err)}`,
     );
   }
@@ -619,6 +772,119 @@ function resolveSignalTsDiagnosticGroupInfo(
     envelope.reactionMessage?.groupInfo ??
     undefined
   );
+}
+
+function describeSignalTsIncomingMessage(message: SignalIncomingMessage): string {
+  const base = [
+    `kind=${message.kind}`,
+    `source=${message.sender.serviceId ?? "unknown"}`,
+    `device=${message.sender.deviceId ?? "unknown"}`,
+    `timestamp=${message.timestamp ?? "none"}`,
+    `serverTimestamp=${message.serverTimestamp ?? "none"}`,
+  ];
+  const group = "group" in message ? message.group : undefined;
+  if (group?.id) {
+    base.push(`group=${group.id}`);
+  }
+  if (message.kind === "data") {
+    base.push(`bodyChars=${message.body?.length ?? 0}`);
+    base.push(`body=${JSON.stringify(message.body ?? "")}`);
+    base.push(`attachments=${message.attachments.length}`);
+    if (message.attachments.length > 0) {
+      base.push(
+        `attachmentMeta=${JSON.stringify(message.attachments.map(describeSignalTsAttachmentPointerForLog))}`,
+      );
+    }
+    base.push(`bodyRanges=${message.bodyRanges.length}`);
+    if (message.message.quote) {
+      base.push(
+        `quote=${JSON.stringify({
+          id: message.message.quote.id ?? null,
+          authorAci: message.message.quote.authorAci ?? null,
+          text: message.message.quote.text ?? null,
+        })}`,
+      );
+    }
+    if (message.message.reaction) {
+      base.push(
+        `reaction=${JSON.stringify({
+          emoji: message.message.reaction.emoji ?? null,
+          remove: message.message.reaction.remove ?? null,
+          targetAuthorAci: message.message.reaction.targetAuthorAci ?? null,
+          targetSentTimestamp: message.message.reaction.targetSentTimestamp ?? null,
+        })}`,
+      );
+    }
+    if (message.message.sticker) {
+      base.push(
+        `sticker=${JSON.stringify({
+          stickerId: message.message.sticker.stickerId ?? null,
+          emoji: message.message.sticker.emoji ?? null,
+          hasData: Boolean(message.message.sticker.data),
+        })}`,
+      );
+    }
+  } else if (message.kind === "reaction") {
+    base.push(
+      `reaction=${JSON.stringify({
+        emoji: message.reaction.emoji ?? null,
+        remove: message.reaction.remove ?? null,
+        targetAuthorAci: message.reaction.targetAuthorAci ?? null,
+        targetSentTimestamp: message.reaction.targetSentTimestamp ?? null,
+      })}`,
+    );
+  } else if (message.kind === "edit") {
+    base.push(`targetSentTimestamp=${message.targetSentTimestamp ?? "none"}`);
+    base.push(`bodyChars=${message.message?.body?.length ?? 0}`);
+    base.push(`body=${JSON.stringify(message.message?.body ?? "")}`);
+    base.push(`attachments=${message.message?.attachments?.length ?? 0}`);
+  } else if (message.kind === "receipt") {
+    base.push(
+      `receipt=${JSON.stringify({
+        type: message.receipt.type ?? null,
+        timestamps: message.receipt.timestamps ?? [],
+      })}`,
+    );
+  } else if (message.kind === "typing") {
+    base.push(
+      `typing=${JSON.stringify({
+        action: message.typing.action ?? null,
+        timestamp: message.typing.timestamp ?? null,
+      })}`,
+    );
+  } else if (message.kind === "decryption-error") {
+    base.push(
+      `decryptionError=${JSON.stringify({
+        timestamp: message.decryptionError.timestamp,
+        deviceId: message.decryptionError.deviceId,
+        ratchetKey: message.decryptionError.ratchetKey ? "present" : "missing",
+      })}`,
+    );
+  } else if (message.kind === "sync") {
+    base.push(`syncKeys=${Object.keys(message.syncMessage).toSorted().join(",") || "none"}`);
+  } else if (message.kind === "unknown") {
+    base.push(`contentKeys=${Object.keys(message.content).toSorted().join(",") || "none"}`);
+  }
+  return base.join(" ");
+}
+
+function describeSignalTsAttachmentPointerForLog(
+  pointer: SignalAttachmentPointer,
+): Record<string, unknown> {
+  return {
+    id: pointer.cdnKey ?? pointer.cdnId ?? pointer.clientUuid ?? null,
+    cdnNumber: pointer.cdnNumber ?? null,
+    contentType: pointer.contentType ?? null,
+    size: pointer.size ?? null,
+    fileName: pointer.fileName ?? null,
+    caption: pointer.caption ?? null,
+    width: pointer.width ?? null,
+    height: pointer.height ?? null,
+    flags: pointer.flags ?? null,
+    hasKey: Boolean(pointer.key),
+    hasDigest: Boolean(pointer.digest),
+    hasIncrementalMac: Boolean(pointer.incrementalMac),
+  };
 }
 
 function isFatalSignalTsDisconnect(err: unknown): boolean {
@@ -694,11 +960,14 @@ async function maybeSendSignalTsRetryReceipt({
       stores: createLibsignalStores(repository),
       abortSignal,
     });
-    runtime.log?.(
+    logSignalTsInfo(
       `signal-ts: sent retry receipt for ${err.retryReceipt.recipientServiceId}.${err.retryReceipt.senderDeviceId} timestamp=${err.retryReceipt.timestamp}`,
     );
   } catch (retryErr) {
-    runtime.error?.(`signal-ts retry receipt failed: ${describeSignalTsDisconnectError(retryErr)}`);
+    logSignalTsError(
+      runtime,
+      `signal-ts retry receipt failed: ${describeSignalTsDisconnectError(retryErr)}`,
+    );
   }
 }
 
@@ -843,6 +1112,7 @@ async function sendSignalTsGroupMessage({
   client,
   repository,
   group,
+  traceId,
   body,
   attachments,
   bodyRanges,
@@ -852,6 +1122,7 @@ async function sendSignalTsGroupMessage({
   client: SignalTsClient;
   repository: FileSignalRepository;
   group: FileSignalGroupState;
+  traceId: string;
   body: string;
   attachments?: SignalAttachmentPointer[];
   bodyRanges?: SignalBodyRange[];
@@ -863,6 +1134,7 @@ async function sendSignalTsGroupMessage({
     throw new Error(`Signal-ts state is missing members for group ${group.id}`);
   }
   const result = await client.sendGroupMessage({
+    traceId,
     members,
     group: {
       masterKey: base64ToBytes(group.masterKey),
@@ -871,7 +1143,7 @@ async function sendSignalTsGroupMessage({
     },
     body,
     attachments,
-    bodyRanges,
+    ...(bodyRanges ? { bodyRanges } : {}),
     ...(quote ? { quote } : {}),
     stores: createLibsignalStores(repository),
     abortSignal,
@@ -883,12 +1155,14 @@ async function sendSignalTsGroupStickerMessage({
   client,
   repository,
   group,
+  traceId,
   sticker,
   abortSignal,
 }: {
   client: SignalTsClient;
   repository: FileSignalRepository;
   group: FileSignalGroupState;
+  traceId: string;
   sticker: SignalSticker;
   abortSignal: AbortSignal;
 }): Promise<{ timestamp: number }> {
@@ -897,6 +1171,7 @@ async function sendSignalTsGroupStickerMessage({
     throw new Error(`Signal-ts state is missing members for group ${group.id}`);
   }
   const result = await client.sendGroupStickerMessage({
+    traceId,
     members,
     group: {
       masterKey: base64ToBytes(group.masterKey),
@@ -914,12 +1189,14 @@ async function sendSignalTsGroupReactionMessage({
   client,
   repository,
   group,
+  traceId,
   reaction,
   abortSignal,
 }: {
   client: SignalTsClient;
   repository: FileSignalRepository;
   group: FileSignalGroupState;
+  traceId: string;
   reaction: SignalReaction;
   abortSignal: AbortSignal;
 }): Promise<{ timestamp: number }> {
@@ -928,6 +1205,7 @@ async function sendSignalTsGroupReactionMessage({
     throw new Error(`Signal-ts state is missing members for group ${group.id}`);
   }
   const result = await client.sendGroupReactionMessage({
+    traceId,
     members,
     group: {
       masterKey: base64ToBytes(group.masterKey),
@@ -945,11 +1223,13 @@ async function resolveSignalTsSticker({
   client,
   repository,
   stickerSpec,
+  traceId,
   abortSignal,
 }: {
   client: SignalTsClient;
   repository: FileSignalRepository;
   stickerSpec: string;
+  traceId: string;
   abortSignal: AbortSignal;
 }): Promise<SignalSticker> {
   const { packId, stickerId } = parseSignalTsStickerSpec(stickerSpec);
@@ -965,6 +1245,7 @@ async function resolveSignalTsSticker({
     await readFile(repository.getStickerFilePath(pack.id, stickerState.fileName)),
   );
   const uploaded = await client.uploadAttachment({
+    traceId: `${traceId}:sticker-upload`,
     attachment: {
       data,
       contentType: stickerState.contentType ?? "image/webp",
@@ -1136,7 +1417,12 @@ async function resolveKnownSignalTsRecipient(
 }
 
 async function withSignalTsClient<T>(
-  params: { accountInfo: ResolvedSignalAccount; timeoutMs?: number; abortSignal?: AbortSignal },
+  params: {
+    accountInfo: ResolvedSignalAccount;
+    runtime?: RuntimeEnv;
+    timeoutMs?: number;
+    abortSignal?: AbortSignal;
+  },
   run: (context: {
     client: SignalTsClient;
     repository: FileSignalRepository;
@@ -1165,6 +1451,10 @@ async function withSignalTsClient<T>(
     account: account.account,
     environment: "production",
     userAgent: account.userAgent ?? "OpenClaw signal-ts",
+    ...(() => {
+      const logger = createSignalTsLogger(params.runtime);
+      return logger ? { logger } : {};
+    })(),
   });
   try {
     await client.connect(abortSignal);
@@ -1177,20 +1467,23 @@ async function withSignalTsClient<T>(
 async function uploadSignalTsAttachments({
   client,
   attachments,
+  traceId,
   abortSignal,
 }: {
   client: SignalTsClient;
   attachments: SignalTsAttachmentInput[];
+  traceId: string;
   abortSignal: AbortSignal;
 }): Promise<SignalAttachmentPointer[] | undefined> {
   if (attachments.length === 0) {
     return undefined;
   }
   const uploaded: SignalAttachmentPointer[] = [];
-  for (const attachment of attachments) {
+  for (const [index, attachment] of attachments.entries()) {
     const data = new Uint8Array(await readFile(attachment.path));
     const fileName = attachment.fileName ?? path.basename(attachment.path);
     const result = await client.uploadAttachment({
+      traceId: `${traceId}:attachment:${index}`,
       attachment: {
         data,
         ...(attachment.contentType ? { contentType: attachment.contentType } : {}),
@@ -1208,27 +1501,9 @@ function mapTextStyles(styles: SignalTextStyleRange[]): SignalBodyRange[] | unde
   if (styles.length === 0) {
     return undefined;
   }
-  return styles.map((style) => ({
-    start: style.start,
-    length: style.length,
-    style: signalBodyRangeStyle(style.style),
-  }));
-}
-
-function signalBodyRangeStyle(style: SignalTextStyleRange["style"]): number {
-  switch (style) {
-    case "BOLD":
-      return 1;
-    case "ITALIC":
-      return 2;
-    case "SPOILER":
-      return 3;
-    case "STRIKETHROUGH":
-      return 4;
-    case "MONOSPACE":
-      return 5;
-  }
-  return 0;
+  // Signal TS rich text has produced server-acked messages that real clients did not show.
+  // Keep outbound text plain until body range sends have real-client E2E coverage.
+  return undefined;
 }
 
 async function toSignalCliEnvelope(

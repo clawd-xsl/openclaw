@@ -326,6 +326,7 @@ function createSingleUseSignalReplySender(params: {
   account?: string;
   accountId?: string;
   maxBytes: number;
+  runtime?: RuntimeEnv;
   replyToId?: string;
   traceLabel?: string;
   abortSignal?: AbortSignal;
@@ -344,6 +345,7 @@ function createSingleUseSignalReplySender(params: {
     account: params.account,
     maxBytes: params.maxBytes,
     accountId: params.accountId,
+    ...(params.runtime ? { runtime: params.runtime } : {}),
     abortSignal: params.abortSignal,
   };
   return {
@@ -442,6 +444,7 @@ async function deliverReplies(params: {
       account,
       accountId,
       maxBytes,
+      runtime,
       replyToId: payload.replyToId ?? undefined,
       traceLabel: params.traceLabel,
       abortSignal: params.abortSignal,
@@ -455,7 +458,7 @@ async function deliverReplies(params: {
     });
     trace("payload-delivered", `result=${delivered}`);
     if (delivered !== "empty") {
-      runtime.log?.(`delivered reply to ${target}`);
+      runtime.log?.(`sent reply to ${target}`);
       if (params.mirror) {
         trace("payload-mirror-start", `session=${params.mirror.sessionKey}`);
         const { appendAssistantMessageToSessionTranscript } = await loadSessionTranscriptRuntime();
@@ -609,6 +612,7 @@ export async function monitorSignalProvider(opts: MonitorSignalOpts = {}): Promi
               accountInfo,
               attachment: params.attachment,
               maxBytes: params.maxBytes,
+              runtime,
             });
           }
         : fetchAttachment,

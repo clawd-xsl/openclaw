@@ -412,6 +412,21 @@ describe("signal-ts runtime monitor", () => {
     );
   });
 
+  it("omits signal-ts body ranges until rich text has real-client coverage", async () => {
+    const { sendMessageSignalTs } = await import("./signal-ts-runtime.js");
+
+    await sendMessageSignalTs({
+      cfg: {},
+      accountInfo: createSignalTsAccountInfo(),
+      to: "signal:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      message: "rich text",
+      textStyles: [{ start: 0, length: 4, style: "BOLD" }],
+    });
+
+    const params = mocks.sendMessage.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(params).not.toHaveProperty("bodyRanges");
+  });
+
   it("sends direct reactions through signal-ts", async () => {
     const { sendReactionSignalTs } = await import("./signal-ts-runtime.js");
 
@@ -615,7 +630,9 @@ describe("signal-ts runtime monitor", () => {
     const abortController = new AbortController();
     mocks.abortController = abortController;
     mocks.emitIncomingOnFirstConnect = true;
-    mocks.normalizeDecryptedIncomingMessage.mockReturnValue([createSignalTsIncomingMessage()]);
+    mocks.normalizeDecryptedIncomingMessage
+      .mockReturnValueOnce([createSignalTsIncomingMessage()])
+      .mockReturnValue([]);
     const accountInfo = createSignalTsAccountInfo();
     const runtime: RuntimeEnv = {
       error: vi.fn(),

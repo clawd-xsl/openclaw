@@ -3,6 +3,7 @@
  */
 
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
+import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/text-runtime";
 import { resolveSignalAccount } from "./accounts.js";
 import { signalRpcRequest } from "./client.js";
@@ -13,6 +14,7 @@ export type SignalReactionOpts = {
   baseUrl?: string;
   account?: string;
   accountId?: string;
+  runtime?: RuntimeEnv;
   timeoutMs?: number;
   targetAuthor?: string;
   targetAuthorUuid?: string;
@@ -131,6 +133,7 @@ async function sendReactionSignalCore(params: {
       targetAuthor: params.opts.targetAuthor,
       targetAuthorUuid: params.opts.targetAuthorUuid,
       groupId,
+      ...(params.opts.runtime ? { runtime: params.opts.runtime } : {}),
       timeoutMs: params.opts.timeoutMs,
     });
     return {
