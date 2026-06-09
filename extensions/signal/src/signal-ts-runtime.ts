@@ -122,6 +122,7 @@ const SIGNAL_TS_RECONNECT_POLICY: BackoffPolicy = {
   factor: 2,
   jitter: 0.2,
 };
+const SIGNAL_TS_SEND_RETRY_DELAYS_MS = [750, 2_000] as const;
 const SIGNAL_TS_ENVELOPE_TYPE_LABELS: Record<number, string> = {
   0: "UNKNOWN",
   1: "DOUBLE_RATCHET",
@@ -215,6 +216,11 @@ function logSignalTsError(runtime: RuntimeEnv | undefined, message: string): voi
   runtime?.error?.(message);
 }
 
+function logSignalTsWarn(runtime: RuntimeEnv | undefined, message: string): void {
+  appendSignalTsLog("warn", message);
+  runtime?.error?.(message);
+}
+
 function createSignalTsLogger(runtime: RuntimeEnv | undefined):
   | {
       debug: (message: string) => void;
@@ -239,6 +245,39 @@ function createSignalTsLogger(runtime: RuntimeEnv | undefined):
       runtime.error?.(`signal-ts: ${fullMessage}`);
     },
   };
+}
+
+async function sendSignalTsContentWithRetry<T>({
+  traceId,
+  operation,
+  runtime,
+  abortSignal,
+  send,
+}: {
+  traceId: string;
+  operation: string;
+  runtime?: RuntimeEnv;
+  abortSignal: AbortSignal;
+  send: () => Promise<T>;
+}): Promise<T> {
+  let attempt = 1;
+  for (;;) {
+    try {
+      return await send();
+    } catch (err) {
+      const retryDelayMs = SIGNAL_TS_SEND_RETRY_DELAYS_MS[attempt - 1];
+      if (retryDelayMs === undefined || abortSignal.aborted || !isRetryableSignalTsSendError(err)) {
+        throw err;
+      }
+      const maxAttempts = SIGNAL_TS_SEND_RETRY_DELAYS_MS.length + 1;
+      logSignalTsWarn(
+        runtime,
+        `signal-ts ${traceId} ${operation} transient failure; retry ${attempt + 1}/${maxAttempts} in ${retryDelayMs}ms: ${describeSignalTsDisconnectError(err)}`,
+      );
+      await sleepWithAbort(retryDelayMs, abortSignal);
+      attempt += 1;
+    }
+  }
 }
 
 export async function sendMessageSignalTs(params: SignalTsSendParams): Promise<{
@@ -266,6 +305,7 @@ export async function sendMessageSignalTs(params: SignalTsSendParams): Promise<{
         repository,
         group,
         traceId,
+        runtime: params.runtime,
         body: params.message,
         attachments,
         ...(bodyRanges ? { bodyRanges } : {}),
@@ -279,16 +319,23 @@ export async function sendMessageSignalTs(params: SignalTsSendParams): Promise<{
     }
     const target = await resolveSignalTsTarget(params.to, repository);
     const preKeyAuth = await resolveSignalTsPreKeyAuth(params.to, repository);
-    const result = await client.sendMessage({
+    const result = await sendSignalTsContentWithRetry({
       traceId,
-      destination: target,
-      body: params.message,
-      attachments,
-      ...(bodyRanges ? { bodyRanges } : {}),
-      ...(quote ? { quote } : {}),
-      stores: createLibsignalStores(repository),
-      ...(preKeyAuth ? { preKeyAuth } : {}),
+      operation: "message",
+      runtime: params.runtime,
       abortSignal,
+      send: async () =>
+        await client.sendMessage({
+          traceId,
+          destination: target,
+          body: params.message,
+          attachments,
+          ...(bodyRanges ? { bodyRanges } : {}),
+          ...(quote ? { quote } : {}),
+          stores: createLibsignalStores(repository),
+          ...(preKeyAuth ? { preKeyAuth } : {}),
+          abortSignal,
+        }),
     });
     return {
       messageId: String(result.timestamp),
@@ -317,6 +364,7 @@ export async function sendStickerSignalTs(params: SignalTsStickerParams): Promis
         repository,
         group,
         traceId,
+        runtime: params.runtime,
         sticker,
         abortSignal,
       });
@@ -327,13 +375,20 @@ export async function sendStickerSignalTs(params: SignalTsStickerParams): Promis
     }
     const target = await resolveSignalTsTarget(params.to, repository);
     const preKeyAuth = await resolveSignalTsPreKeyAuth(params.to, repository);
-    const result = await client.sendStickerMessage({
+    const result = await sendSignalTsContentWithRetry({
       traceId,
-      destination: target,
-      sticker,
-      stores: createLibsignalStores(repository),
-      ...(preKeyAuth ? { preKeyAuth } : {}),
+      operation: "sticker",
+      runtime: params.runtime,
       abortSignal,
+      send: async () =>
+        await client.sendStickerMessage({
+          traceId,
+          destination: target,
+          sticker,
+          stores: createLibsignalStores(repository),
+          ...(preKeyAuth ? { preKeyAuth } : {}),
+          abortSignal,
+        }),
     });
     return {
       messageId: String(result.timestamp),
@@ -374,6 +429,7 @@ export async function sendReactionSignalTs(params: SignalTsReactionParams): Prom
         repository,
         group,
         traceId,
+        runtime: params.runtime,
         reaction,
         abortSignal,
       });
@@ -384,13 +440,20 @@ export async function sendReactionSignalTs(params: SignalTsReactionParams): Prom
     }
     const target = await resolveSignalTsTarget(params.to, repository);
     const preKeyAuth = await resolveSignalTsPreKeyAuth(params.to, repository);
-    const result = await client.sendReactionMessage({
+    const result = await sendSignalTsContentWithRetry({
       traceId,
-      destination: target,
-      reaction,
-      stores: createLibsignalStores(repository),
-      ...(preKeyAuth ? { preKeyAuth } : {}),
+      operation: "reaction",
+      runtime: params.runtime,
       abortSignal,
+      send: async () =>
+        await client.sendReactionMessage({
+          traceId,
+          destination: target,
+          reaction,
+          stores: createLibsignalStores(repository),
+          ...(preKeyAuth ? { preKeyAuth } : {}),
+          abortSignal,
+        }),
     });
     return {
       messageId: String(result.timestamp),
@@ -892,6 +955,25 @@ function isFatalSignalTsDisconnect(err: unknown): boolean {
   return text.includes("connectedelsewhere") || text.includes("connected elsewhere");
 }
 
+function isRetryableSignalTsSendError(err: unknown): boolean {
+  if (isFatalSignalTsDisconnect(err)) {
+    return false;
+  }
+  const text = describeSignalTsDisconnectError(err).toLowerCase();
+  if (text.includes("aborterror") || text.includes("aborted")) {
+    return false;
+  }
+  return (
+    text.includes("all connect attempts failed") ||
+    text.includes("unauthenticatedchatconnection_connect") ||
+    text.includes("connect etimedout") ||
+    text.includes("econnreset") ||
+    text.includes("econnrefused") ||
+    text.includes("eai_again") ||
+    text.includes("socket hang up")
+  );
+}
+
 function describeSignalTsDisconnectError(err: unknown): string {
   if (err instanceof Error) {
     const cause =
@@ -1113,6 +1195,7 @@ async function sendSignalTsGroupMessage({
   repository,
   group,
   traceId,
+  runtime,
   body,
   attachments,
   bodyRanges,
@@ -1123,6 +1206,7 @@ async function sendSignalTsGroupMessage({
   repository: FileSignalRepository;
   group: FileSignalGroupState;
   traceId: string;
+  runtime?: RuntimeEnv;
   body: string;
   attachments?: SignalAttachmentPointer[];
   bodyRanges?: SignalBodyRange[];
@@ -1133,20 +1217,27 @@ async function sendSignalTsGroupMessage({
   if (members.length === 0) {
     throw new Error(`Signal-ts state is missing members for group ${group.id}`);
   }
-  const result = await client.sendGroupMessage({
+  const result = await sendSignalTsContentWithRetry({
     traceId,
-    members,
-    group: {
-      masterKey: base64ToBytes(group.masterKey),
-      distributionId: group.distributionId,
-      ...(group.revision !== undefined ? { revision: group.revision } : {}),
-    },
-    body,
-    attachments,
-    ...(bodyRanges ? { bodyRanges } : {}),
-    ...(quote ? { quote } : {}),
-    stores: createLibsignalStores(repository),
+    operation: "group-message",
+    runtime,
     abortSignal,
+    send: async () =>
+      await client.sendGroupMessage({
+        traceId,
+        members,
+        group: {
+          masterKey: base64ToBytes(group.masterKey),
+          distributionId: group.distributionId,
+          ...(group.revision !== undefined ? { revision: group.revision } : {}),
+        },
+        body,
+        attachments,
+        ...(bodyRanges ? { bodyRanges } : {}),
+        ...(quote ? { quote } : {}),
+        stores: createLibsignalStores(repository),
+        abortSignal,
+      }),
   });
   return { timestamp: result.timestamp };
 }
@@ -1156,6 +1247,7 @@ async function sendSignalTsGroupStickerMessage({
   repository,
   group,
   traceId,
+  runtime,
   sticker,
   abortSignal,
 }: {
@@ -1163,6 +1255,7 @@ async function sendSignalTsGroupStickerMessage({
   repository: FileSignalRepository;
   group: FileSignalGroupState;
   traceId: string;
+  runtime?: RuntimeEnv;
   sticker: SignalSticker;
   abortSignal: AbortSignal;
 }): Promise<{ timestamp: number }> {
@@ -1170,17 +1263,24 @@ async function sendSignalTsGroupStickerMessage({
   if (members.length === 0) {
     throw new Error(`Signal-ts state is missing members for group ${group.id}`);
   }
-  const result = await client.sendGroupStickerMessage({
+  const result = await sendSignalTsContentWithRetry({
     traceId,
-    members,
-    group: {
-      masterKey: base64ToBytes(group.masterKey),
-      distributionId: group.distributionId,
-      ...(group.revision !== undefined ? { revision: group.revision } : {}),
-    },
-    sticker,
-    stores: createLibsignalStores(repository),
+    operation: "group-sticker",
+    runtime,
     abortSignal,
+    send: async () =>
+      await client.sendGroupStickerMessage({
+        traceId,
+        members,
+        group: {
+          masterKey: base64ToBytes(group.masterKey),
+          distributionId: group.distributionId,
+          ...(group.revision !== undefined ? { revision: group.revision } : {}),
+        },
+        sticker,
+        stores: createLibsignalStores(repository),
+        abortSignal,
+      }),
   });
   return { timestamp: result.timestamp };
 }
@@ -1190,6 +1290,7 @@ async function sendSignalTsGroupReactionMessage({
   repository,
   group,
   traceId,
+  runtime,
   reaction,
   abortSignal,
 }: {
@@ -1197,6 +1298,7 @@ async function sendSignalTsGroupReactionMessage({
   repository: FileSignalRepository;
   group: FileSignalGroupState;
   traceId: string;
+  runtime?: RuntimeEnv;
   reaction: SignalReaction;
   abortSignal: AbortSignal;
 }): Promise<{ timestamp: number }> {
@@ -1204,17 +1306,24 @@ async function sendSignalTsGroupReactionMessage({
   if (members.length === 0) {
     throw new Error(`Signal-ts state is missing members for group ${group.id}`);
   }
-  const result = await client.sendGroupReactionMessage({
+  const result = await sendSignalTsContentWithRetry({
     traceId,
-    members,
-    group: {
-      masterKey: base64ToBytes(group.masterKey),
-      distributionId: group.distributionId,
-      ...(group.revision !== undefined ? { revision: group.revision } : {}),
-    },
-    reaction,
-    stores: createLibsignalStores(repository),
+    operation: "group-reaction",
+    runtime,
     abortSignal,
+    send: async () =>
+      await client.sendGroupReactionMessage({
+        traceId,
+        members,
+        group: {
+          masterKey: base64ToBytes(group.masterKey),
+          distributionId: group.distributionId,
+          ...(group.revision !== undefined ? { revision: group.revision } : {}),
+        },
+        reaction,
+        stores: createLibsignalStores(repository),
+        abortSignal,
+      }),
   });
   return { timestamp: result.timestamp };
 }

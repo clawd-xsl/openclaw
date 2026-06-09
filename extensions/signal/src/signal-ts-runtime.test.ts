@@ -427,6 +427,53 @@ describe("signal-ts runtime monitor", () => {
     expect(params).not.toHaveProperty("bodyRanges");
   });
 
+  it("retries transient signal-ts content sends", async () => {
+    const { sendMessageSignalTs } = await import("./signal-ts-runtime.js");
+    const runtime: RuntimeEnv = {
+      error: vi.fn(),
+      exit: vi.fn(),
+      log: vi.fn(),
+    };
+    mocks.sendMessage
+      .mockRejectedValueOnce(new Error("IoError: all connect attempts failed"))
+      .mockResolvedValueOnce({ timestamp: 456 });
+
+    const result = await sendMessageSignalTs({
+      cfg: {},
+      accountInfo: createSignalTsAccountInfo(),
+      to: "signal:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      message: "reply",
+      runtime,
+    });
+
+    expect(result).toEqual({ messageId: "456", timestamp: 456 });
+    expect(mocks.sendMessage).toHaveBeenCalledTimes(2);
+    expect(mocks.sleepWithAbort).toHaveBeenCalledWith(750, expect.any(AbortSignal));
+    expect(runtime.error).toHaveBeenCalledWith(
+      expect.stringContaining("signal-ts openclaw-signal-message-"),
+    );
+    expect(runtime.error).toHaveBeenCalledWith(expect.stringContaining("retry 2/3"));
+  });
+
+  it("does not retry fatal signal-ts content sends", async () => {
+    const { sendMessageSignalTs } = await import("./signal-ts-runtime.js");
+    mocks.sendMessage.mockRejectedValue(
+      new Error("ConnectedElsewhere - connected elsewhere with the same credentials"),
+    );
+
+    await expect(
+      sendMessageSignalTs({
+        cfg: {},
+        accountInfo: createSignalTsAccountInfo(),
+        to: "signal:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        message: "reply",
+      }),
+    ).rejects.toThrow("ConnectedElsewhere");
+
+    expect(mocks.sendMessage).toHaveBeenCalledTimes(1);
+    expect(mocks.sleepWithAbort).not.toHaveBeenCalled();
+  });
+
   it("sends direct reactions through signal-ts", async () => {
     const { sendReactionSignalTs } = await import("./signal-ts-runtime.js");
 
