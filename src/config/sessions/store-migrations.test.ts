@@ -76,6 +76,20 @@ describe("applySessionStoreMigrations", () => {
     });
   });
 
+  it("drops retired custom compaction and prompt-growth state", () => {
+    const entry = createEntry() as SessionEntry & Record<string, unknown>;
+    entry.cliCompactionOverlays = {
+      "claude-cli": { summary: "obsolete provider-owned compaction overlay" },
+    };
+    entry.memoryFlushPromptTokens = 123_456;
+    const store = { main: entry };
+
+    expect(applySessionStoreMigrations(store)).toBe(true);
+    expect(store.main).not.toHaveProperty("cliCompactionOverlays");
+    expect(store.main).not.toHaveProperty("memoryFlushPromptTokens");
+    expect(applySessionStoreMigrations(store)).toBe(false);
+  });
+
   it("leaves unrelated providers unchanged", () => {
     const store = {
       main: createEntry({

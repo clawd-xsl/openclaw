@@ -42,6 +42,12 @@ export function applySessionStoreMigrations(store: Record<string, SessionEntry>)
     }
     changed = migrateClaudeCliSessionEntry(entry) || changed;
     const rec = entry as unknown as Record<string, unknown>;
+    for (const retiredKey of ["cliCompactionOverlays", "memoryFlushPromptTokens"] as const) {
+      if (Object.hasOwn(rec, retiredKey)) {
+        delete rec[retiredKey];
+        changed = true;
+      }
+    }
     if (typeof rec.channel !== "string" && typeof rec.provider === "string") {
       rec.channel = rec.provider;
       delete rec.provider;
