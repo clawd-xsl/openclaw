@@ -2,7 +2,8 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { OpenClawPluginCommandDefinition } from "openclaw/plugin-sdk/core";
 import type { MemoryPluginRuntime } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
-import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
+import { createTestPluginApi, type TestPluginApiInput } from "openclaw/plugin-sdk/plugin-test-api";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildMemoryFlushPlan,
@@ -24,10 +25,22 @@ vi.mock("./src/runtime-provider.js", () => ({
 
 import plugin from "./index.js";
 
+function createMemoryCoreTestApi(overrides: TestPluginApiInput = {}): OpenClawPluginApi {
+  const runtime = {
+    agent: {
+      runEmbeddedAgent: vi.fn(),
+      resolveAgentDir: vi.fn(() => "/agents/main"),
+      resolveAgentTimeoutMs: vi.fn(() => 600_000),
+      resolveAgentWorkspaceDir: vi.fn(() => "/workspace/main"),
+    },
+  } as unknown as OpenClawPluginApi["runtime"];
+  return createTestPluginApi({ runtime, ...overrides });
+}
+
 function registerMemoryCoreRuntime(): MemoryPluginRuntime {
   let runtime: MemoryPluginRuntime | undefined;
   plugin.register(
-    createTestPluginApi({
+    createMemoryCoreTestApi({
       registerMemoryCapability(capability) {
         runtime = capability.runtime;
       },
@@ -92,7 +105,7 @@ describe("memory-core plugin runtime registration", () => {
   it("registers the dreaming runtime slash command", () => {
     let command: OpenClawPluginCommandDefinition | undefined;
     plugin.register(
-      createTestPluginApi({
+      createMemoryCoreTestApi({
         registerCommand(definition) {
           command = definition;
         },
