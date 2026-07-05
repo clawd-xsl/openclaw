@@ -19,6 +19,7 @@ import { configureMemoryCoreDreamingState } from "./src/dreaming-state.js";
 import { registerShortTermPromotionDreaming } from "./src/dreaming.js";
 import { buildMemoryFlushPlan } from "./src/flush-plan.js";
 import { buildPromptSection } from "./src/prompt-section.js";
+import { registerCompletedSessionMemoryFlush } from "./src/session-memory-flush-plugin.js";
 import { registerSessionSummaries } from "./src/session-summaries-plugin.js";
 
 type MemoryToolsModule = typeof import("./src/tools.js");
@@ -179,6 +180,7 @@ export default definePluginEntry({
       api.runtime.state.openKeyedStore<T>(options),
     );
     registerShortTermPromotionDreaming(api);
+    registerCompletedSessionMemoryFlush(api);
     registerSessionSummaries(api);
     api.registerMemoryCapability({
       promptBuilder: buildPromptSection,

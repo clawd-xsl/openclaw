@@ -1,8 +1,11 @@
 {
   "id": "memory-core",
   "activation": {
-    "onStartup": false,
-    "onConfigPaths": ["plugins.entries.memory-core.config.summaries"]
+    "onStartup": true,
+    "onConfigPaths": [
+      "plugins.entries.memory-core.config.completedSessionFlush",
+      "plugins.entries.memory-core.config.summaries"
+    ]
   },
   "kind": "memory",
   "contracts": {
@@ -25,6 +28,15 @@
     }
   ],
   "uiHints": {
+    "completedSessionFlush.enabled": {
+      "label": "Completed Session Memory Flush",
+      "help": "Extract and append durable memory after new, reset, idle, or daily rollover of the default agent's main/global session. Enabled by default and adds one model call when a non-empty transcript is eligible. Uses agents.defaults.compaction.memoryFlush.model when configured, otherwise the default agent model. Set false to disable; agents.defaults.compaction.memoryFlush.enabled=false remains the global kill switch."
+    },
+    "completedSessionFlush.maxPromptTokens": {
+      "label": "Completed Session Flush Prompt Budget",
+      "placeholder": "16000",
+      "help": "Maximum estimated system and user prompt tokens for the isolated read-only extraction call."
+    },
     "dreaming.frequency": {
       "label": "Dreaming Frequency",
       "placeholder": "0 3 * * *",
@@ -68,6 +80,20 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
+      "completedSessionFlush": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "maxPromptTokens": {
+            "type": "integer",
+            "minimum": 1024,
+            "maximum": 65536
+          }
+        }
+      },
       "dreaming": {
         "type": "object",
         "additionalProperties": false,
