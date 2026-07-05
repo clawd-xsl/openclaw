@@ -2138,6 +2138,31 @@ export async function recordSessionMetaFromInbound(params: {
   const { storePath, sessionKey, ctx } = params;
   const createIfMissing = params.createIfMissing ?? true;
   return await runExclusiveSessionStoreWrite(storePath, async () => {
+    if (isSqliteSessionStorePath(storePath)) {
+      const normalizedKey = normalizeStoreSessionKey(sessionKey);
+      const fast = await updateSqliteSessionStoreEntryFastPath({
+        storePath,
+        sessionKey,
+        replaceEntry: true,
+        update: (existing) => {
+          const patch = deriveSessionMetaPatch({
+            ctx,
+            sessionKey: normalizedKey,
+            existing,
+            groupResolution: params.groupResolution,
+          });
+          if (!patch) {
+            return null;
+          }
+          // Inbound metadata updates must not refresh activity timestamps;
+          // idle reset evaluation relies on updatedAt from actual session turns.
+          return mergeSessionEntryPreserveActivity(existing, patch);
+        },
+      });
+      if (fast.handled) {
+        return fast.entry;
+      }
+    }
     const store = loadMutableSessionStoreForWriter(storePath);
     const resolved = resolveSessionStoreEntry({ store, sessionKey });
     const existing = resolved.existing;
@@ -2187,7 +2212,7 @@ export async function recordSessionMetaFromInbound(params: {
   });
 }
 
-export async function updateLastRoute(params: {
+type UpdateLastRouteParams = {
   storePath: string;
   sessionKey: string;
   channel?: SessionEntry["lastChannel"];
@@ -2199,13 +2224,15 @@ export async function updateLastRoute(params: {
   ctx?: MsgContext;
   groupResolution?: import("./types.js").GroupKeyResolution | null;
   createIfMissing?: boolean;
-}): Promise<SessionEntry | null> {
+};
+
+export async function updateLastRoute(params: UpdateLastRouteParams): Promise<SessionEntry | null> {
   const { storePath, sessionKey, channel, to, accountId, threadId, ctx } = params;
   const createIfMissing = params.createIfMissing ?? true;
-  return await runExclusiveSessionStoreWrite(storePath, async () => {
-    const store = loadMutableSessionStoreForWriter(storePath);
-    const resolved = resolveSessionStoreEntry({ store, sessionKey });
-    const existing = resolved.existing;
+  const buildNextEntry = (
+    existing: SessionEntry | undefined,
+    normalizedKey: string,
+  ): SessionEntry | null => {
     if (!existing && !createIfMissing) {
       return null;
     }
@@ -2254,7 +2281,7 @@ export async function updateLastRoute(params: {
     const metaPatch = ctx
       ? deriveSessionMetaPatch({
           ctx,
-          sessionKey: resolved.normalizedKey,
+          sessionKey: normalizedKey,
           existing,
           groupResolution: params.groupResolution,
         })
@@ -2269,10 +2296,30 @@ export async function updateLastRoute(params: {
     };
     // Route updates must not refresh activity timestamps; idle/daily reset
     // evaluation relies on updatedAt from actual session turns (#49515).
-    const next = mergeSessionEntryPreserveActivity(
+    return mergeSessionEntryPreserveActivity(
       existing,
       metaPatch ? { ...basePatch, ...metaPatch } : basePatch,
     );
+  };
+  return await runExclusiveSessionStoreWrite(storePath, async () => {
+    if (isSqliteSessionStorePath(storePath)) {
+      const normalizedKey = normalizeStoreSessionKey(sessionKey);
+      const fast = await updateSqliteSessionStoreEntryFastPath({
+        storePath,
+        sessionKey,
+        replaceEntry: true,
+        update: (existing) => buildNextEntry(existing, normalizedKey),
+      });
+      if (fast.handled) {
+        return fast.entry;
+      }
+    }
+    const store = loadMutableSessionStoreForWriter(storePath);
+    const resolved = resolveSessionStoreEntry({ store, sessionKey });
+    const next = buildNextEntry(resolved.existing, resolved.normalizedKey);
+    if (!next) {
+      return null;
+    }
     return await persistResolvedSessionEntry({
       storePath,
       store,

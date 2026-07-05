@@ -4,6 +4,7 @@ import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import type { MsgContext } from "../../auto-reply/templating.js";
 import { requireNodeSqlite } from "../../infra/node-sqlite.js";
 import { createSuiteTempRootTracker } from "../../test-helpers/temp-dir.js";
 import { resolveStorePath } from "./paths.js";
@@ -19,9 +20,11 @@ import {
   clearSessionStoreCacheForTest,
   getSqliteSessionDiskBudgetWarningCountForTest,
   loadSessionStore,
+  recordSessionMetaFromInbound,
   readSessionUpdatedAt,
   readSessionEntry,
   saveSessionStore,
+  updateLastRoute,
   updateSessionStoreEntry,
 } from "./store.js";
 import type { SessionEntry } from "./types.js";
@@ -115,6 +118,53 @@ describe("SQLite session store", () => {
     expect(getSessionStoreSqliteStatsForTest()).toMatchObject({
       selectAll: 0,
       selectByKey: 2,
+    });
+  });
+
+  it("keeps inbound metadata and route updates row-scoped for existing sessions", async () => {
+    const dir = await suiteRootTracker.make("inbound-hot-writes");
+    const storePath = path.join(dir, "sessions.sqlite");
+    const sessionKey = "agent:main:signal:direct:user";
+    await saveSessionStore(
+      storePath,
+      {
+        [sessionKey]: entry("signal-session", 42),
+        "agent:main:signal:direct:unrelated": entry("unrelated", 41),
+      },
+      { skipMaintenance: true },
+    );
+
+    clearSessionStoreCacheForTest();
+    resetSessionStoreSqliteStatsForTest();
+    await recordSessionMetaFromInbound({
+      storePath,
+      sessionKey,
+      ctx: {
+        Provider: "signal",
+        Surface: "signal",
+        ChatType: "direct",
+        From: "+15555550100",
+        To: "+15555550101",
+      } as MsgContext,
+    });
+    await updateLastRoute({
+      storePath,
+      sessionKey,
+      channel: "signal",
+      to: "+15555550100",
+    });
+
+    expect(getSessionStoreSqliteStatsForTest()).toMatchObject({
+      selectAll: 0,
+      selectByKey: 2,
+      upsert: 2,
+    });
+    expect(readSessionEntry(storePath, sessionKey)).toMatchObject({
+      sessionId: "signal-session",
+      updatedAt: 42,
+      lastChannel: "signal",
+      lastTo: "+15555550100",
+      origin: { provider: "signal", chatType: "direct" },
     });
   });
 
