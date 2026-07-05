@@ -1,14 +1,19 @@
 {
   "id": "memory-core",
   "activation": {
-    "onStartup": false
+    "onStartup": false,
+    "onConfigPaths": ["plugins.entries.memory-core.config.summaries"]
   },
   "kind": "memory",
   "contracts": {
-    "tools": ["memory_get", "memory_search"]
+    "tools": ["memory_get", "memory_search", "session_summaries"]
   },
   "toolMetadata": {
     "memory_get": {
+      "replaySafe": true
+    },
+    "session_summaries": {
+      "optional": true,
       "replaySafe": true
     }
   },
@@ -29,6 +34,34 @@
       "label": "Dreaming Model",
       "placeholder": "anthropic/claude-sonnet-4-6",
       "help": "Optional provider/model override for Dream Diary narrative subagent runs. Requires plugins.entries.memory-core.subagent.allowModelOverride."
+    },
+    "summaries.autoInject": {
+      "label": "Inject Previous Session Summary",
+      "help": "Inject the directly preceding visible session summary as bounded untrusted continuity context. Enabled by default; set false to disable prompt injection."
+    },
+    "summaries.enabled": {
+      "label": "Session Summaries",
+      "help": "Generate durable bounded summaries when sessions end. Enabled by default for session continuity; set false to disable the additional model call. Summaries for non-default agents require plugins.entries.memory-core.llm.allowAgentIdOverride."
+    },
+    "summaries.lookbackDays": {
+      "label": "Summary Lookback Days",
+      "placeholder": "30",
+      "help": "Maximum age of summaries eligible for recall, retry, and predecessor injection."
+    },
+    "summaries.maxPromptTokens": {
+      "label": "Summary Prompt Token Budget",
+      "placeholder": "16000",
+      "help": "Maximum estimated prompt tokens per map or reduce model call."
+    },
+    "summaries.minMessages": {
+      "label": "Minimum Summary Messages",
+      "placeholder": "3",
+      "help": "Minimum extracted user and assistant messages required before generating a summary."
+    },
+    "summaries.model": {
+      "label": "Session Summary Model",
+      "placeholder": "anthropic/claude-sonnet-4-6",
+      "help": "Optional provider/model override. When omitted, the target agent's configured model is used. Model overrides require plugins.entries.memory-core.llm.allowModelOverride; non-default agents also require allowAgentIdOverride."
     }
   },
   "configSchema": {
@@ -197,6 +230,38 @@
                 }
               }
             }
+          }
+        }
+      },
+      "summaries": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "model": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "autoInject": {
+            "type": "boolean"
+          },
+          "lookbackDays": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3650
+          },
+          "maxPromptTokens": {
+            "type": "integer",
+            "minimum": 1024,
+            "maximum": 65536
+          },
+          "minMessages": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
           }
         }
       }
