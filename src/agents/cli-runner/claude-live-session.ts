@@ -9,6 +9,7 @@ import type { CliBackendConfig } from "../../config/types.js";
 import { createAbortError as createNamedAbortError } from "../../infra/abort-signal.js";
 import {
   emitTrustedDiagnosticEvent,
+  type DiagnosticPhaseDetails,
   type DiagnosticToolParamsSummary,
   type DiagnosticToolSource,
   type DiagnosticToolExecutionErrorEvent,
@@ -54,6 +55,10 @@ type ClaudeLiveTurn = {
   diagnosticRefs: ClaudeLiveDiagnosticRefs;
   outputLimits: ClaudeLiveOutputLimits;
   startedAtMs: number;
+  processAgeMs: number;
+  sessionReuse: ClaudeLiveSessionReuse;
+  restartReason?: ClaudeLiveRestartReason;
+  timings: ClaudeLiveTurnTimings;
   rawLines: string[];
   rawChars: number;
   sessionId?: string;
@@ -109,6 +114,16 @@ type ClaudeLiveToolUse = {
   toolName: string;
   toolCallId: string;
   paramsSummary?: DiagnosticToolParamsSummary;
+};
+type ClaudeLiveSessionReuse = "cold_miss" | "warm_hit";
+type ClaudeLiveRestartReason = "fingerprint_changed" | "max_age" | "non_resume_turn";
+type ClaudeLiveTurnOutcome = "aborted" | "completed" | "error";
+type ClaudeLiveTurnTimings = {
+  stdinWriteMs?: number;
+  timeToFirstStdoutByteMs?: number;
+  timeToFirstParsedRecordMs?: number;
+  timeToFirstAssistantDeltaMs?: number;
+  timeToResultMs?: number;
 };
 
 const CLAUDE_LIVE_IDLE_TIMEOUT_MS = 6 * 60 * 60 * 1_000;
@@ -400,17 +415,51 @@ function clearTurnTimers(turn: ClaudeLiveTurn): void {
   }
 }
 
+function elapsedClaudeLiveTurnMs(turn: ClaudeLiveTurn, now = Date.now()): number {
+  return Math.max(0, now - turn.startedAtMs);
+}
+
+function emitClaudeLiveTurnTiming(
+  session: ClaudeLiveSession,
+  turn: ClaudeLiveTurn,
+  outcome: ClaudeLiveTurnOutcome,
+) {
+  const endedAt = Date.now();
+  const durationMs = elapsedClaudeLiveTurnMs(turn, endedAt);
+  const details = {
+    runId: turn.diagnosticRefs.runId,
+    provider: session.providerId,
+    model: session.modelId,
+    sessionReuse: turn.sessionReuse,
+    outcome,
+    processAgeMs: turn.processAgeMs,
+    ...(turn.restartReason ? { restartReason: turn.restartReason } : {}),
+    ...turn.timings,
+  } satisfies DiagnosticPhaseDetails;
+  emitTrustedDiagnosticEvent({
+    type: "diagnostic.phase.completed",
+    name: "claude.live.turn",
+    startedAt: turn.startedAtMs,
+    endedAt,
+    durationMs,
+    details,
+  });
+  return { durationMs, details };
+}
+
 function finishTurn(session: ClaudeLiveSession, output: CliOutput): void {
   const turn = session.currentTurn;
   if (!turn) {
     return;
   }
-  cliBackendLog.info(
-    `claude live session turn: provider=${session.providerId} model=${session.modelId} durationMs=${Date.now() - turn.startedAtMs} rawLines=${turn.rawLines.length} ${formatCliBackendOutputDigest(output.text)}`,
-  );
   completeActiveClaudeLiveTools(turn);
   clearTurnTimers(turn);
   turn.streamingParser.finish();
+  const timing = emitClaudeLiveTurnTiming(session, turn, "completed");
+  cliBackendLog.info(
+    `claude live session turn: provider=${session.providerId} model=${session.modelId} durationMs=${timing.durationMs} rawLines=${turn.rawLines.length} ${formatCliBackendOutputDigest(output.text)}`,
+    timing.details,
+  );
   session.currentTurn = null;
   session.lastUsedAtMs = Date.now();
   turn.resolve(output);
@@ -422,13 +471,21 @@ function failTurn(session: ClaudeLiveSession, error: unknown): void {
   if (!turn) {
     return;
   }
-  const errorKind = error instanceof Error ? error.name : typeof error;
-  cliBackendLog.warn(
-    `claude live session turn failed: provider=${session.providerId} model=${session.modelId} durationMs=${Date.now() - turn.startedAtMs} error=${errorKind}`,
-  );
+  const errorKind =
+    error instanceof FailoverError
+      ? error.reason
+      : error instanceof Error && error.name === "AbortError"
+        ? "aborted"
+        : "error";
   failActiveClaudeLiveTools(turn, error);
   clearTurnTimers(turn);
   turn.streamingParser.finish();
+  const outcome = errorKind === "aborted" ? "aborted" : "error";
+  const timing = emitClaudeLiveTurnTiming(session, turn, outcome);
+  cliBackendLog.warn(
+    `claude live session turn failed: provider=${session.providerId} model=${session.modelId} durationMs=${timing.durationMs} error=${errorKind}`,
+    { ...timing.details, errorCategory: errorKind },
+  );
   session.currentTurn = null;
   session.lastUsedAtMs = Date.now();
   turn.reject(error);
@@ -886,6 +943,10 @@ function handleClaudeLiveLine(session: ClaudeLiveSession, line: string): void {
   if (!turn) {
     return;
   }
+  turn.timings.timeToFirstParsedRecordMs ??= elapsedClaudeLiveTurnMs(turn);
+  if (parsed.type === "result") {
+    turn.timings.timeToResultMs ??= elapsedClaudeLiveTurnMs(turn);
+  }
   turn.rawChars += trimmed.length + 1;
   if (
     turn.rawChars > turn.outputLimits.maxTurnRawChars ||
@@ -923,6 +984,10 @@ function handleClaudeLiveLine(session: ClaudeLiveSession, line: string): void {
 }
 
 function handleClaudeStdout(session: ClaudeLiveSession, chunk: string) {
+  const turn = session.currentTurn;
+  if (turn && chunk.length > 0) {
+    turn.timings.timeToFirstStdoutByteMs ??= elapsedClaudeLiveTurnMs(turn);
+  }
   resetNoOutputTimer(session);
   session.stdoutBuffer += chunk;
   const maxPendingLineChars =
@@ -1026,8 +1091,13 @@ async function writeTurnInput(session: ClaudeLiveSession, prompt: string): Promi
   if (!stdin) {
     throw new Error("Claude CLI live session stdin is unavailable");
   }
+  const turn = session.currentTurn;
+  const startedAtMs = Date.now();
   await new Promise<void>((resolve, reject) => {
     stdin.write(createClaudeUserInputMessage(prompt), (error) => {
+      if (turn) {
+        turn.timings.stdinWriteMs ??= Math.max(0, Date.now() - startedAtMs);
+      }
       if (error) {
         reject(error);
         return;
@@ -1095,7 +1165,7 @@ async function createClaudeLiveSession(params: {
   session = {
     key: params.key,
     fingerprint: params.fingerprint,
-    createdAtMs: Date.now(),
+    createdAtMs: managedRun.startedAtMs,
     lastUsedAtMs: Date.now(),
     pinnedMain: isCanonicalMainSession(params.context),
     managedRun,
@@ -1132,6 +1202,8 @@ async function createClaudeLiveSession(params: {
 function createTurn(params: {
   context: PreparedCliRunContext;
   noOutputTimeoutMs: number;
+  sessionReuse: ClaudeLiveSessionReuse;
+  restartReason?: ClaudeLiveRestartReason;
   onAssistantDelta: (delta: CliStreamingDelta) => void;
   onAssistantBoundary?: (boundary: CliStreamingBoundary) => void;
   onToolUseStart?: (delta: CliToolUseStartDelta) => void;
@@ -1142,6 +1214,8 @@ function createTurn(params: {
   resolve: (output: CliOutput) => void;
   reject: (error: unknown) => void;
 }): ClaudeLiveTurn {
+  const startedAtMs = Date.now();
+  const timings: ClaudeLiveTurnTimings = {};
   const turn: ClaudeLiveTurn = {
     backend: params.context.preparedBackend.backend,
     diagnosticRefs: {
@@ -1150,7 +1224,11 @@ function createTurn(params: {
       ...(params.context.params.sessionKey ? { sessionKey: params.context.params.sessionKey } : {}),
     },
     outputLimits: resolveCliStreamJsonOutputLimits(params.context.preparedBackend.backend),
-    startedAtMs: Date.now(),
+    startedAtMs,
+    processAgeMs: Math.max(0, startedAtMs - params.session.createdAtMs),
+    sessionReuse: params.sessionReuse,
+    restartReason: params.restartReason,
+    timings,
     rawLines: [],
     rawChars: 0,
     noOutputTimer: null,
@@ -1161,7 +1239,10 @@ function createTurn(params: {
     streamingParser: createCliJsonlStreamingParser({
       backend: params.context.preparedBackend.backend,
       providerId: params.context.backendResolved.id,
-      onAssistantDelta: params.onAssistantDelta,
+      onAssistantDelta: (delta) => {
+        timings.timeToFirstAssistantDeltaMs ??= Math.max(0, Date.now() - startedAtMs);
+        params.onAssistantDelta(delta);
+      },
       onAssistantBoundary: params.onAssistantBoundary,
       onToolUseStart: params.onToolUseStart,
       onToolResult: params.onToolResult,
@@ -1225,6 +1306,24 @@ function ensureLiveSessionCapacity(key: string, context: PreparedCliRunContext):
   });
 }
 
+function resolveClaudeLiveRestartReason(params: {
+  session: ClaudeLiveSession;
+  fingerprint: string;
+  resumeCapable: boolean;
+  useResume: boolean;
+}): ClaudeLiveRestartReason | undefined {
+  if (Date.now() - params.session.createdAtMs >= CLAUDE_LIVE_MAX_AGE_MS) {
+    return "max_age";
+  }
+  if (params.resumeCapable && !params.useResume) {
+    return "non_resume_turn";
+  }
+  if (params.session.fingerprint !== params.fingerprint) {
+    return "fingerprint_changed";
+  }
+  return undefined;
+}
+
 /** Runs one prompt through a reusable Claude CLI live session. */
 export async function runClaudeLiveSessionTurn(params: {
   context: PreparedCliRunContext;
@@ -1268,23 +1367,35 @@ export async function runClaudeLiveSessionTurn(params: {
     cleanupDone = true;
     await params.cleanup();
   };
-  let session = liveSessions.get(key) ?? null;
-  if (session && Date.now() - session.createdAtMs >= CLAUDE_LIVE_MAX_AGE_MS) {
-    // Bound credentials, process state, and launch-time configuration. Main
-    // sessions skip idle/LRU eviction but still rotate at the next turn.
-    closeLiveSession(session, "restart");
-    session = null;
-  }
-  if (session && resumeCapable && !params.useResume) {
-    // Non-resume turns must start from a fresh process when the backend supports resume; otherwise
-    // Claude could inherit conversation state from the previous live turn.
-    closeLiveSession(session, "restart");
-    session = null;
-  }
-  if (session && session.fingerprint !== fingerprint) {
-    closeLiveSession(session, "restart");
-    session = null;
-  }
+  let restartReason: ClaudeLiveRestartReason | undefined;
+  const selectReusableSession = (candidate: ClaudeLiveSession | null): ClaudeLiveSession | null => {
+    if (!candidate) {
+      return null;
+    }
+    const reason = resolveClaudeLiveRestartReason({
+      session: candidate,
+      fingerprint,
+      resumeCapable,
+      useResume: params.useResume,
+    });
+    if (!reason) {
+      return candidate;
+    }
+    // Bound launch-time state and prevent non-resume turns from inheriting a
+    // reusable process. The closed code is safe to emit; fingerprints are not.
+    restartReason ??= reason;
+    cliBackendLog.info(
+      `claude live session restart: provider=${candidate.providerId} model=${candidate.modelId} reason=${reason}`,
+      {
+        runId: params.context.params.runId,
+        restartReason: reason,
+        processAgeMs: Math.max(0, Date.now() - candidate.createdAtMs),
+      },
+    );
+    closeLiveSession(candidate, "restart");
+    return null;
+  };
+  let session = selectReusableSession(liveSessions.get(key) ?? null);
   let cleanupTurnArtifacts = Boolean(session);
   try {
     ensureLiveSessionCapacity(key, params.context);
@@ -1296,18 +1407,12 @@ export async function runClaudeLiveSessionTurn(params: {
     const pendingSession = liveSessionCreates.get(key);
     if (pendingSession) {
       try {
-        session = await pendingSession;
+        session = selectReusableSession(await pendingSession);
       } catch (error) {
         await cleanup();
         throw error;
       }
-      if (session.fingerprint !== fingerprint) {
-        closeLiveSession(session, "restart");
-        session = null;
-      } else if (resumeCapable && !params.useResume) {
-        closeLiveSession(session, "restart");
-        session = null;
-      } else {
+      if (session) {
         cleanupTurnArtifacts = true;
       }
     }
@@ -1360,11 +1465,14 @@ export async function runClaudeLiveSessionTurn(params: {
   }
   liveSession.noOutputTimeoutMs = params.noOutputTimeoutMs;
   liveSession.stderr = "";
+  const sessionReuse: ClaudeLiveSessionReuse = cleanupTurnArtifacts ? "warm_hit" : "cold_miss";
 
   const outputPromise = new Promise<CliOutput>((resolve, reject) => {
     liveSession.currentTurn = createTurn({
       context: params.context,
       noOutputTimeoutMs: params.noOutputTimeoutMs,
+      sessionReuse,
+      restartReason,
       onAssistantDelta: params.onAssistantDelta,
       onAssistantBoundary: params.onAssistantBoundary,
       onToolUseStart: params.onToolUseStart,

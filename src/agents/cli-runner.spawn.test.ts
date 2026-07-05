@@ -16,6 +16,7 @@ import {
 import { onAgentEvent, resetAgentEventsForTest } from "../infra/agent-events.js";
 import {
   onInternalDiagnosticEvent,
+  type DiagnosticPhaseCompletedEvent,
   waitForDiagnosticEventsDrained,
 } from "../infra/diagnostic-events.js";
 import {
@@ -87,6 +88,19 @@ afterEach(() => {
 });
 
 const CLAUDE_OK_JSONL = `${JSON.stringify({ type: "result", result: "ok" })}\n`;
+
+function captureClaudeLiveTurnDiagnostics(): {
+  events: DiagnosticPhaseCompletedEvent[];
+  stop: () => void;
+} {
+  const events: DiagnosticPhaseCompletedEvent[] = [];
+  const stop = onInternalDiagnosticEvent((event) => {
+    if (event.type === "diagnostic.phase.completed" && event.name === "claude.live.turn") {
+      events.push(event);
+    }
+  });
+  return { events, stop };
+}
 
 function mockSuccessfulClaudeJsonlRun() {
   supervisorSpawnMock.mockResolvedValueOnce(
@@ -2264,6 +2278,245 @@ ${JSON.stringify({
     expect(parsed.response.response.behavior).toBe("allow");
     expect(parsed.response.response.toolUseID).toBe("tool-allow-1");
     expect(parsed.response.response.updatedInput).toEqual({ command: "ls" });
+  });
+
+  it("reports content-free Claude live turn latency milestones", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const startedAtMs = new Date("2026-07-05T12:00:00.000Z").getTime();
+    vi.setSystemTime(startedAtMs);
+    const diagnostics = captureClaudeLiveTurnDiagnostics();
+    const logInfoSpy = vi.spyOn(cliBackendLog, "info").mockImplementation(() => undefined);
+
+    supervisorSpawnMock.mockImplementationOnce(async (...args: unknown[]) => {
+      const input = (args[0] ?? {}) as { onStdout?: (chunk: string) => void };
+      return {
+        runId: "live-timing",
+        pid: 3061,
+        startedAtMs: Date.now(),
+        stdin: {
+          write: vi.fn((data: string, cb?: (err?: Error | null) => void) => {
+            vi.setSystemTime(startedAtMs + 5);
+            cb?.();
+            vi.setSystemTime(startedAtMs + 7);
+            input.onStdout?.('{"type":"system"');
+            vi.setSystemTime(startedAtMs + 12);
+            input.onStdout?.(',"subtype":"init","session_id":"live-timing"}\n');
+            vi.setSystemTime(startedAtMs + 20);
+            input.onStdout?.(
+              `${JSON.stringify({
+                type: "stream_event",
+                event: {
+                  type: "content_block_delta",
+                  delta: { type: "text_delta", text: "timed" },
+                },
+              })}\n`,
+            );
+            vi.setSystemTime(startedAtMs + 30);
+            input.onStdout?.(
+              `${JSON.stringify({
+                type: "result",
+                session_id: "live-timing",
+                result: "timed",
+              })}\n`,
+            );
+          }),
+          end: vi.fn(),
+        },
+        wait: vi.fn(() => new Promise(() => {})),
+        cancel: vi.fn(),
+      };
+    });
+
+    try {
+      const result = await executePreparedCliRun(
+        buildPreparedCliRunContext({
+          provider: "claude-cli",
+          model: "sonnet",
+          runId: "run-live-timing",
+          prompt: "TOP SECRET PROMPT",
+          backend: { liveSession: "claude-stdio" },
+        }),
+      );
+
+      expect(result.text).toBe("timed");
+      expect(diagnostics.events).toHaveLength(1);
+      expect(diagnostics.events[0]).toMatchObject({
+        name: "claude.live.turn",
+        startedAt: startedAtMs,
+        endedAt: startedAtMs + 30,
+        durationMs: 30,
+        details: {
+          runId: "run-live-timing",
+          provider: "claude-cli",
+          model: "sonnet",
+          sessionReuse: "cold_miss",
+          outcome: "completed",
+          processAgeMs: 0,
+          stdinWriteMs: 5,
+          timeToFirstStdoutByteMs: 7,
+          timeToFirstParsedRecordMs: 12,
+          timeToFirstAssistantDeltaMs: 20,
+          timeToResultMs: 30,
+        },
+      });
+      const turnLog = logInfoSpy.mock.calls.find(([message]) =>
+        message.startsWith("claude live session turn:"),
+      );
+      expect(turnLog?.[1]).toMatchObject(diagnostics.events[0]?.details ?? {});
+      expect(JSON.stringify({ event: diagnostics.events[0], log: turnLog })).not.toContain(
+        "TOP SECRET PROMPT",
+      );
+    } finally {
+      diagnostics.stop();
+    }
+  });
+
+  it("distinguishes cold and warm Claude live turns with process age", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const startedAtMs = new Date("2026-07-05T13:00:00.000Z").getTime();
+    vi.setSystemTime(startedAtMs);
+    const diagnostics = captureClaudeLiveTurnDiagnostics();
+    let turnIndex = 0;
+    supervisorSpawnMock.mockImplementationOnce(async (...args: unknown[]) => {
+      const input = (args[0] ?? {}) as { onStdout?: (chunk: string) => void };
+      return {
+        runId: "live-reuse-diagnostics",
+        pid: 3062,
+        startedAtMs: Date.now(),
+        stdin: {
+          write: vi.fn((data: string, cb?: (err?: Error | null) => void) => {
+            turnIndex += 1;
+            cb?.();
+            input.onStdout?.(
+              `${JSON.stringify({
+                type: "result",
+                session_id: "live-reuse-diagnostics",
+                result: `turn-${turnIndex}`,
+              })}\n`,
+            );
+          }),
+          end: vi.fn(),
+        },
+        wait: vi.fn(() => new Promise(() => {})),
+        cancel: vi.fn(),
+      };
+    });
+
+    try {
+      const first = await executePreparedCliRun(
+        buildPreparedCliRunContext({
+          provider: "claude-cli",
+          model: "sonnet",
+          runId: "run-live-cold",
+          backend: { liveSession: "claude-stdio" },
+        }),
+      );
+      vi.setSystemTime(startedAtMs + 5_000);
+      const second = await executePreparedCliRun(
+        buildPreparedCliRunContext({
+          provider: "claude-cli",
+          model: "sonnet",
+          runId: "run-live-warm",
+          backend: { liveSession: "claude-stdio" },
+        }),
+      );
+
+      expect(first.text).toBe("turn-1");
+      expect(second.text).toBe("turn-2");
+      expect(supervisorSpawnMock).toHaveBeenCalledOnce();
+      expect(diagnostics.events.map((event) => event.details)).toEqual([
+        expect.objectContaining({
+          runId: "run-live-cold",
+          sessionReuse: "cold_miss",
+          processAgeMs: 0,
+        }),
+        expect.objectContaining({
+          runId: "run-live-warm",
+          sessionReuse: "warm_hit",
+          processAgeMs: 5_000,
+        }),
+      ]);
+    } finally {
+      diagnostics.stop();
+    }
+  });
+
+  it("reports a closed restart reason without exposing fingerprint inputs", async () => {
+    const diagnostics = captureClaudeLiveTurnDiagnostics();
+    const logInfoSpy = vi.spyOn(cliBackendLog, "info").mockImplementation(() => undefined);
+    const cancels: Array<ReturnType<typeof vi.fn>> = [];
+    supervisorSpawnMock.mockImplementation(async (...args: unknown[]) => {
+      const input = (args[0] ?? {}) as { onStdout?: (chunk: string) => void };
+      const spawnIndex = supervisorSpawnMock.mock.calls.length;
+      const cancel = vi.fn();
+      cancels.push(cancel);
+      return {
+        runId: `live-restart-${spawnIndex}`,
+        pid: 3062 + spawnIndex,
+        startedAtMs: Date.now(),
+        stdin: {
+          write: vi.fn((data: string, cb?: (err?: Error | null) => void) => {
+            cb?.();
+            input.onStdout?.(
+              `${JSON.stringify({
+                type: "result",
+                session_id: `live-restart-${spawnIndex}`,
+                result: `restart-${spawnIndex}`,
+              })}\n`,
+            );
+          }),
+          end: vi.fn(),
+        },
+        wait: vi.fn(() => new Promise(() => {})),
+        cancel,
+      };
+    });
+
+    try {
+      const first = await executePreparedCliRun(
+        buildPreparedCliRunContext({
+          provider: "claude-cli",
+          model: "sonnet",
+          runId: "run-live-before-fingerprint-change",
+          backend: { liveSession: "claude-stdio" },
+          preparedEnv: { ANTHROPIC_BASE_URL: "https://first.example" },
+        }),
+      );
+      const second = await executePreparedCliRun(
+        buildPreparedCliRunContext({
+          provider: "claude-cli",
+          model: "sonnet",
+          runId: "run-live-after-fingerprint-change",
+          backend: { liveSession: "claude-stdio" },
+          preparedEnv: { ANTHROPIC_BASE_URL: "https://second.example" },
+        }),
+      );
+
+      expect(first.text).toBe("restart-1");
+      expect(second.text).toBe("restart-2");
+      expect(supervisorSpawnMock).toHaveBeenCalledTimes(2);
+      expect(cancels[0]).toHaveBeenCalledWith("manual-cancel");
+      expect(diagnostics.events[1]?.details).toMatchObject({
+        runId: "run-live-after-fingerprint-change",
+        sessionReuse: "cold_miss",
+        restartReason: "fingerprint_changed",
+      });
+      const restartLog = logInfoSpy.mock.calls.find(([message]) =>
+        message.startsWith("claude live session restart:"),
+      );
+      expect(restartLog?.[1]).toMatchObject({
+        runId: "run-live-after-fingerprint-change",
+        restartReason: "fingerprint_changed",
+      });
+      expect(JSON.stringify({ event: diagnostics.events[1], log: restartLog })).not.toContain(
+        "first.example",
+      );
+      expect(JSON.stringify({ event: diagnostics.events[1], log: restartLog })).not.toContain(
+        "second.example",
+      );
+    } finally {
+      diagnostics.stop();
+    }
   });
 
   it("reports Claude live stream progress and keeps native tools fresh while they are running", async () => {
