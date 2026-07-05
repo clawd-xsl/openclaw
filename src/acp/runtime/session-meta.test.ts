@@ -3,7 +3,12 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
-import { loadSessionStore } from "../../config/sessions/store-load.js";
+import { resolveStorePath } from "../../config/sessions/paths.js";
+import {
+  clearSessionStoreCacheForTest,
+  loadSessionStore,
+  saveSessionStore,
+} from "../../config/sessions/store.js";
 import { writeSessionStoreForTestAsync } from "../../config/sessions/test-helpers.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { withTempDir } from "../../test-helpers/temp-dir.js";
@@ -454,37 +459,40 @@ describe("ACP session metadata SQLite store", () => {
       const env = { ...process.env, OPENCLAW_STATE_DIR: dir } as NodeJS.ProcessEnv;
       const cfg = {} as OpenClawConfig;
       const sessionKey = "agent:codex:acp:s1";
-      const storePath = path.join(dir, "agents", "codex", "sessions", "sessions.json");
-      await fs.mkdir(path.dirname(storePath), { recursive: true });
-      await fs.writeFile(
-        storePath,
-        JSON.stringify({
-          [sessionKey]: {
-            sessionId: "sess-acp",
-            updatedAt: 100,
+      const storePath = resolveStorePath(cfg.session?.store, { agentId: "codex", env });
+      try {
+        await saveSessionStore(
+          storePath,
+          {
+            [sessionKey]: {
+              sessionId: "sess-acp",
+              updatedAt: 100,
+            },
           },
-        }),
-        "utf8",
-      );
-      await upsertAcpSessionMeta({
-        cfg,
-        env,
-        sessionKey,
-        mutate: () => ({
-          backend: "acpx",
-          agent: "codex",
-          runtimeSessionName: "codex-s1",
-          mode: "persistent",
-          state: "idle",
-          lastActivityAt: 321,
-        }),
-      });
+          { skipMaintenance: true },
+        );
+        await upsertAcpSessionMeta({
+          cfg,
+          env,
+          sessionKey,
+          mutate: () => ({
+            backend: "acpx",
+            agent: "codex",
+            runtimeSessionName: "codex-s1",
+            mode: "persistent",
+            state: "idle",
+            lastActivityAt: 321,
+          }),
+        });
 
-      const entries = await listAcpSessionEntries({ cfg, env });
+        const entries = await listAcpSessionEntries({ cfg, env });
 
-      expect(entries).toHaveLength(1);
-      expect(entries[0]?.storePath).toBe(storePath);
-      expect(entries[0]?.entry?.sessionId).toBe("sess-acp");
+        expect(entries).toHaveLength(1);
+        expect(entries[0]?.storePath).toBe(storePath);
+        expect(entries[0]?.entry?.sessionId).toBe("sess-acp");
+      } finally {
+        clearSessionStoreCacheForTest();
+      }
     });
   });
 });
