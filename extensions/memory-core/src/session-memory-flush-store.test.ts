@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   createSessionMemoryFlushCandidate,
   createSessionMemoryFlushPlanSnapshot,
+  createSessionMemoryFlushWorkspaceTarget,
   isSessionMemoryFlushRecord,
   SESSION_MEMORY_FLUSH_PLAN_TEXT_MAX_BYTES,
   SESSION_MEMORY_FLUSH_PROCESSING_LEASE_MS,
@@ -65,6 +66,12 @@ function createInput(messageCount = 2) {
     messageCount,
     maxPromptTokens: 16_000,
     generationConfigFingerprint: "prompt=16000",
+    workspaceTarget: createSessionMemoryFlushWorkspaceTarget({
+      configuredPath: "/workspace/main",
+      realPath: "/workspace/main",
+      device: "1",
+      inode: "2",
+    }),
     plan: createSessionMemoryFlushPlanSnapshot({
       prompt: "extract",
       systemPrompt: "system",
@@ -194,6 +201,12 @@ describe("SessionMemoryFlushRepository", () => {
         plan: { ...persisted?.plan, fingerprint: "0".repeat(64) },
       }),
     ).toBe(false);
+    expect(
+      isSessionMemoryFlushRecord({
+        ...persisted,
+        workspaceTarget: { ...persisted?.workspaceTarget, fingerprint: "0".repeat(64) },
+      }),
+    ).toBe(false);
     if (!persisted) {
       throw new Error("expected persisted record");
     }
@@ -202,6 +215,60 @@ describe("SessionMemoryFlushRepository", () => {
       operationId: `v1:${"0".repeat(64)}`,
     });
     await expect(repository.enqueue(createInput())).rejects.toThrow("integrity validation");
+  });
+
+  it("rejects a forged workspace target before registering the outbox record", async () => {
+    const repository = new SessionMemoryFlushRepository({
+      openStore: () => createMemoryStore<SessionMemoryFlushRecord>(),
+    });
+    const input = createInput();
+    input.workspaceTarget = { ...input.workspaceTarget, fingerprint: "0".repeat(64) };
+    await expect(repository.enqueue(input)).rejects.toThrow("integrity validation");
+    await expect(repository.lookup("main", "ended-session")).resolves.toBeUndefined();
+  });
+
+  it("does not revive a durable cancellation tombstone on duplicate enqueue", async () => {
+    const repository = new SessionMemoryFlushRepository({
+      openStore: () => createMemoryStore<SessionMemoryFlushRecord>(),
+    });
+    const first = await repository.enqueue(createInput());
+    await repository.claim(first.key);
+    await repository.cancel(first.key);
+
+    const duplicate = await repository.enqueue(createInput(5));
+
+    expect(duplicate.shouldProcess).toBe(false);
+    expect(duplicate.record).toMatchObject({
+      status: "failed",
+      terminalCode: "cancelled",
+      nextAttemptAt: null,
+    });
+  });
+
+  it("requires the projection lock when a failed record retains an append candidate", async () => {
+    const repository = new SessionMemoryFlushRepository({
+      openStore: () => createMemoryStore<SessionMemoryFlushRecord>(),
+    });
+    const enqueued = await repository.enqueue(createInput());
+    const claim = await repository.claim(enqueued.key);
+    if (!claim) {
+      throw new Error("expected claim");
+    }
+    await repository.persistCandidate(enqueued.key, {
+      candidate: createSessionMemoryFlushCandidate({ kind: "append", content: "durable" }),
+      expectedRevision: claim.revision,
+      extractedMessageCount: 2,
+      transcriptFingerprint: "e".repeat(64),
+    });
+    await repository.markFailed(enqueued.key, {
+      error: "projection lock timed out",
+      expectedRevision: claim.revision,
+    });
+
+    await expect(repository.cancel(enqueued.key)).resolves.toMatchObject({
+      requiresProjectionLock: true,
+      record: { terminalCode: "cancelled" },
+    });
   });
 
   it("rejects non-canonical or impossible projection dates", () => {

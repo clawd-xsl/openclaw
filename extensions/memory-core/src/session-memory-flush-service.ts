@@ -1,5 +1,6 @@
 // Memory Core plugin module runs durable completed-session memory-flush work.
 import { randomUUID } from "node:crypto";
+import { realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
@@ -11,6 +12,7 @@ import type { CompletedSessionMemoryFlushConfig } from "./session-memory-flush-c
 import {
   projectSessionMemoryFlushCandidate,
   SessionMemoryFlushProjectionError,
+  withSessionMemoryFlushProjectionLock,
 } from "./session-memory-flush-projection.js";
 import {
   buildSessionMemoryFlushPrompt,
@@ -19,9 +21,11 @@ import {
 import {
   buildSessionMemoryFlushOperationId,
   createSessionMemoryFlushCandidate,
+  createSessionMemoryFlushWorkspaceTarget,
   SessionMemoryFlushRepository,
   type SessionMemoryFlushEnqueueInput,
   type SessionMemoryFlushRecord,
+  type SessionMemoryFlushWorkspaceTarget,
 } from "./session-memory-flush-store.js";
 import {
   buildSessionTranscriptFingerprint,
@@ -34,6 +38,9 @@ type AgentRuntime = OpenClawPluginApi["runtime"]["agent"];
 type RunEmbeddedAgent = AgentRuntime["runEmbeddedAgent"];
 type ReadBoundedTranscriptEvents = typeof readBoundedSessionTranscriptEvents;
 type ProjectCandidate = typeof projectSessionMemoryFlushCandidate;
+type WithProjectionLock = typeof withSessionMemoryFlushProjectionLock;
+type CaptureWorkspaceTarget = typeof captureSessionMemoryFlushWorkspaceTarget;
+type ValidateWorkspaceTarget = typeof validateSessionMemoryFlushWorkspaceTarget;
 
 type SessionArtifact = {
   cleanup: () => Promise<void>;
@@ -44,6 +51,7 @@ export type SessionMemoryFlushServiceDependencies = {
   getConfig: () => CompletedSessionMemoryFlushConfig;
   getRuntimeConfig: () => OpenClawConfig;
   logger: Logger;
+  projectionLockDir: string;
   repository: SessionMemoryFlushRepository;
   resolveAgentDir: AgentRuntime["resolveAgentDir"];
   resolveAgentTimeoutMs: AgentRuntime["resolveAgentTimeoutMs"];
@@ -56,11 +64,14 @@ export type SessionMemoryFlushServiceDependencies = {
   now?: () => number;
   projectCandidate?: ProjectCandidate;
   readBoundedTranscriptEvents?: ReadBoundedTranscriptEvents;
+  captureWorkspaceTarget?: CaptureWorkspaceTarget;
+  validateWorkspaceTarget?: ValidateWorkspaceTarget;
+  withProjectionLock?: WithProjectionLock;
 };
 
 export type SessionMemoryFlushServiceEnqueueInput = Omit<
   SessionMemoryFlushEnqueueInput,
-  "generationConfigFingerprint" | "maxPromptTokens"
+  "generationConfigFingerprint" | "maxPromptTokens" | "workspaceTarget"
 >;
 
 const MAX_PERSISTED_ERROR_CHARS = 2_000;
@@ -72,6 +83,8 @@ export const SESSION_MEMORY_FLUSH_RUN_TIMEOUT_MS = 10 * 60 * 1_000;
 type ActiveClaim = {
   controller: AbortController;
   revision: number;
+  resolveSettled: () => void;
+  settled: Promise<void>;
 };
 
 type RetryTimer = {
@@ -98,6 +111,45 @@ function recoverableAt(record: SessionMemoryFlushRecord, now: number): number | 
     return record.leaseExpiresAt ?? record.processingAt ?? now;
   }
   return undefined;
+}
+
+export async function captureSessionMemoryFlushWorkspaceTarget(
+  workspaceDir: string,
+): Promise<SessionMemoryFlushWorkspaceTarget> {
+  const configuredPath = path.resolve(workspaceDir);
+  const ensured = await ensureAbsoluteDirectory(configuredPath, {
+    scopeLabel: "completed-session memory-flush workspace",
+  });
+  if (!ensured.ok) {
+    throw ensured.error;
+  }
+  const canonicalPath = await realpath(ensured.path);
+  const identity = await stat(canonicalPath, { bigint: true });
+  if (!identity.isDirectory()) {
+    throw new Error("completed-session memory-flush workspace is not a directory");
+  }
+  return createSessionMemoryFlushWorkspaceTarget({
+    configuredPath: ensured.path,
+    realPath: canonicalPath,
+    device: identity.dev.toString(),
+    inode: identity.ino.toString(),
+  });
+}
+
+export async function validateSessionMemoryFlushWorkspaceTarget(
+  target: SessionMemoryFlushWorkspaceTarget,
+): Promise<string> {
+  const canonicalPath = await realpath(target.configuredPath);
+  const identity = await stat(canonicalPath, { bigint: true });
+  if (
+    !identity.isDirectory() ||
+    canonicalPath !== target.realPath ||
+    identity.dev.toString() !== target.device ||
+    identity.ino.toString() !== target.inode
+  ) {
+    throw new Error("completed-session memory-flush workspace target changed after enqueue");
+  }
+  return target.realPath;
 }
 
 export async function createSessionMemoryFlushArtifact(params: {
@@ -201,6 +253,10 @@ export class SessionMemoryFlushService {
     SessionMemoryFlushServiceDependencies["createSessionArtifact"]
   >;
   private readonly projectCandidate: ProjectCandidate;
+  private readonly projectionLockDir: string;
+  private readonly captureWorkspaceTarget: CaptureWorkspaceTarget;
+  private readonly validateWorkspaceTarget: ValidateWorkspaceTarget;
+  private readonly withProjectionLock: WithProjectionLock;
   private readonly queuedKeys = new Set<string>();
   private readonly activeClaims = new Map<string, ActiveClaim>();
   private readonly cancelledKeys = new Set<string>();
@@ -224,6 +280,12 @@ export class SessionMemoryFlushService {
     this.resolveAgentWorkspaceDir = deps.resolveAgentWorkspaceDir;
     this.createSessionArtifact = deps.createSessionArtifact ?? createSessionMemoryFlushArtifact;
     this.projectCandidate = deps.projectCandidate ?? projectSessionMemoryFlushCandidate;
+    this.projectionLockDir = deps.projectionLockDir;
+    this.captureWorkspaceTarget =
+      deps.captureWorkspaceTarget ?? captureSessionMemoryFlushWorkspaceTarget;
+    this.validateWorkspaceTarget =
+      deps.validateWorkspaceTarget ?? validateSessionMemoryFlushWorkspaceTarget;
+    this.withProjectionLock = deps.withProjectionLock ?? withSessionMemoryFlushProjectionLock;
   }
 
   async enqueue(input: SessionMemoryFlushServiceEnqueueInput): Promise<void> {
@@ -231,10 +293,15 @@ export class SessionMemoryFlushService {
     if (this.stopped || !config.enabled) {
       return;
     }
+    const cfg = this.getRuntimeConfig();
+    const workspaceTarget = await this.captureWorkspaceTarget(
+      this.resolveAgentWorkspaceDir(cfg, input.agentId),
+    );
     const result = await this.repository.enqueue({
       ...input,
       maxPromptTokens: config.maxPromptTokens,
       generationConfigFingerprint: generationConfigFingerprint(config),
+      workspaceTarget,
     });
     this.cancelledKeys.delete(result.key);
     if (result.shouldProcess) {
@@ -267,8 +334,39 @@ export class SessionMemoryFlushService {
     this.cancelledKeys.add(key);
     this.queuedKeys.delete(key);
     this.clearRetryTimer(key);
-    this.activeClaims.get(key)?.controller.abort(new Error("completed session was deleted"));
-    await this.repository.purge(agentId, sessionId);
+    const active = this.activeClaims.get(key);
+    active?.controller.abort(new Error("completed session was deleted"));
+    const cancelled = await this.repository.cancel(key);
+    let purgeError: unknown;
+    if (cancelled?.requiresProjectionLock) {
+      try {
+        await this.withProjectionLock(
+          {
+            lockDir: this.projectionLockDir,
+            relativePath: cancelled.record.plan.relativePath,
+            workspaceDir: cancelled.record.workspaceTarget.realPath,
+            workspaceFingerprint: cancelled.record.workspaceTarget.fingerprint,
+          },
+          async () => {
+            await this.repository.purge(agentId, sessionId);
+          },
+        );
+      } catch (error) {
+        // Keep the non-recoverable cancellation tombstone. A cross-process
+        // projector may still own the target lock, so deleting without it would
+        // discard the only durable fence that makes shouldProject fail closed.
+        purgeError = error;
+        this.logger.debug?.(
+          `memory-core: session memory flush purge lock unavailable for ${key}: ${safeErrorMessage(error)}`,
+        );
+      }
+    } else {
+      await this.repository.purge(agentId, sessionId);
+    }
+    await active?.settled;
+    if (purgeError !== undefined) {
+      throw purgeError;
+    }
   }
 
   async recover(): Promise<void> {
@@ -285,6 +383,15 @@ export class SessionMemoryFlushService {
   }
 
   private async recoverInternal(): Promise<void> {
+    for (const { record } of await this.repository.listCancelled()) {
+      try {
+        await this.purge(record.agentId, record.sessionId);
+      } catch (error) {
+        this.logger.debug?.(
+          `memory-core: deferred cancelled flush purge for ${record.operationId}: ${safeErrorMessage(error)}`,
+        );
+      }
+    }
     for (const { key, record } of await this.repository.listRecoverable()) {
       const availableAt = recoverableAt(record, this.now());
       if (availableAt === undefined) {
@@ -351,7 +458,7 @@ export class SessionMemoryFlushService {
         return;
       }
       this.drainPromise = this.drain()
-        .catch((error) => {
+        .catch((error: unknown) => {
           this.logger.warn(
             `memory-core: session memory flush drain failed: ${safeErrorMessage(error)}`,
           );
@@ -365,7 +472,7 @@ export class SessionMemoryFlushService {
 
   private async drain(): Promise<void> {
     while (!this.stopped && this.queuedKeys.size > 0) {
-      const key = this.queuedKeys.values().next().value as string | undefined;
+      const key = this.queuedKeys.values().next().value;
       if (!key) {
         return;
       }
@@ -398,7 +505,16 @@ export class SessionMemoryFlushService {
       return;
     }
     const controller = new AbortController();
-    this.activeClaims.set(key, { controller, revision: claimed.revision });
+    let resolveSettled: () => void = () => undefined;
+    const settled = new Promise<void>((resolve) => {
+      resolveSettled = resolve;
+    });
+    this.activeClaims.set(key, {
+      controller,
+      revision: claimed.revision,
+      resolveSettled,
+      settled,
+    });
     try {
       if (this.stopped || this.cancelledKeys.has(key) || !this.getConfig().enabled) {
         await this.repository.releaseClaim(key, claimed.revision);
@@ -424,7 +540,7 @@ export class SessionMemoryFlushService {
           candidate = createSessionMemoryFlushCandidate({ kind: "noop" });
         } else {
           const cfg = this.getRuntimeConfig();
-          const workspaceDir = this.resolveAgentWorkspaceDir(cfg, claimed.agentId);
+          const workspaceDir = await this.validateWorkspaceTarget(claimed.workspaceTarget);
           const prompt = buildSessionMemoryFlushPrompt({
             maxPromptTokens: claimed.maxPromptTokens,
             messages,
@@ -488,13 +604,38 @@ export class SessionMemoryFlushService {
         return;
       }
       if (candidate.kind === "append") {
-        const cfg = this.getRuntimeConfig();
-        await this.projectCandidate({
+        const workspaceDir = await this.validateWorkspaceTarget(claimed.workspaceTarget);
+        const projection = await this.projectCandidate({
           candidate,
+          lockDir: this.projectionLockDir,
           operationId: claimed.operationId,
           relativePath: claimed.plan.relativePath,
-          workspaceDir: this.resolveAgentWorkspaceDir(cfg, claimed.agentId),
+          workspaceDir,
+          workspaceFingerprint: claimed.workspaceTarget.fingerprint,
+          validateTarget: async () => {
+            const validated = await this.validateWorkspaceTarget(claimed.workspaceTarget);
+            if (validated !== workspaceDir) {
+              throw new Error(
+                "completed-session memory-flush workspace target changed during projection",
+              );
+            }
+          },
+          shouldProject: async () => {
+            if (this.stopped || this.cancelledKeys.has(key) || !this.getConfig().enabled) {
+              return false;
+            }
+            const current = await this.repository.lookupKey(key);
+            return (
+              current?.status === "processing" &&
+              current.revision === claimed.revision &&
+              current.candidate?.sha256 === candidate.sha256
+            );
+          },
         });
+        if (projection === "cancelled") {
+          await this.repository.releaseClaim(key, claimed.revision);
+          return;
+        }
         controller.signal.throwIfAborted();
       }
       const completed = await this.repository.markComplete(key, {
@@ -528,6 +669,7 @@ export class SessionMemoryFlushService {
         `memory-core: session memory flush failed for ${claimed.agentId}/${claimed.sessionId}: ${safeErrorMessage(error)}`,
       );
     } finally {
+      this.activeClaims.get(key)?.resolveSettled();
       this.activeClaims.delete(key);
     }
   }

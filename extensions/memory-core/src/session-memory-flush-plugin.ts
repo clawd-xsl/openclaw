@@ -1,8 +1,10 @@
 // Memory Core plugin module registers completed-session memory flushing.
+import path from "node:path";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import {
   resolveDefaultAgentId,
   resolveSessionAgentId,
+  resolveStateDir,
   type OpenClawConfig,
 } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
@@ -102,6 +104,7 @@ export function registerCompletedSessionMemoryFlush(
     getRuntimeConfig: () => readCurrentConfig(api),
     logger: api.logger,
     now,
+    projectionLockDir: path.join(resolveStateDir(), "memory", "completed-session-flush-locks"),
     runEmbeddedAgent: api.runtime.agent.runEmbeddedAgent,
     resolveAgentDir: api.runtime.agent.resolveAgentDir,
     resolveAgentTimeoutMs: api.runtime.agent.resolveAgentTimeoutMs,

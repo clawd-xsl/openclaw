@@ -1,7 +1,11 @@
 // Memory Core plugin module projects persisted flush candidates exactly once.
 import { createHash } from "node:crypto";
+import path from "node:path";
+import { createAsyncLock } from "openclaw/plugin-sdk/async-lock-runtime";
 import { root } from "openclaw/plugin-sdk/file-access-runtime";
 import { withFileLock, type FileLockOptions } from "openclaw/plugin-sdk/file-lock";
+import { resolveGlobalSingleton } from "openclaw/plugin-sdk/global-singleton";
+import { ensureAbsoluteDirectory } from "openclaw/plugin-sdk/security-runtime";
 import { SESSION_MEMORY_FLUSH_MARKER_TOKEN } from "./session-memory-flush-prompt.js";
 import {
   isCanonicalSessionMemoryFlushPath,
@@ -22,6 +26,11 @@ const PROJECTION_LOCK_OPTIONS: FileLockOptions = {
   stale: 45 * 60 * 1_000,
 };
 
+const projectionProcessLocks = resolveGlobalSingleton(
+  Symbol.for("openclaw.memoryCore.sessionMemoryFlush.projectionLocks"),
+  () => new Map<string, { lock: ReturnType<typeof createAsyncLock>; references: number }>(),
+);
+
 export class SessionMemoryFlushProjectionError extends Error {
   readonly code: SessionMemoryFlushTerminalCode;
 
@@ -30,6 +39,63 @@ export class SessionMemoryFlushProjectionError extends Error {
     this.name = "SessionMemoryFlushProjectionError";
     this.code = code;
   }
+}
+
+type ProjectionTarget = {
+  lockDir: string;
+  relativePath: string;
+  workspaceDir: string;
+  workspaceFingerprint: string;
+};
+
+async function withProjectionProcessLock<T>(key: string, task: () => Promise<T>): Promise<T> {
+  let entry = projectionProcessLocks.get(key);
+  if (!entry) {
+    entry = { lock: createAsyncLock(), references: 0 };
+    projectionProcessLocks.set(key, entry);
+  }
+  entry.references += 1;
+  try {
+    return await entry.lock(task);
+  } finally {
+    entry.references -= 1;
+    if (entry.references === 0) {
+      projectionProcessLocks.delete(key);
+    }
+  }
+}
+
+async function withProjectionTargetLock<T>(
+  params: ProjectionTarget,
+  task: () => Promise<T>,
+): Promise<T> {
+  if (!isCanonicalSessionMemoryFlushPath(params.relativePath)) {
+    throw new Error("session memory flush projection requires memory/YYYY-MM-DD.md");
+  }
+  if (!/^[a-f0-9]{64}$/u.test(params.workspaceFingerprint)) {
+    throw new Error("session memory flush projection requires a workspace fingerprint");
+  }
+  const lockKey = createHash("sha256")
+    .update(`${params.workspaceFingerprint}\0${params.relativePath}`)
+    .digest("hex");
+  return await withProjectionProcessLock(lockKey, async () => {
+    const ensuredLockDir = await ensureAbsoluteDirectory(params.lockDir, {
+      scopeLabel: "completed-session memory-flush projection lock directory",
+      mode: 0o700,
+    });
+    if (!ensuredLockDir.ok) {
+      throw ensuredLockDir.error;
+    }
+    const lockTarget = path.join(ensuredLockDir.path, `${lockKey}.target`);
+    return await withFileLock(lockTarget, PROJECTION_LOCK_OPTIONS, task);
+  });
+}
+
+export async function withSessionMemoryFlushProjectionLock<T>(
+  params: ProjectionTarget,
+  task: () => Promise<T>,
+): Promise<T> {
+  return await withProjectionTargetLock(params, task);
 }
 
 function escapeRegExp(value: string): string {
@@ -122,22 +188,30 @@ function inspectExistingProjection(params: {
   return "complete";
 }
 
-export async function projectSessionMemoryFlushCandidate(params: {
-  candidate: Extract<SessionMemoryFlushCandidate, { kind: "append" }>;
-  operationId: string;
-  relativePath: string;
-  workspaceDir: string;
-}): Promise<"appended" | "reconciled"> {
-  if (!isCanonicalSessionMemoryFlushPath(params.relativePath)) {
-    throw new Error("session memory flush projection requires memory/YYYY-MM-DD.md");
-  }
-  const workspace = await root(params.workspaceDir, {
-    hardlinks: "reject",
-    maxBytes: SESSION_MEMORY_FLUSH_PROJECTION_MAX_BYTES,
-    symlinks: "reject",
-  });
-  const targetPath = await workspace.resolve(params.relativePath);
-  return await withFileLock(targetPath, PROJECTION_LOCK_OPTIONS, async () => {
+export async function projectSessionMemoryFlushCandidate(
+  params: ProjectionTarget & {
+    candidate: Extract<SessionMemoryFlushCandidate, { kind: "append" }>;
+    operationId: string;
+    shouldProject?: () => boolean | Promise<boolean>;
+    validateTarget?: () => Promise<void> | void;
+  },
+): Promise<"appended" | "cancelled" | "reconciled"> {
+  return await withProjectionTargetLock(params, async () => {
+    const workspace = await root(params.workspaceDir, {
+      hardlinks: "reject",
+      maxBytes: SESSION_MEMORY_FLUSH_PROJECTION_MAX_BYTES,
+      symlinks: "reject",
+    });
+    // Revalidate the persisted workspace identity after taking the target lock.
+    // This rejects config changes and replacements that happened before the
+    // critical section; fs-safe still guards the path-based append itself.
+    await params.validateTarget?.();
+    // Purge takes this same target lock before deleting the durable outbox record.
+    // Re-checking under the lock prevents a worker that was already in flight from
+    // appending after deletion has completed, including across plugin processes.
+    if (params.shouldProject && !(await params.shouldProject())) {
+      return "cancelled";
+    }
     const existing = (await workspace.exists(params.relativePath))
       ? await workspace.readText(params.relativePath, {
           maxBytes: SESSION_MEMORY_FLUSH_PROJECTION_MAX_BYTES,
@@ -165,6 +239,13 @@ export async function projectSessionMemoryFlushCandidate(params: {
       throw new Error(
         `session memory flush projection would exceed ${SESSION_MEMORY_FLUSH_PROJECTION_MAX_BYTES} bytes`,
       );
+    }
+    // Catch a workspace replacement that raced the bounded read before the
+    // path-based append. The stable state-directory lock still serializes every
+    // cooperating projector and purge even if the workspace path is replaced.
+    await params.validateTarget?.();
+    if (params.shouldProject && !(await params.shouldProject())) {
+      return "cancelled";
     }
     await workspace.append(params.relativePath, block, {
       mkdir: true,

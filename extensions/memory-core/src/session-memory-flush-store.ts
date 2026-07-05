@@ -1,5 +1,6 @@
 // Memory Core plugin module persists the completed-session memory-flush outbox.
 import { createHash } from "node:crypto";
+import path from "node:path";
 import type { PluginStateKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
 
 export const SESSION_MEMORY_FLUSH_RECORD_VERSION = 1;
@@ -12,9 +13,13 @@ export const SESSION_MEMORY_FLUSH_PROCESSING_LEASE_MS = 45 * 60 * 1_000;
 export const SESSION_MEMORY_FLUSH_PLAN_TEXT_MAX_BYTES = 8 * 1024;
 export const SESSION_MEMORY_FLUSH_CANDIDATE_JSON_MAX_BYTES = 24 * 1024;
 export const SESSION_MEMORY_FLUSH_RECORD_MAX_BYTES = 64 * 1024;
+export const SESSION_MEMORY_FLUSH_WORKSPACE_PATH_MAX_BYTES = 8 * 1024;
 
 export type SessionMemoryFlushStatus = "pending" | "processing" | "failed" | "complete";
-export type SessionMemoryFlushTerminalCode = "marker_hash_conflict" | "partial_marker";
+export type SessionMemoryFlushTerminalCode =
+  | "cancelled"
+  | "marker_hash_conflict"
+  | "partial_marker";
 
 export type SessionMemoryFlushPlanSnapshot = {
   fingerprint: string;
@@ -27,6 +32,14 @@ export type SessionMemoryFlushPlanSnapshot = {
 export type SessionMemoryFlushCandidate =
   | { kind: "append"; content: string; sha256: string }
   | { kind: "noop"; sha256: string };
+
+export type SessionMemoryFlushWorkspaceTarget = {
+  configuredPath: string;
+  device: string;
+  fingerprint: string;
+  inode: string;
+  realPath: string;
+};
 
 export type SessionMemoryFlushRecord = {
   recordVersion: 1;
@@ -42,6 +55,7 @@ export type SessionMemoryFlushRecord = {
   maxPromptTokens: number;
   generationConfigFingerprint: string;
   plan: SessionMemoryFlushPlanSnapshot;
+  workspaceTarget: SessionMemoryFlushWorkspaceTarget;
   candidate: SessionMemoryFlushCandidate | null;
   transcriptFingerprint: string | null;
   extractedMessageCount: number | null;
@@ -65,6 +79,7 @@ export type SessionMemoryFlushEnqueueInput = {
   messageCount: number;
   maxPromptTokens: number;
   plan: SessionMemoryFlushPlanSnapshot;
+  workspaceTarget: SessionMemoryFlushWorkspaceTarget;
   generationConfigFingerprint: string;
   sessionFile?: string;
   transcriptArchived?: boolean;
@@ -130,6 +145,15 @@ function planFingerprint(value: {
   return sha256(JSON.stringify(value));
 }
 
+function workspaceTargetFingerprint(value: {
+  configuredPath: string;
+  device: string;
+  inode: string;
+  realPath: string;
+}): string {
+  return sha256(JSON.stringify(value));
+}
+
 function recordByteLength(record: SessionMemoryFlushRecord): number {
   return Buffer.byteLength(JSON.stringify(record), "utf8");
 }
@@ -175,6 +199,38 @@ export function createSessionMemoryFlushPlanSnapshot(params: {
     ),
   };
   return { ...value, fingerprint: planFingerprint(value) };
+}
+
+function isBoundedAbsolutePath(value: string): boolean {
+  return (
+    path.isAbsolute(value) &&
+    path.resolve(value) === value &&
+    !value.includes("\u0000") &&
+    Buffer.byteLength(value, "utf8") <= SESSION_MEMORY_FLUSH_WORKSPACE_PATH_MAX_BYTES
+  );
+}
+
+export function createSessionMemoryFlushWorkspaceTarget(params: {
+  configuredPath: string;
+  device: string;
+  inode: string;
+  realPath: string;
+}): SessionMemoryFlushWorkspaceTarget {
+  const value = {
+    configuredPath: params.configuredPath,
+    device: params.device,
+    inode: params.inode,
+    realPath: params.realPath,
+  };
+  if (
+    !isBoundedAbsolutePath(value.configuredPath) ||
+    !isBoundedAbsolutePath(value.realPath) ||
+    !/^\d{1,32}$/u.test(value.device) ||
+    !/^\d{1,32}$/u.test(value.inode)
+  ) {
+    throw new Error("session memory flush workspace target is invalid");
+  }
+  return { ...value, fingerprint: workspaceTargetFingerprint(value) };
 }
 
 export function createSessionMemoryFlushCandidate(
@@ -247,6 +303,35 @@ function isCandidate(value: unknown): value is SessionMemoryFlushCandidate | nul
   );
 }
 
+function isWorkspaceTarget(value: unknown): value is SessionMemoryFlushWorkspaceTarget {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const target = value as Partial<SessionMemoryFlushWorkspaceTarget>;
+  if (
+    typeof target.configuredPath !== "string" ||
+    typeof target.device !== "string" ||
+    typeof target.fingerprint !== "string" ||
+    typeof target.inode !== "string" ||
+    typeof target.realPath !== "string"
+  ) {
+    return false;
+  }
+  const identity = {
+    configuredPath: target.configuredPath,
+    device: target.device,
+    inode: target.inode,
+    realPath: target.realPath,
+  };
+  return (
+    isBoundedAbsolutePath(target.configuredPath) &&
+    isBoundedAbsolutePath(target.realPath) &&
+    /^\d{1,32}$/u.test(target.device) &&
+    /^\d{1,32}$/u.test(target.inode) &&
+    target.fingerprint === workspaceTargetFingerprint(identity)
+  );
+}
+
 export function isSessionMemoryFlushRecord(value: unknown): value is SessionMemoryFlushRecord {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return false;
@@ -276,6 +361,7 @@ export function isSessionMemoryFlushRecord(value: unknown): value is SessionMemo
     Number.isSafeInteger(record.maxPromptTokens) &&
     typeof record.generationConfigFingerprint === "string" &&
     isPlan(record.plan) &&
+    isWorkspaceTarget(record.workspaceTarget) &&
     isCandidate(record.candidate) &&
     isNullableString(record.transcriptFingerprint) &&
     isNullableNumber(record.extractedMessageCount) &&
@@ -284,6 +370,7 @@ export function isSessionMemoryFlushRecord(value: unknown): value is SessionMemo
     isNullableNumber(record.nextAttemptAt) &&
     isNullableString(record.lastError) &&
     (record.terminalCode === null ||
+      record.terminalCode === "cancelled" ||
       record.terminalCode === "marker_hash_conflict" ||
       record.terminalCode === "partial_marker") &&
     isNullableNumber(record.projectedAt) &&
@@ -372,6 +459,7 @@ export class SessionMemoryFlushRepository {
       maxPromptTokens: input.maxPromptTokens,
       generationConfigFingerprint: input.generationConfigFingerprint,
       plan: input.plan,
+      workspaceTarget: input.workspaceTarget,
       candidate: null,
       transcriptFingerprint: null,
       extractedMessageCount: null,
@@ -386,6 +474,9 @@ export class SessionMemoryFlushRepository {
       sessionFile: input.sessionFile?.trim() || null,
       transcriptArchived: input.transcriptArchived === true,
     };
+    if (!isSessionMemoryFlushRecord(initial)) {
+      throw new Error("session memory flush enqueue input failed integrity validation");
+    }
     assertRecordSize(initial);
     if (await this.getStore().registerIfAbsent(key, initial)) {
       return { key, record: initial, shouldProcess: true };
@@ -397,7 +488,7 @@ export class SessionMemoryFlushRepository {
         shouldProcess = true;
         return initial;
       }
-      if (current.status === "complete") {
+      if (current.status === "complete" || current.terminalCode === "cancelled") {
         return current;
       }
       const contentGrew = input.messageCount > current.messageCount;
@@ -625,6 +716,20 @@ export class SessionMemoryFlushRepository {
       );
   }
 
+  async listCancelled(): Promise<Array<{ key: string; record: SessionMemoryFlushRecord }>> {
+    const entries = await this.getStore().entries();
+    return entries
+      .flatMap((entry) =>
+        isSessionMemoryFlushRecord(entry.value) && entry.value.terminalCode === "cancelled"
+          ? [{ key: entry.key, record: entry.value }]
+          : [],
+      )
+      .toSorted(
+        (left, right) =>
+          left.record.endedAt - right.record.endedAt || left.key.localeCompare(right.key),
+      );
+  }
+
   async lookup(agentId: string, sessionId: string): Promise<SessionMemoryFlushRecord | undefined> {
     return await this.lookupKey(buildSessionMemoryFlushOperationId(agentId, sessionId));
   }
@@ -632,6 +737,34 @@ export class SessionMemoryFlushRepository {
   async lookupKey(key: string): Promise<SessionMemoryFlushRecord | undefined> {
     const value = await this.getStore().lookup(key);
     return isSessionMemoryFlushRecord(value) ? value : undefined;
+  }
+
+  async cancel(
+    key: string,
+  ): Promise<{ record: SessionMemoryFlushRecord; requiresProjectionLock: boolean } | undefined> {
+    let requiresProjectionLock = false;
+    let cancelled = false;
+    const now = this.now();
+    const record = await this.updateRecord(key, (current) => {
+      if (!current) {
+        return undefined;
+      }
+      requiresProjectionLock =
+        current.status === "processing" || current.candidate?.kind === "append";
+      cancelled = true;
+      return {
+        ...current,
+        status: "failed",
+        revision: current.revision + 1,
+        processingAt: null,
+        leaseExpiresAt: null,
+        nextAttemptAt: null,
+        lastError: "completed session was deleted",
+        terminalCode: "cancelled",
+        updatedAt: now,
+      };
+    });
+    return cancelled && record ? { record, requiresProjectionLock } : undefined;
   }
 
   async purge(agentId: string, sessionId: string): Promise<void> {
