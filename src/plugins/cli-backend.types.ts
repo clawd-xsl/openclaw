@@ -60,6 +60,8 @@ export type CliBackendResolveExecutionArgsContext = {
   modelId: string;
   authProfileId?: string;
   thinkingLevel?: CliBackendThinkingLevel;
+  /** Effective OpenClaw fast-mode state for this invocation. */
+  fastMode?: boolean;
   executionMode?: CliBackendExecutionMode;
   useResume: boolean;
   baseArgs: readonly string[];

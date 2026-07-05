@@ -153,6 +153,18 @@ describe("normalizeClaudeSettingsArgs", () => {
       '--settings={"disableAllHooks":true}',
     ]);
   });
+
+  it("overrides Claude fast mode while retaining isolated settings", () => {
+    expect(
+      normalizeClaudeSettingsArgs(["-p", "--settings", '{"theme":"dark","fastMode":false}'], {
+        fastMode: true,
+      }),
+    ).toEqual([
+      "-p",
+      "--settings",
+      '{"theme":"dark","fastMode":true,"disableAllHooks":true}',
+    ]);
+  });
 });
 
 describe("Claude CLI model aliases", () => {
@@ -227,6 +239,29 @@ describe("resolveClaudeCliExecutionArgs", () => {
         baseArgs: ["-p", "--effort", "low", "--effort=high"],
       }),
     ).toEqual(["-p", "--effort", "max"]);
+  });
+
+  it("maps the effective OpenClaw fast mode into Claude settings", () => {
+    expect(
+      resolveClaudeCliExecutionArgs({
+        workspaceDir: "/tmp",
+        provider: "claude-cli",
+        modelId: "claude-opus-4-8",
+        fastMode: true,
+        useResume: false,
+        baseArgs: ["-p", "--settings", '{"disableAllHooks":true}'],
+      }),
+    ).toEqual(["-p", "--settings", '{"disableAllHooks":true,"fastMode":true}']);
+    expect(
+      resolveClaudeCliExecutionArgs({
+        workspaceDir: "/tmp",
+        provider: "claude-cli",
+        modelId: "claude-opus-4-8",
+        fastMode: false,
+        useResume: true,
+        baseArgs: ["-p", '--settings={"disableAllHooks":true,"fastMode":true}'],
+      }),
+    ).toEqual(["-p", '--settings={"disableAllHooks":true,"fastMode":false}']);
   });
 
   it("forces isolated no-tool one-shot args for side-question execution", () => {

@@ -88,7 +88,6 @@ const CLAUDE_CONTINUE_ARG = "--continue";
 const CLAUDE_CONTINUE_SHORT_ARG = "-c";
 const CLAUDE_FORK_SESSION_ARG = "--fork-session";
 const CLAUDE_ISOLATED_SETTING_SOURCES = "";
-const CLAUDE_DISABLE_ALL_HOOKS_SETTINGS = JSON.stringify({ disableAllHooks: true });
 const CLAUDE_DISABLE_CLAUDE_MDS_ENV = "CLAUDE_CODE_DISABLE_CLAUDE_MDS";
 const CLAUDE_DISABLE_SLASH_COMMANDS_ARG = "--disable-slash-commands";
 const CLAUDE_SYSTEM_PROMPT_FILE_ARG = "--system-prompt-file";
@@ -287,23 +286,30 @@ export function normalizeClaudeSettingSourcesArgs(args?: string[]): string[] | u
   return normalized;
 }
 
-function normalizeClaudeSettingsValue(value: string | undefined): string {
+function normalizeClaudeSettingsValue(value: string | undefined, fastMode?: boolean): string {
+  const enforced = {
+    disableAllHooks: true,
+    ...(typeof fastMode === "boolean" ? { fastMode } : {}),
+  };
   if (!value?.trim()) {
-    return CLAUDE_DISABLE_ALL_HOOKS_SETTINGS;
+    return JSON.stringify(enforced);
   }
   try {
     const parsed = JSON.parse(value) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return CLAUDE_DISABLE_ALL_HOOKS_SETTINGS;
+      return JSON.stringify(enforced);
     }
-    return JSON.stringify({ ...parsed, disableAllHooks: true });
+    return JSON.stringify({ ...parsed, ...enforced });
   } catch {
-    return CLAUDE_DISABLE_ALL_HOOKS_SETTINGS;
+    return JSON.stringify(enforced);
   }
 }
 
 /** Disable settings-defined hooks while retaining unrelated inline settings. */
-export function normalizeClaudeSettingsArgs(args?: string[]): string[] | undefined {
+export function normalizeClaudeSettingsArgs(
+  args?: string[],
+  options?: { fastMode?: boolean },
+): string[] | undefined {
   if (!args) {
     return args;
   }
@@ -318,6 +324,7 @@ export function normalizeClaudeSettingsArgs(args?: string[]): string[] | undefin
         CLAUDE_SETTINGS_ARG,
         normalizeClaudeSettingsValue(
           typeof maybeValue === "string" && !maybeValue.startsWith("-") ? maybeValue : undefined,
+          options?.fastMode,
         ),
       );
       if (typeof maybeValue === "string" && !maybeValue.startsWith("-")) {
@@ -330,6 +337,7 @@ export function normalizeClaudeSettingsArgs(args?: string[]): string[] | undefin
       normalized.push(
         `${CLAUDE_SETTINGS_ARG}=${normalizeClaudeSettingsValue(
           arg.slice(`${CLAUDE_SETTINGS_ARG}=`.length),
+          options?.fastMode,
         )}`,
       );
       continue;
@@ -337,7 +345,10 @@ export function normalizeClaudeSettingsArgs(args?: string[]): string[] | undefin
     normalized.push(arg);
   }
   if (!hasSettings) {
-    normalized.push(CLAUDE_SETTINGS_ARG, CLAUDE_DISABLE_ALL_HOOKS_SETTINGS);
+    normalized.push(
+      CLAUDE_SETTINGS_ARG,
+      normalizeClaudeSettingsValue(undefined, options?.fastMode),
+    );
   }
   return normalized;
 }
@@ -474,14 +485,20 @@ function resolveClaudeCliSideQuestionExecutionArgs(baseArgs: readonly string[]):
 export function resolveClaudeCliExecutionArgs(
   context: CliBackendResolveExecutionArgsContext,
 ): string[] {
+  const args =
+    typeof context.fastMode === "boolean"
+      ? (normalizeClaudeSettingsArgs([...context.baseArgs], { fastMode: context.fastMode }) ?? [
+          ...context.baseArgs,
+        ])
+      : [...context.baseArgs];
   if (context.executionMode === "side-question") {
-    return resolveClaudeCliSideQuestionExecutionArgs(context.baseArgs);
+    return resolveClaudeCliSideQuestionExecutionArgs(args);
   }
   const effort = mapClaudeCliThinkingLevelToEffort(context.thinkingLevel);
   if (!effort) {
-    return [...context.baseArgs];
+    return args;
   }
-  return [...stripClaudeEffortArgs(context.baseArgs), CLAUDE_EFFORT_ARG, effort];
+  return [...stripClaudeEffortArgs(args), CLAUDE_EFFORT_ARG, effort];
 }
 
 /** Normalize Claude CLI backend config before registration or execution. */

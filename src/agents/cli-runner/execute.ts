@@ -37,6 +37,7 @@ import {
   type CliStreamingDelta,
 } from "../cli-output.js";
 import { classifyFailoverReason } from "../embedded-agent-helpers.js";
+import { resolveFastModeForElapsed } from "../fast-mode.js";
 import {
   isDeliveredMessageToolOnlySourceReplyResult,
   isDeliveredMessagingToolResult,
@@ -511,6 +512,11 @@ export async function executePreparedCliRun(
     context.claudeSkillsPluginArgs ?? fallbackClaudeSkillsPlugin?.args ?? [];
   const baseArgsWithSkills =
     claudeSkillsPluginArgs.length > 0 ? [...resolvedArgs, ...claudeSkillsPluginArgs] : resolvedArgs;
+  const fastMode = resolveFastModeForElapsed({
+    mode: params.fastMode,
+    startedAtMs: params.fastModeStartedAtMs ?? Date.now(),
+    fastAutoOnSeconds: params.fastModeAutoOnSeconds,
+  }).enabled;
   const executionBaseArgs =
     context.backendResolved.resolveExecutionArgs?.({
       config: params.config,
@@ -519,6 +525,7 @@ export async function executePreparedCliRun(
       modelId: context.modelId,
       authProfileId: context.effectiveAuthProfileId,
       thinkingLevel: params.thinkLevel,
+      fastMode,
       executionMode: params.executionMode ?? "agent",
       useResume,
       baseArgs: baseArgsWithSkills,

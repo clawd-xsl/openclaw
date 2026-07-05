@@ -116,6 +116,9 @@ function buildPreparedCliRunContext(params: {
   mcpDeliveryCapture?: boolean;
   skillsSnapshot?: PreparedCliRunContext["params"]["skillsSnapshot"];
   thinkLevel?: PreparedCliRunContext["params"]["thinkLevel"];
+  fastMode?: PreparedCliRunContext["params"]["fastMode"];
+  fastModeStartedAtMs?: number;
+  fastModeAutoOnSeconds?: number;
   executionMode?: PreparedCliRunContext["params"]["executionMode"];
   workspaceDir?: string;
   timeoutMs?: number;
@@ -186,6 +189,9 @@ function buildPreparedCliRunContext(params: {
       provider: params.provider,
       model: params.model,
       thinkLevel: params.thinkLevel,
+      fastMode: params.fastMode,
+      fastModeStartedAtMs: params.fastModeStartedAtMs,
+      fastModeAutoOnSeconds: params.fastModeAutoOnSeconds,
       executionMode: params.executionMode,
       timeoutMs: params.timeoutMs ?? 1_000,
       runId: params.runId,
@@ -625,6 +631,32 @@ describe("runCliAgent spawn path", () => {
     expect(resolveArgsInput.baseArgs).toEqual(["-p", "--output-format", "stream-json"]);
     const input = mockCallArg(supervisorSpawnMock) as { argv?: string[] };
     expect(requireArgAfter(input.argv, "--effort")).toBe("high");
+  });
+
+  it("passes the elapsed fast-mode state to backend-owned execution args", async () => {
+    mockSuccessfulClaudeJsonlRun();
+    const resolveExecutionArgs = vi.fn(({ baseArgs, fastMode }) => [
+      ...baseArgs,
+      "--settings",
+      JSON.stringify({ fastMode }),
+    ]);
+
+    await executePreparedCliRun(
+      buildPreparedCliRunContext({
+        provider: "claude-cli",
+        model: "opus",
+        runId: "run-claude-fast-mode-args",
+        fastMode: "auto",
+        fastModeStartedAtMs: Date.now() - 10_000,
+        fastModeAutoOnSeconds: 1,
+        resolveExecutionArgs,
+      }),
+    );
+
+    const resolveArgsInput = requireRecord(mockCallArg(resolveExecutionArgs), "resolved args");
+    expect(resolveArgsInput.fastMode).toBe(false);
+    const input = mockCallArg(supervisorSpawnMock) as { argv?: string[] };
+    expect(JSON.parse(requireArgAfter(input.argv, "--settings"))).toEqual({ fastMode: false });
   });
 
   it("passes prepared backend env to the spawned CLI process", async () => {
