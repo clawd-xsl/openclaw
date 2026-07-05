@@ -100,6 +100,19 @@ async function expectPathMissing(targetPath: string): Promise<void> {
   expect(accessResult).toBe("ENOENT");
 }
 
+type SessionStoreEntry = Parameters<
+  typeof sessionStoreRuntimeModule.upsertSessionEntry
+>[0]["entry"];
+
+async function seedSessionEntries(
+  storePath: string,
+  entries: Record<string, SessionStoreEntry>,
+): Promise<void> {
+  for (const [sessionKey, entry] of Object.entries(entries)) {
+    await sessionStoreRuntimeModule.upsertSessionEntry({ storePath, sessionKey, entry });
+  }
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
   restoreNarrativeTestEnv();
@@ -1203,33 +1216,29 @@ describe("generateAndAppendDreamNarrative", () => {
     const stateDir = await createTempWorkspace("openclaw-dreaming-state-");
     const sessionsDir = path.join(stateDir, "agents", "main", "sessions");
     await fs.mkdir(sessionsDir, { recursive: true });
-    const storePath = path.join(sessionsDir, "sessions.json");
+    const storePath = path.join(sessionsDir, "sessions.sqlite");
     const orphanPath = path.join(sessionsDir, "orphan.jsonl");
     const livePath = path.join(sessionsDir, "still-live.jsonl");
     const normalTranscriptPath = path.join(sessionsDir, "normal-user-session.jsonl");
     const updatedAt = Date.now();
-    await sessionStoreRuntimeModule.saveSessionStore(
-      storePath,
-      {
-        "agent:main:dreaming-narrative-light-1": {
-          sessionId: "missing",
-          updatedAt,
-        },
-        "agent:main:kept-session": {
-          sessionId: "still-live",
-          updatedAt,
-        },
-        "agent:main:telegram:group:dreaming-narrative-room": {
-          sessionId: "still-missing-non-dreaming",
-          updatedAt,
-        },
-        "agent:main:dreaming-narrative-corrupt-normal": {
-          sessionId: "normal-user-session",
-          updatedAt,
-        },
+    await seedSessionEntries(storePath, {
+      "agent:main:dreaming-narrative-light-1": {
+        sessionId: "missing",
+        updatedAt,
       },
-      { skipMaintenance: true },
-    );
+      "agent:main:kept-session": {
+        sessionId: "still-live",
+        updatedAt,
+      },
+      "agent:main:telegram:group:dreaming-narrative-room": {
+        sessionId: "still-missing-non-dreaming",
+        updatedAt,
+      },
+      "agent:main:dreaming-narrative-corrupt-normal": {
+        sessionId: "normal-user-session",
+        updatedAt,
+      },
+    });
     await fs.writeFile(orphanPath, '{"runId":"dreaming-narrative-light-123"}\n', "utf-8");
     await fs.writeFile(livePath, '{"runId":"dreaming-narrative-light-keep"}\n', "utf-8");
     await fs.writeFile(normalTranscriptPath, '{"runId":"ordinary-user-session"}\n', "utf-8");
@@ -1254,13 +1263,30 @@ describe("generateAndAppendDreamNarrative", () => {
       logger,
     });
 
-    const updatedStore = sessionStoreRuntimeModule.loadSessionStore(storePath, {
-      skipCache: true,
-    }) as Record<string, unknown>;
-    expect(updatedStore).not.toHaveProperty("agent:main:dreaming-narrative-light-1");
-    expect(updatedStore).not.toHaveProperty("agent:main:dreaming-narrative-corrupt-normal");
-    expect(updatedStore).toHaveProperty("agent:main:kept-session");
-    expect(updatedStore).toHaveProperty("agent:main:telegram:group:dreaming-narrative-room");
+    expect(
+      sessionStoreRuntimeModule.getSessionEntry({
+        storePath,
+        sessionKey: "agent:main:dreaming-narrative-light-1",
+      }),
+    ).toBeUndefined();
+    expect(
+      sessionStoreRuntimeModule.getSessionEntry({
+        storePath,
+        sessionKey: "agent:main:dreaming-narrative-corrupt-normal",
+      }),
+    ).toBeUndefined();
+    expect(
+      sessionStoreRuntimeModule.getSessionEntry({
+        storePath,
+        sessionKey: "agent:main:kept-session",
+      }),
+    ).toBeDefined();
+    expect(
+      sessionStoreRuntimeModule.getSessionEntry({
+        storePath,
+        sessionKey: "agent:main:telegram:group:dreaming-narrative-room",
+      }),
+    ).toBeDefined();
     const sessionFiles = await fs.readdir(sessionsDir);
     expect(sessionFiles.filter((file) => file.startsWith("orphan.jsonl.deleted."))).not.toEqual([]);
     expect(sessionFiles).toContain("still-live.jsonl");
@@ -1273,7 +1299,7 @@ describe("generateAndAppendDreamNarrative", () => {
     const stateDir = await createTempWorkspace("openclaw-dreaming-state-");
     const sessionsDir = path.join(stateDir, "agents", "main", "sessions");
     await fs.mkdir(sessionsDir, { recursive: true });
-    const storePath = path.join(sessionsDir, "sessions.json");
+    const storePath = path.join(sessionsDir, "sessions.sqlite");
     // Orphan: a completed dreaming row whose deleteSession previously threw, so
     // BOTH the store row and its transcript still exist (issue #88322).
     const orphanTranscript = path.join(sessionsDir, "orphan-dreaming.jsonl");
@@ -1281,24 +1307,20 @@ describe("generateAndAppendDreamNarrative", () => {
     // must be preserved.
     const liveTranscript = path.join(sessionsDir, "live-dreaming.jsonl");
     const updatedAt = Date.now();
-    await sessionStoreRuntimeModule.saveSessionStore(
-      storePath,
-      {
-        "agent:main:dreaming-narrative-deep-orphan": {
-          sessionId: "orphan-dreaming",
-          updatedAt,
-        },
-        "agent:main:dreaming-narrative-deep-live": {
-          sessionId: "live-dreaming",
-          updatedAt,
-        },
-        "agent:main:kept-session": {
-          sessionId: "still-live",
-          updatedAt,
-        },
+    await seedSessionEntries(storePath, {
+      "agent:main:dreaming-narrative-deep-orphan": {
+        sessionId: "orphan-dreaming",
+        updatedAt,
       },
-      { skipMaintenance: true },
-    );
+      "agent:main:dreaming-narrative-deep-live": {
+        sessionId: "live-dreaming",
+        updatedAt,
+      },
+      "agent:main:kept-session": {
+        sessionId: "still-live",
+        updatedAt,
+      },
+    });
     await fs.writeFile(orphanTranscript, '{"runId":"dreaming-narrative-deep-orphan"}\n', "utf-8");
     await fs.writeFile(liveTranscript, '{"runId":"dreaming-narrative-deep-live"}\n', "utf-8");
     await fs.writeFile(path.join(sessionsDir, "still-live.jsonl"), "{}\n", "utf-8");
@@ -1323,14 +1345,26 @@ describe("generateAndAppendDreamNarrative", () => {
       logger,
     });
 
-    const updatedStore = sessionStoreRuntimeModule.loadSessionStore(storePath, {
-      skipCache: true,
-    }) as Record<string, unknown>;
     // The aged orphan dreaming row is reclaimed even though its transcript existed.
-    expect(updatedStore).not.toHaveProperty("agent:main:dreaming-narrative-deep-orphan");
+    expect(
+      sessionStoreRuntimeModule.getSessionEntry({
+        storePath,
+        sessionKey: "agent:main:dreaming-narrative-deep-orphan",
+      }),
+    ).toBeUndefined();
     // The fresh dreaming row and the non-dreaming row survive.
-    expect(updatedStore).toHaveProperty("agent:main:dreaming-narrative-deep-live");
-    expect(updatedStore).toHaveProperty("agent:main:kept-session");
+    expect(
+      sessionStoreRuntimeModule.getSessionEntry({
+        storePath,
+        sessionKey: "agent:main:dreaming-narrative-deep-live",
+      }),
+    ).toBeDefined();
+    expect(
+      sessionStoreRuntimeModule.getSessionEntry({
+        storePath,
+        sessionKey: "agent:main:kept-session",
+      }),
+    ).toBeDefined();
 
     const sessionFiles = await fs.readdir(sessionsDir);
     // The orphan transcript is archived; the live transcript stays.
