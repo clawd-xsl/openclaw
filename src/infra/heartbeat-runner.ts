@@ -81,7 +81,9 @@ import {
 import { resolveStorePath } from "../config/sessions/paths.js";
 import {
   applySessionEntryLifecycleMutation,
+  loadSessionEntry,
   type SessionEntryLifecycleRemoval,
+  updateSessionEntry,
 } from "../config/sessions/session-accessor.js";
 import { loadSessionStore } from "../config/sessions/store-load.js";
 import { updateSessionStore } from "../config/sessions/store.js";
@@ -571,15 +573,18 @@ function resolveHeartbeatSession(
   const storePath = resolveStorePath(sessionCfg?.store, {
     agentId: storeAgentId,
   });
-  const store = loadSessionStore(storePath);
-  const mainEntry = store[mainSessionKey];
+  const loadEntry = (sessionKey: string) =>
+    loadSessionEntry({
+      storePath,
+      sessionKey,
+      hydrateSkillPromptRefs: false,
+    });
 
   if (scope === "global") {
     return {
       sessionKey: mainSessionKey,
       storePath,
-      store,
-      entry: mainEntry,
+      entry: loadEntry(mainSessionKey),
       suppressOriginatingContext: false,
     };
   }
@@ -590,8 +595,7 @@ function resolveHeartbeatSession(
     return {
       sessionKey: mainSessionKey,
       storePath,
-      store,
-      entry: mainEntry,
+      entry: loadEntry(mainSessionKey),
       suppressOriginatingContext: true,
     };
   }
@@ -620,8 +624,7 @@ function resolveHeartbeatSession(
           return {
             sessionKey: routedSessionKey,
             storePath,
-            store,
-            entry: store[routedSessionKey],
+            entry: loadEntry(routedSessionKey),
             suppressOriginatingContext: false,
           };
         }
@@ -634,8 +637,7 @@ function resolveHeartbeatSession(
     return {
       sessionKey: mainSessionKey,
       storePath,
-      store,
-      entry: mainEntry,
+      entry: loadEntry(mainSessionKey),
       suppressOriginatingContext: false,
     };
   }
@@ -645,8 +647,7 @@ function resolveHeartbeatSession(
     return {
       sessionKey: mainSessionKey,
       storePath,
-      store,
-      entry: mainEntry,
+      entry: loadEntry(mainSessionKey),
       suppressOriginatingContext: false,
     };
   }
@@ -660,8 +661,7 @@ function resolveHeartbeatSession(
     return {
       sessionKey: mainSessionKey,
       storePath,
-      store,
-      entry: mainEntry,
+      entry: loadEntry(mainSessionKey),
       suppressOriginatingContext: false,
     };
   }
@@ -676,8 +676,7 @@ function resolveHeartbeatSession(
       return {
         sessionKey: canonical,
         storePath,
-        store,
-        entry: store[canonical],
+        entry: loadEntry(canonical),
         suppressOriginatingContext: false,
       };
     }
@@ -686,8 +685,7 @@ function resolveHeartbeatSession(
   return {
     sessionKey: mainSessionKey,
     storePath,
-    store,
-    entry: mainEntry,
+    entry: loadEntry(mainSessionKey),
     suppressOriginatingContext: false,
   };
 }
@@ -799,26 +797,14 @@ async function restoreHeartbeatUpdatedAt(params: {
   if (typeof updatedAt !== "number") {
     return;
   }
-  const store = loadSessionStore(storePath);
-  const entry = store[sessionKey];
-  if (!entry) {
-    return;
-  }
-  const nextUpdatedAt = Math.max(entry.updatedAt ?? 0, updatedAt);
-  if (entry.updatedAt === nextUpdatedAt) {
-    return;
-  }
-  await updateSessionStore(storePath, (nextStore) => {
-    const nextEntry = nextStore[sessionKey] ?? entry;
-    if (!nextEntry) {
-      return;
-    }
-    const resolvedUpdatedAt = Math.max(nextEntry.updatedAt ?? 0, updatedAt);
-    if (nextEntry.updatedAt === resolvedUpdatedAt) {
-      return;
-    }
-    nextStore[sessionKey] = { ...nextEntry, updatedAt: resolvedUpdatedAt };
-  });
+  await updateSessionEntry(
+    { storePath, sessionKey },
+    (entry) => {
+      const nextUpdatedAt = Math.max(entry.updatedAt ?? 0, updatedAt);
+      return entry.updatedAt === nextUpdatedAt ? null : { updatedAt: nextUpdatedAt };
+    },
+    { skipMaintenance: true },
+  );
 }
 
 function stripLeadingHeartbeatResponsePrefix(
