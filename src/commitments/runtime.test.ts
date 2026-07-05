@@ -31,6 +31,7 @@ function requireFirstEmbeddedAgentRequest(): {
   provider?: string;
   model?: string;
   disableTools?: boolean;
+  cleanupCliLiveSessionOnRunEnd?: boolean;
 } {
   const [call] = runEmbeddedAgentMock.mock.calls;
   if (!call) {
@@ -40,7 +41,12 @@ function requireFirstEmbeddedAgentRequest(): {
   if (!request || typeof request !== "object" || Array.isArray(request)) {
     throw new Error("expected embedded OpenClaw agent extraction request");
   }
-  return request as { provider?: string; model?: string; disableTools?: boolean };
+  return request as {
+    provider?: string;
+    model?: string;
+    disableTools?: boolean;
+    cleanupCliLiveSessionOnRunEnd?: boolean;
+  };
 }
 
 describe("commitment extraction runtime", () => {
@@ -231,6 +237,7 @@ describe("commitment extraction runtime", () => {
     expect(request.provider).toBe("openai");
     expect(request.model).toBe("gpt-5.5");
     expect(request.disableTools).toBe(true);
+    expect(request.cleanupCliLiveSessionOnRunEnd).toBe(true);
   });
 
   it("backs off hidden extraction after terminal model or auth failures", async () => {

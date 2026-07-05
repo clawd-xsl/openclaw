@@ -277,6 +277,7 @@ async function defaultExtractBatch(params: {
     bootstrapContextMode: "lightweight",
     skillsSnapshot: { prompt: "", skills: [] },
     suppressToolErrorWarnings: true,
+    cleanupCliLiveSessionOnRunEnd: true,
   });
   return parseCommitmentExtractionOutput(joinPayloadText(result));
 }

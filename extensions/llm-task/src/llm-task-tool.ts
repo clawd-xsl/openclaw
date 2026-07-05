@@ -281,6 +281,8 @@ export function createLlmTaskTool(api: OpenClawPluginApi) {
             thinkLevel,
             streamParams,
             disableTools: true,
+            cleanupBundleMcpOnRunEnd: true,
+            cleanupCliLiveSessionOnRunEnd: true,
           });
 
           const text = collectText(

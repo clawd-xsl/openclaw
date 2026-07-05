@@ -97,6 +97,8 @@ describe("runAuthProbes", () => {
         expect.objectContaining({
           modelRun: true,
           disableTools: true,
+          cleanupBundleMcpOnRunEnd: true,
+          cleanupCliLiveSessionOnRunEnd: true,
           authProfileId: "openai:profile",
           authProfileIdSource: "user",
         }),

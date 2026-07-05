@@ -4855,6 +4855,7 @@ describe("active-memory plugin", () => {
     );
 
     expect(runEmbeddedAgent).toHaveBeenCalledTimes(1);
+    expect(lastEmbeddedRunParams().cleanupCliLiveSessionOnRunEnd).toBe(true);
     expect(lastEmbeddedSessionKey()).toMatch(
       /^agent:main:telegram:direct:12345:active-memory:[a-f0-9]{12}$/,
     );

@@ -3017,6 +3017,7 @@ async function runRecallSubagent(params: {
       silentExpected: true,
       authProfileFailurePolicy: "local",
       cleanupBundleMcpOnRunEnd: true,
+      cleanupCliLiveSessionOnRunEnd: true,
       abortSignal: params.abortSignal,
       onAgentToolResult: (event) => {
         const evidence = readMemoryToolResultEvidence({

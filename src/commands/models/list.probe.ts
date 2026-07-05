@@ -542,6 +542,7 @@ async function probeTarget(params: {
       disableTools: true,
       modelRun: true,
       cleanupBundleMcpOnRunEnd: true,
+      cleanupCliLiveSessionOnRunEnd: true,
     });
     return buildResult("ok");
   } catch (err) {

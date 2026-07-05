@@ -107,6 +107,16 @@ describe("llm-task tool (json-only)", () => {
     expect((res as any).details.json).toEqual({ foo: "bar" });
   });
 
+  it("releases resources owned by the one-shot helper session", async () => {
+    const request = await executeEmbeddedRun({ prompt: "return an empty object" });
+
+    expect(request).toMatchObject({
+      disableTools: true,
+      cleanupBundleMcpOnRunEnd: true,
+      cleanupCliLiveSessionOnRunEnd: true,
+    });
+  });
+
   it("strips fenced json", async () => {
     (runEmbeddedAgent as any).mockResolvedValueOnce({
       meta: {},
