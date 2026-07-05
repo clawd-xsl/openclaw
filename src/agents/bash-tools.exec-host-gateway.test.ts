@@ -3,6 +3,7 @@
  * Covers allowlist misses, auto-review, strict inline eval, diagnostics
  * follow-ups, and gateway approval result routing.
  */
+import fs from "node:fs";
 import { beforeAll, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import {
   onInternalDiagnosticEvent,
@@ -717,8 +718,11 @@ describe("processGatewayAllowlist", () => {
       ask: "off",
     });
 
+    const expectedHeadPath = fs.realpathSync(
+      fs.existsSync("/usr/bin/head") ? "/usr/bin/head" : "/bin/head",
+    );
     expect(result).toEqual({
-      execCommandOverride: "/usr/bin/head -c 16",
+      execCommandOverride: `${expectedHeadPath} -c 16`,
     });
   });
 

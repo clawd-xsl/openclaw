@@ -288,9 +288,12 @@ describe("resolveSystemRunExecArgv", () => {
         env,
       });
 
+      const expectedHeadPath = fs.realpathSync(
+        fs.existsSync("/usr/bin/head") ? "/usr/bin/head" : "/bin/head",
+      );
       expect(result).not.toBeNull();
       expect(result?.[0]).toBe("/bin/sh");
-      expect(result?.[2]).toBe("/usr/bin/head -c 16");
+      expect(result?.[2]).toBe(`${expectedHeadPath} -c 16`);
     },
   );
 });
