@@ -723,18 +723,40 @@ struct DebugSettings: View {
     }
 
     private func saveSessionStorePath() {
-        let trimmed = self.sessionStorePath.trimmingCharacters(in: .whitespacesAndNewlines)
-        var root = OpenClawConfigFile.loadDict()
-
-        var session = root["session"] as? [String: Any] ?? [:]
-        session["store"] = trimmed.isEmpty ? SessionLoader.defaultStorePath : trimmed
-        root["session"] = session
+        let root = Self.configRoot(
+            OpenClawConfigFile.loadDict(),
+            settingSessionStorePath: self.sessionStorePath)
 
         guard OpenClawConfigFile.saveDict(root) else {
             self.sessionStoreSaveError = "Config write rejected to protect gateway auth/mode."
             return
         }
         self.sessionStoreSaveError = nil
+    }
+
+    @MainActor
+    static func configRoot(
+        _ root: [String: Any],
+        settingSessionStorePath rawPath: String) -> [String: Any]
+    {
+        var updatedRoot = root
+        var session = updatedRoot["session"] as? [String: Any] ?? [:]
+        let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // The displayed default is a concrete path for local reveal actions. Leaving
+        // session.store unset preserves the runtime's per-agent default resolution.
+        if trimmed.isEmpty || trimmed == SessionLoader.defaultStorePath {
+            session.removeValue(forKey: "store")
+        } else {
+            session["store"] = trimmed
+        }
+
+        if session.isEmpty {
+            updatedRoot.removeValue(forKey: "session")
+        } else {
+            updatedRoot["session"] = session
+        }
+        return updatedRoot
     }
 
     private var bindingOverride: Binding<String> {

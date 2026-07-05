@@ -245,7 +245,7 @@ enum SessionLoader {
 
     static let defaultStorePath = standardize(
         OpenClawPaths.stateDirURL
-            .appendingPathComponent("sessions/sessions.json").path)
+            .appendingPathComponent("agents/main/sessions/sessions.sqlite").path)
 
     static func loadSnapshot(
         activeMinutes: Int? = nil,

@@ -149,6 +149,25 @@ struct SettingsViewSmokeTests {
         _ = view.body
     }
 
+    @Test func `debug settings keeps the default session store implicit`() {
+        let untouched = DebugSettings.configRoot(
+            ["gateway": ["mode": "local"]],
+            settingSessionStorePath: SessionLoader.defaultStorePath)
+        #expect(untouched["session"] == nil)
+
+        let withSessionSettings = DebugSettings.configRoot(
+            ["session": ["reset": "daily", "store": "/tmp/old.sqlite"]],
+            settingSessionStorePath: SessionLoader.defaultStorePath)
+        let session = withSessionSettings["session"] as? [String: Any]
+        #expect(session?["store"] == nil)
+        #expect(session?["reset"] as? String == "daily")
+
+        let custom = DebugSettings.configRoot(
+            [:],
+            settingSessionStorePath: " /tmp/custom.sqlite ")
+        #expect((custom["session"] as? [String: Any])?["store"] as? String == "/tmp/custom.sqlite")
+    }
+
     @Test func `general settings builds body`() {
         let state = AppState(preview: true)
         let view = GeneralSettings(state: state)
