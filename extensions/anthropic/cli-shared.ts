@@ -16,6 +16,7 @@ export {
   CLAUDE_CLI_BACKEND_ID,
   CLAUDE_CLI_DEFAULT_ALLOWLIST_REFS,
   CLAUDE_CLI_DEFAULT_MODEL_REF,
+  CLAUDE_CLI_FABLE_MODEL_ID,
   CLAUDE_CLI_MODEL_ALIASES,
   CLAUDE_CLI_SESSION_ID_FIELDS,
 } from "./cli-constants.js";
@@ -131,6 +132,22 @@ type ClaudeCliEffort = "low" | "medium" | "high" | "xhigh" | "max";
 export const CLAUDE_CLI_OFF_THINKING_PROFILE = {
   levels: [{ id: "off" }],
   defaultLevel: "off",
+} as const;
+
+/** Claude Code accepts Fable through its adaptive-thinking model selector. */
+export const CLAUDE_CLI_FABLE_THINKING_PROFILE = {
+  levels: [
+    { id: "off" },
+    { id: "minimal" },
+    { id: "low" },
+    { id: "medium" },
+    { id: "high" },
+    { id: "xhigh" },
+    { id: "adaptive" },
+    { id: "max" },
+  ],
+  defaultLevel: "adaptive",
+  preserveWhenCatalogReasoningFalse: true,
 } as const;
 
 /** Return whether a provider id refers to the Claude CLI backend. */

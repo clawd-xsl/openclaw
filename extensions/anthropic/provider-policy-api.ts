@@ -7,7 +7,7 @@ import {
   resolveClaudeThinkingProfile,
 } from "openclaw/plugin-sdk/provider-model-shared";
 import type { ModelProviderConfig } from "openclaw/plugin-sdk/provider-model-types";
-import { CLAUDE_CLI_OFF_THINKING_PROFILE } from "./cli-shared.js";
+import { CLAUDE_CLI_FABLE_THINKING_PROFILE } from "./cli-shared.js";
 import {
   applyAnthropicConfigDefaults,
   normalizeAnthropicProviderConfigForProvider,
@@ -40,7 +40,7 @@ export function resolveThinkingProfile(params: {
       });
     case "claude-cli":
       if (contractModelId.startsWith("claude-fable-5")) {
-        return CLAUDE_CLI_OFF_THINKING_PROFILE;
+        return CLAUDE_CLI_FABLE_THINKING_PROFILE;
       }
       return resolveClaudeThinkingProfile(contractModelId, undefined, {
         includeNativeMax: true,

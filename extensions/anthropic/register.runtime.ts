@@ -47,6 +47,7 @@ import {
   CLAUDE_CLI_BACKEND_ID,
   CLAUDE_CLI_DEFAULT_ALLOWLIST_REFS,
   CLAUDE_CLI_DEFAULT_MODEL_REF,
+  CLAUDE_CLI_FABLE_THINKING_PROFILE,
   CLAUDE_CLI_OFF_THINKING_PROFILE,
 } from "./cli-shared.js";
 import {
@@ -842,18 +843,22 @@ export function buildAnthropicProvider(): ProviderPlugin {
     isModernModelRef: ({ provider, modelId }) =>
       matchesAnthropicModernModel(modelId) &&
       (!isAnthropicFable5Model(modelId) ||
-        normalizeLowercaseStringOrEmpty(provider) === PROVIDER_ID),
+        [PROVIDER_ID, CLAUDE_CLI_BACKEND_ID].includes(normalizeLowercaseStringOrEmpty(provider))),
     resolveReasoningOutputMode: () => "native",
     resolveThinkingProfile: ({ provider, modelId, params }) => {
       const contractModelId = resolveClaudeModelIdentity({ id: modelId, params });
-      return isAnthropicFable5Model(contractModelId) &&
-        normalizeLowercaseStringOrEmpty(provider) !== PROVIDER_ID
-        ? CLAUDE_CLI_OFF_THINKING_PROFILE
-        : resolveClaudeThinkingProfile(contractModelId, undefined, {
-            includeNativeMax: [PROVIDER_ID, CLAUDE_CLI_BACKEND_ID].includes(
-              normalizeLowercaseStringOrEmpty(provider),
-            ),
-          });
+      const normalizedProvider = normalizeLowercaseStringOrEmpty(provider);
+      if (isAnthropicFable5Model(contractModelId)) {
+        if (normalizedProvider === CLAUDE_CLI_BACKEND_ID) {
+          return CLAUDE_CLI_FABLE_THINKING_PROFILE;
+        }
+        if (normalizedProvider !== PROVIDER_ID) {
+          return CLAUDE_CLI_OFF_THINKING_PROFILE;
+        }
+      }
+      return resolveClaudeThinkingProfile(contractModelId, undefined, {
+        includeNativeMax: [PROVIDER_ID, CLAUDE_CLI_BACKEND_ID].includes(normalizedProvider),
+      });
     },
     wrapStreamFn: wrapAnthropicProviderStream,
     resolveUsageAuth: resolveAnthropicUsageAuth,

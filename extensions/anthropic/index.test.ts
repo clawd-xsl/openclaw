@@ -282,12 +282,16 @@ describe("anthropic provider replay hooks", () => {
     });
     const models = requireRecord(next?.agents?.defaults?.models, "models");
     for (const modelId of [
+      "anthropic/claude-fable-5",
       "anthropic/claude-opus-4-8",
       "anthropic/claude-opus-4-7",
       "anthropic/claude-sonnet-4-6",
       "anthropic/claude-opus-4-6",
     ]) {
-      expect(models[modelId]).toEqual({ agentRuntime: { id: "claude-cli" } });
+      expect(models[modelId]).toEqual({
+        ...(modelId === "anthropic/claude-fable-5" ? { alias: "fable" } : {}),
+        agentRuntime: { id: "claude-cli" },
+      });
     }
   });
 
@@ -609,8 +613,18 @@ describe("anthropic provider replay hooks", () => {
         modelId: "claude-fable-5",
       } as never),
     ).toEqual({
-      levels: [{ id: "off" }],
-      defaultLevel: "off",
+      levels: [
+        { id: "off" },
+        { id: "minimal" },
+        { id: "low" },
+        { id: "medium" },
+        { id: "high" },
+        { id: "xhigh" },
+        { id: "adaptive" },
+        { id: "max" },
+      ],
+      defaultLevel: "adaptive",
+      preserveWhenCatalogReasoningFalse: true,
     });
     expect(
       provider
@@ -625,7 +639,7 @@ describe("anthropic provider replay hooks", () => {
         provider: "claude-cli",
         modelId: "claude-fable-5",
       }),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("resolves dated modern Claude refs without discovery templates", async () => {

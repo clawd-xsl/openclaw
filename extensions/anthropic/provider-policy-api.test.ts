@@ -162,8 +162,18 @@ describe("anthropic provider policy public artifact", () => {
         modelId: "claude-fable-5",
       }),
     ).toEqual({
-      levels: [{ id: "off" }],
-      defaultLevel: "off",
+      levels: [
+        { id: "off" },
+        { id: "minimal" },
+        { id: "low" },
+        { id: "medium" },
+        { id: "high" },
+        { id: "xhigh" },
+        { id: "adaptive" },
+        { id: "max" },
+      ],
+      defaultLevel: "adaptive",
+      preserveWhenCatalogReasoningFalse: true,
     });
   });
 

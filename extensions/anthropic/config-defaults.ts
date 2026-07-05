@@ -11,7 +11,11 @@ import {
   resolveClaudeCliAnthropicModelRefs,
   resolveKnownAnthropicModelRef,
 } from "./claude-model-refs.js";
-import { CLAUDE_CLI_BACKEND_ID, CLAUDE_CLI_DEFAULT_ALLOWLIST_REFS } from "./cli-constants.js";
+import {
+  CLAUDE_CLI_BACKEND_ID,
+  CLAUDE_CLI_DEFAULT_ALLOWLIST_REFS,
+  CLAUDE_CLI_FABLE_MODEL_ID,
+} from "./cli-constants.js";
 
 const ANTHROPIC_PROVIDER_API = "anthropic-messages";
 const ANTHROPIC_API_KEY_DEFAULT_ALLOWLIST_REFS = ["anthropic/claude-sonnet-4-6"] as const;
@@ -191,8 +195,14 @@ function toCanonicalAnthropicModelRef(ref: string): string {
     : ref;
 }
 
-function modelEntryWithClaudeCliRuntime(entry: unknown): Record<string, unknown> {
+function modelEntryWithClaudeCliRuntime(
+  entry: unknown,
+  modelRef?: string,
+): Record<string, unknown> {
   const base = isRecord(entry) ? { ...entry } : {};
+  if (modelRef?.endsWith(`/${CLAUDE_CLI_FABLE_MODEL_ID}`) && typeof base.alias !== "string") {
+    base.alias = "fable";
+  }
   const currentRuntimeId = isRecord(base.agentRuntime) ? base.agentRuntime.id : undefined;
   const currentRuntime = normalizeLowercaseStringOrEmpty(currentRuntimeId);
   if (currentRuntime && currentRuntime !== "auto") {
@@ -400,7 +410,7 @@ export function applyAnthropicConfigDefaults(params: {
     }
     for (const ref of runtimeRefs) {
       const current = nextModels[ref];
-      const updated = modelEntryWithClaudeCliRuntime(current);
+      const updated = modelEntryWithClaudeCliRuntime(current, ref);
       if (JSON.stringify(updated) === JSON.stringify(current ?? {})) {
         continue;
       }

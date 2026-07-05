@@ -4,11 +4,14 @@
  */
 /** Synthetic provider/backend id for Claude Code CLI-backed Anthropic models. */
 export const CLAUDE_CLI_BACKEND_ID = "claude-cli";
+/** Canonical model id for Claude Fable 5 when routed through Claude Code. */
+export const CLAUDE_CLI_FABLE_MODEL_ID = "claude-fable-5";
 /** Default Claude CLI model ref for agent defaults and live tests. */
 export const CLAUDE_CLI_DEFAULT_MODEL_REF = `${CLAUDE_CLI_BACKEND_ID}/claude-opus-4-8`;
 /** Default Claude CLI models allowed when setup seeds the model allowlist. */
 export const CLAUDE_CLI_DEFAULT_ALLOWLIST_REFS = [
   CLAUDE_CLI_DEFAULT_MODEL_REF,
+  `${CLAUDE_CLI_BACKEND_ID}/${CLAUDE_CLI_FABLE_MODEL_ID}`,
   `${CLAUDE_CLI_BACKEND_ID}/claude-opus-4-7`,
   `${CLAUDE_CLI_BACKEND_ID}/claude-sonnet-4-6`,
   `${CLAUDE_CLI_BACKEND_ID}/claude-opus-4-6`,
@@ -16,6 +19,9 @@ export const CLAUDE_CLI_DEFAULT_ALLOWLIST_REFS = [
 
 /** User-facing Claude CLI model aliases normalized before execution. */
 export const CLAUDE_CLI_MODEL_ALIASES: Record<string, string> = {
+  fable: "fable",
+  "fable-5": "fable",
+  "claude-fable-5": "fable",
   opus: "opus",
   "opus-4.8": "claude-opus-4-8",
   "opus-4.7": "claude-opus-4-7",

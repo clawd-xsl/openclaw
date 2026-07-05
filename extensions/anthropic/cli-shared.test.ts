@@ -169,6 +169,9 @@ describe("Claude CLI model aliases", () => {
   it("keeps pinned Claude CLI model refs on exact selectors", () => {
     const aliases = buildAnthropicCliBackend().config.modelAliases;
 
+    expect(aliases?.["fable"]).toBe("fable");
+    expect(aliases?.["fable-5"]).toBe("fable");
+    expect(aliases?.["claude-fable-5"]).toBe("fable");
     expect(aliases?.["opus"]).toBe("opus");
     expect(aliases?.["opus-4.8"]).toBe("claude-opus-4-8");
     expect(aliases?.["opus-4.7"]).toBe("claude-opus-4-7");
@@ -214,6 +217,19 @@ describe("prepareClaudeCliExecution", () => {
 });
 
 describe("Claude CLI catalog", () => {
+  it("advertises the Fable selector with its effective context", () => {
+    const fable = buildClaudeCliCatalogEntries().find((entry) => entry.id === "claude-fable-5");
+
+    expect(fable).toMatchObject({
+      name: "Claude Fable 5 (Claude CLI)",
+      contextWindow: 1_000_000,
+      contextTokens: 1_000_000,
+      mediaInput: {
+        image: { maxSidePx: 2576, preferredSidePx: 2576, tokenMode: "provider" },
+      },
+    });
+  });
+
   it("advertises the retained Opus 4.6 long-context route", () => {
     const opus46 = buildClaudeCliCatalogEntries().find((entry) => entry.id === "claude-opus-4-6");
 

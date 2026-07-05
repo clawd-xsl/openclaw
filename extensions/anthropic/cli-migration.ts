@@ -13,7 +13,11 @@ import {
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { resolveClaudeCliAnthropicModelRefs } from "./claude-model-refs.js";
 import type { readClaudeCliCredentialsForSetup } from "./cli-auth-seam.js";
-import { CLAUDE_CLI_BACKEND_ID, CLAUDE_CLI_DEFAULT_ALLOWLIST_REFS } from "./cli-shared.js";
+import {
+  CLAUDE_CLI_BACKEND_ID,
+  CLAUDE_CLI_DEFAULT_ALLOWLIST_REFS,
+  CLAUDE_CLI_FABLE_MODEL_ID,
+} from "./cli-shared.js";
 
 type AgentDefaultsModel = NonNullable<NonNullable<OpenClawConfig["agents"]>["defaults"]>["model"];
 type AgentDefaultsModels = NonNullable<NonNullable<OpenClawConfig["agents"]>["defaults"]>["models"];
@@ -149,13 +153,19 @@ function seedClaudeCliAllowlist(
     runtimeRefs.add(ref);
   }
   for (const ref of runtimeRefs) {
-    next[ref] = modelEntryWithClaudeCliRuntime(next[ref]);
+    next[ref] = modelEntryWithClaudeCliRuntime(next[ref], ref);
   }
   return next;
 }
 
-function modelEntryWithClaudeCliRuntime(entry: unknown): Record<string, unknown> {
+function modelEntryWithClaudeCliRuntime(
+  entry: unknown,
+  modelRef?: string,
+): Record<string, unknown> {
   const base = isRecord(entry) ? { ...entry } : {};
+  if (modelRef?.endsWith(`/${CLAUDE_CLI_FABLE_MODEL_ID}`) && typeof base.alias !== "string") {
+    base.alias = "fable";
+  }
   const currentRuntimeId = isRecord(base.agentRuntime) ? base.agentRuntime.id : undefined;
   const currentRuntime =
     typeof currentRuntimeId === "string" ? normalizeLowercaseStringOrEmpty(currentRuntimeId) : "";
