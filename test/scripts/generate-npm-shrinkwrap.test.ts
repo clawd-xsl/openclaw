@@ -12,11 +12,13 @@ import {
   exactOverrideRulesFromOverrides,
   exactVersionFromOverrideSpec,
   normalizeNpmVersionDrift,
+  packageJsonForShrinkwrap,
   packageDependencyInputsChanged,
   pnpmLockOverrideVersionForVersions,
   parsePnpmPackageKey,
   parseLockPackagePath,
   resolvePackageDirs,
+  resolveShrinkwrapTempParent,
   restoreCurrentPnpmLockedPackages,
   shouldUseLegacyPeerDepsForShrinkwrap,
   shrinkwrapPackageDirsForChangedPaths,
@@ -26,6 +28,36 @@ describe("generate-npm-shrinkwrap", () => {
   function repoRelativePath(value: string): string {
     return path.relative(process.cwd(), value).replaceAll("\\", "/");
   }
+
+  it("keeps direct relative file dependency overrides on the declared selector", () => {
+    const packageJson = packageJsonForShrinkwrap(
+      {
+        name: "@openclaw/signal",
+        dependencies: { "@openclaw/signal-ts": "file:../../../signal-ts" },
+      },
+      {
+        "@openclaw/signal-ts@file:../signal-ts": { undici: "8.0.2" },
+      },
+    );
+
+    expect(packageJson.overrides).not.toHaveProperty("@openclaw/signal-ts@file:../signal-ts");
+    expect(packageJson.overrides).toHaveProperty(
+      ["@openclaw/signal-ts@file:../../../signal-ts", "undici"],
+      "8.0.2",
+    );
+  });
+
+  it("creates relative file dependency workspaces beside the package directory", () => {
+    const packageDir = path.join(process.cwd(), "extensions", "signal");
+    expect(
+      resolveShrinkwrapTempParent(packageDir, {
+        dependencies: { "@openclaw/signal-ts": "file:../../../signal-ts" },
+      }),
+    ).toBe(path.dirname(packageDir));
+    expect(resolveShrinkwrapTempParent(packageDir, { dependencies: { ws: "8.21.0" } })).not.toBe(
+      path.dirname(packageDir),
+    );
+  });
 
   it("runs npm shrinkwrap through cmd.exe for Windows npm shims", () => {
     const execPath = "C:\\nodejs\\node.exe";

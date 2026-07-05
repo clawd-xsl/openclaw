@@ -95,6 +95,27 @@ function readPnpmLockPackages() {
     if (metadata && typeof metadata === "object" && typeof metadata.version === "string") {
       lockPackages.add(`${parsed.name}@${metadata.version}`);
     }
+    const directory =
+      metadata &&
+      typeof metadata === "object" &&
+      metadata.resolution &&
+      typeof metadata.resolution === "object" &&
+      typeof metadata.resolution.directory === "string"
+        ? metadata.resolution.directory
+        : undefined;
+    if (directory) {
+      try {
+        const manifest = JSON.parse(
+          readFileSync(path.resolve(ROOT_DIR, directory, "package.json"), "utf8"),
+        );
+        if (manifest?.name === parsed.name && typeof manifest.version === "string") {
+          lockPackages.add(`${parsed.name}@${manifest.version}`);
+        }
+      } catch {
+        // The normal shrinkwrap generation error will report an unavailable
+        // local package. Keep lock parsing tolerant for read-only checks.
+      }
+    }
   }
   return lockPackages;
 }
@@ -382,8 +403,63 @@ function readShrinkwrapOverrides() {
 function packageJsonForShrinkwrap(packageJson, shrinkwrapOverrides) {
   const normalized = { ...packageJson };
   delete normalized.devDependencies;
-  normalized.overrides = mergeOverrides(packageJson.overrides, shrinkwrapOverrides, {});
+  normalized.overrides = alignDirectFileOverrideSelectors(
+    normalized,
+    mergeOverrides(packageJson.overrides, shrinkwrapOverrides, {}),
+  );
   return normalized;
+}
+
+function alignDirectFileOverrideSelectors(packageJson, overrides) {
+  const aligned = normalizeOverrides(overrides);
+  for (const dependencyField of ["dependencies", "optionalDependencies", "peerDependencies"]) {
+    const dependencies = packageJson?.[dependencyField];
+    if (!isPlainObject(dependencies)) {
+      continue;
+    }
+    for (const [dependencyName, dependencySpec] of Object.entries(dependencies)) {
+      if (typeof dependencySpec !== "string" || !dependencySpec.startsWith("file:")) {
+        continue;
+      }
+      const expectedSelector = `${dependencyName}@${dependencySpec}`;
+      const selectorPrefix = `${dependencyName}@file:`;
+      for (const selector of Object.keys(aligned)) {
+        if (selector === expectedSelector || !selector.startsWith(selectorPrefix)) {
+          continue;
+        }
+        const scopedOverride = aligned[selector];
+        delete aligned[selector];
+        mergeOverrideEntry(aligned, expectedSelector, scopedOverride);
+      }
+    }
+  }
+  return aligned;
+}
+
+function hasRelativeFileDependency(packageJson) {
+  for (const dependencyField of ["dependencies", "optionalDependencies"]) {
+    const dependencies = packageJson?.[dependencyField];
+    if (!isPlainObject(dependencies)) {
+      continue;
+    }
+    for (const dependencySpec of Object.values(dependencies)) {
+      if (typeof dependencySpec !== "string" || !dependencySpec.startsWith("file:")) {
+        continue;
+      }
+      const filePath = dependencySpec.slice("file:".length);
+      if (filePath && !path.isAbsolute(filePath) && !path.win32.isAbsolute(filePath)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function resolveShrinkwrapTempParent(packageDir, packageJson) {
+  // Keep relative file: dependencies at the same directory depth as the real
+  // package. Moving them to the system temp directory changes what their specs
+  // resolve to and makes an otherwise valid local package impossible to lock.
+  return hasRelativeFileDependency(packageJson) ? path.dirname(path.resolve(packageDir)) : tmpdir();
 }
 
 /**
@@ -697,9 +773,11 @@ function normalizeNpmVersionDrift(lockfile) {
 }
 
 function generateShrinkwrap(packageDir, options = {}) {
-  const tempDir = mkdtempSync(path.join(tmpdir(), "openclaw-shrinkwrap-"));
+  const packageJson = JSON.parse(readFileSync(path.join(packageDir, "package.json"), "utf8"));
+  const tempDir = mkdtempSync(
+    path.join(resolveShrinkwrapTempParent(packageDir, packageJson), ".openclaw-shrinkwrap-"),
+  );
   try {
-    const packageJson = JSON.parse(readFileSync(path.join(packageDir, "package.json"), "utf8"));
     const currentShrinkwrap = readCurrentShrinkwrap(packageDir);
     const shrinkwrapOverrides = mergeOverrides(
       options.useCurrentShrinkwrapOverrides
@@ -1327,6 +1405,7 @@ export {
   parsePnpmPackageKey,
   parseLockPackagePath,
   readShrinkwrapOverrides,
+  resolveShrinkwrapTempParent,
   restoreCurrentPnpmLockedPackages,
   shouldUseLegacyPeerDepsForShrinkwrap,
   shrinkwrapPackageDirsForChangedPaths,
