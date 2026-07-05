@@ -7,6 +7,7 @@ import {
   readResponseTextSnippet,
   readResponseWithLimit,
 } from "@openclaw/media-core/read-response-with-limit";
+import { isAbortError } from "../infra/abort-signal.js";
 import { formatErrorMessage, toErrorObject } from "../infra/errors.js";
 import {
   fetchWithSsrFGuard,
@@ -14,7 +15,6 @@ import {
   withTrustedExplicitProxyGuardedFetchMode,
 } from "../infra/net/fetch-guard.js";
 import type { LookupFn, PinnedDispatcherPolicy, SsrFPolicy } from "../infra/net/ssrf.js";
-import { isAbortError } from "../infra/abort-signal.js";
 import { retryAsync, type RetryOptions } from "../infra/retry.js";
 import { isTransientNetworkError } from "../infra/unhandled-rejections.js";
 import { redactSensitiveText } from "../logging/redact.js";
@@ -77,6 +77,8 @@ type FetchMediaOptions = {
   maxRedirects?: number;
   /** Abort the guarded fetch request if it has not completed by this deadline (ms). */
   timeoutMs?: number;
+  /** Abort the guarded fetch and response body read when the caller cancels. */
+  signal?: AbortSignal;
   /** Abort if the response body stops yielding data for this long (ms). */
   readIdleTimeoutMs?: number;
   ssrfPolicy?: SsrFPolicy;
@@ -189,6 +191,7 @@ async function fetchGuardedMediaResponse(
     requestInit,
     maxRedirects,
     timeoutMs,
+    signal,
     ssrfPolicy,
     lookupFn,
     dispatcherPolicy,
@@ -196,6 +199,7 @@ async function fetchGuardedMediaResponse(
     shouldRetryFetchError,
     trustExplicitProxyDns,
   } = options;
+  signal?.throwIfAborted();
   const sourceUrl = redactMediaUrl(url);
 
   // Dispatcher attempts are fallback routes inside one logical guarded fetch operation.
@@ -213,6 +217,7 @@ async function fetchGuardedMediaResponse(
         init: requestInit,
         maxRedirects,
         ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+        ...(signal ? { signal } : {}),
         policy: ssrfPolicy,
         lookupFn: attempt.lookupFn ?? lookupFn,
         dispatcherPolicy: attempt.dispatcherPolicy,
@@ -260,6 +265,10 @@ async function fetchGuardedMediaResponse(
       sourceUrl,
     };
   } catch (err) {
+    // Preserve caller cancellation as an AbortError. Network and timeout
+    // failures keep the MediaFetchError contract, but a caller abort must not
+    // become a retryable transport failure.
+    signal?.throwIfAborted();
     throw new MediaFetchError(
       "fetch_failed",
       `Failed to fetch media from ${sourceUrl}: ${formatErrorMessage(err)}`,
@@ -640,6 +649,7 @@ async function readRemoteMediaBufferOnce(options: FetchMediaOptions): Promise<Fe
   const { response: res, finalUrl, release, sourceUrl } = await fetchGuardedMediaResponse(options);
 
   try {
+    options.signal?.throwIfAborted();
     await assertMediaResponseOk({
       res,
       url: options.url,
@@ -661,6 +671,7 @@ async function readRemoteMediaBufferOnce(options: FetchMediaOptions): Promise<Fe
         chunkTimeoutMs: options.readIdleTimeoutMs,
       });
     } catch (err) {
+      options.signal?.throwIfAborted();
       if (err instanceof MediaFetchError) {
         throw err;
       }
@@ -670,6 +681,7 @@ async function readRemoteMediaBufferOnce(options: FetchMediaOptions): Promise<Fe
         { cause: err },
       );
     }
+    options.signal?.throwIfAborted();
     let fileName = resolveRemoteFileName({
       res,
       finalUrl,

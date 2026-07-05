@@ -532,6 +532,38 @@ describe("createPdfTool", () => {
     });
   });
 
+  it("passes caller cancellation through PDF loading and native analysis", async () => {
+    await withTempPdfAgentDir(async (agentDir) => {
+      const { loadSpy } = await stubPdfToolInfra(agentDir, {
+        provider: "anthropic",
+        input: ["text", "document"],
+      });
+      const nativeSpy = vi
+        .spyOn(pdfNativeProviders, "anthropicAnalyzePdf")
+        .mockResolvedValue("native summary");
+      const cfg = withPdfModel(ANTHROPIC_PDF_MODEL);
+      const tool = requirePdfTool((await loadCreatePdfTool())({ config: cfg, agentDir }));
+      const controller = new AbortController();
+
+      await tool.execute(
+        "t1",
+        {
+          prompt: "summarize",
+          pdf: "/tmp/doc.pdf",
+        },
+        controller.signal,
+      );
+
+      expect(loadSpy).toHaveBeenCalledWith(
+        "/tmp/doc.pdf",
+        expect.objectContaining({ signal: controller.signal }),
+      );
+      expect(nativeSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ signal: controller.signal }),
+      );
+    });
+  });
+
   it("rejects pages parameter for native PDF providers", async () => {
     await withTempPdfAgentDir(async (agentDir) => {
       await stubPdfToolInfra(agentDir, { provider: "anthropic", input: ["text", "document"] });
@@ -603,13 +635,25 @@ describe("createPdfTool", () => {
 
       const cfg = withPdfModel(OPENAI_PDF_MODEL);
       const tool = requirePdfTool((await loadCreatePdfTool())({ config: cfg, agentDir }));
+      const controller = new AbortController();
 
-      const result = await tool.execute("t1", {
-        prompt: "summarize",
-        pdf: "/tmp/doc.pdf",
-      });
+      const result = await tool.execute(
+        "t1",
+        {
+          prompt: "summarize",
+          pdf: "/tmp/doc.pdf",
+        },
+        controller.signal,
+      );
 
-      expect(extractSpy).toHaveBeenCalledTimes(1);
+      expect(extractSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ signal: controller.signal }),
+      );
+      expect(completeMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        expect.objectContaining({ signal: controller.signal }),
+      );
       expect(result.content).toEqual([{ type: "text", text: "fallback summary" }]);
       expectFields(result.details, {
         native: false,

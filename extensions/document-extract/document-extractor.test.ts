@@ -189,4 +189,22 @@ describe("PDF document extractor", () => {
     expect(onImageExtractionError).toHaveBeenCalledWith(failure);
     expect(pdfDocument.destroy).toHaveBeenCalledTimes(1);
   });
+
+  it("propagates caller cancellation without treating it as an image fallback failure", async () => {
+    const controller = new AbortController();
+    const onImageExtractionError = vi.fn();
+    pdfDocument.extract.mockImplementationOnce(async () => {
+      controller.abort();
+      return { text: "short", images: [] };
+    });
+    const extractor = createPdfDocumentExtractor();
+
+    await expect(
+      extractor.extract(request({ signal: controller.signal, onImageExtractionError })),
+    ).rejects.toMatchObject({ name: "AbortError" });
+
+    expect(pdfDocument.extract).toHaveBeenCalledTimes(1);
+    expect(onImageExtractionError).not.toHaveBeenCalled();
+    expect(pdfDocument.destroy).toHaveBeenCalledTimes(1);
+  });
 });

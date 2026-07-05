@@ -23,12 +23,14 @@ describe("extractPdfContent", () => {
       extractor: "pdf",
     });
 
+    const controller = new AbortController();
     await expect(
       extractPdfContent({
         buffer: Buffer.from("%PDF-1.4"),
         maxPages: 2,
         maxPixels: 100,
         minTextChars: 10,
+        signal: controller.signal,
       }),
     ).resolves.toEqual({ text: "extracted pdf", images: [] });
     expect(extractDocumentContentMock).toHaveBeenCalledWith({
@@ -37,6 +39,7 @@ describe("extractPdfContent", () => {
       maxPages: 2,
       maxPixels: 100,
       minTextChars: 10,
+      signal: controller.signal,
     });
   });
 

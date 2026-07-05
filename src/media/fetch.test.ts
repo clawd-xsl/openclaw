@@ -611,6 +611,54 @@ describe("readRemoteMediaBuffer", () => {
     });
   });
 
+  it("passes caller cancellation through the guarded fetch path", async () => {
+    const fetchImpl = vi.fn(async () => new Response("ok", { status: 200 }));
+    const controller = new AbortController();
+
+    await readRemoteMediaBuffer({
+      url: "https://example.com/file.bin",
+      fetchImpl,
+      lookupFn: makeLookupFn(),
+      maxBytes: 1024,
+      signal: controller.signal,
+    });
+
+    expect(requireFetchGuardRequest()).toMatchObject({
+      url: "https://example.com/file.bin",
+      signal: controller.signal,
+    });
+  });
+
+  it("preserves an in-flight caller cancellation as an AbortError", async () => {
+    const controller = new AbortController();
+    const fetchImpl = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        if (!signal) {
+          reject(new Error("expected request signal"));
+          return;
+        }
+        signal.addEventListener(
+          "abort",
+          () => reject(signal.reason instanceof Error ? signal.reason : new Error("aborted")),
+          { once: true },
+        );
+      });
+    });
+
+    const pending = readRemoteMediaBuffer({
+      url: "https://example.com/file.bin",
+      fetchImpl,
+      lookupFn: makeLookupFn(),
+      maxBytes: 1024,
+      signal: controller.signal,
+    });
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
+    controller.abort();
+
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+  });
+
   it("streams successful responses directly into the media store", async () => {
     const fetchImpl = vi.fn(
       async () =>

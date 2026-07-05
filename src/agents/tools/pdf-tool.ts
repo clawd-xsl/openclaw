@@ -9,6 +9,7 @@ import {
 } from "@openclaw/normalization-core/string-coerce";
 import { Type } from "typebox";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { throwIfAborted } from "../../infra/outbound/abort.js";
 import { complete } from "../../llm/stream.js";
 import type { Context } from "../../llm/types.js";
 import {
@@ -150,6 +151,7 @@ async function runPdfPrompt(params: {
   password?: string;
   pageNumbers?: number[];
   getExtractions: () => Promise<PdfExtractedContent[]>;
+  signal?: AbortSignal;
 }): Promise<{
   text: string;
   provider: string;
@@ -157,18 +159,22 @@ async function runPdfPrompt(params: {
   native: boolean;
   attempts: Array<{ provider: string; model: string; error: string }>;
 }> {
+  throwIfAborted(params.signal);
   const effectiveCfg = applyImageModelConfigDefaults(params.cfg, params.pdfModelConfig);
 
   const modelsOptions = params.workspaceDir ? { workspaceDir: params.workspaceDir } : undefined;
   await ensureOpenClawModelsJson(effectiveCfg, params.agentDir, modelsOptions);
+  throwIfAborted(params.signal);
   const authStorage = discoverAuthStorage(params.agentDir);
   const modelRegistry = discoverModels(authStorage, params.agentDir, modelsOptions);
 
   let extractionCache: PdfExtractedContent[] | null = null;
   const getExtractions = async (): Promise<PdfExtractedContent[]> => {
+    throwIfAborted(params.signal);
     if (!extractionCache) {
       extractionCache = await params.getExtractions();
     }
+    throwIfAborted(params.signal);
     return extractionCache;
   };
 
@@ -176,6 +182,7 @@ async function runPdfPrompt(params: {
     cfg: effectiveCfg,
     modelOverride: params.modelOverride,
     run: async (provider, modelId) => {
+      throwIfAborted(params.signal);
       const model = resolveModelFromRegistry({ modelRegistry, provider, modelId });
       const apiKey = await resolveModelRuntimeApiKey({
         model,
@@ -183,6 +190,7 @@ async function runPdfPrompt(params: {
         agentDir: params.agentDir,
         authStorage,
       });
+      throwIfAborted(params.signal);
 
       if (providerSupportsNativePdf(provider)) {
         if (params.password) {
@@ -213,6 +221,7 @@ async function runPdfPrompt(params: {
               headers: model.headers,
               request: getModelProviderRequestTransport(model),
             },
+            ...(params.signal ? { signal: params.signal } : {}),
           });
           return { text, provider, model: modelId, native: true };
         }
@@ -228,6 +237,7 @@ async function runPdfPrompt(params: {
               headers: model.headers,
               request: getModelProviderRequestTransport(model),
             },
+            ...(params.signal ? { signal: params.signal } : {}),
           });
           return { text, provider, model: modelId, native: true };
         }
@@ -250,6 +260,7 @@ async function runPdfPrompt(params: {
         const message = await complete(model, context, {
           apiKey,
           maxTokens: resolvePdfToolMaxTokens(model.maxTokens),
+          ...(params.signal ? { signal: params.signal } : {}),
         });
         const text = coercePdfAssistantText({ message, provider, model: modelId });
         return { text, provider, model: modelId, native: false };
@@ -259,10 +270,12 @@ async function runPdfPrompt(params: {
       const message = await complete(model, context, {
         apiKey,
         maxTokens: resolvePdfToolMaxTokens(model.maxTokens),
+        ...(params.signal ? { signal: params.signal } : {}),
       });
       const text = coercePdfAssistantText({ message, provider, model: modelId });
       return { text, provider, model: modelId, native: false };
     },
+    abortSignal: params.signal,
   });
 
   return {
@@ -341,7 +354,8 @@ export function createPdfTool(options?: {
     name: "pdf",
     description,
     parameters: PdfToolSchema,
-    execute: async (_toolCallId, args) => {
+    execute: async (_toolCallId, args, signal) => {
+      throwIfAborted(signal);
       const record = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
 
       // MARK: - Normalize pdf + pdfs input
@@ -407,6 +421,7 @@ export function createPdfTool(options?: {
       }> = [];
 
       for (const pdfRaw of pdfInputs) {
+        throwIfAborted(signal);
         const trimmed = normalizeMediaReferenceSource(pdfRaw);
         const refInfo = classifyMediaReferenceSource(trimmed);
         const { isHttpUrl } = refInfo;
@@ -448,6 +463,7 @@ export function createPdfTool(options?: {
                 ? resolvedPdf.slice("file://".length)
                 : resolvedPdf,
             };
+        throwIfAborted(signal);
         const localRoots = resolveMediaToolLocalRoots(
           options?.workspaceDir,
           {
@@ -461,13 +477,16 @@ export function createPdfTool(options?: {
               maxBytes,
               sandboxValidated: true,
               readFile: createSandboxBridgeReadFile({ sandbox: sandboxConfig }),
+              ...(signal ? { signal } : {}),
             })
           : await loadWebMediaRaw(resolvedPathInfo.resolved, {
               maxBytes,
               localRoots,
               ...(isHttpUrl ? { readIdleTimeoutMs: REMOTE_MEDIA_READ_IDLE_TIMEOUT_MS } : {}),
               ssrfPolicy: remoteMediaSsrfPolicy,
+              ...(signal ? { signal } : {}),
             });
+        throwIfAborted(signal);
 
         if (media.kind !== "document") {
           // Check MIME type more specifically
@@ -500,6 +519,7 @@ export function createPdfTool(options?: {
       const getExtractions = async (): Promise<PdfExtractedContent[]> => {
         const extractedAll: PdfExtractedContent[] = [];
         for (const pdf of loadedPdfs) {
+          throwIfAborted(signal);
           const extracted = await extractPdfContent({
             buffer: pdf.buffer,
             maxPages: configuredMaxPages,
@@ -508,7 +528,9 @@ export function createPdfTool(options?: {
             ...(password ? { password } : {}),
             pageNumbers,
             config: options?.config,
+            ...(signal ? { signal } : {}),
           });
+          throwIfAborted(signal);
           extractedAll.push(extracted);
         }
         return extractedAll;
@@ -525,6 +547,7 @@ export function createPdfTool(options?: {
         ...(password ? { password } : {}),
         pageNumbers,
         getExtractions,
+        ...(signal ? { signal } : {}),
       });
 
       const pdfDetails =

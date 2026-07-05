@@ -93,6 +93,7 @@ export type ProviderOperationDeadline = {
 export type ProviderOperationTimeoutMs = number | (() => number);
 
 type GuardedProviderRequestParams = {
+  signal?: AbortSignal;
   pinDns?: boolean;
   allowPrivateNetwork?: boolean;
   ssrfPolicy?: SsrFPolicy;
@@ -447,6 +448,7 @@ export async function fetchWithTimeoutGuarded(
     dispatcherPolicy?: PinnedDispatcherPolicy;
     auditContext?: string;
     mode?: GuardedFetchMode;
+    signal?: AbortSignal;
   },
 ): Promise<GuardedFetchResult> {
   // Provider HTTP helpers (image/music/video generation, transcription, etc.)
@@ -489,6 +491,7 @@ export async function fetchWithTimeoutGuarded(
     pinDns: options?.pinDns,
     dispatcherPolicy: options?.dispatcherPolicy,
     auditContext: sanitizeAuditContext(options?.auditContext),
+    ...(options?.signal ? { signal: options.signal } : {}),
     ...(resolvedMode ? { mode: resolvedMode } : {}),
   });
 }
@@ -517,7 +520,8 @@ function resolveGuardedRequestOptions(
     !params.dispatcherPolicy &&
     params.pinDns === undefined &&
     !params.auditContext &&
-    params.mode === undefined
+    params.mode === undefined &&
+    !params.signal
   ) {
     return undefined;
   }
@@ -528,6 +532,7 @@ function resolveGuardedRequestOptions(
     ...(params.dispatcherPolicy ? { dispatcherPolicy: params.dispatcherPolicy } : {}),
     ...(params.auditContext ? { auditContext: params.auditContext } : {}),
     ...(params.mode !== undefined ? { mode: params.mode } : {}),
+    ...(params.signal ? { signal: params.signal } : {}),
   };
 }
 

@@ -14,6 +14,8 @@ export type DocumentExtractionRequest = {
   minTextChars: number;
   password?: string;
   pageNumbers?: number[];
+  /** Caller cancellation shared across document loading and page extraction. */
+  signal?: AbortSignal;
   onImageExtractionError?: (error: unknown) => void;
 };
 

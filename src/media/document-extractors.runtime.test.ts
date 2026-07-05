@@ -28,6 +28,7 @@ describe("extractDocumentContent", () => {
       },
     ]);
 
+    const controller = new AbortController();
     await expect(
       extractDocumentContent({
         buffer: Buffer.from("pdf"),
@@ -35,6 +36,7 @@ describe("extractDocumentContent", () => {
         maxPages: 1,
         maxPixels: 100,
         minTextChars: 10,
+        signal: controller.signal,
         config: {
           env: {
             vars: {
@@ -51,6 +53,7 @@ describe("extractDocumentContent", () => {
       maxPages: 1,
       maxPixels: 100,
       minTextChars: 10,
+      signal: controller.signal,
     });
   });
 

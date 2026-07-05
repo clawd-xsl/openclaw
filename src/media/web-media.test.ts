@@ -1159,6 +1159,22 @@ describe("loadWebMedia", () => {
     );
   });
 
+  it("rejects a pre-aborted raw web media load before fetching", async () => {
+    const controller = new AbortController();
+    const fetchImpl = vi.fn();
+    controller.abort();
+
+    await expect(
+      loadWebMediaRaw("https://example.test/canceled.pdf", {
+        maxBytes: 1024 * 1024,
+        fetchImpl,
+        signal: controller.signal,
+        ssrfPolicy: { allowedHostnames: ["example.test"] },
+      }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("loads a valid remote PDF when the raw web media read stays active", async () => {
     const fetchImpl = vi.fn(
       async () =>

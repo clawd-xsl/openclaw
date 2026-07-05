@@ -19,6 +19,7 @@ function makeAnthropicAnalyzeParams(
     maxTokens: number;
     baseUrl: string;
     requestConfig: Parameters<typeof pdfNativeProviders.anthropicAnalyzePdf>[0]["requestConfig"];
+    signal: AbortSignal;
   }> = {},
 ) {
   return {
@@ -37,6 +38,7 @@ function makeGeminiAnalyzeParams(
     prompt: string;
     pdfs: Array<{ base64: string; filename: string }>;
     baseUrl: string;
+    signal: AbortSignal;
   }> = {},
 ) {
   return {
@@ -132,6 +134,37 @@ describe("native PDF provider API calls", () => {
     await expect(
       pdfNativeProviders.anthropicAnalyzePdf(makeAnthropicAnalyzeParams()),
     ).rejects.toThrow("Anthropic PDF request failed");
+  });
+
+  it("anthropicAnalyzePdf aborts an in-flight request with the caller signal", async () => {
+    const controller = new AbortController();
+    const fetchMock = vi.fn((_url: RequestInfo | URL, init?: RequestInit) => {
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        if (!signal) {
+          reject(new Error("expected request signal"));
+          return;
+        }
+        const rejectAborted = () => {
+          const reason = signal.reason;
+          reject(reason instanceof Error ? reason : new Error(String(reason)));
+        };
+        if (signal.aborted) {
+          rejectAborted();
+          return;
+        }
+        signal.addEventListener("abort", rejectAborted, { once: true });
+      });
+    });
+    global.fetch = Object.assign(fetchMock, { preconnect: vi.fn() }) as typeof global.fetch;
+
+    const request = pdfNativeProviders.anthropicAnalyzePdf(
+      makeAnthropicAnalyzeParams({ signal: controller.signal }),
+    );
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    controller.abort();
+
+    await expect(request).rejects.toMatchObject({ name: "AbortError" });
   });
 
   it("bounds large Anthropic API error bodies", async () => {

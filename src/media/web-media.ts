@@ -18,6 +18,7 @@ import { formatErrorMessage } from "../infra/errors.js";
 import { FsSafeError, readLocalFileSafely } from "../infra/fs-safe.js";
 import { assertNoWindowsNetworkPath, safeFileURLToPath } from "../infra/local-file-access.js";
 import type { PinnedDispatcherPolicy, SsrFPolicy } from "../infra/net/ssrf.js";
+import { throwIfAborted } from "../infra/outbound/abort.js";
 import { resolvePreferredOpenClawTmpDir } from "../infra/tmp-openclaw-dir.js";
 import { getActivePluginRegistry } from "../plugins/runtime.js";
 import { resolveUserPath } from "../utils.js";
@@ -56,6 +57,7 @@ type WebMediaOptions = {
   fetchImpl?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
   requestInit?: RequestInit;
   readIdleTimeoutMs?: number;
+  signal?: AbortSignal;
   trustExplicitProxyDns?: boolean;
   workspaceDir?: string;
   /** Allowed root directories for local path reads. "any" is deprecated; prefer sandboxValidated + readFile. */
@@ -862,6 +864,7 @@ async function loadWebMediaInternal(
     fetchImpl,
     requestInit,
     readIdleTimeoutMs,
+    signal,
     trustExplicitProxyDns,
     workspaceDir,
     localRoots,
@@ -872,8 +875,10 @@ async function loadWebMediaInternal(
     hostReadAllowAllFileTypes = false,
     imageCompression,
   } = options;
+  throwIfAborted(signal);
   mediaUrl = stripLegacyMediaDirectivePrefix(mediaUrl);
   mediaUrl = (await resolveMediaStoreUriToPath(mediaUrl)) ?? mediaUrl;
+  throwIfAborted(signal);
   // Use fileURLToPath for proper handling of file:// URLs (handles file://localhost/path, etc.)
   if (mediaUrl.startsWith("file://")) {
     try {
@@ -883,6 +888,7 @@ async function loadWebMediaInternal(
     }
   }
   mediaUrl = (await resolveHostedPluginMediaUrl(mediaUrl)) ?? mediaUrl;
+  throwIfAborted(signal);
   mediaUrl = stripLegacyMediaDirectivePrefix(mediaUrl);
 
   const optimizeAndClampImage = async (
@@ -974,6 +980,7 @@ async function loadWebMediaInternal(
   };
 
   if (hasHttpUrlPrefix(mediaUrl)) {
+    throwIfAborted(signal);
     // Enforce a download cap during fetch to avoid unbounded memory usage.
     // For optimized images, allow fetching larger payloads before compression.
     const defaultFetchCap = maxBytesForKind("document");
@@ -995,11 +1002,13 @@ async function loadWebMediaInternal(
       fetchImpl,
       requestInit,
       readIdleTimeoutMs,
+      signal,
       maxBytes: fetchCap,
       ssrfPolicy,
       dispatcherPolicy,
       trustExplicitProxyDns,
     });
+    throwIfAborted(signal);
     const { buffer, contentType, fileName } = fetched;
     const kind = kindFromMime(contentType);
     return await clampAndFinalize({ buffer, contentType, kind, fileName });
@@ -1030,6 +1039,7 @@ async function loadWebMediaInternal(
   // Guard local reads against allowed directory roots to prevent file exfiltration.
   if (!(sandboxValidated || localRoots === "any")) {
     await assertLocalMediaAllowed(mediaUrl, localRoots, { inboundRoots });
+    throwIfAborted(signal);
   }
 
   const enforceHostReadFileType = hostReadCapability && !hostReadAllowAllFileTypes;
@@ -1047,9 +1057,11 @@ async function loadWebMediaInternal(
   // Local path
   let data: Buffer;
   if (readFileOverride) {
+    throwIfAborted(signal);
     data = await readFileOverride(mediaUrl);
   } else {
     try {
+      throwIfAborted(signal);
       data = (await readLocalFileSafely({ filePath: mediaUrl })).buffer;
     } catch (err) {
       if (err instanceof FsSafeError) {
@@ -1074,8 +1086,11 @@ async function loadWebMediaInternal(
       throw err;
     }
   }
+  throwIfAborted(signal);
   const sniffedMime = await detectMime({ buffer: data });
+  throwIfAborted(signal);
   const mime = await detectMime({ buffer: data, filePath: mediaUrl });
+  throwIfAborted(signal);
   const kind = kindFromMime(mime);
   if (enforceHostReadFileType) {
     assertHostReadMediaAllowed({

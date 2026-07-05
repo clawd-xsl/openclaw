@@ -3511,4 +3511,36 @@ describe("runWithImageModelFallback", () => {
       ["google", "gemini-2.5-flash-image-preview"],
     ]);
   });
+
+  it("does not try another image candidate after caller cancellation", async () => {
+    const cfg = makeCfg({
+      agents: {
+        defaults: {
+          imageModel: {
+            primary: "openai/gpt-image-1",
+            fallbacks: ["google/gemini-2.5-flash-image-preview"],
+          },
+        },
+      },
+    });
+    const controller = new AbortController();
+    const run = vi.fn(async () => {
+      throw new Error("first candidate failed");
+    });
+    const onError = vi.fn(() => {
+      controller.abort();
+    });
+
+    await expect(
+      runWithImageModelFallback({
+        cfg,
+        run,
+        onError,
+        abortSignal: controller.signal,
+      }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
 });
