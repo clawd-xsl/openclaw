@@ -965,6 +965,7 @@ export async function runPreparedCliAgent(
       : (resultParams.effectiveCliSessionId ?? params.sessionId ?? "");
     const yielded = resultParams.output.yielded === true;
     const stopReason = yielded ? "end_turn" : "completed";
+    const lastCallUsage = resultParams.output.lastCallUsage ?? resultParams.output.usage;
 
     return {
       payloads,
@@ -1008,7 +1009,7 @@ export async function runPreparedCliAgent(
           provider: params.provider,
           model: context.modelId,
           usage: resultParams.output.usage,
-          ...(resultParams.output.usage ? { lastCallUsage: resultParams.output.usage } : {}),
+          ...(lastCallUsage ? { lastCallUsage } : {}),
           ...(persistedCliSessionId
             ? {
                 cliSessionBinding: {

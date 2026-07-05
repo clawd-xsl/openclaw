@@ -39,7 +39,10 @@ export type CliOutput = {
   text: string;
   rawText?: string;
   sessionId?: string;
+  /** Aggregate usage reported for the complete CLI turn. */
   usage?: CliUsage;
+  /** Last assistant-call snapshot used for active context pressure. */
+  lastCallUsage?: CliUsage;
   errorText?: string;
   diagnostics?: {
     process?: CliProcessDiagnostics;
@@ -136,14 +139,6 @@ export function supportsCliJsonlToolEvents(params: {
     isClaudeCliProvider(params.providerId) ||
     isGeminiStreamJsonDialect(params)
   );
-}
-
-function isClaudeStreamJsonResult(params: {
-  backend: CliBackendConfig;
-  providerId: string;
-  parsed: Record<string, unknown>;
-}): boolean {
-  return supportsCliJsonlToolEvents(params) && params.parsed.type === "result";
 }
 
 function extractJsonObjectCandidates(raw: string): string[] {
@@ -527,6 +522,7 @@ function parseClaudeCliJsonlResult(params: {
   parsed: Record<string, unknown>;
   sessionId?: string;
   usage?: CliUsage;
+  lastCallUsage?: CliUsage;
 }): CliOutput | null {
   if (!supportsCliJsonlToolEvents(params)) {
     return null;
@@ -538,6 +534,7 @@ function parseClaudeCliJsonlResult(params: {
         text: "",
         sessionId: params.sessionId,
         usage: params.usage,
+        ...(params.lastCallUsage ? { lastCallUsage: params.lastCallUsage } : {}),
         errorText,
       };
     }
@@ -546,11 +543,21 @@ function parseClaudeCliJsonlResult(params: {
     }
     const resultText = unwrapNestedCliResultText(params.parsed.result).trim();
     if (resultText) {
-      return { text: resultText, sessionId: params.sessionId, usage: params.usage };
+      return {
+        text: resultText,
+        sessionId: params.sessionId,
+        usage: params.usage,
+        ...(params.lastCallUsage ? { lastCallUsage: params.lastCallUsage } : {}),
+      };
     }
     // Claude may finish with an empty result after tool-only work. Keep the
     // resolved session handle and usage instead of dropping them.
-    return { text: "", sessionId: params.sessionId, usage: params.usage };
+    return {
+      text: "",
+      sessionId: params.sessionId,
+      usage: params.usage,
+      ...(params.lastCallUsage ? { lastCallUsage: params.lastCallUsage } : {}),
+    };
   }
   return null;
 }
@@ -879,6 +886,7 @@ export function createCliJsonlStreamingParser(params: {
   let resetAssistantTextBeforeNextDelta = false;
   let sessionId: string | undefined;
   let usage: CliUsage | undefined;
+  let lastCallUsage: CliUsage | undefined;
   let output: CliOutput | null = null;
   let parseErrorText = "";
   let rawChars = 0;
@@ -930,14 +938,14 @@ export function createCliJsonlStreamingParser(params: {
       sessionId = parsed.thread_id.trim();
     }
     const nextUsage = readCliUsage(parsed);
-    const shouldUseUsage =
-      !isClaudeStreamJsonResult({
-        backend: params.backend,
-        providerId: params.providerId,
-        parsed,
-      }) || !usage;
-    if (shouldUseUsage) {
-      usage = nextUsage ?? usage;
+    usage = nextUsage ?? usage;
+    if (
+      nextUsage &&
+      isClaudeStreamJsonDialect(params) &&
+      parsed.type === "assistant" &&
+      isRecord(parsed.message)
+    ) {
+      lastCallUsage = nextUsage;
     }
     const geminiErrorText = isGeminiStreamJsonDialect(params)
       ? readGeminiCliStreamJsonError(parsed)
@@ -997,6 +1005,7 @@ export function createCliJsonlStreamingParser(params: {
       parsed,
       sessionId,
       usage,
+      lastCallUsage,
     });
     if (result) {
       output = result;
@@ -1169,16 +1178,27 @@ export function createCliJsonlStreamingParser(params: {
     },
     getOutput() {
       if (parseErrorText) {
-        return { text: "", sessionId, usage, errorText: parseErrorText };
+        return {
+          text: "",
+          sessionId,
+          usage,
+          ...(lastCallUsage ? { lastCallUsage } : {}),
+          errorText: parseErrorText,
+        };
       }
       if (output) {
         return output;
       }
       if (isStreamJsonDialect(params) && assistantText.trim()) {
-        return { text: assistantText.trim(), sessionId, usage };
+        return {
+          text: assistantText.trim(),
+          sessionId,
+          usage,
+          ...(lastCallUsage ? { lastCallUsage } : {}),
+        };
       }
       const text = texts.join("\n").trim();
-      return text ? { text, sessionId, usage } : null;
+      return text ? { text, sessionId, usage, ...(lastCallUsage ? { lastCallUsage } : {}) } : null;
     },
   };
 }
@@ -1196,6 +1216,7 @@ export function parseCliJsonl(
   }
   let sessionId: string | undefined;
   let usage: CliUsage | undefined;
+  let lastCallUsage: CliUsage | undefined;
   const texts: string[] = [];
   let streamJsonText = "";
   let geminiErrorText: string | undefined;
@@ -1208,9 +1229,14 @@ export function parseCliJsonl(
         sessionId = parsed.thread_id.trim();
       }
       const nextUsage = readCliUsage(parsed);
-      const shouldUseUsage = !isClaudeStreamJsonResult({ backend, providerId, parsed }) || !usage;
-      if (shouldUseUsage) {
-        usage = nextUsage ?? usage;
+      usage = nextUsage ?? usage;
+      if (
+        nextUsage &&
+        isClaudeStreamJsonDialect({ backend, providerId }) &&
+        parsed.type === "assistant" &&
+        isRecord(parsed.message)
+      ) {
+        lastCallUsage = nextUsage;
       }
 
       if (isGeminiStreamJsonDialect({ backend, providerId })) {
@@ -1244,6 +1270,7 @@ export function parseCliJsonl(
         parsed,
         sessionId,
         usage,
+        lastCallUsage,
       });
       if (claudeResult) {
         return claudeResult;
@@ -1275,16 +1302,27 @@ export function parseCliJsonl(
     return { text: "", sessionId, usage, errorText: geminiErrorText };
   }
   if (streamJsonDialect && (streamJsonText.trim() || sawGeminiStructuredOutput)) {
-    return { text: streamJsonText.trim(), sessionId, usage };
+    return {
+      text: streamJsonText.trim(),
+      sessionId,
+      usage,
+      ...(lastCallUsage ? { lastCallUsage } : {}),
+    };
   }
   if (streamJsonDialect) {
-    return { text: "", sessionId, usage, errorText: CLI_STREAM_JSON_MISSING_RESULT_ERROR };
+    return {
+      text: "",
+      sessionId,
+      usage,
+      ...(lastCallUsage ? { lastCallUsage } : {}),
+      errorText: CLI_STREAM_JSON_MISSING_RESULT_ERROR,
+    };
   }
   const text = texts.join("\n").trim();
   if (!text) {
     return null;
   }
-  return { text, sessionId, usage };
+  return { text, sessionId, usage, ...(lastCallUsage ? { lastCallUsage } : {}) };
 }
 
 /** Parses CLI output according to the backend output mode with text fallback. */

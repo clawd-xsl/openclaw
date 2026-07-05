@@ -701,7 +701,7 @@ describe("parseCliJsonl", () => {
     });
   });
 
-  it("does not let cumulative Claude result usage overwrite assistant usage", () => {
+  it("separates cumulative Claude result usage from the last assistant snapshot", () => {
     const result = parseCliJsonl(
       [
         JSON.stringify({ type: "init", session_id: "session-stream" }),
@@ -735,6 +735,13 @@ describe("parseCliJsonl", () => {
     );
 
     expect(result?.usage).toEqual({
+      input: 30,
+      output: 15,
+      cacheRead: 300,
+      cacheWrite: undefined,
+      total: undefined,
+    });
+    expect(result?.lastCallUsage).toEqual({
       input: 11,
       output: 6,
       cacheRead: 125,
@@ -1441,7 +1448,7 @@ describe("createCliJsonlStreamingParser", () => {
     });
   });
 
-  it("ignores cumulative usage from result events to avoid cache_read inflation", () => {
+  it("separates cumulative result usage from streaming context usage", () => {
     const parser = createCliJsonlStreamingParser({
       backend: {
         command: "local-cli",
@@ -1481,6 +1488,13 @@ describe("createCliJsonlStreamingParser", () => {
 
     const output = parser.getOutput();
     expect(output?.usage).toEqual({
+      input: 30,
+      output: 15,
+      cacheRead: 300,
+      cacheWrite: undefined,
+      total: undefined,
+    });
+    expect(output?.lastCallUsage).toEqual({
       input: 11,
       output: 6,
       cacheRead: 125,

@@ -604,6 +604,71 @@ describe("runCliAgent reliability", () => {
     expect(supervisorSpawnMock).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps Claude turn totals separate from the last-call context snapshot", async () => {
+    supervisorSpawnMock.mockClear();
+    supervisorSpawnMock.mockResolvedValueOnce(
+      createManagedRun({
+        reason: "exit",
+        exitCode: 0,
+        exitSignal: null,
+        durationMs: 50,
+        stdout: [
+          JSON.stringify({ type: "system", subtype: "init", session_id: "usage-session" }),
+          JSON.stringify({
+            type: "assistant",
+            session_id: "usage-session",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "done" }],
+              usage: {
+                input_tokens: 11,
+                output_tokens: 6,
+                cache_read_input_tokens: 125,
+              },
+            },
+          }),
+          JSON.stringify({
+            type: "result",
+            session_id: "usage-session",
+            result: "done",
+            usage: {
+              input_tokens: 30,
+              output_tokens: 15,
+              cache_read_input_tokens: 300,
+            },
+          }),
+        ].join("\n"),
+        stderr: "",
+        timedOut: false,
+        noOutputTimedOut: false,
+      }),
+    );
+    const context = buildPreparedContext({
+      provider: "claude-cli",
+      model: "opus",
+      runId: "run-claude-usage",
+    });
+    context.preparedBackend.backend.output = "jsonl";
+    context.preparedBackend.backend.jsonlDialect = "claude-stream-json";
+
+    const result = await runPreparedCliAgent(context);
+
+    expect(result.meta.agentMeta?.usage).toEqual({
+      input: 30,
+      output: 15,
+      cacheRead: 300,
+      cacheWrite: undefined,
+      total: undefined,
+    });
+    expect(result.meta.agentMeta?.lastCallUsage).toEqual({
+      input: 11,
+      output: 6,
+      cacheRead: 125,
+      cacheWrite: undefined,
+      total: undefined,
+    });
+  });
+
   it("does not retry or fail over after a confirmed message send", async () => {
     supervisorSpawnMock.mockClear();
     supervisorSpawnMock.mockImplementationOnce(async (...args: unknown[]) => {
