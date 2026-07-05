@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { stripInboundMetadata } from "../auto-reply/reply/strip-inbound-meta.js";
 import {
   appendTranscriptMessage,
   publishTranscriptUpdate,
@@ -51,10 +52,26 @@ export type {
 
 export type SessionTranscriptEvent = unknown;
 
+export type SessionTranscriptMessageRole = "user" | "assistant";
+
 export type BoundedSessionTranscriptReadResult = {
+  /** False when the scoped transcript artifact cannot currently be read. */
+  available: boolean;
   events: SessionTranscriptEvent[];
   truncated: boolean;
 };
+
+/**
+ * Removes OpenClaw's model-facing inbound metadata from persisted user text.
+ * Assistant text is returned unchanged so callers do not accidentally apply
+ * user-envelope rules to model output.
+ */
+export function sanitizeSessionTranscriptMessageText(params: {
+  role: SessionTranscriptMessageRole;
+  text: string;
+}): string {
+  return params.role === "user" ? stripInboundMetadata(params.text) : params.text;
+}
 
 export type SessionTranscriptTargetParams = SessionTranscriptReadParams & {
   /**
@@ -250,15 +267,19 @@ export async function readBoundedSessionTranscriptEvents(
   try {
     stat = await fs.promises.stat(target.sessionFile);
   } catch {
-    return { events: [], truncated: false };
+    return { available: false, events: [], truncated: false };
   }
-  if (!stat.isFile() || stat.size <= 0) {
-    return { events: [], truncated: false };
+  if (!stat.isFile()) {
+    return { available: false, events: [], truncated: false };
+  }
+  if (stat.size <= 0) {
+    return { available: true, events: [], truncated: false };
   }
 
   if (stat.size <= maxBytes) {
     const events = await readSessionTranscriptEvents(params);
     return {
+      available: true,
       events: selectTranscriptHeadAndTail(events, maxEvents),
       truncated: events.length > maxEvents,
     };
@@ -282,7 +303,7 @@ export async function readBoundedSessionTranscriptEvents(
       reverse: true,
     }),
   ]);
-  return { events: [...head, ...tail], truncated: true };
+  return { available: true, events: [...head, ...tail], truncated: true };
 }
 
 /**

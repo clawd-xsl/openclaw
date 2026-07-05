@@ -16,6 +16,7 @@ import {
   readLatestAssistantTextByIdentity,
   readSessionTranscriptEvents,
   resolveSessionTranscriptIdentity,
+  sanitizeSessionTranscriptMessageText,
   resolveSessionTranscriptLegacyFileTarget,
   resolveSessionTranscriptTarget,
   resolveSessionTranscriptMemoryHitKeyToSessionKeys,
@@ -23,6 +24,22 @@ import {
 } from "./session-transcript-runtime.js";
 
 describe("session transcript runtime SDK", () => {
+  it("strips model-facing inbound metadata only from persisted user text", () => {
+    const text = [
+      "Conversation info (untrusted metadata):",
+      "```json",
+      '{"message_id":"123","sender":"operator"}',
+      "```",
+      "",
+      "Continue the migration.",
+    ].join("\n");
+
+    expect(sanitizeSessionTranscriptMessageText({ role: "user", text })).toBe(
+      "Continue the migration.",
+    );
+    expect(sanitizeSessionTranscriptMessageText({ role: "assistant", text })).toBe(text);
+  });
+
   let tempDir: string;
   let storePath: string;
 
@@ -190,6 +207,7 @@ describe("session transcript runtime SDK", () => {
     await expect(
       readBoundedSessionTranscriptEvents({ ...scope, maxBytes: 900, maxEvents: 5 }),
     ).resolves.toEqual({
+      available: true,
       events: [events[0], ...events.slice(-4)],
       truncated: true,
     });
@@ -212,9 +230,33 @@ describe("session transcript runtime SDK", () => {
     await expect(
       readBoundedSessionTranscriptEvents({ ...scope, maxBytes: 8_192, maxEvents: 5 }),
     ).resolves.toEqual({
+      available: true,
       events: [events[0], ...events.slice(-4)],
       truncated: true,
     });
+  });
+
+  it("distinguishes an unavailable transcript from an available empty transcript", async () => {
+    const scope = {
+      agentId: "main",
+      sessionId: "availability",
+      sessionKey: "agent:main:main",
+      storePath,
+    };
+    await expect(
+      readBoundedSessionTranscriptEvents({ ...scope, maxBytes: 512, maxEvents: 5 }),
+    ).resolves.toEqual({ available: false, events: [], truncated: false });
+
+    const sessionFile = path.join(tempDir, "available-empty.jsonl");
+    fs.writeFileSync(sessionFile, "");
+    await expect(
+      readBoundedSessionTranscriptEvents({
+        ...scope,
+        sessionFile,
+        maxBytes: 512,
+        maxEvents: 5,
+      }),
+    ).resolves.toEqual({ available: true, events: [], truncated: false });
   });
 
   it("binds scoped reads to an explicit active transcript file without exposing it", async () => {
