@@ -85,11 +85,14 @@ async function sendSignalTsContentWithRetry<T>({
   operation: string;
   runtime?: RuntimeEnv;
   abortSignal: AbortSignal;
-  send: () => Promise<T>;
+  send: (timestamp: number) => Promise<T>;
 }): Promise<T> {
+  // Reuse the timestamp across retries so an ACK-lost first attempt and a retry
+  // identify the same logical Signal send.
+  const timestamp = Date.now();
   const runAttempt = async (retryIndex: number): Promise<T> => {
     try {
-      return await send();
+      return await send(timestamp);
     } catch (err) {
       const retryDelayMs = SIGNAL_TS_SEND_RETRY_DELAYS_MS[retryIndex];
       if (retryDelayMs === undefined || abortSignal.aborted || !isRetryableSignalTsSendError(err)) {
@@ -152,9 +155,10 @@ export async function sendMessageSignalTs(params: SignalTsSendParams): Promise<{
       operation: "message",
       runtime: params.runtime,
       abortSignal,
-      send: async () =>
+      send: async (timestamp) =>
         await client.sendMessage({
           traceId,
+          timestamp,
           destination: target,
           body: params.message,
           attachments,
@@ -208,9 +212,10 @@ export async function sendStickerSignalTs(params: SignalTsStickerParams): Promis
       operation: "sticker",
       runtime: params.runtime,
       abortSignal,
-      send: async () =>
+      send: async (timestamp) =>
         await client.sendStickerMessage({
           traceId,
+          timestamp,
           destination: target,
           sticker,
           stores: createLibsignalStores(repository),
@@ -273,9 +278,10 @@ export async function sendReactionSignalTs(params: SignalTsReactionParams): Prom
       operation: "reaction",
       runtime: params.runtime,
       abortSignal,
-      send: async () =>
+      send: async (timestamp) =>
         await client.sendReactionMessage({
           traceId,
+          timestamp,
           destination: target,
           reaction,
           stores: createLibsignalStores(repository),
@@ -366,9 +372,10 @@ async function sendSignalTsGroupMessage({
     operation: "group-message",
     runtime,
     abortSignal,
-    send: async () =>
+    send: async (timestamp) =>
       await client.sendGroupMessage({
         traceId,
+        timestamp,
         members,
         group: {
           masterKey: base64ToBytes(group.masterKey),
@@ -412,9 +419,10 @@ async function sendSignalTsGroupStickerMessage({
     operation: "group-sticker",
     runtime,
     abortSignal,
-    send: async () =>
+    send: async (timestamp) =>
       await client.sendGroupStickerMessage({
         traceId,
+        timestamp,
         members,
         group: {
           masterKey: base64ToBytes(group.masterKey),
@@ -455,9 +463,10 @@ async function sendSignalTsGroupReactionMessage({
     operation: "group-reaction",
     runtime,
     abortSignal,
-    send: async () =>
+    send: async (timestamp) =>
       await client.sendGroupReactionMessage({
         traceId,
+        timestamp,
         members,
         group: {
           masterKey: base64ToBytes(group.masterKey),

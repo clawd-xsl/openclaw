@@ -460,6 +460,14 @@ describe("signal-ts runtime monitor", () => {
 
     expect(result).toEqual({ messageId: "456", timestamp: 456 });
     expect(mocks.sendMessage).toHaveBeenCalledTimes(2);
+    const firstTimestamp = (
+      mocks.sendMessage.mock.calls[0]?.[0] as { timestamp?: number } | undefined
+    )?.timestamp;
+    const secondTimestamp = (
+      mocks.sendMessage.mock.calls[1]?.[0] as { timestamp?: number } | undefined
+    )?.timestamp;
+    expect(firstTimestamp).toEqual(expect.any(Number));
+    expect(secondTimestamp).toBe(firstTimestamp);
     expect(mocks.sleepWithAbort).toHaveBeenCalledWith(750, expect.any(AbortSignal));
     expect(runtime.log).toHaveBeenCalledWith(
       expect.stringContaining("signal-ts openclaw-signal-message-"),
@@ -499,6 +507,7 @@ describe("signal-ts runtime monitor", () => {
     expect(result).toEqual({ messageId: "765", timestamp: 765 });
     expect(mocks.sendReactionMessage).toHaveBeenCalledWith(
       expect.objectContaining({
+        timestamp: expect.any(Number),
         destination: "signal:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
         reaction: {
           emoji: "🔥",
@@ -544,6 +553,7 @@ describe("signal-ts runtime monitor", () => {
     expect(result).toEqual({ messageId: "876", timestamp: 876 });
     expect(mocks.sendGroupReactionMessage).toHaveBeenCalledWith(
       expect.objectContaining({
+        timestamp: expect.any(Number),
         members: ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"],
         reaction: {
           emoji: "❌",
@@ -612,6 +622,7 @@ describe("signal-ts runtime monitor", () => {
       );
       expect(mocks.sendStickerMessage).toHaveBeenCalledWith(
         expect.objectContaining({
+          timestamp: expect.any(Number),
           destination: "signal:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
           sticker: {
             packId: new Uint8Array([0xaa, 0xbb, 0xcc, 0xdd]),
@@ -672,6 +683,7 @@ describe("signal-ts runtime monitor", () => {
       expect(result).toEqual({ messageId: "654", timestamp: 654 });
       expect(mocks.sendGroupStickerMessage).toHaveBeenCalledWith(
         expect.objectContaining({
+          timestamp: expect.any(Number),
           members: ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"],
           sticker: expect.objectContaining({
             stickerId: 5,
