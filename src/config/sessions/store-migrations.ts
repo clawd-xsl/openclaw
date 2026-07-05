@@ -1,6 +1,37 @@
 // Session store migrations repair legacy field names during load/save normalization.
 import type { SessionEntry } from "./types.js";
 
+const LEGACY_CLAUDE_CLI_BACKEND_ID = "claude-cli-streaming";
+const CLAUDE_CLI_BACKEND_ID = "claude-cli";
+
+function removeRetiredClaudeCliMapKey<T>(map: Record<string, T> | undefined): boolean {
+  if (!map || !Object.hasOwn(map, LEGACY_CLAUDE_CLI_BACKEND_ID)) {
+    return false;
+  }
+  // The retired process did not use the canonical binding fingerprints. Renaming
+  // its key could resume an unrelated native thread; dropping it forces safe reseed.
+  delete map[LEGACY_CLAUDE_CLI_BACKEND_ID];
+  return true;
+}
+
+function migrateClaudeCliSessionEntry(entry: SessionEntry): boolean {
+  let changed = false;
+  for (const key of [
+    "modelProvider",
+    "providerOverride",
+    "agentHarnessId",
+    "agentRuntimeOverride",
+  ] as const) {
+    if (entry[key] === LEGACY_CLAUDE_CLI_BACKEND_ID) {
+      entry[key] = CLAUDE_CLI_BACKEND_ID;
+      changed = true;
+    }
+  }
+  changed = removeRetiredClaudeCliMapKey(entry.cliSessionIds) || changed;
+  changed = removeRetiredClaudeCliMapKey(entry.cliSessionBindings) || changed;
+  return changed;
+}
+
 /** Applies best-effort in-place migrations for legacy session store entry fields. */
 export function applySessionStoreMigrations(store: Record<string, SessionEntry>): boolean {
   let changed = false;
@@ -9,6 +40,7 @@ export function applySessionStoreMigrations(store: Record<string, SessionEntry>)
     if (!entry || typeof entry !== "object") {
       continue;
     }
+    changed = migrateClaudeCliSessionEntry(entry) || changed;
     const rec = entry as unknown as Record<string, unknown>;
     if (typeof rec.channel !== "string" && typeof rec.provider === "string") {
       rec.channel = rec.provider;
