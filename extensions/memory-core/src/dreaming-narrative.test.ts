@@ -114,6 +114,7 @@ async function seedSessionEntries(
 }
 
 afterEach(() => {
+  sessionStoreRuntimeModule.clearSessionStoreCacheForTest();
   vi.restoreAllMocks();
   restoreNarrativeTestEnv();
   resolveGlobalMap<string, unknown>(DREAMS_FILE_LOCKS_KEY).clear();
