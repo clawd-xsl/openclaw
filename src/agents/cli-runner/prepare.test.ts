@@ -3434,6 +3434,67 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
     }
   });
 
+  it("keeps Claude CLI prompt skills when slash commands disable the native plugin", async () => {
+    const { dir, sessionFile } = createSessionFile();
+    const prepareClaudeCliSkillsPlugin = vi.fn(async () => ({
+      args: ["--plugin-dir", path.join(dir, "openclaw-skills")],
+      cleanup: vi.fn(async () => undefined),
+    }));
+
+    try {
+      cliBackendsTesting.setDepsForTest({
+        resolvePluginSetupCliBackend: () => undefined,
+        resolveRuntimeCliBackends: () => [
+          {
+            id: "claude-cli",
+            pluginId: "anthropic",
+            bundleMcp: false,
+            config: {
+              command: "claude",
+              args: ["--print", "--disable-slash-commands"],
+              resumeArgs: ["--print", "--disable-slash-commands", "--resume", "{sessionId}"],
+              output: "jsonl",
+              input: "stdin",
+              sessionMode: "existing",
+            },
+          },
+        ],
+      });
+      setCliRunnerPrepareTestDeps({ prepareClaudeCliSkillsPlugin });
+
+      const context = await prepareCliRunContext({
+        sessionId: "session-test",
+        sessionFile,
+        workspaceDir: dir,
+        prompt: "latest ask",
+        provider: "claude-cli",
+        model: "opus",
+        timeoutMs: 1_000,
+        runId: "run-claude-disabled-slash-skills-prompt",
+        config: createCliBackendConfig(),
+        skillsSnapshot: {
+          prompt: [
+            "<available_skills>",
+            "  <skill>",
+            "    <name>weather</name>",
+            "    <description>Use weather tools for forecasts.</description>",
+            "  </skill>",
+            "</available_skills>",
+          ].join("\n"),
+          skills: [{ name: "weather" }],
+        },
+      });
+
+      expect(prepareClaudeCliSkillsPlugin).not.toHaveBeenCalled();
+      expect(context.systemPrompt).toContain("<available_skills>");
+      expect(context.systemPrompt).toContain("<name>weather</name>");
+      expect(context.systemPromptReport.skills.promptChars).toBeGreaterThan(0);
+      expect(context.claudeSkillsPluginArgs).toEqual([]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("keeps Claude CLI prompt skills when the snapshot has no materialized plugin skills", async () => {
     const { dir, sessionFile } = createSessionFile();
     const missingSkillDir = path.join(dir, "skills", "missing");

@@ -134,6 +134,11 @@ function canApplySystemPromptOnResume(backend: CliBackendConfig): boolean {
   );
 }
 
+function disablesClaudeCliSlashCommands(backend: CliBackendConfig): boolean {
+  const args = [...(backend.args ?? []), ...(backend.resumeArgs ?? [])];
+  return args.some((arg) => arg === "--disable-slash-commands");
+}
+
 function buildCliSessionDriftUserContext(
   reusableCliSession: CliReusableSession,
 ): string | undefined {
@@ -603,12 +608,16 @@ export async function prepareCliRunContext(
             await preparedExecution?.beforeExecution?.();
           }
         : undefined;
-    const claudeSkillsPlugin = isSideQuestion
-      ? { args: [], cleanup: async () => {} }
-      : await prepareDeps.prepareClaudeCliSkillsPlugin({
-          backendId: backendResolved.id,
-          skillsSnapshot: params.skillsSnapshot,
-        });
+    // Claude's slash-command switch also disables skills from --plugin-dir.
+    // Fall back to the existing system-prompt representation so a hardened
+    // backend does not silently lose the OpenClaw-selected skill set.
+    const claudeSkillsPlugin =
+      isSideQuestion || disablesClaudeCliSlashCommands(preparedBackend.backend)
+        ? { args: [], cleanup: async () => {} }
+        : await prepareDeps.prepareClaudeCliSkillsPlugin({
+            backendId: backendResolved.id,
+            skillsSnapshot: params.skillsSnapshot,
+          });
     const preparedCleanup =
       preparedBackendCleanup || claudeSkillsPlugin.args.length > 0
         ? async () => {
