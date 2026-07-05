@@ -1404,6 +1404,7 @@ export {
   pnpmLockOverrideVersionForVersions,
   parsePnpmPackageKey,
   parseLockPackagePath,
+  readPnpmLockPackages,
   readShrinkwrapOverrides,
   resolveShrinkwrapTempParent,
   restoreCurrentPnpmLockedPackages,

@@ -6,7 +6,7 @@ import {
   collectCurrentShrinkwrapOverrides,
   collectPnpmLockViolations,
   mergeOverrides,
-  parsePnpmPackageKey,
+  readPnpmLockPackages,
   readShrinkwrapOverrides,
 } from "../scripts/generate-npm-shrinkwrap.mjs";
 
@@ -34,24 +34,6 @@ type NpmShrinkwrap = {
 
 function readJson(filePath: string): unknown {
   return JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
-}
-
-function collectPnpmLockPackages(): Set<string> {
-  const lockfile = parse(fs.readFileSync("pnpm-lock.yaml", "utf8")) as {
-    packages?: Record<string, { version?: unknown }>;
-  };
-  const packages = new Set<string>();
-  for (const [packageKey, metadata] of Object.entries(lockfile.packages ?? {})) {
-    const parsed = parsePnpmPackageKey(packageKey);
-    if (!parsed) {
-      continue;
-    }
-    packages.add(`${parsed.name}@${parsed.version}`);
-    if (typeof metadata.version === "string") {
-      packages.add(`${parsed.name}@${metadata.version}`);
-    }
-  }
-  return packages;
 }
 
 describe("package manager build policy", () => {
@@ -88,7 +70,7 @@ describe("package manager build policy", () => {
   it("pins forked transitive dependencies with parent-scoped shrinkwrap overrides", () => {
     const overrides = readShrinkwrapOverrides() as Record<string, unknown>;
 
-    const packages = collectPnpmLockPackages();
+    const packages = readPnpmLockPackages();
 
     expect(overrides["lru-cache"]).toBeUndefined();
     expect(overrides["lru-memoizer@2.3.0"]).toMatchObject({
@@ -218,7 +200,7 @@ describe("package manager build policy", () => {
   });
 
   it("keeps npm shrinkwrap package versions inside the pnpm lock graph", () => {
-    const pnpmLockPackages = collectPnpmLockPackages();
+    const pnpmLockPackages = readPnpmLockPackages();
     const shrinkwrapPaths = [
       "npm-shrinkwrap.json",
       ...fs
