@@ -266,6 +266,7 @@ async function sendFormattedSignalText(ctx: {
       accountId: ctx.accountId ?? undefined,
       textMode: "plain",
       textStyles: chunk.styles,
+      abortSignal: ctx.abortSignal,
       ...(index === 0 && ctx.replyToId ? { replyToId: ctx.replyToId } : {}),
     });
     results.push(attachSignalVisibleText(result, chunk.text));
@@ -316,6 +317,7 @@ async function sendFormattedSignalMedia(ctx: {
     accountId: ctx.accountId ?? undefined,
     textMode: "plain",
     textStyles: formatted.styles,
+    abortSignal: ctx.abortSignal,
     ...(ctx.replyToId ? { replyToId: ctx.replyToId } : {}),
   });
   return attachChannelToResult("signal", attachSignalVisibleText(result, formatted.text));

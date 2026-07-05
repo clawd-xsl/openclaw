@@ -19,6 +19,36 @@ vi.mock("./approval-reactions.js", () => ({
 const { deliverReplies } = await import("./monitor.js");
 
 describe("Signal monitor reply threading", () => {
+  it("forwards the owning turn abort signal to every platform send", async () => {
+    const abortController = new AbortController();
+    sendMessageSignalMock
+      .mockReset()
+      .mockResolvedValueOnce({ messageId: "message-1" })
+      .mockResolvedValueOnce({ messageId: "message-2" });
+
+    await deliverReplies({
+      cfg: {} as OpenClawConfig,
+      replies: [{ text: "abcdef" }],
+      target: "signal:+15550002222",
+      baseUrl: "http://signal.test",
+      account: "+15550001111",
+      accountId: "work",
+      runtime: { ...createNonExitingRuntime(), log: vi.fn() },
+      maxBytes: 8 * 1024 * 1024,
+      textLimit: 3,
+      chunkMode: "length",
+      abortSignal: abortController.signal,
+    });
+
+    expect(sendMessageSignalMock).toHaveBeenCalledTimes(2);
+    expect(sendMessageSignalMock.mock.calls[0]?.[2]).toEqual(
+      expect.objectContaining({ abortSignal: abortController.signal }),
+    );
+    expect(sendMessageSignalMock.mock.calls[1]?.[2]).toEqual(
+      expect.objectContaining({ abortSignal: abortController.signal }),
+    );
+  });
+
   it("quotes only the first platform send with the inbound group author", async () => {
     sendMessageSignalMock
       .mockReset()

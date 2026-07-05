@@ -1,6 +1,6 @@
 // Signal tests cover event handler.inbound context plugin behavior.
 import { expectChannelInboundContextContract as expectInboundContextContract } from "openclaw/plugin-sdk/channel-contract-testing";
-import type { MsgContext } from "openclaw/plugin-sdk/reply-runtime";
+import type { MsgContext, ReplyDispatcher } from "openclaw/plugin-sdk/reply-runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SignalReactionMessage } from "./event-handler.types.js";
 vi.useRealTimers();
@@ -11,7 +11,9 @@ const [
 
 type DispatchInboundMessageMockParams = {
   ctx: MsgContext;
+  dispatcher?: ReplyDispatcher;
   replyOptions?: {
+    abortSignal?: AbortSignal;
     allowProgressCallbacksWhenSourceDeliverySuppressed?: boolean;
     allowToolLifecycleWhenProgressHidden?: boolean;
     onReplyStart?: () => void | Promise<void>;
@@ -31,6 +33,7 @@ const {
   dispatchInboundMessageMock,
   enqueueSystemEventMock,
   recordInboundSessionMock,
+  readSessionUpdatedAtMock,
   capture,
 } = vi.hoisted(() => {
   const captureState: { ctx?: MsgContext } = {};
@@ -41,6 +44,7 @@ const {
     removeReactionSignalMock: vi.fn(async () => ({ ok: true })),
     enqueueSystemEventMock: vi.fn(),
     recordInboundSessionMock: vi.fn(),
+    readSessionUpdatedAtMock: vi.fn(),
     dispatchInboundMessageMock: vi.fn(async (params: DispatchInboundMessageMockParams) => {
       captureState.ctx = params.ctx;
       await Promise.resolve(params.replyOptions?.onReplyStart?.());
@@ -89,6 +93,16 @@ vi.mock("openclaw/plugin-sdk/conversation-runtime", async () => {
   };
 });
 
+vi.mock("openclaw/plugin-sdk/session-store-runtime", async () => {
+  const actual = await vi.importActual<typeof import("openclaw/plugin-sdk/session-store-runtime")>(
+    "openclaw/plugin-sdk/session-store-runtime",
+  );
+  return {
+    ...actual,
+    readSessionUpdatedAt: readSessionUpdatedAtMock,
+  };
+});
+
 vi.mock("openclaw/plugin-sdk/system-event-runtime", async () => {
   const actual = await vi.importActual<typeof import("openclaw/plugin-sdk/system-event-runtime")>(
     "openclaw/plugin-sdk/system-event-runtime",
@@ -131,6 +145,7 @@ describe("signal createSignalEventHandler inbound context", () => {
     removeReactionSignalMock.mockReset().mockResolvedValue({ ok: true });
     enqueueSystemEventMock.mockReset();
     recordInboundSessionMock.mockReset().mockResolvedValue(undefined);
+    readSessionUpdatedAtMock.mockReset().mockReturnValue(undefined);
     dispatchInboundMessageMock.mockClear();
     approvalReactionMocks.maybeResolveSignalApprovalReaction.mockReset().mockResolvedValue(false);
   });
@@ -259,6 +274,175 @@ describe("signal createSignalEventHandler inbound context", () => {
     expect(context.Body).toContain("summarize the release notes");
     expect(context.Body).not.toBe(context.BodyForAgent);
     expect(context.UntrustedContext).toBeUndefined();
+  });
+
+  it("starts DM typing before session persistence and dispatch without blocking either", async () => {
+    const order: string[] = [];
+    let resolveTyping!: () => void;
+    const typingPending = new Promise<void>((resolve) => {
+      resolveTyping = resolve;
+    });
+    sendTypingMock.mockImplementationOnce(async () => {
+      order.push("typing");
+      await typingPending;
+      return true;
+    });
+    readSessionUpdatedAtMock.mockImplementationOnce(() => {
+      order.push("store-read");
+      return undefined;
+    });
+    recordInboundSessionMock.mockImplementationOnce(async () => {
+      order.push("store-write");
+    });
+    dispatchInboundMessageMock.mockImplementationOnce(
+      async (params: DispatchInboundMessageMockParams) => {
+        capture.ctx = params.ctx;
+        order.push("dispatch");
+        await params.replyOptions?.onReplyStart?.();
+        return { queuedFinal: false, counts: { tool: 0, block: 0, final: 0 } };
+      },
+    );
+    const handler = createSignalEventHandler(
+      createBaseSignalEventHandlerDeps({
+        cfg: {
+          messages: { inbound: { debounceMs: 0 } },
+          channels: { signal: { dmPolicy: "open", allowFrom: ["*"] } },
+        },
+        historyLimit: 0,
+      }),
+    );
+
+    await handler(
+      createSignalReceiveEvent({
+        dataMessage: { message: "fast typing", attachments: [] },
+      }),
+    );
+
+    expect(order).toEqual(["typing", "store-read", "store-write", "dispatch"]);
+    expect(sendTypingMock).toHaveBeenCalledTimes(1);
+    resolveTyping();
+    await Promise.resolve();
+  });
+
+  it("keeps group typing owned by reply start instead of ingress", async () => {
+    dispatchInboundMessageMock.mockImplementationOnce(
+      async (params: DispatchInboundMessageMockParams) => {
+        capture.ctx = params.ctx;
+        expect(sendTypingMock).not.toHaveBeenCalled();
+        await params.replyOptions?.onReplyStart?.();
+        expect(sendTypingMock).toHaveBeenCalledTimes(1);
+        return { queuedFinal: false, counts: { tool: 0, block: 0, final: 0 } };
+      },
+    );
+    const handler = createSignalEventHandler(
+      createBaseSignalEventHandlerDeps({
+        cfg: { messages: { inbound: { debounceMs: 0 } } } as any,
+        historyLimit: 0,
+      }),
+    );
+
+    await handler(
+      createSignalReceiveEvent({
+        dataMessage: {
+          message: "group typing",
+          attachments: [],
+          groupInfo: { groupId: "g1", groupName: "Test Group" },
+        },
+      }),
+    );
+  });
+
+  it("keeps supersession ownership on the newest same-session inbound turn", async () => {
+    const replySignals: AbortSignal[] = [];
+    const runTurn = async (params: DispatchInboundMessageMockParams) => {
+      capture.ctx = params.ctx;
+      const abortSignal = params.replyOptions?.abortSignal;
+      if (!abortSignal) {
+        throw new Error("expected per-turn abort signal");
+      }
+      const turnIndex = replySignals.push(abortSignal) - 1;
+      if (turnIndex < 2) {
+        await new Promise<void>((resolve) => {
+          if (abortSignal.aborted) {
+            resolve();
+            return;
+          }
+          abortSignal.addEventListener("abort", () => resolve(), { once: true });
+        });
+      }
+      return { queuedFinal: false, counts: { tool: 0, block: 0, final: 0 } };
+    };
+    dispatchInboundMessageMock
+      .mockImplementationOnce(runTurn)
+      .mockImplementationOnce(runTurn)
+      .mockImplementationOnce(runTurn);
+    const handler = createSignalEventHandler(
+      createBaseSignalEventHandlerDeps({
+        cfg: {
+          messages: { inbound: { debounceMs: 0 } },
+          channels: { signal: { dmPolicy: "open", allowFrom: ["*"] } },
+        },
+        historyLimit: 0,
+      }),
+    );
+    const event = (timestamp: number, message: string) =>
+      createSignalReceiveEvent({
+        timestamp,
+        dataMessage: { timestamp, message, attachments: [] },
+      });
+
+    const first = handler(event(1700000000001, "first"));
+    await vi.waitFor(() => expect(replySignals).toHaveLength(1));
+    const second = handler(event(1700000000002, "second"));
+    await vi.waitFor(() => expect(replySignals).toHaveLength(2));
+    expect(replySignals[0]?.aborted).toBe(true);
+    expect(replySignals[1]?.aborted).toBe(false);
+    await first;
+
+    const third = handler(event(1700000000003, "third"));
+    await vi.waitFor(() => expect(replySignals).toHaveLength(3));
+    expect(replySignals[1]?.aborted).toBe(true);
+    expect(replySignals[2]?.aborted).toBe(false);
+    await Promise.all([second, third]);
+  });
+
+  it("propagates the turn abort signal through reply delivery", async () => {
+    const deliverReplies = vi.fn(async () => {});
+    let replyAbortSignal: AbortSignal | undefined;
+    dispatchInboundMessageMock.mockImplementationOnce(
+      async (params: DispatchInboundMessageMockParams) => {
+        capture.ctx = params.ctx;
+        replyAbortSignal = params.replyOptions?.abortSignal;
+        if (!params.dispatcher) {
+          throw new Error("expected reply dispatcher");
+        }
+        params.dispatcher.sendFinalReply({ text: "delivered" });
+        params.dispatcher.markComplete();
+        await params.dispatcher.waitForIdle();
+        return { queuedFinal: true, counts: { tool: 0, block: 0, final: 1 } };
+      },
+    );
+    const handler = createSignalEventHandler(
+      createBaseSignalEventHandlerDeps({
+        cfg: {
+          messages: { inbound: { debounceMs: 0 } },
+          channels: { signal: { dmPolicy: "open", allowFrom: ["*"] } },
+        },
+        historyLimit: 0,
+        deliverReplies,
+      }),
+    );
+
+    await handler(
+      createSignalReceiveEvent({
+        dataMessage: { message: "deliver", attachments: [] },
+      }),
+    );
+
+    expect(replyAbortSignal).toBeInstanceOf(AbortSignal);
+    expect(deliverReplies).toHaveBeenCalledWith(
+      expect.objectContaining({ abortSignal: replyAbortSignal }),
+    );
   });
 
   it("runs Telegram-parity Signal status reactions when explicitly enabled", async () => {
@@ -1397,15 +1581,19 @@ describe("signal createSignalEventHandler inbound context", () => {
       }),
     );
 
-    expect(sendTypingMock).toHaveBeenCalledWith("+15550001111", {
-      cfg: {
-        messages: { inbound: { debounceMs: 0 } },
-        channels: { signal: { dmPolicy: "open", allowFrom: ["*"] } },
-      },
-      baseUrl: "http://localhost",
-      account: "+15550009999",
-      accountId: "default",
-    });
+    expect(sendTypingMock).toHaveBeenCalledWith(
+      "+15550001111",
+      expect.objectContaining({
+        cfg: {
+          messages: { inbound: { debounceMs: 0 } },
+          channels: { signal: { dmPolicy: "open", allowFrom: ["*"] } },
+        },
+        baseUrl: "http://localhost",
+        account: "+15550009999",
+        accountId: "default",
+        abortSignal: expect.any(AbortSignal),
+      }),
+    );
     expect(sendReadReceiptMock).toHaveBeenCalledWith("signal:+15550001111", 1700000000000, {
       cfg: {
         messages: { inbound: { debounceMs: 0 } },

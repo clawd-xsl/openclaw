@@ -237,6 +237,7 @@ export async function sendMessageSignal(
   text: string,
   opts: SignalSendOpts,
 ): Promise<SignalSendResult> {
+  opts.abortSignal?.throwIfAborted();
   const cfg = requireRuntimeConfig(opts.cfg, "Signal send");
   const apiMode = cfg.channels?.signal?.apiMode;
   const accountInfo = resolveSignalAccount({
@@ -276,6 +277,7 @@ export async function sendMessageSignal(
       localRoots: opts.mediaLocalRoots,
       readFile: opts.mediaReadFile,
     });
+    opts.abortSignal?.throwIfAborted();
     attachments = [resolved.path];
     signalTsAttachments = [
       {

@@ -386,6 +386,31 @@ describe("signal outbound", () => {
     expect(send.mock.calls[1]?.[2]).not.toHaveProperty("replyToId");
   });
 
+  it("forwards abort ownership through formatted Signal sends", async () => {
+    const abortController = new AbortController();
+    const send = vi.fn(async () => ({
+      messageId: "signal-1",
+      receipt: createMessageReceiptFromOutboundResults({
+        results: [{ channel: "signal", messageId: "signal-1" }],
+        kind: "text",
+      }),
+    }));
+
+    await signalPlugin.outbound?.sendFormattedText?.({
+      cfg: {} as OpenClawConfig,
+      to: "+15551234567",
+      text: "cancelable",
+      abortSignal: abortController.signal,
+      deps: { signal: send },
+    });
+
+    expect(send).toHaveBeenCalledWith(
+      "+15551234567",
+      "cancelable",
+      expect.objectContaining({ abortSignal: abortController.signal }),
+    );
+  });
+
   it("resolves aliases before formatted Signal media sends", async () => {
     const send = vi.fn(async () => ({
       messageId: "signal-1",

@@ -152,6 +152,8 @@ function resolveSignalStatusReactionTimestamp(params: {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
+const SIGNAL_TYPING_START_DEDUPE_WINDOW_MS = 2_500;
+
 type SignalStatusDispatchResult = Awaited<ReturnType<typeof dispatchInboundMessage>>;
 
 function hasSignalStatusReplyDeliveryFailure(result: SignalStatusDispatchResult): boolean {
@@ -212,6 +214,11 @@ async function finalizeSignalStatusReaction(params: {
 }
 
 export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
+  const activeReplyAbortControllers = new Map<
+    string,
+    { token: symbol; controller: AbortController }
+  >();
+
   type SignalInboundEntry = {
     senderName: string;
     senderDisplay: string;
@@ -253,401 +260,437 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
       groupId: entry.groupId,
       senderPeerId: entry.senderPeerId,
     });
-    const storePath = resolveStorePath(deps.cfg.session?.store, {
-      agentId: route.agentId,
-    });
-    const envelopeOptions = resolveEnvelopeFormatOptions(deps.cfg);
-    const previousTimestamp = readSessionUpdatedAt({
-      storePath,
-      sessionKey: route.sessionKey,
-    });
-    const body = formatInboundEnvelope({
-      channel: "Signal",
-      from: fromLabel,
-      timestamp: entry.timestamp ?? undefined,
-      body: entry.bodyText,
-      chatType: entry.isGroup ? "group" : "direct",
-      sender: { name: entry.senderName, id: entry.senderDisplay },
-      previousTimestamp,
-      envelope: envelopeOptions,
-    });
-    let combinedBody = body;
-    const historyKey = entry.isGroup ? (entry.groupId ?? "unknown") : undefined;
-    if (entry.isGroup && historyKey) {
-      const channelHistory = createChannelHistoryWindow({ historyMap: deps.groupHistories });
-      combinedBody = channelHistory.buildPendingContext({
-        historyKey,
-        limit: deps.historyLimit,
-        currentMessage: combinedBody,
-        formatEntry: (historyEntry) =>
-          formatInboundEnvelope({
-            channel: "Signal",
-            from: fromLabel,
-            timestamp: historyEntry.timestamp,
-            body: `${historyEntry.body}${
-              historyEntry.messageId ? ` [id:${historyEntry.messageId}]` : ""
-            }`,
-            chatType: "group",
-            senderLabel: historyEntry.sender,
-            envelope: envelopeOptions,
-          }),
-      });
-    }
-    const signalToRaw = entry.isGroup
-      ? `group:${entry.groupId}`
-      : `signal:${entry.senderRecipient}`;
-    const signalTo = normalizeSignalMessagingTarget(signalToRaw) ?? signalToRaw;
-    const inboundHistory =
-      entry.isGroup && historyKey && deps.historyLimit > 0
-        ? createChannelHistoryWindow({ historyMap: deps.groupHistories }).buildInboundHistory({
-            historyKey,
-            limit: deps.historyLimit,
-          })
-        : undefined;
-    const media =
-      entry.mediaPaths && entry.mediaPaths.length > 0
-        ? entry.mediaPaths.map((path, index) => ({
-            path,
-            url: path,
-            contentType: entry.mediaTypes?.[index],
-          }))
-        : entry.mediaPath
-          ? [{ path: entry.mediaPath, url: entry.mediaPath, contentType: entry.mediaType }]
-          : undefined;
-    const ctxPayload = buildChannelInboundEventContext({
-      channel: "signal",
-      supplemental: {
-        quote: entry.replyToBody
-          ? {
-              body: entry.replyToBody,
-              sender: entry.replyToSender,
-              isQuote: entry.replyToIsQuote,
-            }
-          : undefined,
-      },
-      messageId: entry.messageId,
-      timestamp: entry.timestamp ?? undefined,
-      from: entry.isGroup
-        ? `group:${entry.groupId ?? "unknown"}`
-        : `signal:${entry.senderRecipient}`,
-      sender: {
-        id: entry.senderDisplay,
-        name: entry.senderName,
-      },
-      conversation: {
-        kind: entry.isGroup ? "group" : "direct",
-        id: entry.isGroup ? (entry.groupId ?? "unknown") : entry.senderRecipient,
-        label: fromLabel,
-      },
-      route: {
-        agentId: route.agentId,
-        accountId: route.accountId,
-        routeSessionKey: route.sessionKey,
-      },
-      reply: {
-        to: signalTo,
-      },
-      message: {
-        body: combinedBody,
-        bodyForAgent: entry.bodyText,
-        inboundHistory,
-        rawBody: entry.bodyText,
-        commandBody: entry.commandBody,
-      },
-      access: {
-        ...(entry.isGroup
-          ? {
-              mentions: {
-                canDetectMention: true,
-                wasMentioned: entry.wasMentioned === true,
-              },
-            }
-          : {}),
-        commands: {
-          authorized: entry.commandAuthorized,
-        },
-      },
-      media,
-      extra: {
-        GroupSubject: entry.isGroup ? (entry.groupName ?? undefined) : undefined,
-      },
-    });
-
-    if (shouldLogVerbose()) {
-      const preview = truncateUtf16Safe(body, 200).replace(/\\n/g, "\\\\n");
-      logVerbose(`signal inbound: from=${ctxPayload.From} len=${body.length} preview="${preview}"`);
-    }
-
-    const statusReactionTimestamp = resolveSignalStatusReactionTimestamp(entry);
-    const statusReactionsConfig = deps.cfg.messages?.statusReactions;
-    const signalReactionLevel = resolveSignalReactionLevel({
-      cfg: deps.cfg,
-      accountId: route.accountId,
-    });
-    const ackReaction = resolveAckReaction(deps.cfg, route.agentId, {
-      channel: "signal",
-      accountId: route.accountId,
-    });
-    const shouldSendStatusReaction = Boolean(
-      ackReaction &&
-      shouldAckReaction({
-        scope: deps.cfg.messages?.ackReactionScope,
-        isDirect: !entry.isGroup,
-        isGroup: entry.isGroup,
-        isMentionableGroup: entry.isGroup,
-        requireMention: entry.requireMention === true,
-        canDetectMention: entry.canDetectMention === true,
-        effectiveWasMentioned: entry.wasMentioned === true,
-      }),
+    const replyAbortToken = Symbol(route.sessionKey);
+    const replyAbortController = new AbortController();
+    const previousReplyAbort = activeReplyAbortControllers.get(route.sessionKey);
+    previousReplyAbort?.controller.abort(
+      new Error(`Signal inbound reply superseded for ${route.sessionKey}`),
     );
-    const statusReactionTarget = `${entry.groupId ?? entry.senderRecipient}/${
-      statusReactionTimestamp ?? "unknown"
-    }`;
-    const signalReactionOpts: SignalReactionOpts = {
-      cfg: deps.cfg,
-      ...(deps.baseUrl ? { baseUrl: deps.baseUrl } : {}),
-      ...(deps.account ? { account: deps.account } : {}),
-      ...(deps.accountId ? { accountId: deps.accountId } : {}),
-      ...(entry.isGroup && entry.groupId
-        ? {
-            groupId: entry.groupId,
-            targetAuthor: entry.senderRecipient,
-          }
-        : {}),
-    };
-    const statusReactionRecipient = entry.isGroup ? "" : entry.senderRecipient;
-    let currentStatusReactionEmoji = ackReaction;
-    const statusReactionController =
-      statusReactionsConfig?.enabled === true &&
-      signalReactionLevel.level !== "off" &&
-      shouldSendStatusReaction &&
-      statusReactionTimestamp
-        ? createStatusReactionController({
-            enabled: true,
-            adapter: {
-              setReaction: async (emoji) => {
-                await sendReactionSignal(
-                  statusReactionRecipient,
-                  statusReactionTimestamp,
-                  emoji,
-                  signalReactionOpts,
-                );
-                currentStatusReactionEmoji = emoji;
-              },
-              clearReaction: async () => {
-                if (!currentStatusReactionEmoji) {
-                  return;
-                }
-                await removeReactionSignal(
-                  statusReactionRecipient,
-                  statusReactionTimestamp,
-                  currentStatusReactionEmoji,
-                  signalReactionOpts,
-                );
-                currentStatusReactionEmoji = "";
-              },
-            },
-            initialEmoji: ackReaction,
-            emojis: resolveSignalStatusReactionEmojis(statusReactionsConfig.emojis),
-            timing: statusReactionsConfig.timing,
-            onError: (err) => {
-              logAckFailure({
-                log: logVerbose,
-                channel: "signal",
-                target: statusReactionTarget,
-                error: err,
-              });
-            },
-          })
-        : null;
-    const statusReactionTiming = {
-      ...DEFAULT_TIMING,
-      ...statusReactionsConfig?.timing,
-    };
-    if (statusReactionController) {
-      void statusReactionController.setQueued();
-    }
-
-    const { onModelSelected, typingCallbacks, ...replyPipeline } =
-      createChannelMessageReplyPipeline({
-        cfg: deps.cfg,
-        agentId: route.agentId,
-        channel: "signal",
-        accountId: route.accountId,
-        typing: {
-          start: async () => {
-            if (!ctxPayload.To) {
-              return;
-            }
-            await sendTypingSignal(ctxPayload.To, {
-              cfg: deps.cfg,
-              baseUrl: deps.baseUrl,
-              account: deps.account,
-              accountId: deps.accountId,
-            });
-          },
-          onStartError: (err) => {
-            logTypingFailure({
-              log: logVerbose,
-              channel: "signal",
-              target: ctxPayload.To ?? undefined,
-              error: err,
-            });
-          },
-        },
-      });
-
-    const { dispatcher, replyOptions, markDispatchIdle } = createReplyDispatcherWithTyping({
-      ...replyPipeline,
-      humanDelay: resolveHumanDelayConfig(deps.cfg, route.agentId),
-      typingCallbacks,
-      deliver: async (payload, _info) => {
-        await deps.deliverReplies({
+    activeReplyAbortControllers.set(route.sessionKey, {
+      token: replyAbortToken,
+      controller: replyAbortController,
+    });
+    try {
+      const signalToRaw = entry.isGroup
+        ? `group:${entry.groupId}`
+        : `signal:${entry.senderRecipient}`;
+      const signalTo = normalizeSignalMessagingTarget(signalToRaw) ?? signalToRaw;
+      let lastTypingSignalAt: number | undefined;
+      const handleTypingStartError = (err: unknown) => {
+        logTypingFailure({
+          log: logVerbose,
+          channel: "signal",
+          target: signalTo,
+          error: err,
+        });
+      };
+      const startSignalTyping = async () => {
+        const now = Date.now();
+        if (
+          lastTypingSignalAt !== undefined &&
+          now - lastTypingSignalAt < SIGNAL_TYPING_START_DEDUPE_WINDOW_MS
+        ) {
+          return;
+        }
+        lastTypingSignalAt = now;
+        await sendTypingSignal(signalTo, {
           cfg: deps.cfg,
-          replies: [payload],
-          target: ctxPayload.To,
           baseUrl: deps.baseUrl,
           account: deps.account,
           accountId: deps.accountId,
           runtime: deps.runtime,
-          maxBytes: deps.mediaMaxBytes,
-          textLimit: deps.textLimit,
-          quoteAuthor: entry.senderRecipient,
+          abortSignal: replyAbortController.signal,
         });
-      },
-      onError: (err, info) => {
-        deps.runtime.error?.(danger(`signal ${info.kind} reply failed: ${String(err)}`));
-      },
-    });
-    const inboundLastRouteSessionKey = resolveInboundLastRouteSessionKey({
-      route,
-      sessionKey: route.sessionKey,
-    });
+      };
+      if (!entry.isGroup) {
+        void startSignalTyping().catch(handleTypingStartError);
+      }
 
-    await runChannelInboundEvent({
-      channel: "signal",
-      accountId: route.accountId,
-      raw: entry,
-      adapter: {
-        ingest: () => ({
-          id: entry.messageId ?? `${entry.timestamp ?? Date.now()}`,
-          timestamp: entry.timestamp,
-          rawText: entry.bodyText,
-          raw: entry,
-        }),
-        resolveTurn: () => ({
-          channel: "signal",
+      const storePath = resolveStorePath(deps.cfg.session?.store, {
+        agentId: route.agentId,
+      });
+      const envelopeOptions = resolveEnvelopeFormatOptions(deps.cfg);
+      const previousTimestamp = readSessionUpdatedAt({
+        storePath,
+        sessionKey: route.sessionKey,
+      });
+      const body = formatInboundEnvelope({
+        channel: "Signal",
+        from: fromLabel,
+        timestamp: entry.timestamp ?? undefined,
+        body: entry.bodyText,
+        chatType: entry.isGroup ? "group" : "direct",
+        sender: { name: entry.senderName, id: entry.senderDisplay },
+        previousTimestamp,
+        envelope: envelopeOptions,
+      });
+      let combinedBody = body;
+      const historyKey = entry.isGroup ? (entry.groupId ?? "unknown") : undefined;
+      if (entry.isGroup && historyKey) {
+        const channelHistory = createChannelHistoryWindow({ historyMap: deps.groupHistories });
+        combinedBody = channelHistory.buildPendingContext({
+          historyKey,
+          limit: deps.historyLimit,
+          currentMessage: combinedBody,
+          formatEntry: (historyEntry) =>
+            formatInboundEnvelope({
+              channel: "Signal",
+              from: fromLabel,
+              timestamp: historyEntry.timestamp,
+              body: `${historyEntry.body}${
+                historyEntry.messageId ? ` [id:${historyEntry.messageId}]` : ""
+              }`,
+              chatType: "group",
+              senderLabel: historyEntry.sender,
+              envelope: envelopeOptions,
+            }),
+        });
+      }
+      const inboundHistory =
+        entry.isGroup && historyKey && deps.historyLimit > 0
+          ? createChannelHistoryWindow({ historyMap: deps.groupHistories }).buildInboundHistory({
+              historyKey,
+              limit: deps.historyLimit,
+            })
+          : undefined;
+      const media =
+        entry.mediaPaths && entry.mediaPaths.length > 0
+          ? entry.mediaPaths.map((path, index) => ({
+              path,
+              url: path,
+              contentType: entry.mediaTypes?.[index],
+            }))
+          : entry.mediaPath
+            ? [{ path: entry.mediaPath, url: entry.mediaPath, contentType: entry.mediaType }]
+            : undefined;
+      const ctxPayload = buildChannelInboundEventContext({
+        channel: "signal",
+        supplemental: {
+          quote: entry.replyToBody
+            ? {
+                body: entry.replyToBody,
+                sender: entry.replyToSender,
+                isQuote: entry.replyToIsQuote,
+              }
+            : undefined,
+        },
+        messageId: entry.messageId,
+        timestamp: entry.timestamp ?? undefined,
+        from: entry.isGroup
+          ? `group:${entry.groupId ?? "unknown"}`
+          : `signal:${entry.senderRecipient}`,
+        sender: {
+          id: entry.senderDisplay,
+          name: entry.senderName,
+        },
+        conversation: {
+          kind: entry.isGroup ? "group" : "direct",
+          id: entry.isGroup ? (entry.groupId ?? "unknown") : entry.senderRecipient,
+          label: fromLabel,
+        },
+        route: {
+          agentId: route.agentId,
           accountId: route.accountId,
           routeSessionKey: route.sessionKey,
-          storePath,
-          ctxPayload,
-          recordInboundSession,
-          record: {
-            updateLastRoute: !entry.isGroup
-              ? {
-                  sessionKey: inboundLastRouteSessionKey,
-                  channel: "signal",
-                  to: entry.senderRecipient,
-                  accountId: route.accountId,
-                  mainDmOwnerPin: (() => {
-                    if (inboundLastRouteSessionKey !== route.mainSessionKey) {
-                      return undefined;
-                    }
-                    const pinnedOwner = resolvePinnedMainDmOwnerFromAllowlist({
-                      dmScope: deps.cfg.session?.dmScope,
-                      allowFrom: deps.allowFrom,
-                      normalizeEntry: normalizeSignalAllowRecipient,
-                    });
-                    if (!pinnedOwner) {
-                      return undefined;
-                    }
-                    return {
-                      ownerRecipient: pinnedOwner,
-                      senderRecipient: entry.senderRecipient,
-                      onSkip: ({ ownerRecipient, senderRecipient }) => {
-                        logVerbose(
-                          `signal: skip main-session last route for ${senderRecipient} (pinned owner ${ownerRecipient})`,
-                        );
-                      },
-                    };
-                  })(),
-                }
-              : undefined,
-            onRecordError: (err) => {
-              logVerbose(`signal: failed updating session meta: ${String(err)}`);
-            },
-          },
-          history: {
-            isGroup: entry.isGroup,
-            historyKey,
-            historyMap: deps.groupHistories,
-            limit: deps.historyLimit,
-          },
-          onPreDispatchFailure: () =>
-            settleReplyDispatcher({
-              dispatcher,
-              onSettled: () => markDispatchIdle(),
-            }),
-          runDispatch: async () => {
-            try {
-              if (statusReactionController) {
-                void statusReactionController.setThinking();
-              }
-              return await dispatchInboundMessage({
-                ctx: ctxPayload,
-                cfg: deps.cfg,
-                dispatcher,
-                replyOptions: {
-                  ...replyOptions,
-                  disableBlockStreaming:
-                    typeof deps.blockStreaming === "boolean" ? !deps.blockStreaming : undefined,
-                  ...(statusReactionController
-                    ? {
-                        allowProgressCallbacksWhenSourceDeliverySuppressed: true,
-                        allowToolLifecycleWhenProgressHidden: true,
-                        onToolStart: async (payload: { name?: string }) => {
-                          const toolName = payload.name?.trim();
-                          if (toolName) {
-                            await statusReactionController.setTool(toolName);
-                          }
-                        },
-                        onCompactionStart: async () => {
-                          await statusReactionController.setCompacting();
-                        },
-                        onCompactionEnd: async () => {
-                          statusReactionController.cancelPending();
-                          await statusReactionController.setThinking();
-                        },
-                      }
-                    : {}),
-                  onModelSelected,
+        },
+        reply: {
+          to: signalTo,
+        },
+        message: {
+          body: combinedBody,
+          bodyForAgent: entry.bodyText,
+          inboundHistory,
+          rawBody: entry.bodyText,
+          commandBody: entry.commandBody,
+        },
+        access: {
+          ...(entry.isGroup
+            ? {
+                mentions: {
+                  canDetectMention: true,
+                  wasMentioned: entry.wasMentioned === true,
                 },
-              });
-            } finally {
-              markDispatchIdle();
-            }
+              }
+            : {}),
+          commands: {
+            authorized: entry.commandAuthorized,
           },
+        },
+        media,
+        extra: {
+          GroupSubject: entry.isGroup ? (entry.groupName ?? undefined) : undefined,
+        },
+      });
+
+      if (shouldLogVerbose()) {
+        const preview = truncateUtf16Safe(body, 200).replace(/\\n/g, "\\\\n");
+        logVerbose(
+          `signal inbound: from=${ctxPayload.From} len=${body.length} preview="${preview}"`,
+        );
+      }
+
+      const statusReactionTimestamp = resolveSignalStatusReactionTimestamp(entry);
+      const statusReactionsConfig = deps.cfg.messages?.statusReactions;
+      const signalReactionLevel = resolveSignalReactionLevel({
+        cfg: deps.cfg,
+        accountId: route.accountId,
+      });
+      const ackReaction = resolveAckReaction(deps.cfg, route.agentId, {
+        channel: "signal",
+        accountId: route.accountId,
+      });
+      const shouldSendStatusReaction = Boolean(
+        ackReaction &&
+        shouldAckReaction({
+          scope: deps.cfg.messages?.ackReactionScope,
+          isDirect: !entry.isGroup,
+          isGroup: entry.isGroup,
+          isMentionableGroup: entry.isGroup,
+          requireMention: entry.requireMention === true,
+          canDetectMention: entry.canDetectMention === true,
+          effectiveWasMentioned: entry.wasMentioned === true,
         }),
-        onFinalize: (result) => {
-          if (!statusReactionController) {
-            return;
-          }
-          const hasFinalResponse =
-            result.dispatched && hasVisibleInboundReplyDispatch(result.dispatchResult);
-          const hasDeliveryFailure =
-            result.dispatched && hasSignalStatusReplyDeliveryFailure(result.dispatchResult);
-          void finalizeSignalStatusReaction({
-            controller: statusReactionController,
-            outcome: hasFinalResponse && !hasDeliveryFailure ? "done" : "error",
-            hasFinalResponse,
-            removeAckAfterReply: deps.cfg.messages?.removeAckAfterReply ?? false,
-            timing: statusReactionTiming,
-          }).catch((err: unknown) => {
-            logVerbose(`signal: status reaction finalize failed: ${String(err)}`);
+      );
+      const statusReactionTarget = `${entry.groupId ?? entry.senderRecipient}/${
+        statusReactionTimestamp ?? "unknown"
+      }`;
+      const signalReactionOpts: SignalReactionOpts = {
+        cfg: deps.cfg,
+        ...(deps.baseUrl ? { baseUrl: deps.baseUrl } : {}),
+        ...(deps.account ? { account: deps.account } : {}),
+        ...(deps.accountId ? { accountId: deps.accountId } : {}),
+        ...(entry.isGroup && entry.groupId
+          ? {
+              groupId: entry.groupId,
+              targetAuthor: entry.senderRecipient,
+            }
+          : {}),
+      };
+      const statusReactionRecipient = entry.isGroup ? "" : entry.senderRecipient;
+      let currentStatusReactionEmoji = ackReaction;
+      const statusReactionController =
+        statusReactionsConfig?.enabled === true &&
+        signalReactionLevel.level !== "off" &&
+        shouldSendStatusReaction &&
+        statusReactionTimestamp
+          ? createStatusReactionController({
+              enabled: true,
+              adapter: {
+                setReaction: async (emoji) => {
+                  await sendReactionSignal(
+                    statusReactionRecipient,
+                    statusReactionTimestamp,
+                    emoji,
+                    signalReactionOpts,
+                  );
+                  currentStatusReactionEmoji = emoji;
+                },
+                clearReaction: async () => {
+                  if (!currentStatusReactionEmoji) {
+                    return;
+                  }
+                  await removeReactionSignal(
+                    statusReactionRecipient,
+                    statusReactionTimestamp,
+                    currentStatusReactionEmoji,
+                    signalReactionOpts,
+                  );
+                  currentStatusReactionEmoji = "";
+                },
+              },
+              initialEmoji: ackReaction,
+              emojis: resolveSignalStatusReactionEmojis(statusReactionsConfig.emojis),
+              timing: statusReactionsConfig.timing,
+              onError: (err) => {
+                logAckFailure({
+                  log: logVerbose,
+                  channel: "signal",
+                  target: statusReactionTarget,
+                  error: err,
+                });
+              },
+            })
+          : null;
+      const statusReactionTiming = {
+        ...DEFAULT_TIMING,
+        ...statusReactionsConfig?.timing,
+      };
+      if (statusReactionController) {
+        void statusReactionController.setQueued();
+      }
+
+      const { onModelSelected, typingCallbacks, ...replyPipeline } =
+        createChannelMessageReplyPipeline({
+          cfg: deps.cfg,
+          agentId: route.agentId,
+          channel: "signal",
+          accountId: route.accountId,
+          typing: {
+            start: startSignalTyping,
+            onStartError: handleTypingStartError,
+          },
+        });
+
+      const { dispatcher, replyOptions, markDispatchIdle } = createReplyDispatcherWithTyping({
+        ...replyPipeline,
+        abortSignal: replyAbortController.signal,
+        humanDelay: resolveHumanDelayConfig(deps.cfg, route.agentId),
+        typingCallbacks,
+        deliver: async (payload, _info) => {
+          replyAbortController.signal.throwIfAborted();
+          await deps.deliverReplies({
+            cfg: deps.cfg,
+            replies: [payload],
+            target: ctxPayload.To,
+            baseUrl: deps.baseUrl,
+            account: deps.account,
+            accountId: deps.accountId,
+            runtime: deps.runtime,
+            maxBytes: deps.mediaMaxBytes,
+            textLimit: deps.textLimit,
+            quoteAuthor: entry.senderRecipient,
+            abortSignal: replyAbortController.signal,
           });
         },
-      },
-    });
+        onError: (err, info) => {
+          deps.runtime.error?.(danger(`signal ${info.kind} reply failed: ${String(err)}`));
+        },
+      });
+      const inboundLastRouteSessionKey = resolveInboundLastRouteSessionKey({
+        route,
+        sessionKey: route.sessionKey,
+      });
+
+      await runChannelInboundEvent({
+        channel: "signal",
+        accountId: route.accountId,
+        raw: entry,
+        adapter: {
+          ingest: () => ({
+            id: entry.messageId ?? `${entry.timestamp ?? Date.now()}`,
+            timestamp: entry.timestamp,
+            rawText: entry.bodyText,
+            raw: entry,
+          }),
+          resolveTurn: () => ({
+            channel: "signal",
+            accountId: route.accountId,
+            routeSessionKey: route.sessionKey,
+            storePath,
+            ctxPayload,
+            recordInboundSession,
+            record: {
+              updateLastRoute: !entry.isGroup
+                ? {
+                    sessionKey: inboundLastRouteSessionKey,
+                    channel: "signal",
+                    to: entry.senderRecipient,
+                    accountId: route.accountId,
+                    mainDmOwnerPin: (() => {
+                      if (inboundLastRouteSessionKey !== route.mainSessionKey) {
+                        return undefined;
+                      }
+                      const pinnedOwner = resolvePinnedMainDmOwnerFromAllowlist({
+                        dmScope: deps.cfg.session?.dmScope,
+                        allowFrom: deps.allowFrom,
+                        normalizeEntry: normalizeSignalAllowRecipient,
+                      });
+                      if (!pinnedOwner) {
+                        return undefined;
+                      }
+                      return {
+                        ownerRecipient: pinnedOwner,
+                        senderRecipient: entry.senderRecipient,
+                        onSkip: ({ ownerRecipient, senderRecipient }) => {
+                          logVerbose(
+                            `signal: skip main-session last route for ${senderRecipient} (pinned owner ${ownerRecipient})`,
+                          );
+                        },
+                      };
+                    })(),
+                  }
+                : undefined,
+              onRecordError: (err) => {
+                logVerbose(`signal: failed updating session meta: ${String(err)}`);
+              },
+            },
+            history: {
+              isGroup: entry.isGroup,
+              historyKey,
+              historyMap: deps.groupHistories,
+              limit: deps.historyLimit,
+            },
+            onPreDispatchFailure: () =>
+              settleReplyDispatcher({
+                dispatcher,
+                onSettled: () => markDispatchIdle(),
+              }),
+            runDispatch: async () => {
+              try {
+                if (statusReactionController) {
+                  void statusReactionController.setThinking();
+                }
+                return await dispatchInboundMessage({
+                  ctx: ctxPayload,
+                  cfg: deps.cfg,
+                  dispatcher,
+                  replyOptions: {
+                    ...replyOptions,
+                    abortSignal: replyAbortController.signal,
+                    disableBlockStreaming:
+                      typeof deps.blockStreaming === "boolean" ? !deps.blockStreaming : undefined,
+                    ...(statusReactionController
+                      ? {
+                          allowProgressCallbacksWhenSourceDeliverySuppressed: true,
+                          allowToolLifecycleWhenProgressHidden: true,
+                          onToolStart: async (payload: { name?: string }) => {
+                            const toolName = payload.name?.trim();
+                            if (toolName) {
+                              await statusReactionController.setTool(toolName);
+                            }
+                          },
+                          onCompactionStart: async () => {
+                            await statusReactionController.setCompacting();
+                          },
+                          onCompactionEnd: async () => {
+                            statusReactionController.cancelPending();
+                            await statusReactionController.setThinking();
+                          },
+                        }
+                      : {}),
+                    onModelSelected,
+                  },
+                });
+              } finally {
+                markDispatchIdle();
+              }
+            },
+          }),
+          onFinalize: (result) => {
+            if (!statusReactionController) {
+              return;
+            }
+            const hasFinalResponse =
+              result.dispatched && hasVisibleInboundReplyDispatch(result.dispatchResult);
+            const hasDeliveryFailure =
+              result.dispatched && hasSignalStatusReplyDeliveryFailure(result.dispatchResult);
+            void finalizeSignalStatusReaction({
+              controller: statusReactionController,
+              outcome: hasFinalResponse && !hasDeliveryFailure ? "done" : "error",
+              hasFinalResponse,
+              removeAckAfterReply: deps.cfg.messages?.removeAckAfterReply ?? false,
+              timing: statusReactionTiming,
+            }).catch((err: unknown) => {
+              logVerbose(`signal: status reaction finalize failed: ${String(err)}`);
+            });
+          },
+        },
+      });
+    } finally {
+      if (activeReplyAbortControllers.get(route.sessionKey)?.token === replyAbortToken) {
+        activeReplyAbortControllers.delete(route.sessionKey);
+      }
+    }
   }
 
   const { debouncer: inboundDebouncer } = createChannelInboundDebouncer<SignalInboundEntry>({

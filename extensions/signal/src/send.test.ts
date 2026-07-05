@@ -93,6 +93,49 @@ describe("sendMessageSignal receipts", () => {
     expect(result.receipt.replyToId).toBe("1699999999999");
   });
 
+  it("forwards reply cancellation into direct signal-ts sends", async () => {
+    const abortController = new AbortController();
+    const cfg = {
+      channels: {
+        signal: {
+          backend: "signal-ts",
+          signalTsStatePath: "/secure/signal/default.json",
+        },
+      },
+    } as never;
+
+    await sendMessageSignal("+15551234567", "cancelable", {
+      cfg,
+      abortSignal: abortController.signal,
+    });
+
+    expect(signalTsMocks.message).toHaveBeenCalledWith(
+      expect.objectContaining({ abortSignal: abortController.signal }),
+    );
+  });
+
+  it("does not start a direct signal-ts send for an already-aborted reply", async () => {
+    const abortController = new AbortController();
+    abortController.abort(new Error("superseded"));
+    const cfg = {
+      channels: {
+        signal: {
+          backend: "signal-ts",
+          signalTsStatePath: "/secure/signal/default.json",
+        },
+      },
+    } as never;
+
+    await expect(
+      sendMessageSignal("+15551234567", "stale", {
+        cfg,
+        abortSignal: abortController.signal,
+      }),
+    ).rejects.toThrow("superseded");
+
+    expect(signalTsMocks.message).not.toHaveBeenCalled();
+  });
+
   it("routes typing, receipts, and stickers through signal-ts", async () => {
     const cfg = {
       channels: {

@@ -140,6 +140,7 @@ export type SignalEventHandlerDeps = {
     maxBytes: number;
     textLimit: number;
     quoteAuthor?: string;
+    abortSignal?: AbortSignal;
   }) => Promise<void>;
   resolveSignalReactionTargets: (reaction: SignalReactionMessage) => SignalReactionTarget[];
   isSignalReactionMessage: (

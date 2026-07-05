@@ -377,10 +377,12 @@ export async function deliverReplies(params: {
   textLimit: number;
   chunkMode: "length" | "newline";
   quoteAuthor?: string;
+  abortSignal?: AbortSignal;
 }) {
   const { replies, target, baseUrl, account, accountId, runtime, maxBytes, textLimit, chunkMode } =
     params;
   for (const payload of replies) {
+    params.abortSignal?.throwIfAborted();
     const deliveryResults: Array<{
       channel: "signal";
       messageId: string;
@@ -438,6 +440,7 @@ export async function deliverReplies(params: {
             account,
             maxBytes,
             accountId,
+            abortSignal: params.abortSignal,
             ...consumeQuote(),
           }),
           chunk,
@@ -453,6 +456,7 @@ export async function deliverReplies(params: {
             mediaUrl,
             maxBytes,
             accountId,
+            abortSignal: params.abortSignal,
             ...consumeQuote(),
           }),
           visibleText,
