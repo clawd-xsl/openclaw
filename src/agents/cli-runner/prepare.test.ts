@@ -777,6 +777,72 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
     }
   });
 
+  it("passes the effective context limit to backend execution preparation", async () => {
+    const { dir, sessionFile } = createSessionFile();
+    const prepareExecution = vi.fn(async (ctx: { contextTokens?: number }) =>
+      ctx.contextTokens
+        ? { env: { TEST_CLI_CONTEXT_TOKENS: String(ctx.contextTokens) } }
+        : undefined,
+    );
+    cliBackendsTesting.setDepsForTest({
+      resolvePluginSetupCliBackend: () => undefined,
+      resolveRuntimeCliBackends: () => [
+        {
+          id: "claude-cli",
+          pluginId: "anthropic",
+          bundleMcp: false,
+          prepareExecution,
+          config: {
+            command: "claude",
+            args: ["-p"],
+            output: "jsonl",
+            input: "stdin",
+            sessionMode: "existing",
+          },
+        },
+      ],
+    });
+
+    try {
+      const context = await prepareCliRunContext({
+        sessionId: "session-test",
+        sessionKey: "agent:main:main",
+        sessionFile,
+        workspaceDir: dir,
+        prompt: "latest ask",
+        provider: "claude-cli",
+        model: "claude-opus-4-6",
+        timeoutMs: 1_000,
+        runId: "run-test-cli-context-window",
+        config: {
+          agents: {
+            defaults: {
+              contextTokens: 222_000,
+            },
+          },
+        },
+      });
+
+      expect(prepareExecution).toHaveBeenCalledWith(
+        expect.objectContaining({
+          provider: "claude-cli",
+          modelId: "claude-opus-4-6",
+          contextTokens: 222_000,
+        }),
+      );
+      expect(context.contextWindowInfo).toMatchObject({
+        tokens: 222_000,
+        referenceTokens: 1_048_576,
+        source: "agentContextTokens",
+      });
+      expect(context.preparedBackend.env).toMatchObject({
+        TEST_CLI_CONTEXT_TOKENS: "222000",
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("lets Gemini CLI preparation override generated MCP system settings auth", async () => {
     const { dir, sessionFile } = createSessionFile();
     const profileSystemSettingsPath = path.join(dir, "profile-system-settings.json");

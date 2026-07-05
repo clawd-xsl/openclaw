@@ -557,6 +557,7 @@ export async function prepareCliRunContext(
       agentDir,
       provider: params.provider,
       modelId,
+      contextTokens: contextWindowInfo.tokens,
       authProfileId: effectiveAuthProfileId,
       executionMode,
       env: preparedBackend.env,

@@ -26,6 +26,8 @@ export type CliBackendPrepareExecutionContext = {
   agentDir?: string;
   provider: string;
   modelId: string;
+  /** Effective OpenClaw context limit for this provider/model invocation. */
+  contextTokens?: number;
   authProfileId?: string;
   executionMode?: CliBackendExecutionMode;
 };
