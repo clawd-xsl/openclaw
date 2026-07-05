@@ -659,6 +659,78 @@ function deleteSessionKeys(db: DatabaseSync, sessionKeys: readonly string[]): vo
   }
 }
 
+export type DeletedSessionStoreSqliteEntry = {
+  sessionKey: string;
+  entry: SessionEntry;
+};
+
+export type SessionStoreSqliteEntryDeletionTarget = {
+  sessionKey: string;
+  /** Omit for unconditional deletion; null matches an entry without a session id. */
+  expectedSessionId?: string | null;
+};
+
+/** Deletes only the named rows and returns entries observed in the same writer transaction. */
+export function deleteSessionEntriesFromSqlite(params: {
+  storePath: string;
+  targets: readonly SessionStoreSqliteEntryDeletionTarget[];
+}): DeletedSessionStoreSqliteEntry[] {
+  const targetsByKey = new Map(
+    params.targets
+      .filter((target) => target.sessionKey)
+      .map((target) => [target.sessionKey, target]),
+  );
+  if (targetsByKey.size === 0) {
+    return [];
+  }
+  const sessionKeys = [...targetsByKey.keys()];
+
+  const { db, path: databasePath } = openSessionStore(params.storePath);
+  const deleted = runSqliteImmediateTransactionSync(db, () => {
+    const kysely = getNodeSqliteKysely<SessionStoreDatabase>(db);
+    const serializedByKey = new Map<string, string>();
+    const chunkSize = 500;
+    for (let offset = 0; offset < sessionKeys.length; offset += chunkSize) {
+      const rows = executeSqliteQuerySync(
+        db,
+        kysely
+          .selectFrom("session_entries")
+          .select(["session_key", "entry_json"])
+          .where("session_key", "in", sessionKeys.slice(offset, offset + chunkSize)),
+      ).rows;
+      for (const row of rows) {
+        serializedByKey.set(row.session_key, row.entry_json);
+      }
+    }
+
+    const entries: DeletedSessionStoreSqliteEntry[] = [];
+    for (const [sessionKey, target] of targetsByKey) {
+      const serialized = serializedByKey.get(sessionKey);
+      if (serialized === undefined) {
+        continue;
+      }
+      const entry = parseEntryStrict({ databasePath, sessionKey, serialized });
+      if (
+        target.expectedSessionId !== undefined &&
+        (entry.sessionId ?? null) !== target.expectedSessionId
+      ) {
+        continue;
+      }
+      entries.push({
+        sessionKey,
+        entry,
+      });
+    }
+    deleteSessionKeys(
+      db,
+      entries.map((entry) => entry.sessionKey),
+    );
+    return entries;
+  });
+  hardenDatabaseFiles(databasePath);
+  return deleted;
+}
+
 export function upsertSessionEntryInSqlite(params: {
   storePath: string;
   sessionKey: string;

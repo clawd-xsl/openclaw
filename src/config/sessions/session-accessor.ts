@@ -39,13 +39,21 @@ import {
 } from "./plugin-host-cleanup.js";
 import { resolveAndPersistSessionFile } from "./session-file.js";
 import { resolveSessionStorePathForScope } from "./session-store-path.js";
+import { normalizeSessionStore } from "./store-load.js";
 import type {
   ResolvedSessionMaintenanceConfig,
   SessionMaintenanceWarning,
 } from "./store-maintenance.js";
+import { applySessionStoreMigrations } from "./store-migrations.js";
+import {
+  inspectSessionStoreSqliteReadOnly,
+  isSqliteSessionStorePath,
+  resolveSessionStoreJsonImportPath,
+} from "./store-sqlite.js";
 import {
   getSessionEntry,
   cleanupSessionLifecycleArtifacts as cleanupFileSessionLifecycleArtifacts,
+  deleteSessionEntries as deleteFileSessionEntries,
   deleteSessionEntryLifecycle as deleteFileSessionEntryLifecycle,
   applySessionEntryLifecycleMutation as applyFileSessionEntryLifecycleMutation,
   listSessionEntries as listFileSessionEntries,
@@ -927,6 +935,53 @@ export function listSessionEntries(scope: SessionEntryListScope = {}): SessionEn
     ).map(([sessionKey, entry]) => ({ sessionKey, entry }));
   }
   return listFileSessionEntries(scope);
+}
+
+/** Inspects one resolved store without creating a database or consuming its legacy JSON source. */
+export function inspectSessionStoreEntriesReadOnly(params: {
+  storePath: string;
+}): SessionEntrySummary[] {
+  let store: Record<string, SessionEntry>;
+  if (isSqliteSessionStorePath(params.storePath)) {
+    const sqliteSnapshot = fs.existsSync(params.storePath)
+      ? inspectSessionStoreSqliteReadOnly(params.storePath)
+      : undefined;
+    const sqliteIsAuthoritative = Boolean(
+      sqliteSnapshot &&
+      (sqliteSnapshot.entryCount > 0 ||
+        sqliteSnapshot.jsonImportResolved ||
+        sqliteSnapshot.jsonImportArchivePendingDigest),
+    );
+    store = sqliteIsAuthoritative
+      ? (sqliteSnapshot?.store ?? {})
+      : loadSessionStore(resolveSessionStoreJsonImportPath(params.storePath), {
+          hydrateSkillPromptRefs: false,
+          skipCache: true,
+        });
+    if (sqliteIsAuthoritative) {
+      applySessionStoreMigrations(store);
+      normalizeSessionStore(store);
+    }
+  } else {
+    store = loadSessionStore(params.storePath, {
+      hydrateSkillPromptRefs: false,
+      skipCache: true,
+    });
+  }
+  return Object.entries(store)
+    .map(([sessionKey, entry]) => ({ sessionKey, entry: structuredClone(entry) }))
+    .toSorted((left, right) => left.sessionKey.localeCompare(right.sessionKey));
+}
+
+/** Deletes only the named entries at the storage boundary. */
+export async function deleteSessionEntries(params: {
+  storePath: string;
+  targets: ReadonlyArray<{
+    sessionKey: string;
+    expectedSessionId?: string | null;
+  }>;
+}): Promise<SessionEntrySummary[]> {
+  return await deleteFileSessionEntries(params);
 }
 
 /** Reads the last activity timestamp for one session entry, or undefined when absent. */

@@ -73,10 +73,12 @@ import {
 } from "./store-maintenance.js";
 import { applySessionStoreMigrations } from "./store-migrations.js";
 import {
+  deleteSessionEntriesFromSqlite,
   isSqliteSessionStorePath,
   loadSessionEntryFromSqlite,
   readSessionUpdatedAtFromSqlite,
   saveSessionStoreToSqlite,
+  type SessionStoreSqliteEntryDeletionTarget,
   upsertSessionEntryInSqlite,
 } from "./store-sqlite.js";
 import { runExclusiveSessionStoreWrite } from "./store-writer.js";
@@ -1107,6 +1109,67 @@ export async function updateSessionStore<T>(
     },
     { reentrant: opts?.reentrant },
   );
+}
+
+export type DeletedSessionStoreEntry = {
+  sessionKey: string;
+  entry: SessionEntry;
+};
+
+export type SessionStoreEntryDeletionTarget = SessionStoreSqliteEntryDeletionTarget;
+
+/** Deletes only the named entries without projecting a stale whole-store snapshot. */
+export async function deleteSessionEntries(params: {
+  storePath: string;
+  targets: readonly SessionStoreEntryDeletionTarget[];
+}): Promise<DeletedSessionStoreEntry[]> {
+  const targetsByKey = new Map(
+    params.targets
+      .filter((target) => target.sessionKey)
+      .map((target) => [target.sessionKey, target]),
+  );
+  if (targetsByKey.size === 0) {
+    return [];
+  }
+
+  return await runExclusiveSessionStoreWrite(params.storePath, async () => {
+    if (isSqliteSessionStorePath(params.storePath)) {
+      ensureSqliteSessionStoreJsonImport(params.storePath);
+      const deleted = deleteSessionEntriesFromSqlite({
+        storePath: params.storePath,
+        targets: [...targetsByKey.values()],
+      });
+      invalidateSessionStoreCache(params.storePath);
+      return deleted;
+    }
+
+    const store = loadMutableSessionStoreForWriter(params.storePath);
+    const deleted: DeletedSessionStoreEntry[] = [];
+    for (const [sessionKey, target] of targetsByKey) {
+      const entry = store[sessionKey];
+      if (!entry) {
+        continue;
+      }
+      if (
+        target.expectedSessionId !== undefined &&
+        (entry.sessionId ?? null) !== target.expectedSessionId
+      ) {
+        continue;
+      }
+      deleted.push({ sessionKey, entry: cloneSessionEntry(entry) });
+      delete store[sessionKey];
+    }
+    if (deleted.length === 0) {
+      restoreUnchangedSessionStoreCache(params.storePath, store);
+      return [];
+    }
+    await saveSessionStoreUnlocked(params.storePath, store, {
+      requireWriteSuccess: true,
+      skipMaintenance: true,
+      takeCacheOwnership: true,
+    });
+    return deleted;
+  });
 }
 
 function cloneSessionEntryProjectionSnapshot(

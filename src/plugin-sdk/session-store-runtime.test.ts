@@ -1,11 +1,15 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as jsonFiles from "../infra/json-files.js";
 import {
+  clearSessionStoreCacheForTest,
   cleanupSessionLifecycleArtifacts,
+  deleteSessionEntries,
   getSessionEntry,
+  inspectSessionStoreEntriesReadOnly,
   listSessionEntries,
   patchSessionEntry,
   readSessionUpdatedAt,
@@ -27,6 +31,7 @@ describe("session-store-runtime compatibility surface", () => {
   });
 
   afterEach(() => {
+    clearSessionStoreCacheForTest();
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
@@ -68,6 +73,125 @@ describe("session-store-runtime compatibility surface", () => {
       },
     });
     expect(getSessionEntry({ sessionKey, storePath })?.model).toBeUndefined();
+  });
+
+  it("inspects a pending SQLite import without creating or archiving files", () => {
+    const sqlitePath = path.join(tempDir, "sessions.sqlite");
+    const jsonPath = path.join(tempDir, "sessions.json");
+    const sessionKey = "agent:main:feishu:direct:ou_user";
+    const raw = JSON.stringify({
+      [sessionKey]: {
+        sessionId: "legacy-session",
+        updatedAt: 10,
+      },
+    });
+    fs.writeFileSync(jsonPath, raw);
+    const namesBefore = fs.readdirSync(tempDir).toSorted();
+
+    expect(inspectSessionStoreEntriesReadOnly({ storePath: sqlitePath })).toEqual([
+      {
+        sessionKey,
+        entry: expect.objectContaining({ sessionId: "legacy-session" }),
+      },
+    ]);
+
+    expect(fs.readdirSync(tempDir).toSorted()).toEqual(namesBefore);
+    expect(fs.existsSync(sqlitePath)).toBe(false);
+    expect(fs.readFileSync(jsonPath, "utf8")).toBe(raw);
+  });
+
+  it("deletes only named SQLite rows added after a read-only inspection", async () => {
+    const sqlitePath = path.join(tempDir, "sessions.sqlite");
+    const targetKey = "agent:main:feishu:direct:ou_user";
+    const existingKey = "agent:main:discord:direct:user";
+    const concurrentKey = "agent:main:slack:direct:user";
+    await saveSessionStore(
+      sqlitePath,
+      {
+        [targetKey]: { sessionId: "target", updatedAt: 10 },
+        [existingKey]: { sessionId: "existing", updatedAt: 20 },
+      },
+      { skipMaintenance: true },
+    );
+    expect(
+      inspectSessionStoreEntriesReadOnly({ storePath: sqlitePath }).map(
+        (entry) => entry.sessionKey,
+      ),
+    ).not.toContain(concurrentKey);
+
+    const concurrentDb = new DatabaseSync(sqlitePath);
+    const concurrentEntry = { sessionId: "concurrent", updatedAt: 30 };
+    concurrentDb
+      .prepare(
+        `INSERT INTO session_entries
+          (session_key, session_id, updated_at, created_at, entry_json)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(
+        concurrentKey,
+        concurrentEntry.sessionId,
+        concurrentEntry.updatedAt,
+        concurrentEntry.updatedAt,
+        JSON.stringify(concurrentEntry),
+      );
+    concurrentDb.close();
+
+    await expect(
+      deleteSessionEntries({
+        storePath: sqlitePath,
+        targets: [{ sessionKey: targetKey, expectedSessionId: "target" }],
+      }),
+    ).resolves.toEqual([
+      {
+        sessionKey: targetKey,
+        entry: expect.objectContaining({ sessionId: "target" }),
+      },
+    ]);
+    expect(getSessionEntry({ storePath: sqlitePath, sessionKey: targetKey })).toBeUndefined();
+    expect(getSessionEntry({ storePath: sqlitePath, sessionKey: existingKey })?.sessionId).toBe(
+      "existing",
+    );
+    expect(getSessionEntry({ storePath: sqlitePath, sessionKey: concurrentKey })?.sessionId).toBe(
+      "concurrent",
+    );
+  });
+
+  it("keeps a same-key SQLite replacement when its inspected session identity is stale", async () => {
+    const sqlitePath = path.join(tempDir, "sessions.sqlite");
+    const targetKey = "agent:main:feishu:direct:ou_user";
+    await saveSessionStore(
+      sqlitePath,
+      { [targetKey]: { sessionId: "inspected", updatedAt: 10 } },
+      { skipMaintenance: true },
+    );
+    const inspected = inspectSessionStoreEntriesReadOnly({ storePath: sqlitePath });
+    expect(inspected[0]?.entry.sessionId).toBe("inspected");
+
+    const replacementDb = new DatabaseSync(sqlitePath);
+    const replacementEntry = { sessionId: "replacement", updatedAt: 20 };
+    replacementDb
+      .prepare(
+        `UPDATE session_entries
+         SET session_id = ?, updated_at = ?, entry_json = ?
+         WHERE session_key = ?`,
+      )
+      .run(
+        replacementEntry.sessionId,
+        replacementEntry.updatedAt,
+        JSON.stringify(replacementEntry),
+        targetKey,
+      );
+    replacementDb.close();
+
+    await expect(
+      deleteSessionEntries({
+        storePath: sqlitePath,
+        targets: [{ sessionKey: targetKey, expectedSessionId: "inspected" }],
+      }),
+    ).resolves.toEqual([]);
+    expect(getSessionEntry({ storePath: sqlitePath, sessionKey: targetKey })?.sessionId).toBe(
+      "replacement",
+    );
   });
 
   it("keeps the public entry mutation signature while delegating to the seam", async () => {
@@ -118,6 +242,41 @@ describe("session-store-runtime compatibility surface", () => {
       providerOverride: "openai",
       sessionId: "session-1",
     });
+  });
+
+  it("deletes only named JSON entries and returns the removed row", async () => {
+    const targetKey = "agent:main:feishu:direct:ou_user";
+    const preservedKey = "agent:main:discord:direct:user";
+    await saveSessionStore(
+      storePath,
+      {
+        [targetKey]: { sessionId: "target", updatedAt: 10 },
+        [preservedKey]: { sessionId: "preserved", updatedAt: 20 },
+      },
+      { skipMaintenance: true },
+    );
+
+    await expect(
+      deleteSessionEntries({
+        storePath,
+        targets: [{ sessionKey: targetKey, expectedSessionId: "stale-inspection" }],
+      }),
+    ).resolves.toEqual([]);
+    expect(getSessionEntry({ storePath, sessionKey: targetKey })?.sessionId).toBe("target");
+
+    await expect(
+      deleteSessionEntries({
+        storePath,
+        targets: [{ sessionKey: targetKey, expectedSessionId: "target" }],
+      }),
+    ).resolves.toEqual([
+      {
+        sessionKey: targetKey,
+        entry: expect.objectContaining({ sessionId: "target" }),
+      },
+    ]);
+    expect(getSessionEntry({ storePath, sessionKey: targetKey })).toBeUndefined();
+    expect(getSessionEntry({ storePath, sessionKey: preservedKey })?.sessionId).toBe("preserved");
   });
 
   it("preserves resolved maintenance settings through entry patches", async () => {

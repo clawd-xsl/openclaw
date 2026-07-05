@@ -9,6 +9,8 @@ import {
 import { resolveStorePath as resolveSessionStorePath } from "../config/sessions/paths.js";
 import {
   cleanupSessionLifecycleArtifacts as cleanupAccessorSessionLifecycleArtifacts,
+  deleteSessionEntries as deleteAccessorSessionEntries,
+  inspectSessionStoreEntriesReadOnly as inspectAccessorSessionStoreEntriesReadOnly,
   listSessionEntries as listAccessorSessionEntries,
   loadSessionEntry,
   patchSessionEntry as patchAccessorSessionEntry,
@@ -36,6 +38,12 @@ type SessionStoreListParams = Partial<Omit<SessionStoreReadParams, "sessionKey">
 type SessionStoreEntrySummary = {
   sessionKey: string;
   entry: SessionEntry;
+};
+
+export type SessionStoreEntryDeletionTarget = {
+  sessionKey: string;
+  /** Omit for unconditional deletion; null matches an entry without a session id. */
+  expectedSessionId?: string | null;
 };
 
 type SessionStoreEntryUpdate = (
@@ -131,6 +139,21 @@ export function listSessionEntries(
       : {}),
     ...(params.storePath !== undefined ? { storePath: params.storePath } : {}),
   });
+}
+
+/** Inspects one explicit store path without importing or archiving legacy JSON. */
+export function inspectSessionStoreEntriesReadOnly(params: {
+  storePath: string;
+}): SessionStoreEntrySummary[] {
+  return inspectAccessorSessionStoreEntriesReadOnly(params);
+}
+
+/** Deletes only the named entries and returns the rows removed by that storage operation. */
+export async function deleteSessionEntries(params: {
+  storePath: string;
+  targets: readonly SessionStoreEntryDeletionTarget[];
+}): Promise<SessionStoreEntrySummary[]> {
+  return await deleteAccessorSessionEntries(params);
 }
 
 /** Patches one session entry by agent/session identity. */
