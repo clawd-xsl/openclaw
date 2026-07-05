@@ -72,7 +72,10 @@ const CLAUDE_EFFORT_ARG = "--effort";
 const CLAUDE_BARE_ARG = "--bare";
 const CLAUDE_SAFE_MODE_ARG = "--safe-mode";
 const CLAUDE_TOOLS_ARG = "--tools";
+const CLAUDE_ALLOWED_TOOLS_ARG = "--allowedTools";
+const CLAUDE_ALLOWED_TOOLS_ALIAS_ARG = "--allowed-tools";
 const CLAUDE_DISALLOWED_TOOLS_ARG = "--disallowedTools";
+const CLAUDE_DISALLOWED_TOOLS_ALIAS_ARG = "--disallowed-tools";
 const CLAUDE_MCP_CONFIG_ARG = "--mcp-config";
 const CLAUDE_STRICT_MCP_CONFIG_ARG = "--strict-mcp-config";
 const CLAUDE_NO_SESSION_PERSISTENCE_ARG = "--no-session-persistence";
@@ -93,6 +96,7 @@ const CLAUDE_BYPASS_PERMISSION_MODE = "bypassPermissions";
 const CLAUDE_DEFAULT_PERMISSION_MODE = "default";
 const CLAUDE_NO_TOOLS_VALUE = "";
 const CLAUDE_OPENCLAW_TOOLS_VALUE = "ToolSearch";
+const CLAUDE_OPENCLAW_ALLOWED_TOOLS_VALUE = "mcp__openclaw__*";
 const CLAUDE_DENY_MCP_TOOLS_VALUE = "mcp__*";
 
 type ClaudeCliEffort = "low" | "medium" | "high" | "xhigh" | "max";
@@ -205,6 +209,36 @@ export function normalizeClaudeIsolationArgs(args?: string[]): string[] | undefi
   if (!hasTools) {
     normalized.push(CLAUDE_TOOLS_ARG, CLAUDE_OPENCLAW_TOOLS_VALUE);
   }
+  return normalized;
+}
+
+/** Auto-approve only the bundled OpenClaw MCP server after operator arg overrides. */
+export function normalizeClaudeOpenClawToolPermissionArgs(args?: string[]): string[] | undefined {
+  if (!args) {
+    return args;
+  }
+  const permissionArgs = new Set([
+    CLAUDE_ALLOWED_TOOLS_ARG,
+    CLAUDE_ALLOWED_TOOLS_ALIAS_ARG,
+    CLAUDE_DISALLOWED_TOOLS_ARG,
+    CLAUDE_DISALLOWED_TOOLS_ALIAS_ARG,
+  ]);
+  const normalized: string[] = [];
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    const equalsIndex = arg.indexOf("=");
+    const argName = equalsIndex > 0 ? arg.slice(0, equalsIndex) : arg;
+    if (!permissionArgs.has(argName)) {
+      normalized.push(arg);
+      continue;
+    }
+    if (equalsIndex < 0) {
+      while (typeof args[i + 1] === "string" && !args[i + 1]?.startsWith("-")) {
+        i += 1;
+      }
+    }
+  }
+  normalized.push(CLAUDE_ALLOWED_TOOLS_ARG, CLAUDE_OPENCLAW_ALLOWED_TOOLS_VALUE);
   return normalized;
 }
 
@@ -461,17 +495,21 @@ export function normalizeClaudeBackendConfig(
   return {
     ...config,
     args: normalizeClaudePermissionArgs(
-      normalizeClaudeSettingsArgs(
-        normalizeClaudeSettingSourcesArgs(
-          normalizeClaudeSlashCommandArgs(normalizeClaudeIsolationArgs(config.args)),
+      normalizeClaudeOpenClawToolPermissionArgs(
+        normalizeClaudeSettingsArgs(
+          normalizeClaudeSettingSourcesArgs(
+            normalizeClaudeSlashCommandArgs(normalizeClaudeIsolationArgs(config.args)),
+          ),
         ),
       ),
       permission,
     ),
     resumeArgs: normalizeClaudePermissionArgs(
-      normalizeClaudeSettingsArgs(
-        normalizeClaudeSettingSourcesArgs(
-          normalizeClaudeSlashCommandArgs(normalizeClaudeIsolationArgs(config.resumeArgs)),
+      normalizeClaudeOpenClawToolPermissionArgs(
+        normalizeClaudeSettingsArgs(
+          normalizeClaudeSettingSourcesArgs(
+            normalizeClaudeSlashCommandArgs(normalizeClaudeIsolationArgs(config.resumeArgs)),
+          ),
         ),
       ),
       permission,

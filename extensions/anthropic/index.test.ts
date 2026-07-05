@@ -85,7 +85,7 @@ describe("anthropic provider replay hooks", () => {
     }
     expect(backend.bundleMcp).toBe(true);
     expect(backend.bundleMcpToolSurface).toBe("openclaw");
-    expect(backend.nativeToolMode).toBe("none");
+    expect(backend.nativeToolMode).toBe("always-on");
     expectFields(backend.config, {
       command: "claude",
       modelArg: "--model",

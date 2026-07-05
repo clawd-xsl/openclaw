@@ -34,7 +34,8 @@ export function buildAnthropicCliBackend(): CliBackendPlugin {
     bundleMcp: true,
     bundleMcpMode: "claude-config-file",
     bundleMcpToolSurface: "openclaw",
-    nativeToolMode: "none",
+    // ToolSearch is still a Claude built-in, so tools-disabled turns must fail closed.
+    nativeToolMode: "always-on",
     sideQuestionToolMode: "disabled",
     ownsNativeCompaction: true,
     config: {

@@ -5,6 +5,7 @@ import {
   CLAUDE_CLI_CLEAR_ENV,
   normalizeClaudeBackendConfig,
   normalizeClaudeIsolationArgs,
+  normalizeClaudeOpenClawToolPermissionArgs,
   normalizeClaudePermissionArgs,
   normalizeClaudeSettingSourcesArgs,
   normalizeClaudeSettingsArgs,
@@ -107,6 +108,23 @@ describe("normalizeClaudeIsolationArgs", () => {
       "--tools",
       "ToolSearch",
     ]);
+  });
+});
+
+describe("normalizeClaudeOpenClawToolPermissionArgs", () => {
+  it("replaces operator allow and deny rules with the bundled MCP server", () => {
+    expect(
+      normalizeClaudeOpenClawToolPermissionArgs([
+        "-p",
+        "--allowed-tools=Read",
+        "--allowedTools",
+        "Bash",
+        "Edit",
+        "--disallowedTools",
+        "mcp__*",
+        "--verbose",
+      ]),
+    ).toEqual(["-p", "--verbose", "--allowedTools", "mcp__openclaw__*"]);
   });
 });
 
@@ -287,6 +305,8 @@ describe("normalizeClaudeBackendConfig", () => {
       "",
       "--settings",
       '{"disableAllHooks":true}',
+      "--allowedTools",
+      "mcp__openclaw__*",
       "--permission-mode",
       "bypassPermissions",
     ]);
@@ -304,6 +324,8 @@ describe("normalizeClaudeBackendConfig", () => {
       "",
       "--settings",
       '{"disableAllHooks":true}',
+      "--allowedTools",
+      "mcp__openclaw__*",
       "--permission-mode",
       "bypassPermissions",
     ]);
@@ -427,7 +449,7 @@ describe("normalizeClaudeBackendConfig", () => {
   it("isolates Claude runtime context while preserving subscription auth", () => {
     const backend = buildAnthropicCliBackend();
 
-    expect(backend.nativeToolMode).toBe("none");
+    expect(backend.nativeToolMode).toBe("always-on");
     expect(backend.bundleMcpToolSurface).toBe("openclaw");
     expect(backend.config.env).toEqual({ CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1" });
     expect(backend.config.liveSession).toBe("claude-stdio");
