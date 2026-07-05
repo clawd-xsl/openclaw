@@ -21,6 +21,8 @@ const BUNDLED_TYPED_HOOK_REGISTRATION_FILES = [
   "extensions/feishu/subagent-hooks-api.ts",
   "extensions/matrix/subagent-hooks-api.ts",
   "extensions/memory-core/src/dreaming.ts",
+  "extensions/memory-core/src/session-memory-flush-plugin.ts",
+  "extensions/memory-core/src/session-summaries-plugin.ts",
   "extensions/memory-lancedb/index.ts",
   "extensions/thread-ownership/index.ts",
 ] as const;
@@ -33,6 +35,8 @@ const BUNDLED_TYPED_HOOK_REGISTRATION_GUARDS = {
   "extensions/feishu/subagent-hooks-api.ts": ["subagent_delivery_target", "subagent_ended"],
   "extensions/matrix/subagent-hooks-api.ts": ["subagent_delivery_target", "subagent_ended"],
   "extensions/memory-core/src/dreaming.ts": ["before_agent_reply", "gateway_start", "gateway_stop"],
+  "extensions/memory-core/src/session-memory-flush-plugin.ts": ["session_end"],
+  "extensions/memory-core/src/session-summaries-plugin.ts": ["before_prompt_build", "session_end"],
   "extensions/memory-lancedb/index.ts": ["agent_end", "before_prompt_build", "session_end"],
   "extensions/thread-ownership/index.ts": ["message_received", "message_sending"],
 } as const satisfies Record<
@@ -50,6 +54,12 @@ const BUNDLED_LIVE_CONFIG_HOOK_GUARDS = {
   "extensions/memory-core/src/dreaming.ts": [
     'params.reason === "runtime"',
     "resolveMemoryCorePluginConfig(startupCfg)",
+    "api.runtime.config?.current?.() ?? api.config",
+  ],
+  "extensions/memory-core/src/session-memory-flush-plugin.ts": [
+    "api.runtime.config?.current?.() ?? api.config",
+  ],
+  "extensions/memory-core/src/session-summaries-plugin.ts": [
     "api.runtime.config?.current?.() ?? api.config",
   ],
   "extensions/memory-lancedb/index.ts": ["resolveLivePluginConfigObject(", '"memory-lancedb"'],
