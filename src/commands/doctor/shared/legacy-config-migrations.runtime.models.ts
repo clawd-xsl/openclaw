@@ -754,6 +754,10 @@ function upgradeRetiredModelRef(value: string): string | null {
   const normalizedProvider = normalizeString(provider);
   const normalizedModel = normalizeString(model);
 
+  if (normalizedProvider === "claude-cli-streaming") {
+    return `claude-cli/${model}${split.profile ? `@${split.profile}` : ""}`;
+  }
+
   const retiredOwnerModel =
     normalizedProvider === "groq"
       ? upgradeRetiredGroqModelId(model)
@@ -795,6 +799,7 @@ const MODEL_REF_STRING_KEYS = new Set([
   "musicGenerationModel",
   "pdfModel",
   "videoGenerationModel",
+  "voiceModel",
 ]);
 const MODEL_REF_ARRAY_KEYS = new Set([
   "fallback",

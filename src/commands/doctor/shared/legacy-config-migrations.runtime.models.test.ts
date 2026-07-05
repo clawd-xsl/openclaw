@@ -228,3 +228,87 @@ describe("stale contextWindow migration", () => {
     expect(changes).toHaveLength(0);
   });
 });
+
+describe("retired claude-cli-streaming model refs", () => {
+  const migration = LEGACY_CONFIG_MIGRATIONS_RUNTIME_MODELS.find(
+    (entry) => entry.id === "models.retired-model-refs",
+  );
+
+  it("rewrites every configured model-ref shape and keeps canonical map values", () => {
+    const raw = {
+      agents: {
+        session: { summaryModel: "claude-cli-streaming/claude-sonnet-4-6" },
+        defaults: {
+          model: {
+            primary: "claude-cli-streaming/claude-opus-4-7@claude:work",
+            fallbacks: ["claude-cli-streaming/claude-sonnet-4-6"],
+          },
+          voiceModel: "claude-cli-streaming/claude-sonnet-4-6",
+          models: {
+            "claude-cli/claude-opus-4-7": { alias: "canonical" },
+            "claude-cli-streaming/claude-opus-4-7": {
+              alias: "legacy",
+              streaming: false,
+            },
+          },
+        },
+        list: [
+          {
+            id: "research",
+            heartbeat: { model: "claude-cli-streaming/claude-opus-4-7" },
+          },
+        ],
+      },
+      channels: {
+        modelByChannel: {
+          discord: { "*": "claude-cli-streaming/claude-sonnet-4-6" },
+        },
+      },
+      hooks: {
+        mappings: [{ model: "claude-cli-streaming/claude-opus-4-7" }],
+      },
+      messages: {
+        tts: { summaryModel: "claude-cli-streaming/claude-sonnet-4-6" },
+      },
+      plugins: {
+        entries: {
+          "memory-core": {
+            config: {
+              summaries: { model: "claude-cli-streaming/claude-opus-4-7" },
+            },
+          },
+        },
+      },
+    };
+
+    const agentsRule = migration!.legacyRules?.find((rule) => rule.path[0] === "agents");
+    expect(agentsRule?.match?.(raw.agents, raw)).toBe(true);
+
+    const changes: string[] = [];
+    migration!.apply(raw, changes);
+
+    expect(raw.agents.session.summaryModel).toBe("claude-cli/claude-sonnet-4-6");
+    expect(raw.agents.defaults.model).toEqual({
+      primary: "claude-cli/claude-opus-4-7@claude:work",
+      fallbacks: ["claude-cli/claude-sonnet-4-6"],
+    });
+    expect(raw.agents.defaults.voiceModel).toBe("claude-cli/claude-sonnet-4-6");
+    expect(raw.agents.defaults.models).toEqual({
+      "claude-cli/claude-opus-4-7": { alias: "canonical", streaming: false },
+    });
+    expect(raw.agents.list[0].heartbeat.model).toBe("claude-cli/claude-opus-4-7");
+    expect(raw.channels.modelByChannel.discord["*"]).toBe("claude-cli/claude-sonnet-4-6");
+    expect(raw.hooks.mappings[0].model).toBe("claude-cli/claude-opus-4-7");
+    expect(raw.messages.tts.summaryModel).toBe("claude-cli/claude-sonnet-4-6");
+    expect(raw.plugins.entries["memory-core"].config.summaries.model).toBe(
+      "claude-cli/claude-opus-4-7",
+    );
+    expect(changes).toContain(
+      'Merged config.agents.defaults.models key "claude-cli-streaming/claude-opus-4-7" into "claude-cli/claude-opus-4-7"; kept existing values for conflicting fields: alias.',
+    );
+
+    const repeatChanges: string[] = [];
+    migration!.apply(raw, repeatChanges);
+    expect(repeatChanges).toEqual([]);
+  });
+});
