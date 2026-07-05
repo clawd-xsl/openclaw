@@ -4,6 +4,7 @@ import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
+import type { CliStreamingBoundary } from "../../agents/cli-output.js";
 import { runCliAgent } from "../../agents/cli-runner.js";
 import type { RunCliAgentParams } from "../../agents/cli-runner/types.js";
 import { clearCliSession } from "../../agents/cli-session.js";
@@ -33,6 +34,8 @@ import { formatToolAggregate } from "../tool-meta.js";
 import { resolveAgentLifecycleTerminalMetadata } from "./agent-lifecycle-terminal.js";
 import { createBlockReplyCoalescer } from "./block-reply-coalescer.js";
 import type { BlockStreamingCoalescing } from "./block-streaming.js";
+
+const CLI_ASSISTANT_MESSAGE_BOUNDARY = "assistant_message" satisfies CliStreamingBoundary["type"];
 
 function isClaudeCliProvider(provider: string): boolean {
   return normalizeLowercaseStringOrEmpty(provider) === "claude-cli";
@@ -160,6 +163,10 @@ function createAssistantTextBridge(params: {
       if (evt.stream !== "assistant") {
         return undefined;
       }
+      if (evt.data.boundary === CLI_ASSISTANT_MESSAGE_BOUNDARY) {
+        lastText = undefined;
+        return undefined;
+      }
       const text = typeof evt.data.text === "string" ? evt.data.text : undefined;
       if (text === undefined || text === lastText) {
         return undefined;
@@ -197,6 +204,7 @@ function createAssistantBlockEventBridge(params: {
   onDelta?: (delta: string) => Promise<void>;
   onBoundary?: () => Promise<void>;
 }) {
+  let hasPendingDelta = false;
   const deliver =
     params.onDelta || params.onBoundary
       ? async (event: CliAssistantBlockEvent) => {
@@ -207,22 +215,45 @@ function createAssistantBlockEventBridge(params: {
           await params.onBoundary?.();
         }
       : undefined;
-  return createAgentEventBridge({
+  const bridge = createAgentEventBridge({
     runId: params.runId,
     suppressed: params.suppressed,
     deliver,
     read: (evt): CliAssistantBlockEvent | undefined => {
       if (evt.stream === "assistant") {
         const delta = typeof evt.data.delta === "string" ? evt.data.delta : "";
-        return delta ? { kind: "delta", delta } : undefined;
-      }
-      if (evt.stream === "tool") {
+        if (delta) {
+          hasPendingDelta = true;
+          return { kind: "delta", delta };
+        }
+        if (evt.data.boundary !== CLI_ASSISTANT_MESSAGE_BOUNDARY) {
+          return undefined;
+        }
+      } else if (evt.stream === "tool") {
         const phase = evt.data.phase;
-        return phase === "start" || phase === "result" ? { kind: "boundary" } : undefined;
+        if (phase !== "start" && phase !== "result") {
+          return undefined;
+        }
+      } else if (!readCommentaryTextPayload(evt)) {
+        return undefined;
       }
-      return readCommentaryTextPayload(evt) ? { kind: "boundary" } : undefined;
+      if (!hasPendingDelta) {
+        return undefined;
+      }
+      hasPendingDelta = false;
+      return { kind: "boundary" };
     },
   });
+  return {
+    ...bridge,
+    async flushPendingBoundary(): Promise<void> {
+      if (!hasPendingDelta || params.suppressed) {
+        return;
+      }
+      hasPendingDelta = false;
+      await params.onBoundary?.();
+    },
+  };
 }
 
 export type CliToolEventPayload = {
@@ -586,9 +617,7 @@ async function runCliAgentWithLifecycleInternal(
     }
     const result = params.transformResult?.(rawResult) ?? rawResult;
     await stopAgentEventBridges(bridges);
-    if (!params.suppressAssistantBridge) {
-      await params.onAssistantBoundary?.();
-    }
+    await assistantBlockBridge.flushPendingBoundary();
 
     const cliText = normalizeOptionalString(result.payloads?.[0]?.text);
     if (cliText) {

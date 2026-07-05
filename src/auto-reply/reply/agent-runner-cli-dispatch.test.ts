@@ -169,7 +169,7 @@ describe("runCliAgentWithLifecycle", () => {
     });
   });
 
-  it("keeps assistant deltas ordered across tool and commentary boundaries", async () => {
+  it("keeps assistant deltas ordered and ignores duplicate message boundaries", async () => {
     const delivered: string[] = [];
     cliDispatchState.runCliAgentMock.mockImplementationOnce(async () => {
       emitAgentEvent({
@@ -185,6 +185,16 @@ describe("runCliAgentWithLifecycle", () => {
       emitAgentEvent({
         runId: "run-blocks",
         stream: "assistant",
+        data: { boundary: "assistant_message" },
+      });
+      emitAgentEvent({
+        runId: "run-blocks",
+        stream: "tool",
+        data: { phase: "result", name: "Read", toolCallId: "tool-1" },
+      });
+      emitAgentEvent({
+        runId: "run-blocks",
+        stream: "assistant",
         data: { text: "First second", delta: " second" },
       });
       emitAgentEvent({
@@ -195,7 +205,17 @@ describe("runCliAgentWithLifecycle", () => {
       emitAgentEvent({
         runId: "run-blocks",
         stream: "assistant",
+        data: { boundary: "assistant_message" },
+      });
+      emitAgentEvent({
+        runId: "run-blocks",
+        stream: "assistant",
         data: { text: "First second third", delta: " third" },
+      });
+      emitAgentEvent({
+        runId: "run-blocks",
+        stream: "assistant",
+        data: { boundary: "assistant_message" },
       });
       return {
         payloads: [{ text: "First second third" }],
@@ -234,10 +254,53 @@ describe("runCliAgentWithLifecycle", () => {
       "boundary",
     ]);
   });
+
+  it("delivers identical snapshots for consecutive messages without replaying the final result", async () => {
+    const delivered: string[] = [];
+    cliDispatchState.runCliAgentMock.mockImplementationOnce(async () => {
+      for (let index = 0; index < 2; index += 1) {
+        emitAgentEvent({
+          runId: "run-consecutive",
+          stream: "assistant",
+          data: { text: "Same", delta: "Same" },
+        });
+        emitAgentEvent({
+          runId: "run-consecutive",
+          stream: "assistant",
+          data: { boundary: "assistant_message" },
+        });
+      }
+      return {
+        payloads: [{ text: "Same" }],
+        meta: { durationMs: 1 },
+      } satisfies EmbeddedAgentRunResult;
+    });
+
+    await runCliAgentWithLifecycle({
+      runId: "run-consecutive",
+      provider: "claude-cli",
+      onAssistantText: async (text) => {
+        delivered.push(text);
+      },
+      runParams: {
+        sessionId: "session-1",
+        sessionFile: "/tmp/session.jsonl",
+        workspaceDir: "/tmp/workspace",
+        prompt: "hello",
+        provider: "claude-cli",
+        model: "claude",
+        thinkLevel: "off",
+        timeoutMs: 1_000,
+        runId: "run-consecutive",
+      },
+    });
+
+    expect(delivered).toEqual(["Same", "Same"]);
+  });
 });
 
 describe("createCliAssistantBlockStreamer", () => {
-  it("concatenates literal deltas and drops buffered text after abort", async () => {
+  it("tracks aggregate coverage, rejects partial finals, and drops buffered text after abort", async () => {
     const delivered: string[] = [];
     let aborted = false;
     const pipeline = createBlockReplyPipeline({
@@ -263,6 +326,8 @@ describe("createCliAssistantBlockStreamer", () => {
     });
 
     streamer.enqueue("Hello");
+    await streamer.flush({ force: true });
+
     streamer.enqueue(" world");
     await streamer.flush({ force: true });
 
@@ -271,9 +336,10 @@ describe("createCliAssistantBlockStreamer", () => {
     await streamer.flush({ force: true });
     streamer.stop();
 
-    expect(delivered).toEqual(["Hello world"]);
+    expect(delivered).toEqual(["Hello", " world"]);
     expect(pipeline.didStream()).toBe(true);
     expect(pipeline.hasSentPayload({ text: "Hello world" })).toBe(true);
+    expect(pipeline.hasSentPayload({ text: "Hello world and more" })).toBe(false);
   });
 });
 

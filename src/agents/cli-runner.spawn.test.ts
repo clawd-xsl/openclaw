@@ -1140,12 +1140,18 @@ describe("runCliAgent spawn path", () => {
   });
 
   it("streams Claude text deltas from stream-json stdout", async () => {
-    const agentEvents: Array<{ stream: string; text?: string; delta?: string }> = [];
+    const agentEvents: Array<{
+      stream: string;
+      text?: string;
+      delta?: string;
+      boundary?: string;
+    }> = [];
     const stop = onAgentEvent((evt) => {
       agentEvents.push({
         stream: evt.stream,
         text: typeof evt.data.text === "string" ? evt.data.text : undefined,
         delta: typeof evt.data.delta === "string" ? evt.data.delta : undefined,
+        boundary: typeof evt.data.boundary === "string" ? evt.data.boundary : undefined,
       });
     });
     supervisorSpawnMock.mockImplementationOnce(async (...args: unknown[]) => {
@@ -1163,6 +1169,16 @@ describe("runCliAgent spawn path", () => {
         JSON.stringify({
           type: "stream_event",
           event: { type: "content_block_delta", delta: { type: "text_delta", text: " world" } },
+        }) + "\n",
+      );
+      input.onStdout?.(
+        JSON.stringify({
+          type: "assistant",
+          session_id: "session-123",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Hello world" }],
+          },
         }) + "\n",
       );
       input.onStdout?.(
@@ -1197,6 +1213,7 @@ describe("runCliAgent spawn path", () => {
       expect(agentEvents).toEqual([
         { stream: "assistant", text: "Hello", delta: "Hello" },
         { stream: "assistant", text: "Hello world", delta: " world" },
+        { stream: "assistant", boundary: "assistant_message" },
       ]);
     } finally {
       stop();
@@ -1284,6 +1301,14 @@ describe("runCliAgent spawn path", () => {
               },
             }),
             JSON.stringify({
+              type: "assistant",
+              session_id: "live-session-1",
+              message: {
+                role: "assistant",
+                content: [{ type: "text", text }],
+              },
+            }),
+            JSON.stringify({
               type: "result",
               session_id: "live-session-1",
               result: text,
@@ -1356,7 +1381,9 @@ describe("runCliAgent spawn path", () => {
       ).toEqual(["first", "second"]);
       expect(agentEvents).toEqual([
         { text: "one", delta: "one" },
+        { boundary: "assistant_message" },
         { text: "two", delta: "two" },
+        { boundary: "assistant_message" },
       ]);
       const turnLogs = logInfoSpy.mock.calls
         .map(([message]) => message)

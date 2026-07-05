@@ -70,6 +70,11 @@ export type CliStreamingDelta = {
   usage?: CliUsage;
 };
 
+/** Completed Claude assistant message boundary emitted after its streamed text. */
+export type CliStreamingBoundary = {
+  type: "assistant_message";
+};
+
 export type CliStreamJsonOutputLimits = {
   maxTurnRawChars: number;
   maxPendingLineChars: number;
@@ -93,6 +98,15 @@ export type CliToolResultDelta = {
 
 function isClaudeCliProvider(providerId: string): boolean {
   return normalizeLowercaseStringOrEmpty(providerId) === "claude-cli";
+}
+
+function isClaudeStreamJsonDialect(params: {
+  backend: CliBackendConfig;
+  providerId: string;
+}): boolean {
+  return (
+    params.backend.jsonlDialect === "claude-stream-json" || isClaudeCliProvider(params.providerId)
+  );
 }
 
 function isGeminiCliProvider(providerId: string): boolean {
@@ -854,6 +868,7 @@ export function createCliJsonlStreamingParser(params: {
   backend: CliBackendConfig;
   providerId: string;
   onAssistantDelta: (delta: CliStreamingDelta) => void;
+  onAssistantBoundary?: (boundary: CliStreamingBoundary) => void;
   onToolUseStart?: (delta: CliToolUseStartDelta) => void;
   onToolResult?: (delta: CliToolResultDelta) => void;
   onCommentaryText?: (text: string) => void;
@@ -861,6 +876,7 @@ export function createCliJsonlStreamingParser(params: {
   let lineBuffer = "";
   let assistantText = "";
   let pendingClaudeText = "";
+  let resetAssistantTextBeforeNextDelta = false;
   let sessionId: string | undefined;
   let usage: CliUsage | undefined;
   let output: CliOutput | null = null;
@@ -881,6 +897,10 @@ export function createCliJsonlStreamingParser(params: {
     }
     const delta = pendingClaudeText;
     pendingClaudeText = "";
+    if (resetAssistantTextBeforeNextDelta) {
+      assistantText = "";
+      resetAssistantTextBeforeNextDelta = false;
+    }
     assistantText = `${assistantText}${delta}`;
     params.onAssistantDelta({
       text: assistantText,
@@ -930,6 +950,41 @@ export function createCliJsonlStreamingParser(params: {
         errorText: preferGeminiCliStreamJsonError(output?.errorText, geminiErrorText),
       };
       return;
+    }
+
+    const isClaudeMessageStart =
+      isClaudeStreamJsonDialect(params) &&
+      parsed.type === "stream_event" &&
+      isRecord(parsed.event) &&
+      parsed.event.type === "message_start";
+    if (isClaudeMessageStart) {
+      if (classifyClaudeCommentary) {
+        flushPendingClaudeAssistantText();
+      }
+      assistantText = "";
+      resetAssistantTextBeforeNextDelta = false;
+    }
+
+    const claudeAssistantMessage =
+      isClaudeStreamJsonDialect(params) && parsed.type === "assistant" && isRecord(parsed.message)
+        ? parsed.message
+        : null;
+    const assistantBoundary: CliStreamingBoundary | undefined =
+      claudeAssistantMessage && collectCliText(claudeAssistantMessage).trim()
+        ? { type: "assistant_message" }
+        : undefined;
+    if (claudeAssistantMessage && assistantBoundary && classifyClaudeCommentary) {
+      const content = Array.isArray(claudeAssistantMessage.content)
+        ? claudeAssistantMessage.content
+        : [];
+      const hasToolUse = content.some(
+        (block) => isRecord(block) && isClaudeToolUseBlockType(block.type),
+      );
+      if (hasToolUse) {
+        flushPendingClaudeCommentaryText();
+      } else {
+        flushPendingClaudeAssistantText();
+      }
     }
 
     if (classifyClaudeCommentary && parsed.type === "result") {
@@ -992,7 +1047,7 @@ export function createCliJsonlStreamingParser(params: {
       backend: params.backend,
       providerId: params.providerId,
       parsed,
-      textSoFar: assistantText,
+      textSoFar: resetAssistantTextBeforeNextDelta ? "" : assistantText,
       sessionId,
       usage,
     });
@@ -1024,7 +1079,17 @@ export function createCliJsonlStreamingParser(params: {
           usage,
         };
       }
+      if (assistantBoundary) {
+        params.onAssistantBoundary?.(assistantBoundary);
+        // Keep this message available to getOutput(), but start the next
+        // streamed assistant snapshot from an empty message.
+        resetAssistantTextBeforeNextDelta = true;
+      }
       return;
+    }
+    if (resetAssistantTextBeforeNextDelta) {
+      assistantText = "";
+      resetAssistantTextBeforeNextDelta = false;
     }
     if (classifyClaudeCommentary) {
       pendingClaudeText = `${pendingClaudeText}${delta.delta}`;

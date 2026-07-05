@@ -961,6 +961,204 @@ describe("parseCliOutput", () => {
 });
 
 describe("createCliJsonlStreamingParser", () => {
+  it("flushes a text-only assistant message and its boundary before the result", () => {
+    const events: string[] = [];
+    const parser = createCliJsonlStreamingParser({
+      backend: {
+        command: "claude",
+        output: "jsonl",
+        jsonlDialect: "claude-stream-json",
+        sessionIdFields: ["session_id"],
+      },
+      providerId: "claude-cli",
+      onAssistantDelta: (delta) => events.push(`delta:${delta.text}:${delta.delta}`),
+      onAssistantBoundary: (boundary) => events.push(`boundary:${boundary.type}`),
+      onCommentaryText: (text) => events.push(`commentary:${text}`),
+    });
+
+    parser.push(
+      [
+        JSON.stringify({ type: "init", session_id: "session-boundary" }),
+        JSON.stringify({
+          type: "stream_event",
+          event: { type: "message_start" },
+        }),
+        JSON.stringify({
+          type: "stream_event",
+          event: {
+            type: "content_block_delta",
+            delta: { type: "text_delta", text: "Final answer." },
+          },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Final answer." }],
+          },
+        }),
+      ].join("\n") + "\n",
+    );
+
+    expect(events).toEqual(["delta:Final answer.:Final answer.", "boundary:assistant_message"]);
+
+    parser.push(`${JSON.stringify({ type: "result", result: "Final answer." })}\n`);
+    parser.finish();
+
+    expect(events).toEqual(["delta:Final answer.:Final answer.", "boundary:assistant_message"]);
+  });
+
+  it("keeps text-tool-text messages ordered without duplicate commentary or tool events", () => {
+    const events: string[] = [];
+    const parser = createCliJsonlStreamingParser({
+      backend: {
+        command: "claude",
+        output: "jsonl",
+        jsonlDialect: "claude-stream-json",
+        sessionIdFields: ["session_id"],
+      },
+      providerId: "claude-cli",
+      onAssistantDelta: (delta) => events.push(`delta:${delta.text}:${delta.delta}`),
+      onAssistantBoundary: (boundary) => events.push(`boundary:${boundary.type}`),
+      onToolUseStart: (delta) => events.push(`tool-start:${delta.toolCallId}`),
+      onToolResult: (delta) => events.push(`tool-result:${delta.toolCallId}`),
+      onCommentaryText: (text) => events.push(`commentary:${text}`),
+    });
+
+    parser.push(
+      [
+        JSON.stringify({ type: "init", session_id: "session-tool-boundary" }),
+        JSON.stringify({
+          type: "stream_event",
+          event: { type: "message_start" },
+        }),
+        JSON.stringify({
+          type: "stream_event",
+          event: {
+            type: "content_block_delta",
+            delta: { type: "text_delta", text: "Checking the file." },
+          },
+        }),
+        JSON.stringify({
+          type: "stream_event",
+          event: {
+            type: "content_block_start",
+            index: 1,
+            content_block: { type: "tool_use", id: "toolu_1", name: "Read", input: {} },
+          },
+        }),
+        JSON.stringify({
+          type: "stream_event",
+          event: { type: "content_block_stop", index: 1 },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          message: {
+            role: "assistant",
+            content: [
+              { type: "text", text: "Checking the file." },
+              { type: "tool_use", id: "toolu_1", name: "Read", input: {} },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: "user",
+          message: {
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "contents" }],
+          },
+        }),
+        JSON.stringify({
+          type: "stream_event",
+          event: { type: "message_start" },
+        }),
+        JSON.stringify({
+          type: "stream_event",
+          event: {
+            type: "content_block_delta",
+            delta: { type: "text_delta", text: "Done." },
+          },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Done." }],
+          },
+        }),
+      ].join("\n") + "\n",
+    );
+    parser.finish();
+
+    expect(events).toEqual([
+      "commentary:Checking the file.",
+      "tool-start:toolu_1",
+      "boundary:assistant_message",
+      "tool-result:toolu_1",
+      "delta:Done.:Done.",
+      "boundary:assistant_message",
+    ]);
+  });
+
+  it("resets streamed snapshots across consecutive assistant messages", () => {
+    const events: string[] = [];
+    const parser = createCliJsonlStreamingParser({
+      backend: {
+        command: "claude",
+        output: "jsonl",
+        jsonlDialect: "claude-stream-json",
+        sessionIdFields: ["session_id"],
+      },
+      providerId: "claude-cli",
+      onAssistantDelta: (delta) => events.push(`delta:${delta.text}:${delta.delta}`),
+      onAssistantBoundary: (boundary) => events.push(`boundary:${boundary.type}`),
+    });
+
+    parser.push(
+      [
+        JSON.stringify({ type: "init", session_id: "session-consecutive" }),
+        JSON.stringify({
+          type: "stream_event",
+          event: { type: "message_start" },
+        }),
+        JSON.stringify({
+          type: "stream_event",
+          event: {
+            type: "content_block_delta",
+            delta: { type: "text_delta", text: "First" },
+          },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          message: { role: "assistant", content: [{ type: "text", text: "First" }] },
+        }),
+        JSON.stringify({
+          type: "stream_event",
+          event: { type: "message_start" },
+        }),
+        JSON.stringify({
+          type: "stream_event",
+          event: {
+            type: "content_block_delta",
+            delta: { type: "text_delta", text: "Second" },
+          },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          message: { role: "assistant", content: [{ type: "text", text: "Second" }] },
+        }),
+      ].join("\n") + "\n",
+    );
+    parser.finish();
+
+    expect(events).toEqual([
+      "delta:First:First",
+      "boundary:assistant_message",
+      "delta:Second:Second",
+      "boundary:assistant_message",
+    ]);
+  });
+
   it("streams Claude stream-json deltas for an explicit backend dialect", () => {
     const deltas: Array<{ text: string; delta: string; sessionId?: string }> = [];
     const parser = createCliJsonlStreamingParser({

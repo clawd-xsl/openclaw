@@ -34,6 +34,7 @@ import {
   extractCliErrorMessage,
   parseCliOutput,
   type CliOutput,
+  type CliStreamingBoundary,
   type CliStreamingDelta,
 } from "../cli-output.js";
 import { classifyFailoverReason } from "../embedded-agent-helpers.js";
@@ -1051,6 +1052,17 @@ export async function executePreparedCliRun(
             },
           });
         };
+        const emitCliAssistantBoundary = (boundary: CliStreamingBoundary) => {
+          observedCliActivity = true;
+          if (!emitLiveEvents) {
+            return;
+          }
+          emitAgentEvent({
+            runId: params.runId,
+            stream: "assistant",
+            data: { boundary: boundary.type },
+          });
+        };
         if (shouldUseClaudeLiveSession(context)) {
           if (!hasJsonlOutput) {
             throw new Error("Claude live session requires JSONL streaming parser");
@@ -1071,6 +1083,7 @@ export async function executePreparedCliRun(
             noOutputTimeoutMs,
             getProcessSupervisor: executeDeps.getProcessSupervisor,
             onAssistantDelta: emitCliAssistantDelta,
+            onAssistantBoundary: emitCliAssistantBoundary,
             onToolUseStart: emitCliToolUseStart,
             onToolResult: emitCliToolResult,
             onCommentaryText:
@@ -1098,6 +1111,7 @@ export async function executePreparedCliRun(
                 backend,
                 providerId: context.backendResolved.id,
                 onAssistantDelta: emitCliAssistantDelta,
+                onAssistantBoundary: emitCliAssistantBoundary,
                 onToolUseStart: emitCliToolUseStart,
                 onToolResult: emitCliToolResult,
                 onCommentaryText:
