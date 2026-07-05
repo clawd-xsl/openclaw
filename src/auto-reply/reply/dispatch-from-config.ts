@@ -62,11 +62,11 @@ import {
   toPluginMessageContext,
   toPluginMessageReceivedEvent,
 } from "../../hooks/message-hook-mappers.js";
+import { isAbortError } from "../../infra/abort-signal.js";
 import { isDiagnosticsEnabled } from "../../infra/diagnostic-events.js";
 import { measureDiagnosticsTimelineSpan } from "../../infra/diagnostics-timeline.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { getSessionBindingService } from "../../infra/outbound/session-binding-service.js";
-import { isAbortError } from "../../infra/abort-signal.js";
 import type { StuckSessionRecoveryOutcome } from "../../logging/diagnostic-session-recovery.js";
 import {
   logMessageDispatchCompleted,
@@ -134,10 +134,7 @@ import {
 import { resolveConversationBindingContextFromMessage } from "./conversation-binding-input.js";
 import {
   createInternalHookEvent,
-  loadSessionStore,
   readSessionEntry,
-  resolveSessionStoreEntry,
-  resolveStorePath,
   triggerInternalHook,
   updateSessionStoreEntry,
 } from "./dispatch-from-config.runtime.js";
@@ -145,6 +142,7 @@ import type {
   DispatchFromConfigParams,
   DispatchFromConfigResult,
 } from "./dispatch-from-config.types.js";
+import { resolveDispatchSessionStoreLookup } from "./dispatch-session-store-lookup.js";
 import { resolveEffectiveReplyRoute } from "./effective-reply-route.js";
 import { withFullRuntimeReplyConfig } from "./get-reply-fast-path.js";
 import type { ReplySessionBinding } from "./get-reply.types.js";
@@ -388,37 +386,15 @@ const resolveRoutedPolicyConversationType = (
   return undefined;
 };
 
-const resolveSessionStoreLookup = (
-  ctx: FinalizedMsgContext,
-  cfg: OpenClawConfig,
-): {
-  sessionKey?: string;
-  storePath?: string;
-  entry?: SessionEntry;
-  store?: Record<string, SessionEntry>;
-} => {
-  const targetSessionKey = resolveCommandTurnTargetSessionKey(ctx);
-  const sessionKey = normalizeOptionalString(targetSessionKey ?? ctx.SessionKey);
-  if (!sessionKey) {
-    return {};
+function createSessionEntryLoader(
+  storePath: string | undefined,
+): ((sessionKey: string) => SessionEntry | undefined) | undefined {
+  if (!storePath) {
+    return undefined;
   }
-  const agentId = resolveSessionAgentId({ sessionKey, config: cfg, fallbackAgentId: ctx.AgentId });
-  const storePath = resolveStorePath(cfg.session?.store, { agentId });
-  try {
-    const store = loadSessionStore(storePath);
-    return {
-      sessionKey,
-      storePath,
-      store,
-      entry: resolveSessionStoreEntry({ store, sessionKey }).existing,
-    };
-  } catch {
-    return {
-      sessionKey,
-      storePath,
-    };
-  }
-};
+  return (sessionKey) =>
+    readSessionEntry(storePath, sessionKey, { exact: true }) as SessionEntry | undefined;
+}
 
 const resolveBoundAcpDispatchSessionKey = (params: {
   ctx: FinalizedMsgContext;
@@ -460,7 +436,7 @@ const createShouldEmitVerboseProgress = (params: {
   const resolveCurrentExplicitLevel = () => {
     if (params.sessionKey && params.storePath) {
       try {
-        const entry = readSessionEntry(params.storePath, params.sessionKey);
+        const entry = readSessionEntry(params.storePath, params.sessionKey, { exact: true });
         return normalizeVerboseLevel(entry?.verboseLevel ?? "");
       } catch {
         // Ignore transient store read failures and fall back to the current dispatch snapshot.
@@ -588,13 +564,13 @@ function resolveChannelModelCandidate(params: {
 function resolveStoredModelCandidate(params: {
   defaultProvider: string;
   entry?: SessionEntry;
+  loadSessionEntry?: (sessionKey: string) => SessionEntry | undefined;
   parentSessionKey?: string;
   sessionKey?: string;
-  sessionStore?: Record<string, SessionEntry>;
 }): HarnessDefaultCandidate | undefined {
   const storedModelRef = resolveStoredModelOverride({
+    loadSessionEntry: params.loadSessionEntry,
     sessionEntry: params.entry,
-    sessionStore: params.sessionStore,
     sessionKey: params.sessionKey,
     parentSessionKey: params.parentSessionKey,
     defaultProvider: params.defaultProvider,
@@ -627,9 +603,9 @@ const resolveHarnessSourceVisibleRepliesDefault = (params: {
   cfg: OpenClawConfig;
   ctx: FinalizedMsgContext;
   entry?: SessionEntry;
+  loadSessionEntry?: (sessionKey: string) => SessionEntry | undefined;
   sessionAgentId: string;
   sessionKey?: string;
-  sessionStore?: Record<string, SessionEntry>;
   turnModelOverride?: string;
 }): HarnessSourceVisibleRepliesDefault | undefined => {
   if (isNativeCommandTurn(resolveCommandTurnContext(params.ctx))) {
@@ -656,9 +632,9 @@ const resolveHarnessSourceVisibleRepliesDefault = (params: {
     const storedModelCandidate = resolveStoredModelCandidate({
       defaultProvider: defaultModelRef.provider,
       entry: params.entry,
+      loadSessionEntry: params.loadSessionEntry,
       parentSessionKey,
       sessionKey: params.sessionKey,
-      sessionStore: params.sessionStore,
     });
     const turnModelCandidate = resolveModelOverrideCandidate({
       aliasIndex,
@@ -1109,8 +1085,8 @@ export async function dispatchReplyFromConfig(
     normalizeOptionalString(ctx.SessionKey) ?? normalizeOptionalString(ctx.CommandTargetSessionKey);
   const startTime = diagnosticsEnabled ? Date.now() : 0;
   const canTrackSession = diagnosticsEnabled && Boolean(sessionKey);
-  const initialSessionStoreEntry = resolveSessionStoreLookup(ctx, cfg);
-  // resolveSessionStoreLookup is command-target-aware (it prefers
+  const initialSessionStoreEntry = resolveDispatchSessionStoreLookup(ctx, cfg);
+  // resolveDispatchSessionStoreLookup is command-target-aware (it prefers
   // resolveCommandTurnTargetSessionKey), whereas the lifecycle's sessionKey is
   // source-first (ctx.SessionKey). On a native command turn that targets a
   // different session, the resolved entry can belong to the *target* while the
@@ -1249,7 +1225,7 @@ export async function dispatchReplyFromConfig(
     return resolveStuckSessionAbortMs(cfg, warnMs);
   })();
   const sessionStoreEntry = boundAcpDispatchSessionKey
-    ? resolveSessionStoreLookup({ ...ctx, SessionKey: boundAcpDispatchSessionKey }, cfg)
+    ? resolveDispatchSessionStoreLookup({ ...ctx, SessionKey: boundAcpDispatchSessionKey }, cfg)
     : initialSessionStoreEntry;
   let preparedSessionBinding: ReplySessionBinding | undefined =
     sessionStoreEntry.sessionKey && sessionStoreEntry.entry?.sessionId
@@ -1966,9 +1942,9 @@ export async function dispatchReplyFromConfig(
           cfg,
           ctx,
           entry: sessionStoreEntry.entry,
+          loadSessionEntry: createSessionEntryLoader(sessionStoreEntry.storePath),
           sessionAgentId,
           sessionKey: acpDispatchSessionKey,
-          sessionStore: sessionStoreEntry.store,
           turnModelOverride: resolveTurnModelOverride(params.replyOptions),
         })
       : undefined;

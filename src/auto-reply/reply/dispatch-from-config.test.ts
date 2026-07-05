@@ -151,7 +151,11 @@ const sessionStoreMocks = vi.hoisted(() => ({
   currentEntry: undefined as Record<string, unknown> | undefined,
   entriesBySessionKey: new Map<string, Record<string, unknown>>(),
   loadSessionStore: vi.fn(() => ({})),
-  readSessionEntry: vi.fn(() => sessionStoreMocks.currentEntry),
+  readSessionEntry: vi.fn((_storePath?: string, sessionKey?: string) =>
+    sessionKey
+      ? (sessionStoreMocks.entriesBySessionKey.get(sessionKey) ?? sessionStoreMocks.currentEntry)
+      : sessionStoreMocks.currentEntry,
+  ),
   resolveStorePath: vi.fn(() => "/tmp/mock-sessions.json"),
   resolveSessionStoreEntry: vi.fn((params?: { sessionKey?: string }) => ({
     existing:
@@ -1114,7 +1118,13 @@ describe("dispatchReplyFromConfig", () => {
     sessionStoreMocks.entriesBySessionKey.clear();
     sessionStoreMocks.loadSessionStore.mockClear();
     sessionStoreMocks.readSessionEntry.mockReset();
-    sessionStoreMocks.readSessionEntry.mockImplementation(() => sessionStoreMocks.currentEntry);
+    sessionStoreMocks.readSessionEntry.mockImplementation(
+      (_storePath?: string, sessionKey?: string) =>
+        sessionKey
+          ? (sessionStoreMocks.entriesBySessionKey.get(sessionKey) ??
+            sessionStoreMocks.currentEntry)
+          : sessionStoreMocks.currentEntry,
+    );
     sessionStoreMocks.resolveStorePath.mockClear();
     sessionStoreMocks.resolveSessionStoreEntry.mockClear();
     threadInfoMocks.parseSessionThreadInfo.mockReset();
@@ -4305,6 +4315,7 @@ describe("dispatchReplyFromConfig", () => {
     expect(sessionStoreMocks.readSessionEntry).toHaveBeenCalledWith(
       "/tmp/mock-sessions.json",
       "agent:main:main",
+      { exact: true },
     );
     expect(sessionStoreMocks.loadSessionStore).not.toHaveBeenCalled();
     expect(sessionStoreMocks.resolveSessionStoreEntry).not.toHaveBeenCalled();
@@ -5636,6 +5647,11 @@ describe("dispatchReplyFromConfig", () => {
       conversationId: "C123",
     });
     expect(sessionBindingMocks.touch).toHaveBeenCalledWith("binding-acp-current");
+    expect(sessionStoreMocks.readSessionEntry).toHaveBeenCalledWith(
+      "/tmp/mock-sessions.json",
+      boundSessionKey,
+      { exact: true },
+    );
     const ensureSessionOptions = firstMockArg(runtime.ensureSession, "ensure session") as
       | { agent?: unknown; sessionKey?: unknown }
       | undefined;
@@ -11320,13 +11336,11 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
       parentSessionKey,
       sendPolicy: "allow",
     };
-    sessionStoreMocks.loadSessionStore.mockReturnValueOnce({
-      [parentSessionKey]: {
-        sessionId: "parent",
-        updatedAt: 0,
-        providerOverride: "anthropic",
-        modelOverride: "claude-sonnet-4.6",
-      },
+    sessionStoreMocks.entriesBySessionKey.set(parentSessionKey, {
+      sessionId: "parent",
+      updatedAt: 0,
+      providerOverride: "anthropic",
+      modelOverride: "claude-sonnet-4.6",
     });
     const dispatcher = createDispatcher();
     const replyResolver = vi.fn(async (_ctx: MsgContext, opts?: GetReplyOptions) => {
