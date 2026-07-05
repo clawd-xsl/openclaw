@@ -76,18 +76,81 @@ describe("applySessionStoreMigrations", () => {
     });
   });
 
-  it("drops retired custom compaction and prompt-growth state", () => {
-    const entry = createEntry() as SessionEntry & Record<string, unknown>;
+  it("migrates valid CLI prompt-growth state and drops retired custom fields", () => {
+    const entry = createEntry({ agentRuntimeOverride: "claude-cli" }) as SessionEntry &
+      Record<string, unknown>;
     entry.cliCompactionOverlays = {
       "claude-cli": { summary: "obsolete provider-owned compaction overlay" },
     };
-    entry.memoryFlushPromptTokens = 123_456;
+    entry.memoryFlushPromptTokens = 123_456.75;
+    entry.memoryFlushContextHash = "retired-tail-hash";
     const store = { main: entry };
 
     expect(applySessionStoreMigrations(store)).toBe(true);
+    expect(store.main.memoryFlushCliPromptTokens).toBe(123_456);
     expect(store.main).not.toHaveProperty("cliCompactionOverlays");
     expect(store.main).not.toHaveProperty("memoryFlushPromptTokens");
+    expect(store.main).not.toHaveProperty("memoryFlushContextHash");
     expect(applySessionStoreMigrations(store)).toBe(false);
+  });
+
+  it("drops invalid or non-CLI legacy prompt-growth state without migrating it", () => {
+    const nonCli = createEntry({ modelProvider: "anthropic" }) as SessionEntry &
+      Record<string, unknown>;
+    nonCli.memoryFlushPromptTokens = 123_456;
+    const invalidCli = createEntry({ agentHarnessId: "claude-cli" }) as SessionEntry &
+      Record<string, unknown>;
+    invalidCli.memoryFlushPromptTokens = -1;
+    const dormantCli = createEntry({
+      modelProvider: "anthropic",
+      cliSessionIds: { "claude-cli": "dormant-native-session" },
+      cliSessionBindings: { "claude-cli": { sessionId: "dormant-native-session" } },
+      claudeCliSessionId: "dormant-native-session",
+    }) as SessionEntry & Record<string, unknown>;
+    dormantCli.memoryFlushPromptTokens = 99_999;
+    const store = { nonCli, invalidCli, dormantCli };
+
+    expect(applySessionStoreMigrations(store)).toBe(true);
+    expect(store.nonCli.memoryFlushCliPromptTokens).toBeUndefined();
+    expect(store.invalidCli.memoryFlushCliPromptTokens).toBeUndefined();
+    expect(store.dormantCli.memoryFlushCliPromptTokens).toBeUndefined();
+    expect(store.nonCli).not.toHaveProperty("memoryFlushPromptTokens");
+    expect(store.invalidCli).not.toHaveProperty("memoryFlushPromptTokens");
+    expect(store.dormantCli).not.toHaveProperty("memoryFlushPromptTokens");
+  });
+
+  it("migrates retired CLI runtime watermarks without overwriting a new receipt", () => {
+    const retired = createEntry({
+      agentRuntimeOverride: "claude-cli-streaming",
+    }) as SessionEntry & Record<string, unknown>;
+    retired.memoryFlushPromptTokens = 88_000;
+    const alreadyMigrated = createEntry({
+      agentRuntimeOverride: "claude-cli",
+      memoryFlushCliPromptTokens: 99_000,
+    }) as SessionEntry & Record<string, unknown>;
+    alreadyMigrated.memoryFlushPromptTokens = 77_000;
+    const store = { retired, alreadyMigrated };
+
+    expect(applySessionStoreMigrations(store)).toBe(true);
+    expect(store.retired.agentRuntimeOverride).toBe("claude-cli");
+    expect(store.retired.memoryFlushCliPromptTokens).toBe(88_000);
+    expect(store.alreadyMigrated.memoryFlushCliPromptTokens).toBe(99_000);
+    expect(store.retired).not.toHaveProperty("memoryFlushPromptTokens");
+    expect(store.alreadyMigrated).not.toHaveProperty("memoryFlushPromptTokens");
+    expect(applySessionStoreMigrations(store)).toBe(false);
+  });
+
+  it("migrates an active custom CLI backend whose id does not contain cli", () => {
+    const entry = createEntry({
+      agentRuntimeOverride: "acme-agent",
+      cliSessionBindings: { "acme-agent": { sessionId: "native-session" } },
+    }) as SessionEntry & Record<string, unknown>;
+    entry.memoryFlushPromptTokens = 64_000;
+    const store = { main: entry };
+
+    expect(applySessionStoreMigrations(store)).toBe(true);
+    expect(store.main.memoryFlushCliPromptTokens).toBe(64_000);
+    expect(store.main).not.toHaveProperty("memoryFlushPromptTokens");
   });
 
   it("leaves unrelated providers unchanged", () => {

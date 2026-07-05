@@ -401,7 +401,14 @@ export type SessionEntry = {
   compactionCheckpoints?: SessionCompactionCheckpoint[];
   memoryFlushAt?: number;
   memoryFlushCompactionCount?: number;
+  /** @deprecated Retained for Plugin SDK compatibility; ignored and removed from persisted stores. */
   memoryFlushContextHash?: string;
+  /** Prompt-token baseline for the current CLI pressure-flush cycle. */
+  memoryFlushCliPromptTokens?: number;
+  /** OpenClaw transcript-byte baseline for the current CLI pressure-flush cycle. */
+  memoryFlushCliTranscriptBytes?: number;
+  /** Hash of the CLI backend, binding, and OpenClaw transcript identity for that cycle. */
+  memoryFlushCliFingerprint?: string;
   /** Consecutive memory flush failures since the last successful flush. */
   memoryFlushFailureCount?: number;
   /** Timestamp (ms) of the last failed memory flush attempt. */

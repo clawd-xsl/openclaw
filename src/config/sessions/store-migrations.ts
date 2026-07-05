@@ -4,6 +4,35 @@ import type { SessionEntry } from "./types.js";
 const LEGACY_CLAUDE_CLI_BACKEND_ID = "claude-cli-streaming";
 const CLAUDE_CLI_BACKEND_ID = "claude-cli";
 
+function isCliRuntimeId(value: unknown): boolean {
+  return typeof value === "string" && /(?:^|-)cli(?:$|-)/iu.test(value.trim());
+}
+
+function hasLegacyCliMemoryFlushIdentity(entry: SessionEntry): boolean {
+  // Dormant native bindings can survive a later embedded run. Only migrate the
+  // shared legacy watermark when an active runtime field is CLI-shaped or owns
+  // a native CLI binding. The latter also covers custom backend IDs without a
+  // "cli" token in their name.
+  const activeRuntimeIds = [
+    entry.agentRuntimeOverride,
+    entry.agentHarnessId,
+    entry.modelProvider,
+    entry.providerOverride,
+  ].flatMap((value) => (typeof value === "string" && value.trim() ? [value.trim()] : []));
+  return activeRuntimeIds.some((runtimeId) => {
+    if (isCliRuntimeId(runtimeId)) {
+      return true;
+    }
+    const normalizedRuntimeId = runtimeId.toLowerCase();
+    return (
+      Object.hasOwn(entry.cliSessionBindings ?? {}, runtimeId) ||
+      Object.hasOwn(entry.cliSessionBindings ?? {}, normalizedRuntimeId) ||
+      Object.hasOwn(entry.cliSessionIds ?? {}, runtimeId) ||
+      Object.hasOwn(entry.cliSessionIds ?? {}, normalizedRuntimeId)
+    );
+  });
+}
+
 function removeRetiredClaudeCliMapKey<T>(map: Record<string, T> | undefined): boolean {
   if (!map || !Object.hasOwn(map, LEGACY_CLAUDE_CLI_BACKEND_ID)) {
     return false;
@@ -40,9 +69,25 @@ export function applySessionStoreMigrations(store: Record<string, SessionEntry>)
     if (!entry || typeof entry !== "object") {
       continue;
     }
-    changed = migrateClaudeCliSessionEntry(entry) || changed;
     const rec = entry as unknown as Record<string, unknown>;
-    for (const retiredKey of ["cliCompactionOverlays", "memoryFlushPromptTokens"] as const) {
+    const hasLegacyCliIdentity = hasLegacyCliMemoryFlushIdentity(entry);
+    changed = migrateClaudeCliSessionEntry(entry) || changed;
+    const legacyMemoryFlushPromptTokens = rec.memoryFlushPromptTokens;
+    if (
+      hasLegacyCliIdentity &&
+      entry.memoryFlushCliPromptTokens === undefined &&
+      typeof legacyMemoryFlushPromptTokens === "number" &&
+      Number.isFinite(legacyMemoryFlushPromptTokens) &&
+      legacyMemoryFlushPromptTokens > 0
+    ) {
+      entry.memoryFlushCliPromptTokens = Math.floor(legacyMemoryFlushPromptTokens);
+      changed = true;
+    }
+    for (const retiredKey of [
+      "cliCompactionOverlays",
+      "memoryFlushPromptTokens",
+      "memoryFlushContextHash",
+    ] as const) {
       if (Object.hasOwn(rec, retiredKey)) {
         delete rec[retiredKey];
         changed = true;

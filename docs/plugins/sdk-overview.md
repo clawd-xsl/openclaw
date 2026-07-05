@@ -412,6 +412,10 @@ For an end-to-end authoring guide, see
 - `MemoryFlushPlan.model` can pin the flush turn to an exact `provider/model`
   reference, such as `ollama/qwen3:8b`, without inheriting the active fallback
   chain.
+- `MemoryFlushPlan.repeatAfterTokens` and `repeatAfterTranscriptBytes` are
+  optional CLI pressure-cycle hints. Omitting both preserves legacy
+  once-per-compaction gating; transcript repeats apply only while
+  `forceFlushTranscriptBytes` pressure is active.
 - `registerMemoryEmbeddingProvider` is deprecated. New embedding providers
   should use `api.registerEmbeddingProvider(...)` and
   `contracts.embeddingProviders`.

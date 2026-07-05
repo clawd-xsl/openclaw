@@ -68,6 +68,10 @@ export type MemoryPromptSupplementRegistration = {
 export type MemoryFlushPlan = {
   softThresholdTokens: number;
   forceFlushTranscriptBytes: number;
+  /** CLI-only token growth required before another flush. Missing preserves legacy gating. */
+  repeatAfterTokens?: number;
+  /** CLI-only transcript growth hint, active only under forceFlushTranscriptBytes pressure. */
+  repeatAfterTranscriptBytes?: number;
   reserveTokensFloor: number;
   model?: string;
   prompt: string;

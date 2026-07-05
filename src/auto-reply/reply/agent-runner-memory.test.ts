@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { testing as cliBackendsTesting } from "../../agents/cli-backends.js";
 import type { SessionEntry } from "../../config/sessions.js";
+import { updateSessionEntry } from "../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
   clearMemoryPluginState,
@@ -1126,10 +1127,148 @@ describe("runMemoryFlushIfNeeded", () => {
     },
   );
 
-  it("uses the transcript byte gate for CLI memory flushes", async () => {
+  it("repeats CLI pressure flushes only after configured token growth", async () => {
     registerMemoryFlushPlanResolverForTest(() => ({
       softThresholdTokens: 4_000,
-      forceFlushTranscriptBytes: 256,
+      forceFlushTranscriptBytes: 1_000_000_000,
+      repeatAfterTokens: 20_000,
+      repeatAfterTranscriptBytes: 2_097_152,
+      reserveTokensFloor: 20_000,
+      prompt: "Pre-compaction memory flush.\nNO_REPLY",
+      systemPrompt: "Write memory to memory/YYYY-MM-DD.md.",
+      relativePath: "memory/2023-11-14.md",
+    }));
+    const cfg = {
+      agents: {
+        defaults: {
+          cliBackends: { "codex-cli": { command: "codex" } },
+          compaction: { memoryFlush: {} },
+        },
+      },
+    };
+    const storePath = path.join(rootDir, "sessions-repeat.json");
+    const sessionFile = path.join(rootDir, "cli-repeat.jsonl");
+    await fs.writeFile(sessionFile, "", "utf8");
+    let currentEntry: SessionEntry = {
+      sessionId: "session",
+      sessionFile,
+      updatedAt: Date.now(),
+      totalTokens: 176_000,
+      totalTokensFresh: true,
+      compactionCount: 1,
+    };
+    const sessionStore = { main: currentEntry };
+    await writeTestSessionStore(storePath, "main", currentEntry);
+    const followupRun = createTestFollowupRun({
+      provider: "codex-cli",
+      model: "gpt-5.5",
+      sessionId: currentEntry.sessionId,
+      sessionFile,
+      workspaceDir: rootDir,
+    });
+    const run = async () => {
+      currentEntry =
+        (await runMemoryFlushIfNeeded({
+          cfg,
+          followupRun,
+          sessionCtx: { Provider: "whatsapp" } as unknown as TemplateContext,
+          defaultModel: "codex-cli/gpt-5.5",
+          agentCfgContextTokens: 200_000,
+          resolvedVerboseLevel: "off",
+          sessionEntry: currentEntry,
+          sessionStore,
+          sessionKey: "main",
+          storePath,
+          isHeartbeat: false,
+          replyOperation: createReplyOperation(),
+        })) ?? currentEntry;
+      sessionStore.main = currentEntry;
+    };
+    const setTotalTokens = async (totalTokens: number) => {
+      const persisted = await updateSessionEntry(
+        { storePath, sessionKey: "main" },
+        () => ({ totalTokens, totalTokensFresh: true }),
+        { skipMaintenance: true, takeCacheOwnership: true },
+      );
+      currentEntry = persisted ?? { ...currentEntry, totalTokens, totalTokensFresh: true };
+      sessionStore.main = currentEntry;
+    };
+
+    await run();
+    expect(runEmbeddedAgentMock).toHaveBeenCalledTimes(1);
+    expect(currentEntry.memoryFlushCliPromptTokens).toBe(176_000);
+
+    await setTotalTokens(195_999);
+    await run();
+    expect(runEmbeddedAgentMock).toHaveBeenCalledTimes(1);
+
+    await setTotalTokens(196_000);
+    await run();
+    expect(runEmbeddedAgentMock).toHaveBeenCalledTimes(2);
+    expect(currentEntry.memoryFlushCliPromptTokens).toBe(196_000);
+
+    const resetEntry = await updateSessionEntry(
+      { storePath, sessionKey: "main" },
+      () => ({
+        totalTokens: 160_000,
+        totalTokensFresh: true,
+        memoryFlushFailureCount: 2,
+        memoryFlushLastFailedAt: 123,
+        memoryFlushLastFailureError: "old cycle failure",
+      }),
+      { skipMaintenance: true, takeCacheOwnership: true },
+    );
+    currentEntry = resetEntry ?? currentEntry;
+    sessionStore.main = currentEntry;
+    await run();
+    expect(runEmbeddedAgentMock).toHaveBeenCalledTimes(2);
+    expect(currentEntry.memoryFlushCliPromptTokens).toBe(160_000);
+    expect(currentEntry.memoryFlushCliFingerprint).toBeTruthy();
+    expect(currentEntry.memoryFlushFailureCount).toBe(0);
+    expect(currentEntry.memoryFlushLastFailedAt).toBeUndefined();
+    expect(currentEntry.memoryFlushLastFailureError).toBeUndefined();
+
+    await setTotalTokens(180_000);
+    await run();
+    expect(runEmbeddedAgentMock).toHaveBeenCalledTimes(3);
+    expect(currentEntry.memoryFlushCliPromptTokens).toBe(180_000);
+
+    const beforeExhaustion = await updateSessionEntry(
+      { storePath, sessionKey: "main" },
+      () => ({
+        memoryFlushCliPromptTokens: undefined,
+        memoryFlushCliTranscriptBytes: undefined,
+        memoryFlushCliFingerprint: undefined,
+        memoryFlushFailureCount: TEST_MAX_FLUSH_FAILURES - 1,
+      }),
+      { skipMaintenance: true, takeCacheOwnership: true },
+    );
+    currentEntry = beforeExhaustion ?? currentEntry;
+    sessionStore.main = currentEntry;
+    runEmbeddedAgentMock.mockRejectedValue(new Error("CLI memory flush failed"));
+
+    await run();
+    expect(runEmbeddedAgentMock).toHaveBeenCalledTimes(4);
+    expect(currentEntry.memoryFlushFailureCount).toBe(TEST_MAX_FLUSH_FAILURES);
+    expect(currentEntry.memoryFlushCliPromptTokens).toBe(180_000);
+
+    await run();
+    expect(runEmbeddedAgentMock).toHaveBeenCalledTimes(4);
+
+    await setTotalTokens(200_000);
+    await run();
+    expect(runEmbeddedAgentMock).toHaveBeenCalledTimes(5);
+    expect(currentEntry.memoryFlushFailureCount).toBe(1);
+    expect(currentEntry.memoryFlushCliPromptTokens).toBeUndefined();
+    expect(currentEntry.memoryFlushCliFingerprint).toBeUndefined();
+  });
+
+  it("repeats CLI memory flushes only after plan-defined transcript growth", async () => {
+    registerMemoryFlushPlanResolverForTest(() => ({
+      softThresholdTokens: 4_000,
+      forceFlushTranscriptBytes: 128,
+      repeatAfterTokens: 0,
+      repeatAfterTranscriptBytes: 256,
       reserveTokensFloor: 20_000,
       prompt: "Pre-compaction memory flush.\nNO_REPLY",
       systemPrompt: "Write memory to memory/YYYY-MM-DD.md.",
@@ -1150,6 +1289,73 @@ describe("runMemoryFlushIfNeeded", () => {
       `${JSON.stringify({ message: { role: "user", content: "x".repeat(512) } })}\n`,
       "utf8",
     );
+    let currentEntry: SessionEntry = {
+      sessionId: "session",
+      sessionFile,
+      updatedAt: Date.now(),
+      totalTokens: 1,
+      totalTokensFresh: true,
+      compactionCount: 1,
+    };
+    const sessionStore = { main: currentEntry };
+    await writeTestSessionStore(storePath, "main", currentEntry);
+    const followupRun = createTestFollowupRun({
+      provider: "codex-cli",
+      model: "gpt-5.5",
+      sessionId: "session",
+      sessionFile,
+      workspaceDir: rootDir,
+    });
+    const run = async () => {
+      currentEntry =
+        (await runMemoryFlushIfNeeded({
+          cfg,
+          followupRun,
+          sessionCtx: { Provider: "whatsapp" } as unknown as TemplateContext,
+          defaultModel: "codex-cli/gpt-5.5",
+          agentCfgContextTokens: 200_000,
+          resolvedVerboseLevel: "off",
+          sessionEntry: currentEntry,
+          sessionStore,
+          sessionKey: "main",
+          storePath,
+          isHeartbeat: false,
+          replyOperation: createReplyOperation(),
+        })) ?? currentEntry;
+      sessionStore.main = currentEntry;
+    };
+
+    await run();
+    expect(runEmbeddedAgentMock).toHaveBeenCalledTimes(1);
+    const firstReceiptBytes = currentEntry.memoryFlushCliTranscriptBytes;
+    expect(firstReceiptBytes).toBeGreaterThanOrEqual(256);
+
+    await run();
+    expect(runEmbeddedAgentMock).toHaveBeenCalledTimes(1);
+
+    await fs.appendFile(sessionFile, "x".repeat(255), "utf8");
+    await run();
+    expect(runEmbeddedAgentMock).toHaveBeenCalledTimes(1);
+
+    await fs.appendFile(sessionFile, "x", "utf8");
+    await run();
+    expect(runEmbeddedAgentMock).toHaveBeenCalledTimes(2);
+    expect(currentEntry.memoryFlushCliTranscriptBytes).toBe((firstReceiptBytes ?? 0) + 256);
+  });
+
+  it("disables CLI transcript repeats when transcript-size pressure is disabled", async () => {
+    registerMemoryFlushPlanResolverForTest(() => ({
+      softThresholdTokens: 4_000,
+      forceFlushTranscriptBytes: 0,
+      repeatAfterTokens: 0,
+      repeatAfterTranscriptBytes: 1,
+      reserveTokensFloor: 20_000,
+      prompt: "Pre-compaction memory flush.\nNO_REPLY",
+      systemPrompt: "Write memory to memory/YYYY-MM-DD.md.",
+      relativePath: "memory/2023-11-14.md",
+    }));
+    const sessionFile = path.join(rootDir, "byte-pressure-disabled.jsonl");
+    await fs.writeFile(sessionFile, "x".repeat(512), "utf8");
     const sessionEntry: SessionEntry = {
       sessionId: "session",
       sessionFile,
@@ -1158,10 +1364,16 @@ describe("runMemoryFlushIfNeeded", () => {
       totalTokensFresh: true,
       compactionCount: 1,
     };
-    await writeTestSessionStore(storePath, "main", sessionEntry);
 
-    await runMemoryFlushIfNeeded({
-      cfg,
+    const result = await runMemoryFlushIfNeeded({
+      cfg: {
+        agents: {
+          defaults: {
+            cliBackends: { "codex-cli": { command: "codex" } },
+            compaction: { memoryFlush: {} },
+          },
+        },
+      },
       followupRun: createTestFollowupRun({
         provider: "codex-cli",
         model: "gpt-5.5",
@@ -1176,12 +1388,79 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionEntry,
       sessionStore: { main: sessionEntry },
       sessionKey: "main",
-      storePath,
       isHeartbeat: false,
       replyOperation: createReplyOperation(),
     });
 
+    expect(runEmbeddedAgentMock).not.toHaveBeenCalled();
+    expect(result?.memoryFlushCliTranscriptBytes).toBeUndefined();
+    expect(result?.memoryFlushCliFingerprint).toBeUndefined();
+  });
+
+  it("preserves legacy once-per-compaction gating when a plugin omits repeat hints", async () => {
+    registerMemoryFlushPlanResolverForTest(() => ({
+      softThresholdTokens: 4_000,
+      forceFlushTranscriptBytes: 128,
+      reserveTokensFloor: 20_000,
+      prompt: "Pre-compaction memory flush.\nNO_REPLY",
+      systemPrompt: "Write memory to memory/YYYY-MM-DD.md.",
+      relativePath: "memory/2023-11-14.md",
+    }));
+    const storePath = path.join(rootDir, "sessions-legacy-plan.json");
+    const sessionFile = path.join(rootDir, "legacy-byte-pressure.jsonl");
+    await fs.writeFile(sessionFile, "x".repeat(512), "utf8");
+    let currentEntry: SessionEntry = {
+      sessionId: "session",
+      sessionFile,
+      updatedAt: Date.now(),
+      totalTokens: 1,
+      totalTokensFresh: true,
+      compactionCount: 1,
+    };
+    const sessionStore = { main: currentEntry };
+    await writeTestSessionStore(storePath, "main", currentEntry);
+    const baseParams = {
+      cfg: {
+        agents: {
+          defaults: {
+            cliBackends: { "codex-cli": { command: "codex" } },
+            compaction: { memoryFlush: {} },
+          },
+        },
+      },
+      followupRun: createTestFollowupRun({
+        provider: "codex-cli",
+        model: "gpt-5.5",
+        sessionId: "session",
+        sessionFile,
+        workspaceDir: rootDir,
+      }),
+      sessionCtx: { Provider: "whatsapp" } as unknown as TemplateContext,
+      defaultModel: "codex-cli/gpt-5.5",
+      agentCfgContextTokens: 200_000,
+      resolvedVerboseLevel: "off" as const,
+      sessionStore,
+      sessionKey: "main",
+      storePath,
+      isHeartbeat: false,
+    };
+    const run = async () => {
+      currentEntry =
+        (await runMemoryFlushIfNeeded({
+          ...baseParams,
+          sessionEntry: currentEntry,
+          replyOperation: createReplyOperation(),
+        })) ?? currentEntry;
+      sessionStore.main = currentEntry;
+    };
+
+    await run();
+    await fs.appendFile(sessionFile, "x".repeat(512), "utf8");
+    await run();
+
     expect(runEmbeddedAgentMock).toHaveBeenCalledTimes(1);
+    expect(currentEntry.memoryFlushCompactionCount).toBe(1);
+    expect(currentEntry.memoryFlushCliFingerprint).toBeUndefined();
   });
 
   it("keeps CLI memory flush disabled for heartbeat turns", async () => {

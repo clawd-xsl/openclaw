@@ -254,6 +254,14 @@ not append the maintenance prompt to, resume, or replace the user-owned CLI
 session. A success updates only the flush receipt; a failure retains bounded
 retry diagnostics so a later turn can try again.
 
+A CLI session can flush again after another 20,000 prompt tokens. Once the
+configured transcript-size pressure threshold is active, another 2 MiB of
+OpenClaw transcript growth can also trigger the next flush. Setting
+`agents.defaults.compaction.memoryFlush.forceFlushTranscriptBytes` to `0`
+disables both the initial transcript-size trigger and that byte-growth fallback.
+Native CLI compaction, transcript rotation, and CLI binding changes re-arm the
+next pressure cycle.
+
 ### Completed-session memory flush
 
 The bundled `memory-core` plugin also performs a durable-memory pass after an

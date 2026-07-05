@@ -11,6 +11,8 @@ import { resolveMemoryCoreNowMs } from "./time.js";
 
 export const DEFAULT_MEMORY_FLUSH_SOFT_TOKENS = 4000;
 export const DEFAULT_MEMORY_FLUSH_FORCE_TRANSCRIPT_BYTES = 2 * 1024 * 1024;
+export const DEFAULT_MEMORY_FLUSH_REPEAT_TOKENS = 20_000;
+export const DEFAULT_MEMORY_FLUSH_REPEAT_TRANSCRIPT_BYTES = 2 * 1024 * 1024;
 
 const MEMORY_FLUSH_TARGET_HINT =
   "Store durable memories only in memory/YYYY-MM-DD.md (create memory/ if needed).";
@@ -133,6 +135,8 @@ export function buildMemoryFlushPlan(
   return {
     softThresholdTokens,
     forceFlushTranscriptBytes,
+    repeatAfterTokens: DEFAULT_MEMORY_FLUSH_REPEAT_TOKENS,
+    repeatAfterTranscriptBytes: DEFAULT_MEMORY_FLUSH_REPEAT_TRANSCRIPT_BYTES,
     reserveTokensFloor,
     model: defaults?.model?.trim() || undefined,
     prompt: appendCurrentTimeLine(promptBase.replaceAll("YYYY-MM-DD", dateStamp), timeLine),

@@ -38,6 +38,12 @@ function resolvePositiveTokenCount(value: number | undefined): number | undefine
     : undefined;
 }
 
+function resolveNonNegativeInteger(value: number | undefined): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.floor(value)
+    : undefined;
+}
+
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -188,4 +194,145 @@ export function hasAlreadyFlushedForCurrentCompaction(
   const compactionCount = entry.compactionCount ?? 0;
   const lastFlushAt = entry.memoryFlushCompactionCount;
   return typeof lastFlushAt === "number" && lastFlushAt === compactionCount;
+}
+
+export type CliMemoryFlushPosition = {
+  fingerprint: string;
+  promptTokens?: number;
+  transcriptBytes?: number;
+};
+
+export type CliMemoryFlushGateDecision =
+  | {
+      kind: "run";
+      reason: "first" | "tokens" | "bytes";
+      resetFailureBudget: boolean;
+    }
+  | {
+      kind: "rearm";
+      reason: "fingerprint_changed" | "file_shrank" | "token_reset";
+      receipt: CliMemoryFlushPosition;
+    }
+  | { kind: "adopt_fingerprint"; receipt: CliMemoryFlushPosition }
+  | { kind: "wait" };
+
+const CLI_MEMORY_FLUSH_TOKEN_RESET_HYSTERESIS = 2_000;
+
+/**
+ * Gates repeated pressure flushes for CLI runtimes that compact outside OpenClaw.
+ * Positions are frozen before the maintenance run so a receipt never claims
+ * context that was not present in that run's bounded transcript snapshot.
+ */
+export function resolveCliMemoryFlushGate(params: {
+  entry: Pick<
+    SessionEntry,
+    "memoryFlushCliFingerprint" | "memoryFlushCliPromptTokens" | "memoryFlushCliTranscriptBytes"
+  >;
+  position: CliMemoryFlushPosition;
+  tokenPressureDue: boolean;
+  transcriptPressureDue: boolean;
+  repeatAfterTokens?: number;
+  repeatAfterTranscriptBytes?: number;
+}): CliMemoryFlushGateDecision {
+  const currentPromptTokens = resolveNonNegativeInteger(params.position.promptTokens);
+  const currentTranscriptBytes = resolveNonNegativeInteger(params.position.transcriptBytes);
+  const previousPromptTokens = resolveNonNegativeInteger(params.entry.memoryFlushCliPromptTokens);
+  const previousTranscriptBytes = resolveNonNegativeInteger(
+    params.entry.memoryFlushCliTranscriptBytes,
+  );
+  const previousFingerprint = params.entry.memoryFlushCliFingerprint?.trim() || undefined;
+  const repeatAfterTokens = resolveNonNegativeInteger(params.repeatAfterTokens) ?? 0;
+  const repeatAfterTranscriptBytes =
+    resolveNonNegativeInteger(params.repeatAfterTranscriptBytes) ?? 0;
+  const hasReceipt =
+    previousFingerprint !== undefined ||
+    previousPromptTokens !== undefined ||
+    previousTranscriptBytes !== undefined;
+
+  const currentReceipt: CliMemoryFlushPosition = {
+    fingerprint: params.position.fingerprint,
+    ...(currentPromptTokens !== undefined
+      ? { promptTokens: currentPromptTokens }
+      : previousPromptTokens !== undefined
+        ? { promptTokens: previousPromptTokens }
+        : {}),
+    ...(currentTranscriptBytes !== undefined
+      ? { transcriptBytes: currentTranscriptBytes }
+      : previousTranscriptBytes !== undefined
+        ? { transcriptBytes: previousTranscriptBytes }
+        : {}),
+  };
+
+  const resetReason = (() => {
+    if (previousFingerprint && previousFingerprint !== params.position.fingerprint) {
+      return "fingerprint_changed" as const;
+    }
+    if (
+      previousTranscriptBytes !== undefined &&
+      currentTranscriptBytes !== undefined &&
+      currentTranscriptBytes < previousTranscriptBytes
+    ) {
+      return "file_shrank" as const;
+    }
+    if (
+      previousPromptTokens !== undefined &&
+      currentPromptTokens !== undefined &&
+      currentPromptTokens + CLI_MEMORY_FLUSH_TOKEN_RESET_HYSTERESIS <= previousPromptTokens
+    ) {
+      return "token_reset" as const;
+    }
+    return undefined;
+  })();
+  if (resetReason) {
+    return { kind: "rearm", reason: resetReason, receipt: currentReceipt };
+  }
+
+  if (!hasReceipt) {
+    return params.tokenPressureDue || params.transcriptPressureDue
+      ? { kind: "run", reason: "first", resetFailureBudget: false }
+      : { kind: "wait" };
+  }
+
+  const tokenProgressed =
+    repeatAfterTokens > 0 &&
+    previousPromptTokens !== undefined &&
+    currentPromptTokens !== undefined &&
+    currentPromptTokens >= previousPromptTokens + repeatAfterTokens;
+  if (params.tokenPressureDue && tokenProgressed) {
+    return { kind: "run", reason: "tokens", resetFailureBudget: true };
+  }
+
+  const transcriptProgressed =
+    repeatAfterTranscriptBytes > 0 &&
+    previousTranscriptBytes !== undefined &&
+    currentTranscriptBytes !== undefined &&
+    currentTranscriptBytes >= previousTranscriptBytes + repeatAfterTranscriptBytes;
+  if (params.transcriptPressureDue && transcriptProgressed) {
+    return { kind: "run", reason: "bytes", resetFailureBudget: true };
+  }
+
+  const receiptIsIncomplete =
+    !previousFingerprint ||
+    (previousPromptTokens === undefined && currentPromptTokens !== undefined) ||
+    (previousTranscriptBytes === undefined && currentTranscriptBytes !== undefined);
+  if (receiptIsIncomplete) {
+    return {
+      kind: "adopt_fingerprint",
+      receipt: {
+        fingerprint: params.position.fingerprint,
+        ...(previousPromptTokens !== undefined
+          ? { promptTokens: previousPromptTokens }
+          : currentPromptTokens !== undefined
+            ? { promptTokens: currentPromptTokens }
+            : {}),
+        ...(previousTranscriptBytes !== undefined
+          ? { transcriptBytes: previousTranscriptBytes }
+          : currentTranscriptBytes !== undefined
+            ? { transcriptBytes: currentTranscriptBytes }
+            : {}),
+      },
+    };
+  }
+
+  return { kind: "wait" };
 }

@@ -678,6 +678,20 @@ for lifecycle, recovery, and visibility behavior.
 
 ---
 
+## CLI pressure-flush cadence
+
+CLI backends run pressure-triggered memory flushes in isolated maintenance
+sessions. After a successful flush, another 20,000 prompt tokens can trigger the
+next one. Once `forceFlushTranscriptBytes` has activated transcript-size
+pressure, another 2 MiB of transcript growth can also trigger it. Setting
+`forceFlushTranscriptBytes` to `0` disables both transcript-size triggers.
+
+Native CLI compaction, transcript rotation, or a changed runtime binding starts
+a new cycle. This policy does not change the once-per-compaction behavior of
+embedded sessions.
+
+---
+
 ## Completed-session memory flush
 
 The bundled memory-core plugin can project durable facts from an ended default

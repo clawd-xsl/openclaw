@@ -444,6 +444,7 @@ Config (`agents.defaults.compaction.memoryFlush`):
 - `enabled` (default: `true`)
 - `model` (optional exact provider/model override for the flush turn, for example `ollama/qwen3:8b`)
 - `softThresholdTokens` (default: `4000`)
+- `forceFlushTranscriptBytes` (default: `2mb`; `0` disables transcript-size pressure)
 - `prompt` (user message for the flush turn)
 - `systemPrompt` (extra system prompt appended for the flush turn)
 
@@ -454,8 +455,16 @@ Notes:
 - When `model` is set, the flush turn uses that model without inheriting the
   active session fallback chain, so local-only housekeeping does not silently
   fall back to a paid conversation model.
-- The flush runs once per compaction cycle (tracked in `sessions.json`).
-- The flush runs only for embedded OpenClaw sessions (CLI backends skip it).
+- Embedded sessions flush once per OpenClaw compaction cycle (tracked in
+  `sessions.json`).
+- CLI sessions can flush again after 20,000 prompt tokens. Once transcript-size
+  pressure is active, another 2 MiB of transcript growth can also retrigger the
+  flush. Set `forceFlushTranscriptBytes` to `0` to disable both transcript-size
+  gates.
+- CLI backends flush in an isolated maintenance session. After a successful
+  flush, another pressure flush waits for the fixed token or transcript growth
+  cadence above. Native compaction, transcript rotation, or a changed CLI
+  binding starts a new cycle.
 - The flush is skipped when the session workspace is read-only (`workspaceAccess: "ro"` or `"none"`).
 - See [Memory](/concepts/memory) for the workspace file layout and write patterns.
 

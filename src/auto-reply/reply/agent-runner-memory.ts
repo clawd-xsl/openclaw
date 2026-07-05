@@ -33,6 +33,7 @@ import {
   resolveSessionFilePathOptions,
   type SessionEntry,
 } from "../../config/sessions.js";
+import { getCliSessionBinding } from "../../config/sessions/cli-session-binding.js";
 import { updateSessionEntry } from "../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { readSessionMessagesAsync } from "../../gateway/session-utils.fs.js";
@@ -54,6 +55,7 @@ import {
 import type { CompactionNoticePhase } from "./compaction-notice.js";
 import {
   hasAlreadyFlushedForCurrentCompaction,
+  resolveCliMemoryFlushGate,
   resolveMaxActiveTranscriptBytes,
   resolveMemoryFlushContextWindowTokens,
   resolveResponsesServerCompactionThreshold,
@@ -282,11 +284,11 @@ function resolveMemoryFlushRuntimeOverrideForProvider(params: {
   return undefined;
 }
 
-function followupUsesCliRuntime(params: {
+function resolveFollowupCliRuntimeId(params: {
   cfg: OpenClawConfig;
   followupRun: FollowupRun;
   sessionEntry?: Pick<SessionEntry, "agentRuntimeOverride">;
-}): boolean {
+}): string | undefined {
   const provider = params.followupRun.run.provider;
   const sessionRuntimeOverride = resolveMemoryFlushRuntimeOverrideForProvider({
     provider,
@@ -308,7 +310,45 @@ function followupUsesCliRuntime(params: {
       authProfileId: selectedAuthProfile.authProfileId,
     }) ??
     provider;
-  return isCliProvider(executionProvider, params.cfg);
+  return isCliProvider(executionProvider, params.cfg)
+    ? normalizeLowercaseStringOrEmpty(executionProvider)
+    : undefined;
+}
+
+function resolveCliMemoryFlushFingerprint(params: {
+  runtimeId: string;
+  followupRun: FollowupRun;
+  sessionEntry?: SessionEntry;
+  sessionKey?: string;
+  storePath?: string;
+}): string {
+  const entry = params.sessionEntry;
+  const localSessionId = entry?.sessionId ?? params.followupRun.run.sessionId;
+  const binding = getCliSessionBinding(entry, params.runtimeId);
+  const transcriptEntry = entry?.sessionFile
+    ? entry
+    : entry
+      ? { ...entry, sessionFile: params.followupRun.run.sessionFile }
+      : undefined;
+  const transcriptPath = resolveSessionLogPath(
+    localSessionId,
+    transcriptEntry,
+    params.sessionKey ?? params.followupRun.run.sessionKey,
+    { storePath: params.storePath },
+  );
+  const identity = [
+    "openclaw-cli-memory-flush",
+    1,
+    params.runtimeId,
+    localSessionId,
+    binding?.sessionId ?? "",
+    transcriptPath ?? "",
+    binding?.reseedReceipt?.version ?? "",
+    binding?.reseedReceipt?.promptHash ?? "",
+    binding?.reseedReceipt?.localSessionId ?? "",
+    binding?.reseedReceipt?.userTurnDisposition ?? "",
+  ];
+  return crypto.createHash("sha256").update(JSON.stringify(identity)).digest("hex");
 }
 
 function resolveFollowupContextConfigProvider(params: {
@@ -785,12 +825,12 @@ export async function runPreflightCompactionIfNeeded(params: {
     return entry ?? params.sessionEntry;
   }
 
-  const isCli = followupUsesCliRuntime({
+  const cliRuntimeId = resolveFollowupCliRuntimeId({
     cfg: params.cfg,
     followupRun: params.followupRun,
     sessionEntry: entry,
   });
-  if (params.isHeartbeat || isCli) {
+  if (params.isHeartbeat || cliRuntimeId) {
     return entry ?? params.sessionEntry;
   }
   if (
@@ -921,7 +961,7 @@ export async function runPreflightCompactionIfNeeded(params: {
       `tokenCount=${tokenCountForCompaction ?? freshPersistedTokens ?? "undefined"} ` +
       `contextWindow=${contextWindowTokens} threshold=${threshold} ` +
       `serverCompactionThreshold=${serverCompactionThreshold ?? "undefined"} ` +
-      `isHeartbeat=${params.isHeartbeat} isCli=${isCli} ` +
+      `isHeartbeat=${params.isHeartbeat} isCli=${cliRuntimeId !== undefined} ` +
       `persistedFresh=${entry?.totalTokensFresh === true} ` +
       `transcriptPromptTokens=${transcriptPromptTokens ?? "undefined"} ` +
       `promptTokensEst=${promptTokenEstimate ?? "undefined"} ` +
@@ -1124,11 +1164,12 @@ export async function runMemoryFlushIfNeeded(params: {
   let entry =
     params.sessionEntry ??
     (params.sessionKey ? params.sessionStore?.[params.sessionKey] : undefined);
-  const isCli = followupUsesCliRuntime({
+  const cliRuntimeId = resolveFollowupCliRuntimeId({
     cfg: params.cfg,
     followupRun: params.followupRun,
     sessionEntry: entry,
   });
+  const isCli = cliRuntimeId !== undefined;
   const canAttemptFlush = memoryFlushWritable && !params.isHeartbeat;
   const contextWindowTokens = resolveMemoryFlushContextWindowTokens({
     cfg: params.cfg,
@@ -1179,26 +1220,32 @@ export async function runMemoryFlushIfNeeded(params: {
   );
 
   const forceFlushTranscriptBytes = memoryFlushPlan.forceFlushTranscriptBytes;
-  const shouldCheckTranscriptSizeForForcedFlush = Boolean(
+  const usesCliRepeatGate =
+    isCli &&
+    (memoryFlushPlan.repeatAfterTokens !== undefined ||
+      memoryFlushPlan.repeatAfterTranscriptBytes !== undefined);
+  const shouldCheckTranscriptByteSize = Boolean(
     canAttemptFlush &&
     entry &&
     Number.isFinite(forceFlushTranscriptBytes) &&
     forceFlushTranscriptBytes > 0,
   );
-  const shouldReadSessionLog = shouldReadTranscript || shouldCheckTranscriptSizeForForcedFlush;
+  const shouldReadSessionLog = shouldReadTranscript || shouldCheckTranscriptByteSize;
   const sessionLogSnapshot = shouldReadSessionLog
     ? await readSessionLogSnapshot({
         sessionId: params.followupRun.run.sessionId,
         sessionEntry: entry,
         sessionKey: params.sessionKey ?? params.followupRun.run.sessionKey,
         opts: { storePath: params.storePath },
-        includeByteSize: shouldCheckTranscriptSizeForForcedFlush,
+        includeByteSize: shouldCheckTranscriptByteSize,
         includeUsage: shouldReadTranscript,
       })
     : undefined;
   const transcriptByteSize = sessionLogSnapshot?.byteSize;
   const shouldForceFlushByTranscriptSize =
-    typeof transcriptByteSize === "number" && transcriptByteSize >= forceFlushTranscriptBytes;
+    forceFlushTranscriptBytes > 0 &&
+    typeof transcriptByteSize === "number" &&
+    transcriptByteSize >= forceFlushTranscriptBytes;
 
   const transcriptUsageSnapshot = sessionLogSnapshot?.usage;
   const transcriptPromptTokens = transcriptUsageSnapshot?.promptTokens;
@@ -1269,6 +1316,89 @@ export async function runMemoryFlushIfNeeded(params: {
       ? projectedTokenCount
       : undefined;
 
+  const cliTokenPressureDue = shouldRunPreflightCompaction({
+    entry,
+    tokenCount: tokenCountForFlush,
+    contextWindowTokens,
+    reserveTokensFloor: memoryFlushPlan.reserveTokensFloor,
+    softThresholdTokens: memoryFlushPlan.softThresholdTokens,
+  });
+  const cliTranscriptPressureDue = canAttemptFlush && shouldForceFlushByTranscriptSize;
+  const cliGatePosition =
+    usesCliRepeatGate && cliRuntimeId
+      ? {
+          fingerprint: resolveCliMemoryFlushFingerprint({
+            runtimeId: cliRuntimeId,
+            followupRun: params.followupRun,
+            sessionEntry: entry,
+            sessionKey: params.sessionKey,
+            storePath: params.storePath,
+          }),
+          ...(hasFreshPromptTokensSnapshot ? { promptTokens: promptTokensSnapshot } : {}),
+          ...(typeof transcriptByteSize === "number"
+            ? { transcriptBytes: transcriptByteSize }
+            : {}),
+        }
+      : undefined;
+  const cliGateDecision =
+    cliGatePosition && entry
+      ? resolveCliMemoryFlushGate({
+          entry,
+          position: cliGatePosition,
+          tokenPressureDue: canAttemptFlush && cliTokenPressureDue,
+          transcriptPressureDue: cliTranscriptPressureDue,
+          repeatAfterTokens: memoryFlushPlan.repeatAfterTokens,
+          repeatAfterTranscriptBytes: memoryFlushPlan.repeatAfterTranscriptBytes,
+        })
+      : undefined;
+
+  const persistCliGatePatch = async (patch: Partial<SessionEntry>): Promise<void> => {
+    if (!entry) {
+      return;
+    }
+    entry = { ...entry, ...patch };
+    if (params.sessionKey && params.sessionStore) {
+      params.sessionStore[params.sessionKey] = entry;
+    }
+    if (!params.storePath || !params.sessionKey) {
+      return;
+    }
+    try {
+      const updatedEntry = await memoryDeps.updateSessionEntry({
+        storePath: params.storePath,
+        sessionKey: params.sessionKey,
+        skipMaintenance: true,
+        takeCacheOwnership: true,
+        update: async () => patch,
+      });
+      if (updatedEntry) {
+        entry = updatedEntry;
+        if (params.sessionStore) {
+          params.sessionStore[params.sessionKey] = updatedEntry;
+        }
+      }
+    } catch (err) {
+      logVerbose(`failed to persist CLI memory flush gate state: ${String(err)}`);
+    }
+  };
+
+  if (cliGateDecision?.kind === "adopt_fingerprint") {
+    await persistCliGatePatch({
+      memoryFlushCliFingerprint: cliGateDecision.receipt.fingerprint,
+      memoryFlushCliPromptTokens: cliGateDecision.receipt.promptTokens,
+      memoryFlushCliTranscriptBytes: cliGateDecision.receipt.transcriptBytes,
+    });
+  } else if (cliGateDecision?.kind === "rearm") {
+    await persistCliGatePatch({
+      memoryFlushCliPromptTokens: cliGateDecision.receipt.promptTokens,
+      memoryFlushCliTranscriptBytes: cliGateDecision.receipt.transcriptBytes,
+      memoryFlushCliFingerprint: cliGateDecision.receipt.fingerprint,
+      memoryFlushFailureCount: 0,
+      memoryFlushLastFailedAt: undefined,
+      memoryFlushLastFailureError: undefined,
+    });
+  }
+
   // Diagnostic logging to understand why memory flush may not trigger.
   logVerbose(
     `memoryFlush check: sessionKey=${params.sessionKey} ` +
@@ -1279,22 +1409,30 @@ export async function runMemoryFlushIfNeeded(params: {
       `persistedPromptTokens=${persistedPromptTokens ?? "undefined"} persistedFresh=${entry?.totalTokensFresh === true} ` +
       `promptTokensEst=${promptTokenEstimate ?? "undefined"} transcriptPromptTokens=${transcriptPromptTokens ?? "undefined"} transcriptOutputTokens=${transcriptOutputTokens ?? "undefined"} ` +
       `projectedTokenCount=${projectedTokenCount ?? "undefined"} transcriptBytes=${transcriptByteSize ?? "undefined"} ` +
-      `forceFlushTranscriptBytes=${forceFlushTranscriptBytes} forceFlushByTranscriptSize=${shouldForceFlushByTranscriptSize}`,
+      `forceFlushTranscriptBytes=${forceFlushTranscriptBytes} forceFlushByTranscriptSize=${shouldForceFlushByTranscriptSize} ` +
+      `cliTokenPressure=${cliTokenPressureDue} cliTranscriptPressure=${cliTranscriptPressureDue} ` +
+      `cliGate=${cliGateDecision?.kind ?? "legacy"} cliGateReason=${cliGateDecision && "reason" in cliGateDecision ? cliGateDecision.reason : "none"}`,
   );
 
-  const shouldFlushMemory =
-    (memoryFlushWritable &&
-      !params.isHeartbeat &&
-      shouldRunMemoryFlush({
-        entry,
-        tokenCount: tokenCountForFlush,
-        contextWindowTokens,
-        reserveTokensFloor: memoryFlushPlan.reserveTokensFloor,
-        softThresholdTokens: memoryFlushPlan.softThresholdTokens,
-      })) ||
-    (shouldForceFlushByTranscriptSize &&
-      entry != null &&
-      !hasAlreadyFlushedForCurrentCompaction(entry));
+  const shouldFlushMemory = usesCliRepeatGate
+    ? cliGateDecision?.kind === "run"
+    : (memoryFlushWritable &&
+        !params.isHeartbeat &&
+        shouldRunMemoryFlush({
+          entry,
+          tokenCount: tokenCountForFlush,
+          contextWindowTokens,
+          reserveTokensFloor: memoryFlushPlan.reserveTokensFloor,
+          softThresholdTokens: memoryFlushPlan.softThresholdTokens,
+        })) ||
+      (shouldForceFlushByTranscriptSize &&
+        entry != null &&
+        !hasAlreadyFlushedForCurrentCompaction(entry));
+  const resetCliFailureBudget =
+    cliGateDecision?.kind === "run" &&
+    (cliGateDecision.resetFailureBudget ||
+      (cliGateDecision.reason === "first" &&
+        Math.max(0, entry?.memoryFlushFailureCount ?? 0) >= MAX_FLUSH_FAILURES));
 
   if (!shouldFlushMemory) {
     return entry ?? params.sessionEntry;
@@ -1522,6 +1660,13 @@ export async function runMemoryFlushIfNeeded(params: {
           update: async () => ({
             memoryFlushAt: memoryDeps.now(),
             memoryFlushCompactionCount: flushedCompactionCount,
+            ...(cliGatePosition
+              ? {
+                  memoryFlushCliPromptTokens: cliGatePosition.promptTokens,
+                  memoryFlushCliTranscriptBytes: cliGatePosition.transcriptBytes,
+                  memoryFlushCliFingerprint: cliGatePosition.fingerprint,
+                }
+              : {}),
             memoryFlushFailureCount: 0,
             memoryFlushLastFailedAt: undefined,
             memoryFlushLastFailureError: undefined,
@@ -1552,9 +1697,18 @@ export async function runMemoryFlushIfNeeded(params: {
           skipMaintenance: true,
           takeCacheOwnership: true,
           update: async (sessionEntry) => ({
-            memoryFlushFailureCount: Math.max(0, sessionEntry.memoryFlushFailureCount ?? 0) + 1,
+            memoryFlushFailureCount:
+              (resetCliFailureBudget ? 0 : Math.max(0, sessionEntry.memoryFlushFailureCount ?? 0)) +
+              1,
             memoryFlushLastFailedAt: failedAt,
             memoryFlushLastFailureError: truncatedError,
+            ...(resetCliFailureBudget
+              ? {
+                  memoryFlushCliPromptTokens: undefined,
+                  memoryFlushCliTranscriptBytes: undefined,
+                  memoryFlushCliFingerprint: undefined,
+                }
+              : {}),
           }),
         });
         if (failedEntry) {
@@ -1602,6 +1756,13 @@ export async function runMemoryFlushIfNeeded(params: {
             update: async (sessionEntry) => ({
               memoryFlushAt: memoryDeps.now(),
               memoryFlushCompactionCount: sessionEntry.compactionCount ?? 0,
+              ...(cliGatePosition
+                ? {
+                    memoryFlushCliPromptTokens: cliGatePosition.promptTokens,
+                    memoryFlushCliTranscriptBytes: cliGatePosition.transcriptBytes,
+                    memoryFlushCliFingerprint: cliGatePosition.fingerprint,
+                  }
+                : {}),
             }),
           });
           if (exhaustedEntry) {
@@ -1612,7 +1773,9 @@ export async function runMemoryFlushIfNeeded(params: {
           }
           params.onVisibleErrorPayloads?.([
             {
-              text: `⚠️ Memory flush failed after ${MAX_FLUSH_FAILURES} attempts; skipping for this cycle. It will retry after the next compaction.`,
+              text: cliGatePosition
+                ? `⚠️ Memory flush failed after ${MAX_FLUSH_FAILURES} attempts; skipping until a new CLI pressure cycle is eligible.`
+                : `⚠️ Memory flush failed after ${MAX_FLUSH_FAILURES} attempts; skipping for this cycle. It will retry after the next compaction.`,
               isError: true,
             },
           ]);

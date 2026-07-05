@@ -1,6 +1,10 @@
 // Memory Core tests cover flush plan plugin behavior.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { buildMemoryFlushPlan } from "./flush-plan.js";
+import {
+  buildMemoryFlushPlan,
+  DEFAULT_MEMORY_FLUSH_REPEAT_TOKENS,
+  DEFAULT_MEMORY_FLUSH_REPEAT_TRANSCRIPT_BYTES,
+} from "./flush-plan.js";
 
 describe("buildMemoryFlushPlan", () => {
   afterEach(() => {
@@ -15,5 +19,12 @@ describe("buildMemoryFlushPlan", () => {
     });
 
     expect(plan?.relativePath).toBe("memory/2026-05-30.md");
+  });
+
+  it("defaults CLI pressure repeat intervals", () => {
+    const plan = buildMemoryFlushPlan();
+
+    expect(plan?.repeatAfterTokens).toBe(DEFAULT_MEMORY_FLUSH_REPEAT_TOKENS);
+    expect(plan?.repeatAfterTranscriptBytes).toBe(DEFAULT_MEMORY_FLUSH_REPEAT_TRANSCRIPT_BYTES);
   });
 });
