@@ -17,8 +17,7 @@ const mocks = vi.hoisted(() => {
     disconnectError: undefined as Error | undefined,
     downloadSignalAttachment: vi.fn(),
     emitIncomingOnFirstConnect: false,
-    signalCdnAgentOptions: [] as unknown[],
-    signalCdnFetch: vi.fn(),
+    signalAttachmentFetch: vi.fn(),
     saveMediaBuffer: vi.fn(async () => ({
       path: "/tmp/signal-attachment",
       contentType: "text/plain",
@@ -44,16 +43,6 @@ const mocks = vi.hoisted(() => {
       },
     })),
     sleepWithAbort: vi.fn(async () => undefined),
-  };
-});
-
-vi.mock("undici", () => {
-  function MockAgent(this: unknown, options: unknown): void {
-    mocks.signalCdnAgentOptions.push(options);
-  }
-  return {
-    Agent: MockAgent,
-    fetch: mocks.signalCdnFetch,
   };
 });
 
@@ -184,6 +173,7 @@ vi.mock("@openclaw/signal-ts", () => {
       return { kind: "username", username: value };
     }),
     preKeyAuthFromBase64: vi.fn(() => ({})),
+    signalAttachmentFetch: mocks.signalAttachmentFetch,
   };
 });
 
@@ -225,8 +215,7 @@ describe("signal-ts runtime monitor", () => {
     mocks.disconnectError = undefined;
     mocks.downloadSignalAttachment.mockReset();
     mocks.emitIncomingOnFirstConnect = false;
-    mocks.signalCdnAgentOptions = [];
-    mocks.signalCdnFetch.mockReset();
+    mocks.signalAttachmentFetch.mockReset();
     mocks.saveMediaBuffer.mockClear();
     mocks.normalizeDecryptedIncomingMessage.mockReset().mockReturnValue([]);
     mocks.openRepository.mockReset().mockResolvedValue({
@@ -294,15 +283,11 @@ describe("signal-ts runtime monitor", () => {
     );
   });
 
-  it("retries Signal CDN attachment downloads with a scoped TLS fallback fetch", async () => {
+  it("downloads Signal CDN attachments through the signal-ts trusted fetch", async () => {
     const { fetchSignalTsAttachment } = await import("./signal-ts-runtime.js");
-    const normalFetch = vi.fn(async () => {
-      throw new Error("fetch failed");
-    });
-    vi.stubGlobal("fetch", normalFetch);
-    mocks.signalCdnFetch.mockResolvedValueOnce(new Response("encrypted"));
+    mocks.signalAttachmentFetch.mockResolvedValueOnce(new Response("encrypted"));
     mocks.downloadSignalAttachment.mockImplementationOnce(
-      async (params: { fetch?: typeof fetch }) => {
+      async (params: { fetch?: typeof mocks.signalAttachmentFetch }) => {
         const response = await params.fetch?.("https://cdn3.signal.org/attachments/cdn-key", {
           method: "GET",
         });
@@ -311,53 +296,40 @@ describe("signal-ts runtime monitor", () => {
       },
     );
 
-    try {
-      const result = await fetchSignalTsAttachment({
-        accountInfo: createSignalTsAccountInfo(),
-        attachment: {
-          id: "signal-ts:cdn-key",
+    const result = await fetchSignalTsAttachment({
+      accountInfo: createSignalTsAccountInfo(),
+      attachment: {
+        id: "signal-ts:cdn-key",
+        contentType: "text/x-signal-plain",
+        size: 5,
+        signalTsPointer: {
+          cdnKey: "cdn-key",
+          cdnNumber: 3,
+          key: "a2V5",
+          digest: "ZGlnZXN0",
           contentType: "text/x-signal-plain",
           size: 5,
-          signalTsPointer: {
-            cdnKey: "cdn-key",
-            cdnNumber: 3,
-            key: "a2V5",
-            digest: "ZGlnZXN0",
-            contentType: "text/x-signal-plain",
-            size: 5,
-          },
         },
-        maxBytes: 1024,
-      });
+      },
+      maxBytes: 1024,
+    });
 
-      expect(result).toEqual({ path: "/tmp/signal-attachment", contentType: "text/plain" });
-      expect(normalFetch).toHaveBeenCalledOnce();
-      expect(mocks.signalCdnFetch).toHaveBeenCalledOnce();
-      expect(mocks.signalCdnFetch.mock.calls[0]?.[1]).toMatchObject({
-        method: "GET",
-        dispatcher: expect.any(Object),
-      });
-      expect(mocks.signalCdnAgentOptions).toEqual([
-        { allowH2: false, connect: { rejectUnauthorized: false } },
-      ]);
-    } finally {
-      vi.unstubAllGlobals();
-    }
+    expect(result).toEqual({ path: "/tmp/signal-attachment", contentType: "text/plain" });
+    expect(mocks.signalAttachmentFetch).toHaveBeenCalledWith(
+      "https://cdn3.signal.org/attachments/cdn-key",
+      expect.objectContaining({ method: "GET" }),
+    );
   });
 
-  it("retries Signal attachment uploads with a scoped TLS fallback fetch", async () => {
+  it("uploads Signal attachments through the signal-ts trusted fetch", async () => {
     const { sendMessageSignalTs } = await import("./signal-ts-runtime.js");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "openclaw-signal-upload-"));
     const mediaPath = path.join(tempDir, "captcha.png");
     await writeFile(mediaPath, new Uint8Array([1, 2, 3, 4]));
-    const normalFetch = vi.fn(async () => {
-      throw new Error("fetch failed");
-    });
-    vi.stubGlobal("fetch", normalFetch);
-    mocks.signalCdnFetch.mockResolvedValueOnce(new Response(null, { status: 200 }));
+    mocks.signalAttachmentFetch.mockResolvedValueOnce(new Response(null, { status: 200 }));
     mocks.uploadAttachment.mockImplementationOnce(async (...args: unknown[]) => {
-      const params = args[0] as { fetch?: typeof fetch };
-      const response = await params.fetch?.("https://upload.signal.example/start", {
+      const params = args[0] as { fetch?: typeof mocks.signalAttachmentFetch };
+      const response = await params.fetch?.("https://cdn3.signal.org/upload/attachments", {
         method: "PUT",
       });
       expect(response?.ok).toBe(true);
@@ -374,19 +346,16 @@ describe("signal-ts runtime monitor", () => {
       });
 
       expect(mocks.uploadAttachment).toHaveBeenCalledOnce();
-      expect(normalFetch).toHaveBeenCalledOnce();
-      expect(mocks.signalCdnFetch).toHaveBeenCalledOnce();
-      expect(mocks.signalCdnFetch.mock.calls[0]?.[1]).toMatchObject({
-        method: "PUT",
-        dispatcher: expect.any(Object),
-      });
+      expect(mocks.signalAttachmentFetch).toHaveBeenCalledWith(
+        "https://cdn3.signal.org/upload/attachments",
+        expect.objectContaining({ method: "PUT" }),
+      );
       expect(mocks.sendMessage).toHaveBeenCalledWith(
         expect.objectContaining({
           attachments: [expect.objectContaining({ cdnKey: "uploaded-key" })],
         }),
       );
     } finally {
-      vi.unstubAllGlobals();
       await rm(tempDir, { force: true, recursive: true });
     }
   });

@@ -18,6 +18,7 @@ import {
   normalizeDecryptedIncomingMessage,
   parseSignalRecipientTarget,
   preKeyAuthFromBase64,
+  signalAttachmentFetch,
   type FileSignalGroupState,
   type FileSignalRecipientState,
   type PreKeyAuth,
@@ -39,7 +40,6 @@ import {
   type RuntimeEnv,
 } from "openclaw/plugin-sdk/runtime-env";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/text-runtime";
-import { Agent, fetch as undiciFetch, type RequestInit as UndiciRequestInit } from "undici";
 import type { ResolvedSignalAccount } from "./accounts.js";
 import type { SignalTextStyleRange } from "./format.js";
 import type {
@@ -48,16 +48,6 @@ import type {
   SignalEnvelope,
   SignalReceivePayload,
 } from "./monitor/event-handler.types.js";
-
-type SignalAttachmentFetch = NonNullable<Parameters<typeof downloadSignalAttachment>[0]["fetch"]>;
-type SignalAttachmentUploadFetch = NonNullable<
-  Parameters<SignalTsClient["uploadAttachment"]>[0]["fetch"]
->;
-type RequestInitWithDispatcher = UndiciRequestInit & { dispatcher?: Agent };
-
-const SIGNAL_CDN_HOSTS = new Set(["cdn.signal.org", "cdn2.signal.org", "cdn3.signal.org"]);
-
-let signalCdnTlsFallbackAgent: Agent | undefined;
 
 export type SignalTsAttachmentInput = {
   path: string;
@@ -486,7 +476,7 @@ export async function fetchSignalTsAttachment(
   }
   const data = await downloadSignalAttachment({
     pointer,
-    fetch: fetchSignalCdnAttachment,
+    fetch: signalAttachmentFetch,
     abortSignal: params.abortSignal,
   });
   logSignalTsInfo(
@@ -511,71 +501,6 @@ export async function fetchSignalTsAttachment(
   );
   return { path: saved.path, contentType: saved.contentType };
 }
-
-function isSignalCdnRequest(input: string | URL): boolean {
-  try {
-    const url = typeof input === "string" ? new URL(input) : input;
-    return url.protocol === "https:" && SIGNAL_CDN_HOSTS.has(url.hostname);
-  } catch {
-    return false;
-  }
-}
-
-function isHttpsRequest(input: RequestInfo | URL): boolean {
-  try {
-    const url =
-      input instanceof URL
-        ? input
-        : typeof input === "string"
-          ? new URL(input)
-          : new URL(input.url);
-    return url.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
-
-function getSignalCdnTlsFallbackAgent(): Agent {
-  signalCdnTlsFallbackAgent ??= new Agent({
-    allowH2: false,
-    connect: { rejectUnauthorized: false },
-  });
-  return signalCdnTlsFallbackAgent;
-}
-
-const fetchSignalCdnAttachment: SignalAttachmentFetch = async (input, init) => {
-  try {
-    return await globalThis.fetch(input, init);
-  } catch (err) {
-    if (!isSignalCdnRequest(input)) {
-      throw err;
-    }
-    // Signal attachment ciphertext is still authenticated by the pointer key/digest
-    // after download. This fallback is scoped to Signal CDN requests for hosts where
-    // the local runtime's CA bundle rejects the CDN chain.
-    return (await undiciFetch(input, {
-      ...(init as UndiciRequestInit | undefined),
-      dispatcher: getSignalCdnTlsFallbackAgent(),
-    } satisfies RequestInitWithDispatcher)) as unknown as Response;
-  }
-};
-
-const fetchSignalAttachmentUpload: SignalAttachmentUploadFetch = async (input, init) => {
-  try {
-    return await globalThis.fetch(input, init);
-  } catch (err) {
-    if (!isHttpsRequest(input)) {
-      throw err;
-    }
-    // Attachments are encrypted and authenticated before upload. This mirrors the
-    // scoped download fallback for runtimes whose local CA bundle rejects Signal's
-    // upload endpoint chain.
-    return (await undiciFetch(input as Parameters<typeof undiciFetch>[0], {
-      ...(init as UndiciRequestInit | undefined),
-      dispatcher: getSignalCdnTlsFallbackAgent(),
-    } satisfies RequestInitWithDispatcher)) as unknown as Response;
-  }
-};
 
 export async function sendTypingSignalTs(
   params: SignalTsRpcLikeParams & { stop?: boolean },
@@ -1359,7 +1284,7 @@ async function resolveSignalTsSticker({
       data,
       contentType: stickerState.contentType ?? "image/webp",
     },
-    fetch: fetchSignalAttachmentUpload,
+    fetch: signalAttachmentFetch,
     abortSignal,
   });
   const sticker: SignalSticker = {
@@ -1598,7 +1523,7 @@ async function uploadSignalTsAttachments({
         ...(attachment.contentType ? { contentType: attachment.contentType } : {}),
         fileName,
       },
-      fetch: fetchSignalAttachmentUpload,
+      fetch: signalAttachmentFetch,
       abortSignal,
     });
     uploaded.push(result.pointer);

@@ -9919,6 +9919,7 @@ snapshots:
     dependencies:
       '@signalapp/libsignal-client': 0.94.3
       protobufjs: 8.5.0
+      undici: 8.0.2
 
   '@opentelemetry/api-logs@0.214.0':
     dependencies:
