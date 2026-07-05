@@ -7,6 +7,9 @@ import { formatAgentModelStartupDetails, logGatewayStartup } from "./server-star
 const pluginRegistryMocks = vi.hoisted(() => ({
   loadPluginManifestRegistryForPluginRegistry: vi.fn(),
 }));
+const channelPluginBlockerMocks = vi.hoisted(() => ({
+  scanConfiguredChannelPluginBlockers: vi.fn(),
+}));
 
 vi.mock("../plugins/plugin-registry.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../plugins/plugin-registry.js")>()),
@@ -14,8 +17,20 @@ vi.mock("../plugins/plugin-registry.js", async (importOriginal) => ({
     pluginRegistryMocks.loadPluginManifestRegistryForPluginRegistry,
 }));
 
+// Mock the owner seam directly because shared workers may cache it before this
+// file's transitive plugin-registry mock is installed.
+vi.mock("../commands/doctor/shared/channel-plugin-blockers.js", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("../commands/doctor/shared/channel-plugin-blockers.js")
+  >()),
+  scanConfiguredChannelPluginBlockers:
+    channelPluginBlockerMocks.scanConfiguredChannelPluginBlockers,
+}));
+
 describe("gateway startup log", () => {
   beforeEach(() => {
+    channelPluginBlockerMocks.scanConfiguredChannelPluginBlockers.mockReset();
+    channelPluginBlockerMocks.scanConfiguredChannelPluginBlockers.mockReturnValue([]);
     pluginRegistryMocks.loadPluginManifestRegistryForPluginRegistry.mockReset();
     pluginRegistryMocks.loadPluginManifestRegistryForPluginRegistry.mockReturnValue({
       plugins: [],
@@ -70,6 +85,13 @@ describe("gateway startup log", () => {
   });
 
   it("warns when a configured channel plugin is blocked from startup", async () => {
+    channelPluginBlockerMocks.scanConfiguredChannelPluginBlockers.mockReturnValue([
+      {
+        channelId: "slack",
+        pluginId: "slack",
+        reason: "missing explicit enablement",
+      },
+    ]);
     pluginRegistryMocks.loadPluginManifestRegistryForPluginRegistry.mockReturnValue({
       plugins: [
         {
@@ -136,6 +158,13 @@ describe("gateway startup log", () => {
 
   it("sanitizes configured channel ids in startup warnings", async () => {
     const unsafeChannelId = `slack${String.fromCharCode(0x1b)}[31m`;
+    channelPluginBlockerMocks.scanConfiguredChannelPluginBlockers.mockReturnValue([
+      {
+        channelId: unsafeChannelId,
+        pluginId: "slack",
+        reason: "missing explicit enablement",
+      },
+    ]);
     pluginRegistryMocks.loadPluginManifestRegistryForPluginRegistry.mockReturnValue({
       plugins: [
         {
@@ -210,6 +239,19 @@ describe("gateway startup log", () => {
       isNixMode: false,
     });
 
+    expect(channelPluginBlockerMocks.scanConfiguredChannelPluginBlockers).toHaveBeenCalledWith(
+      expect.any(Object),
+      process.env,
+      {
+        plugins: {
+          entries: {
+            "openclaw-modern-chat": {
+              enabled: true,
+            },
+          },
+        },
+      },
+    );
     expect(warn).not.toHaveBeenCalled();
   });
 

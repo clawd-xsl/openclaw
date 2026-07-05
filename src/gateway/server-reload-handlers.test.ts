@@ -1,7 +1,7 @@
 /**
  * Gateway config reload handler tests.
  */
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConfigWriteNotification } from "../config/config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { consumeGatewaySigusr1RestartIntent } from "../infra/restart.js";
@@ -1826,6 +1826,13 @@ describe("deferred channel reload abort generation", () => {
     disposeMcpRuntimes: false,
     noopPaths: [],
   };
+
+  // Shared gateway helpers set these flags at module load. Clear them before the
+  // first case so worker import order cannot route this suite through skip mode.
+  beforeEach(() => {
+    delete process.env.OPENCLAW_SKIP_CHANNELS;
+    delete process.env.OPENCLAW_SKIP_PROVIDERS;
+  });
 
   afterEach(() => {
     hoisted.activeTaskCount.value = 0;
