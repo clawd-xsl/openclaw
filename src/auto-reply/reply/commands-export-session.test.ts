@@ -33,8 +33,8 @@ vi.mock("../../config/sessions/paths.js", () => ({
   resolveSessionFilePathOptions: hoisted.resolveSessionFilePathOptionsMock,
 }));
 
-vi.mock("../../config/sessions/store.js", () => ({
-  loadSessionStore: hoisted.loadSessionStoreMock,
+vi.mock("../../config/sessions/session-accessor.js", () => ({
+  loadSessionEntry: hoisted.loadSessionEntryMock,
 }));
 
 vi.mock("./commands-system-prompt.js", () => ({
@@ -176,11 +176,9 @@ describe("buildExportSessionReply", () => {
     hoisted.resolveSessionFilePathOptionsMock.mockImplementation(
       (params: { agentId: string; storePath: string }) => params,
     );
-    hoisted.loadSessionStoreMock.mockReturnValue({
-      "agent:target:session": {
-        sessionId: "session-1",
-        updatedAt: 1,
-      },
+    hoisted.loadSessionEntryMock.mockReturnValue({
+      sessionId: "session-1",
+      updatedAt: 1,
     });
     hoisted.resolveCommandsSystemPromptBundleMock.mockResolvedValue({
       systemPrompt: "system prompt",
@@ -207,11 +205,9 @@ describe("buildExportSessionReply", () => {
   });
 
   it("prefers the active command storePath over the default target-agent store", async () => {
-    hoisted.loadSessionStoreMock.mockReturnValue({
-      "agent:target:session": {
-        sessionId: "session-1",
-        updatedAt: 1,
-      },
+    hoisted.loadSessionEntryMock.mockReturnValue({
+      sessionId: "session-1",
+      updatedAt: 1,
     });
 
     await buildExportSessionReply({
@@ -220,8 +216,10 @@ describe("buildExportSessionReply", () => {
     });
 
     expect(hoisted.resolveDefaultSessionStorePathMock).not.toHaveBeenCalled();
-    expect(hoisted.loadSessionStoreMock).toHaveBeenCalledWith("/tmp/custom-store/sessions.json", {
-      skipCache: true,
+    expect(hoisted.loadSessionEntryMock).toHaveBeenCalledWith({
+      storePath: "/tmp/custom-store/sessions.json",
+      sessionKey: "agent:target:session",
+      readConsistency: "latest",
     });
     expect(hoisted.resolveSessionFilePathOptionsMock).toHaveBeenCalledWith({
       agentId: "target",
@@ -230,11 +228,9 @@ describe("buildExportSessionReply", () => {
   });
 
   it("uses the target store entry even when the wrapper sessionEntry is missing", async () => {
-    hoisted.loadSessionStoreMock.mockReturnValue({
-      "agent:target:session": {
-        sessionId: "session-from-store",
-        updatedAt: 2,
-      },
+    hoisted.loadSessionEntryMock.mockReturnValue({
+      sessionId: "session-from-store",
+      updatedAt: 2,
     });
 
     const reply = await buildExportSessionReply({

@@ -4,7 +4,7 @@ import {
   resolveSessionFilePath,
   resolveSessionFilePathOptions,
 } from "../../config/sessions/paths.js";
-import { loadSessionStore } from "../../config/sessions/store.js";
+import { loadSessionEntry } from "../../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
@@ -49,8 +49,11 @@ export function resolveExportCommandSessionTarget(
 ): ExportCommandSessionTarget | ReplyPayload {
   const targetAgentId = resolveAgentIdFromSessionKey(params.sessionKey) || params.agentId;
   const storePath = params.storePath ?? resolveDefaultSessionStorePath(targetAgentId);
-  const store = loadSessionStore(storePath, { skipCache: true });
-  const entry = store[params.sessionKey] as SessionEntry | undefined;
+  const entry = loadSessionEntry({
+    storePath,
+    sessionKey: params.sessionKey,
+    readConsistency: "latest",
+  });
   if (!entry?.sessionId) {
     return { text: `❌ Session not found: ${params.sessionKey}` };
   }

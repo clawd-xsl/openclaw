@@ -11,11 +11,9 @@ export function createExportCommandSessionMocks(viInstance: ViLike) {
     resolveSessionFilePathOptionsMock: viInstance.fn(
       (params: { agentId: string; storePath: string }) => params,
     ),
-    loadSessionStoreMock: viInstance.fn(() => ({
-      "agent:target:session": {
-        sessionId: "session-1",
-        updatedAt: 1,
-      },
+    loadSessionEntryMock: viInstance.fn(() => ({
+      sessionId: "session-1",
+      updatedAt: 1,
     })),
   };
 }
