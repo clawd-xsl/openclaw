@@ -296,6 +296,62 @@ describe("session accessor file-backed seam", () => {
     });
   });
 
+  it("resolves ordered SQLite candidates without scanning unrelated rows", async () => {
+    const sqlitePath = path.join(tempDir, "candidate-sessions.sqlite");
+    await saveSessionStore(
+      sqlitePath,
+      {
+        "agent:main:main": { sessionId: "session-main", updatedAt: 10 },
+        "agent:main:unrelated": { sessionId: "session-other", updatedAt: 20 },
+      },
+      { skipMaintenance: true },
+    );
+    resetSessionStoreSqliteStatsForTest();
+
+    expect(
+      resolveSessionEntryCandidateTarget({
+        agentId: "main",
+        candidateKeys: ["agent:main:main", "agent:main:current"],
+        cfg: { session: { store: sqlitePath } },
+      }),
+    ).toMatchObject({
+      candidateKey: "agent:main:main",
+      entry: { sessionId: "session-main" },
+      persisted: true,
+      sessionKey: "agent:main:main",
+    });
+    expect(getSessionStoreSqliteStatsForTest()).toMatchObject({
+      selectAll: 0,
+      selectByKey: 1,
+    });
+  });
+
+  it("keeps missing SQLite candidate fallback resolution off full scans", async () => {
+    const sqlitePath = path.join(tempDir, "missing-candidate-sessions.sqlite");
+    await saveSessionStore(
+      sqlitePath,
+      { "agent:main:unrelated": { sessionId: "session-other", updatedAt: 20 } },
+      { skipMaintenance: true },
+    );
+    resetSessionStoreSqliteStatsForTest();
+
+    expect(
+      resolveSessionEntryCandidateTarget({
+        agentId: "main",
+        candidateKeys: ["agent:main:missing"],
+        cfg: { session: { store: sqlitePath } },
+        fallback: {
+          sessionKey: "agent:main:current",
+          entry: { sessionId: "", updatedAt: 40 },
+        },
+      }),
+    ).toMatchObject({ persisted: false, sessionKey: "agent:main:current" });
+    expect(getSessionStoreSqliteStatsForTest()).toMatchObject({
+      selectAll: 0,
+      selectByKey: 1,
+    });
+  });
+
   it("returns an implicit candidate fallback without persisting it", () => {
     const resolved = resolveSessionEntryCandidateTarget({
       agentId: "main",
@@ -1238,6 +1294,84 @@ describe("session accessor file-backed seam", () => {
         sessionId: "legacy-session",
       }),
     });
+  });
+
+  it("resolves a logical SQLite target without scanning unrelated rows", async () => {
+    const sqlitePath = path.join(tempDir, "logical-sessions.sqlite");
+    await saveSessionStore(
+      sqlitePath,
+      {
+        "agent:main:main": { sessionId: "logical-main", updatedAt: 10 },
+        "agent:main:unrelated": { sessionId: "logical-other", updatedAt: 20 },
+      },
+      { skipMaintenance: true },
+    );
+    resetSessionStoreSqliteStatsForTest();
+
+    expect(
+      resolveSessionEntryAccessTarget({
+        cfg: { session: { store: sqlitePath } },
+        sessionKey: "agent:main:main",
+      }),
+    ).toMatchObject({
+      entry: { sessionId: "logical-main" },
+      storeKey: "agent:main:main",
+    });
+    expect(getSessionStoreSqliteStatsForTest()).toMatchObject({
+      selectAll: 0,
+      selectByKey: 1,
+    });
+  });
+
+  it("updates a logical SQLite target without scanning or retaining deleted fields", async () => {
+    const sqlitePath = path.join(tempDir, "logical-update-sessions.sqlite");
+    await saveSessionStore(
+      sqlitePath,
+      {
+        "agent:main:main": {
+          model: "gpt-5.4",
+          sessionId: "logical-main",
+          updatedAt: 10,
+        },
+        "agent:main:unrelated": { sessionId: "logical-other", updatedAt: 20 },
+      },
+      { skipMaintenance: true },
+    );
+    resetSessionStoreSqliteStatsForTest();
+
+    await expect(
+      updateResolvedSessionEntry(
+        {
+          cfg: { session: { store: sqlitePath } },
+          sessionKey: "agent:main:main",
+        },
+        (entry) => {
+          delete entry.model;
+          entry.label = "updated";
+          return "done";
+        },
+      ),
+    ).resolves.toMatchObject({
+      found: true,
+      result: "done",
+      entry: { label: "updated", sessionId: "logical-main" },
+    });
+    expect(getSessionStoreSqliteStatsForTest()).toMatchObject({
+      selectAll: 0,
+      selectByKey: 2,
+    });
+    expect(
+      loadSessionEntry({ sessionKey: "agent:main:main", storePath: sqlitePath }),
+    ).toMatchObject({
+      label: "updated",
+      sessionId: "logical-main",
+    });
+    expect(
+      loadSessionEntry({ sessionKey: "agent:main:main", storePath: sqlitePath })?.model,
+    ).toBeUndefined();
+    expect(
+      loadSessionEntry({ sessionKey: "agent:main:unrelated", storePath: sqlitePath })?.sessionId,
+    ).toBe("logical-other");
   });
 
   it("updates the freshest matching session entry across discovered agent stores", async () => {

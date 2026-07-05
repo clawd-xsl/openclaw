@@ -39,6 +39,7 @@ import {
 } from "./plugin-host-cleanup.js";
 import { resolveAndPersistSessionFile } from "./session-file.js";
 import { resolveSessionStorePathForScope } from "./session-store-path.js";
+import { foldedSessionKeyAliasCandidates, normalizeStoreSessionKey } from "./store-entry.js";
 import { normalizeSessionStore } from "./store-load.js";
 import type {
   ResolvedSessionMaintenanceConfig,
@@ -51,6 +52,7 @@ import {
   resolveSessionStoreJsonImportPath,
 } from "./store-sqlite.js";
 import {
+  getExactSessionEntry,
   getSessionEntry,
   cleanupSessionLifecycleArtifacts as cleanupFileSessionLifecycleArtifacts,
   deleteSessionEntries as deleteFileSessionEntries,
@@ -750,18 +752,76 @@ function buildLogicalSessionEntryCandidateKeys(params: {
   return [...targets];
 }
 
-function findFreshestSessionEntryMatch(
-  entries: SessionEntrySummary[],
-  candidateKeys: readonly string[],
-): SessionEntrySummary | undefined {
-  let freshest: SessionEntrySummary | undefined;
-  for (const candidate of candidateKeys) {
-    const trimmed = candidate.trim();
-    if (!trimmed) {
+function findSessionEntryMatchesByKey(params: {
+  candidateKeys: readonly string[];
+  storePath: string;
+}): SessionEntrySummary[] {
+  if (!isSqliteSessionStorePath(params.storePath)) {
+    const store = loadSessionStore(params.storePath);
+    return params.candidateKeys.flatMap((candidateKey) => {
+      const resolved = resolveSessionStoreEntry({ store, sessionKey: candidateKey });
+      if (!resolved.existing) {
+        return [];
+      }
+      const persisted = Object.entries(store).find(([, entry]) => entry === resolved.existing);
+      return [
+        {
+          sessionKey: persisted?.[0] ?? resolved.normalizedKey,
+          entry: resolved.existing,
+        },
+      ];
+    });
+  }
+
+  const narrowStore = Object.create(null) as Record<string, SessionEntry>;
+  const queriedKeys = new Set<string>();
+  for (const candidateKey of params.candidateKeys) {
+    const trimmedKey = candidateKey.trim();
+    if (!trimmedKey) {
       continue;
     }
-    const match = entries.find((entry) => entry.sessionKey === trimmed);
-    if (match && (!freshest || (match.entry.updatedAt ?? 0) >= (freshest.entry.updatedAt ?? 0))) {
+    const normalizedKey = normalizeStoreSessionKey(trimmedKey);
+    for (const lookupKey of [
+      trimmedKey,
+      normalizedKey,
+      ...foldedSessionKeyAliasCandidates(normalizedKey),
+    ]) {
+      if (queriedKeys.has(lookupKey)) {
+        continue;
+      }
+      queriedKeys.add(lookupKey);
+      const entry = getExactSessionEntry({
+        sessionKey: lookupKey,
+        storePath: params.storePath,
+      });
+      if (entry) {
+        narrowStore[normalizeStoreSessionKey(lookupKey)] = entry;
+      }
+    }
+  }
+
+  return params.candidateKeys.flatMap((candidateKey) => {
+    const resolved = resolveSessionStoreEntry({ store: narrowStore, sessionKey: candidateKey });
+    if (!resolved.existing) {
+      return [];
+    }
+    const persisted = Object.entries(narrowStore).find(([, entry]) => entry === resolved.existing);
+    return [
+      {
+        sessionKey: persisted?.[0] ?? resolved.normalizedKey,
+        entry: resolved.existing,
+      },
+    ];
+  });
+}
+
+function findFreshestSessionEntryMatchByKey(params: {
+  candidateKeys: readonly string[];
+  storePath: string;
+}): SessionEntrySummary | undefined {
+  let freshest: SessionEntrySummary | undefined;
+  for (const match of findSessionEntryMatchesByKey(params)) {
+    if (!freshest || (match.entry.updatedAt ?? 0) >= (freshest.entry.updatedAt ?? 0)) {
       freshest = match;
     }
   }
@@ -793,21 +853,20 @@ export function resolveSessionEntryCandidateTarget(
     agentId: scope.agentId,
     env: scope.env,
   });
-  const store = loadSessionStore(storePath);
   for (const candidateKey of uniqueStrings(scope.candidateKeys.map((key) => key.trim()))) {
     if (!candidateKey) {
       continue;
     }
-    const resolved = resolveSessionStoreEntry({ store, sessionKey: candidateKey });
-    if (!resolved.existing) {
+    const match = findSessionEntryMatchesByKey({ candidateKeys: [candidateKey], storePath })[0];
+    if (!match) {
       continue;
     }
     return {
       agentId: scope.agentId,
       candidateKey,
-      entry: structuredClone(resolved.existing),
+      entry: structuredClone(match.entry),
       persisted: true,
-      sessionKey: resolved.normalizedKey,
+      sessionKey: match.sessionKey,
     };
   }
   const fallbackKey = scope.fallback?.sessionKey.trim();
@@ -845,19 +904,19 @@ function resolveSessionEntryStoreTarget(
     storePath: resolveStorePath(scope.cfg.session?.store, { agentId, env: scope.env }),
   };
   let selectedStorePath = fallback.storePath;
-  let selectedMatch = findFreshestSessionEntryMatch(
-    listSessionEntries({ storePath: fallback.storePath }),
-    scanTargets,
-  );
+  let selectedMatch = findFreshestSessionEntryMatchByKey({
+    candidateKeys: scanTargets,
+    storePath: fallback.storePath,
+  });
   for (let index = 1; index < candidates.length; index += 1) {
     const candidate = candidates[index];
     if (!candidate) {
       continue;
     }
-    const match = findFreshestSessionEntryMatch(
-      listSessionEntries({ storePath: candidate.storePath }),
-      scanTargets,
-    );
+    const match = findFreshestSessionEntryMatchByKey({
+      candidateKeys: scanTargets,
+      storePath: candidate.storePath,
+    });
     if (
       match &&
       (!selectedMatch || (match.entry.updatedAt ?? 0) >= (selectedMatch.entry.updatedAt ?? 0))
@@ -888,27 +947,37 @@ export async function updateResolvedSessionEntry<T>(
   if (!target.entry) {
     return { canonicalKey: target.canonicalKey, found: false };
   }
-  return await updateSessionStore(target.storePath, async (store) => {
-    const entry = store[target.storeKey];
-    if (!entry) {
-      return { canonicalKey: target.canonicalKey, found: false };
-    }
-    const context: ResolvedSessionEntryUpdateContext = {
-      agentId: target.agentId,
-      canonicalKey: target.canonicalKey,
-      entry,
-      requestedKey: target.requestedKey,
-      storeKey: target.storeKey,
-    };
-    const result = await update(entry, context);
-    return {
-      canonicalKey: target.canonicalKey,
-      entry: structuredClone(entry),
-      found: true,
-      result,
-      storeKey: target.storeKey,
-    };
+  let callbackResult: T | undefined;
+  let callbackCompleted = false;
+  const updatedEntry = await updateFileSessionStoreEntry({
+    storePath: target.storePath,
+    sessionKey: target.storeKey,
+    replaceEntry: true,
+    skipMaintenance: true,
+    takeCacheOwnership: false,
+    update: async (entry) => {
+      const context: ResolvedSessionEntryUpdateContext = {
+        agentId: target.agentId,
+        canonicalKey: target.canonicalKey,
+        entry,
+        requestedKey: target.requestedKey,
+        storeKey: target.storeKey,
+      };
+      callbackResult = await update(entry, context);
+      callbackCompleted = true;
+      return entry;
+    },
   });
+  if (!updatedEntry || !callbackCompleted) {
+    return { canonicalKey: target.canonicalKey, found: false };
+  }
+  return {
+    canonicalKey: target.canonicalKey,
+    entry: structuredClone(updatedEntry),
+    found: true,
+    result: callbackResult as T,
+    storeKey: target.storeKey,
+  };
 }
 
 /** Returns the entry for a canonical or alias session key, if one exists. */

@@ -69,6 +69,8 @@ export type LoadSessionStoreOptions = {
 };
 
 export type ReadSessionEntryOptions = {
+  /** Skip compatibility alias scans after an exact normalized-key miss. */
+  exact?: boolean;
   hydrateSkillPromptRefs?: boolean;
 };
 
@@ -722,6 +724,9 @@ export function readSessionEntry(
       normalizeSessionStore(store);
       const entry = store[normalizedKey];
       return entry ? cloneSessionStoreSnapshotEntry(entry) : undefined;
+    }
+    if (opts.exact) {
+      return undefined;
     }
     // Legacy aliases are rare and need the whole candidate set for delivery-proof checks.
   }

@@ -385,6 +385,17 @@ export function getSessionEntry(
   return entry ? cloneSessionEntry(entry) : undefined;
 }
 
+/** Reads only the exact normalized key, without a compatibility alias scan on SQLite misses. */
+export function getExactSessionEntry(
+  options: SessionEntryWorkflowOptions & { sessionKey: string },
+): SessionEntry | undefined {
+  const entry = readSessionEntry(resolveSessionStorePathForScope(options), options.sessionKey, {
+    exact: true,
+    hydrateSkillPromptRefs: options.hydrateSkillPromptRefs,
+  }) as SessionEntry | undefined;
+  return entry ? cloneSessionEntry(entry) : undefined;
+}
+
 export function listSessionEntries(
   options: SessionEntryWorkflowOptions = {},
 ): Array<{ sessionKey: string; entry: SessionEntry }> {
@@ -1861,6 +1872,7 @@ async function persistResolvedSessionEntry(params: {
 async function updateSqliteSessionStoreEntryFastPath(params: {
   storePath: string;
   sessionKey: string;
+  replaceEntry?: boolean;
   update: (
     entry: SessionEntry,
   ) => Promise<Partial<SessionEntry> | null> | Partial<SessionEntry> | null;
@@ -1883,7 +1895,11 @@ async function updateSqliteSessionStoreEntryFastPath(params: {
   if (!patch) {
     return { handled: true, entry: cloneSessionEntry(existing) };
   }
-  const normalizedNextStore = { [normalizedKey]: mergeSessionEntry(existing, patch) };
+  const normalizedNextStore = {
+    [normalizedKey]: params.replaceEntry
+      ? cloneSessionEntry(patch as SessionEntry)
+      : mergeSessionEntry(existing, patch),
+  };
   normalizeSessionStore(normalizedNextStore);
   const next = normalizedNextStore[normalizedKey];
   if (!next) {
@@ -1915,11 +1931,17 @@ export async function updateSessionStoreEntry(params: {
   skipMaintenance?: boolean;
   takeCacheOwnership?: boolean;
   requireWriteSuccess?: boolean;
+  replaceEntry?: boolean;
 }): Promise<SessionEntry | null> {
   const { storePath, sessionKey, update } = params;
   return await runExclusiveSessionStoreWrite(storePath, async () => {
     if (isSqliteSessionStorePath(storePath) && params.skipMaintenance === true) {
-      const fast = await updateSqliteSessionStoreEntryFastPath({ storePath, sessionKey, update });
+      const fast = await updateSqliteSessionStoreEntryFastPath({
+        storePath,
+        sessionKey,
+        replaceEntry: params.replaceEntry,
+        update,
+      });
       if (fast.handled) {
         return fast.entry;
       }
@@ -1934,7 +1956,9 @@ export async function updateSessionStoreEntry(params: {
     if (!patch) {
       return existing;
     }
-    const next = mergeSessionEntry(existing, patch);
+    const next = params.replaceEntry
+      ? cloneSessionEntry(patch as SessionEntry)
+      : mergeSessionEntry(existing, patch);
     return await persistResolvedSessionEntry({
       storePath,
       store,
