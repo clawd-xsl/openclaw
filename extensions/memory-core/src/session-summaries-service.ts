@@ -27,10 +27,7 @@ export type SessionSummaryServiceDependencies = {
   now?: () => number;
   readBoundedTranscriptEvents?: ReadBoundedTranscriptEvents;
   repository: SessionSummaryRepository;
-  validateGenerationPolicy?: (params: {
-    agentId: string;
-    config: SessionSummariesConfig;
-  }) => void;
+  validateGenerationPolicy?: (params: { agentId: string; config: SessionSummariesConfig }) => void;
 };
 
 const MAX_PERSISTED_ERROR_CHARS = 2_000;
@@ -418,9 +415,15 @@ export class SessionSummaryService {
       }
       const message = safeErrorMessage(error);
       try {
-        const failed = await this.repository.markFailed(key, message, this.now(), claimed.revision, {
-          retryable: !(error instanceof SessionSummaryPolicyError),
-        });
+        const failed = await this.repository.markFailed(
+          key,
+          message,
+          this.now(),
+          claimed.revision,
+          {
+            retryable: !(error instanceof SessionSummaryPolicyError),
+          },
+        );
         if (failed) {
           this.logger.warn(
             `memory-core: session summary generation failed for ${claimed.agentId}/${claimed.sessionId}: ${message}`,

@@ -1671,15 +1671,16 @@ describe("state migrations", () => {
     }
     let observedCapacity: { liveEntries: number; maxEntries: number } | undefined;
     const migrateLegacyState = vi.fn(async (params: unknown) => {
-      const context = (params as {
-        context: {
-          getPluginStateCapacity?: () => { liveEntries: number; maxEntries: number };
-          openPluginStateKeyedStore: (options: {
-            namespace: string;
-            maxEntries: number;
-          }) => { register: (key: string, value: unknown) => Promise<void> };
-        };
-      }).context;
+      const context = (
+        params as {
+          context: {
+            getPluginStateCapacity?: () => { liveEntries: number; maxEntries: number };
+            openPluginStateKeyedStore: (options: { namespace: string; maxEntries: number }) => {
+              register: (key: string, value: unknown) => Promise<void>;
+            };
+          };
+        }
+      ).context;
       const store = context.openPluginStateKeyedStore({
         namespace: "capacity-test",
         maxEntries: 10,

@@ -15,10 +15,7 @@ import {
   resolveSessionSummariesConfig,
   type SessionSummariesConfig,
 } from "./session-summaries-config.js";
-import {
-  SessionSummaryPolicyError,
-  SessionSummaryService,
-} from "./session-summaries-service.js";
+import { SessionSummaryPolicyError, SessionSummaryService } from "./session-summaries-service.js";
 import {
   SESSION_SUMMARY_LIST_HARD_LIMIT,
   SESSION_SUMMARY_QUERY_MAX_CHARS,

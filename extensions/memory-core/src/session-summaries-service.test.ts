@@ -4,10 +4,7 @@ import type {
 } from "openclaw/plugin-sdk/plugin-state-runtime";
 import { describe, expect, it, vi } from "vitest";
 import type { SessionSummariesConfig } from "./session-summaries-config.js";
-import {
-  SessionSummaryPolicyError,
-  SessionSummaryService,
-} from "./session-summaries-service.js";
+import { SessionSummaryPolicyError, SessionSummaryService } from "./session-summaries-service.js";
 import {
   SESSION_SUMMARY_PROCESSING_LEASE_MS,
   SESSION_SUMMARY_RETRY_BASE_MS,

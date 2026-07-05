@@ -159,11 +159,7 @@ describe("normalizeClaudeSettingsArgs", () => {
       normalizeClaudeSettingsArgs(["-p", "--settings", '{"theme":"dark","fastMode":false}'], {
         fastMode: true,
       }),
-    ).toEqual([
-      "-p",
-      "--settings",
-      '{"theme":"dark","fastMode":true,"disableAllHooks":true}',
-    ]);
+    ).toEqual(["-p", "--settings", '{"theme":"dark","fastMode":true,"disableAllHooks":true}']);
   });
 });
 

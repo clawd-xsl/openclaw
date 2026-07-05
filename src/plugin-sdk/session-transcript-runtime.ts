@@ -317,7 +317,8 @@ export async function readBoundedSessionTranscriptEvents(
     }
 
     const requestedHeadEvents = maxEvents >= 5 ? Math.max(1, Math.floor(maxEvents / 5)) : 0;
-    let headBytes = requestedHeadEvents > 0 && maxBytes > 1 ? Math.max(1, Math.floor(maxBytes / 5)) : 0;
+    let headBytes =
+      requestedHeadEvents > 0 && maxBytes > 1 ? Math.max(1, Math.floor(maxBytes / 5)) : 0;
     const tailBytes = maxBytes - headBytes;
     // Spend one byte from the head budget to inspect the byte immediately
     // before the tail range. That preserves a complete first tail line when the
@@ -328,11 +329,7 @@ export async function readBoundedSessionTranscriptEvents(
     const tailReadStart = stat.size - tailBytes - tailBoundaryProbeBytes;
     const [headBuffer, tailBuffer] = await Promise.all([
       readFileRangeAsync(fileHandle, 0, headBytes),
-      readFileRangeAsync(
-        fileHandle,
-        tailReadStart,
-        tailBytes + tailBoundaryProbeBytes,
-      ),
+      readFileRangeAsync(fileHandle, tailReadStart, tailBytes + tailBoundaryProbeBytes),
     ]);
     const headEvents = requestedHeadEvents;
     const tailEvents = Math.max(1, maxEvents - headEvents);
@@ -345,8 +342,7 @@ export async function readBoundedSessionTranscriptEvents(
     }).events.slice(0, headEvents);
     const tail = parseBoundedTranscriptBuffer({
       buffer: tailBuffer,
-      discardLeadingPartialLine:
-        tailBoundaryProbeBytes === 0 || tailBuffer[0] !== 0x0a,
+      discardLeadingPartialLine: tailBoundaryProbeBytes === 0 || tailBuffer[0] !== 0x0a,
       discardTrailingPartialLine: false,
       maxEvents: tailEvents,
       retention: "tail",
