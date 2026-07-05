@@ -79,6 +79,7 @@ import {
 import { sendMessageSignal, sendReadReceiptSignal, sendTypingSignal } from "../send.js";
 import { handleSignalDirectMessageAccess, resolveSignalAccessState } from "./access-policy.js";
 import type {
+  SignalDataMessage,
   SignalEnvelope,
   SignalEventHandlerDeps,
   SignalReactionMessage,
@@ -104,6 +105,22 @@ function formatAttachmentSummaryPlaceholder(contentTypes: Array<string | undefin
     formatAttachmentKindCount(kind, count),
   );
   return `[${parts.join(" + ")} attached]`;
+}
+
+function formatSignalStickerPlaceholder(sticker: SignalDataMessage["sticker"]): string {
+  if (!sticker) {
+    return "";
+  }
+  const rawPackId = normalizeOptionalString(sticker.packId);
+  const packId =
+    rawPackId && /^[0-9a-f]+$/i.test(rawPackId) ? truncateUtf16Safe(rawPackId, 128) : "unknown";
+  const stickerId =
+    typeof sticker.stickerId === "number" &&
+    Number.isSafeInteger(sticker.stickerId) &&
+    sticker.stickerId >= 0
+      ? sticker.stickerId
+      : "unknown";
+  return `[Signal sticker ${packId}:${stickerId}]`;
 }
 
 function resolveSignalInboundRoute(params: {
@@ -495,6 +512,7 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
           runtime: deps.runtime,
           maxBytes: deps.mediaMaxBytes,
           textLimit: deps.textLimit,
+          quoteAuthor: entry.senderRecipient,
         });
       },
       onError: (err, info) => {
@@ -864,7 +882,7 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
     }
     const hasBodyContent =
       Boolean(messageText || visibleQuoteText) ||
-      Boolean(!reaction && dataMessage?.attachments?.length);
+      Boolean(!reaction && (dataMessage?.attachments?.length || dataMessage?.sticker));
 
     if (
       reaction &&
@@ -983,6 +1001,10 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
         target: senderDisplay,
       });
       const pendingPlaceholder = (() => {
+        const stickerPlaceholder = formatSignalStickerPlaceholder(dataMessage.sticker);
+        if (stickerPlaceholder) {
+          return stickerPlaceholder;
+        }
         if (!dataMessage.attachments?.length) {
           return "";
         }
@@ -1094,7 +1116,10 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
       }
     }
 
-    if (mediaPaths.length > 1) {
+    const stickerPlaceholder = formatSignalStickerPlaceholder(dataMessage.sticker);
+    if (stickerPlaceholder) {
+      placeholder = stickerPlaceholder;
+    } else if (mediaPaths.length > 1) {
       placeholder = formatAttachmentSummaryPlaceholder(mediaTypes);
     } else {
       const kind = kindFromMime(mediaType ?? undefined);

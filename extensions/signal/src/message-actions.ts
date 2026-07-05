@@ -1,6 +1,11 @@
 // Signal plugin module implements message actions behavior.
 import { resolveReactionMessageId } from "openclaw/plugin-sdk/channel-actions";
-import { createActionGate, jsonResult, readStringParam } from "openclaw/plugin-sdk/channel-actions";
+import {
+  createActionGate,
+  jsonResult,
+  readStringArrayParam,
+  readStringParam,
+} from "openclaw/plugin-sdk/channel-actions";
 import type {
   ChannelMessageActionAdapter,
   ChannelMessageActionName,
@@ -93,6 +98,7 @@ export const signalMessageActions: ChannelMessageActionAdapter = {
     if (reactionsEnabled) {
       actions.add("react");
     }
+    actions.add("sticker");
 
     return { actions: Array.from(actions) };
   },
@@ -182,6 +188,28 @@ export const signalMessageActions: ChannelMessageActionAdapter = {
         targetAuthor,
         targetAuthorUuid,
       });
+    }
+
+    if (action === "sticker") {
+      const recipientRaw =
+        readStringParam(params, "recipient") ??
+        readStringParam(params, "to") ??
+        readStringParam(params, "target", { required: true, label: "recipient" });
+      const target = resolveSignalReactionTarget(recipientRaw);
+      if (!target.recipient && !target.groupId) {
+        throw new Error("recipient or group required");
+      }
+      const stickerSpec = readStringArrayParam(params, "stickerId", {
+        required: true,
+        label: "stickerId",
+      })[0];
+      const to = target.groupId ? `signal:group:${target.groupId}` : `signal:${target.recipient}`;
+      const { sendStickerSignal } = await import("./send.runtime.js");
+      const result = await sendStickerSignal(to, stickerSpec, {
+        cfg,
+        accountId: accountId ?? undefined,
+      });
+      return jsonResult({ ok: true, messageId: result.messageId });
     }
 
     throw new Error(`Action ${action} not supported for ${providerId}.`);

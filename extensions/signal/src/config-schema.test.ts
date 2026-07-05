@@ -66,6 +66,21 @@ describe("signal groups schema", () => {
     }
   });
 
+  it("accepts top-level and account-scoped reply modes", () => {
+    expectValidSignalConfig({
+      replyToMode: "first",
+      accounts: {
+        work: { replyToMode: "all" },
+      },
+    });
+  });
+
+  it("rejects unsupported reply modes", () => {
+    const issues = expectInvalidSignalConfig({ replyToMode: "always" });
+
+    expect(issues.map((issue) => issue.path.join("."))).toContain("replyToMode");
+  });
+
   it("accepts accountUuid for loop protection", () => {
     expectValidSignalConfig({
       accountUuid: "a1b2c3d4-e5f6-7890-abcd-ef1234567890",

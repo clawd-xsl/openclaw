@@ -369,6 +369,7 @@ export async function deliverReplies(params: {
   maxBytes: number;
   textLimit: number;
   chunkMode: "length" | "newline";
+  quoteAuthor?: string;
 }) {
   const { replies, target, baseUrl, account, accountId, runtime, maxBytes, textLimit, chunkMode } =
     params;
@@ -387,6 +388,21 @@ export async function deliverReplies(params: {
         targetAuthor: account,
       }) ?? payload;
     const reply = resolveSendableOutboundReplyParts(deliveredPayload);
+    let nextReplyToId = deliveredPayload.replyToId;
+    const quoteAuthor =
+      deliveredPayload.replyToTag === true && deliveredPayload.replyToCurrent !== true
+        ? undefined
+        : params.quoteAuthor;
+    const consumeQuote = () => {
+      const replyToId = nextReplyToId;
+      nextReplyToId = undefined;
+      return replyToId
+        ? {
+            replyToId,
+            ...(quoteAuthor ? { quoteAuthor } : {}),
+          }
+        : {};
+    };
     const recordDeliveryResult = (
       result: Awaited<ReturnType<typeof sendMessageSignal>>,
       visibleText: string,
@@ -415,6 +431,7 @@ export async function deliverReplies(params: {
             account,
             maxBytes,
             accountId,
+            ...consumeQuote(),
           }),
           chunk,
         );
@@ -429,6 +446,7 @@ export async function deliverReplies(params: {
             mediaUrl,
             maxBytes,
             accountId,
+            ...consumeQuote(),
           }),
           visibleText,
         );

@@ -22,4 +22,8 @@ export const signalChannelConfigUiHints = {
     label: "Signal CLI Config Path",
     help: "Optional directory passed to signal-cli via --config when the service needs a non-default signal-cli data path.",
   },
+  replyToMode: {
+    label: "Signal Reply Mode",
+    help: 'Controls native quoted replies: "off" (default), "first", "all", or "batched".',
+  },
 } satisfies Record<string, ChannelConfigUiHint>;

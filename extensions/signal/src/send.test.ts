@@ -21,7 +21,7 @@ vi.mock("openclaw/plugin-sdk/media-runtime", async () => {
   };
 });
 
-const { sendMessageSignal } = await import("./send.js");
+const { sendMessageSignal, sendStickerSignal } = await import("./send.js");
 
 const SIGNAL_TEST_CFG = {
   channels: {
@@ -77,6 +77,106 @@ describe("sendMessageSignal receipts", () => {
       },
     ]);
     expect(result.receipt.sentAt).toBeGreaterThan(0);
+  });
+
+  it("adds native quote parameters and receipt metadata for direct replies", async () => {
+    signalRpcRequestMock.mockResolvedValueOnce({ timestamp: 1234567894 });
+
+    const result = await sendMessageSignal("+15551234567", "quoted reply", {
+      cfg: SIGNAL_TEST_CFG,
+      replyToId: "1700000000000",
+    });
+
+    expect(signalRpcRequestMock).toHaveBeenCalledWith(
+      "send",
+      expect.objectContaining({
+        quoteTimestamp: 1700000000000,
+        quoteAuthor: "+15551234567",
+      }),
+      expect.any(Object),
+    );
+    expect(result.receipt.replyToId).toBe("1700000000000");
+    expect(result.receipt.parts[0]?.replyToId).toBe("1700000000000");
+  });
+
+  it("uses the inbound author for quoted group replies", async () => {
+    signalRpcRequestMock.mockResolvedValueOnce({ timestamp: 1234567895 });
+
+    await sendMessageSignal("group:group-1", "quoted reply", {
+      cfg: SIGNAL_TEST_CFG,
+      replyToId: "1700000000001",
+      quoteAuthor: "123e4567-e89b-12d3-a456-426614174000",
+    });
+
+    expect(signalRpcRequestMock).toHaveBeenCalledWith(
+      "send",
+      expect.objectContaining({
+        groupId: "group-1",
+        quoteTimestamp: 1700000000001,
+        quoteAuthor: "123e4567-e89b-12d3-a456-426614174000",
+      }),
+      expect.any(Object),
+    );
+  });
+
+  it.each(["not-a-timestamp", "0", "0x18bcfe56800", "1700000000000.5"])(
+    "does not emit malformed quote timestamp %s",
+    async (replyToId) => {
+      signalRpcRequestMock.mockResolvedValueOnce({ timestamp: 1234567896 });
+
+      const result = await sendMessageSignal("+15551234567", "plain reply", {
+        cfg: SIGNAL_TEST_CFG,
+        replyToId,
+      });
+
+      const requestParams = signalRpcRequestMock.mock.calls[0]?.[1] as Record<string, unknown>;
+      expect(requestParams).not.toHaveProperty("quoteTimestamp");
+      expect(requestParams).not.toHaveProperty("quoteAuthor");
+      expect(result.receipt.replyToId).toBeUndefined();
+    },
+  );
+
+  it("sends installed sticker specs with media receipts", async () => {
+    signalRpcRequestMock.mockResolvedValueOnce({ timestamp: 1234567897 });
+
+    const result = await sendStickerSignal(
+      "group:group-1",
+      " 00ABAC3BC18D7F599BFF2325DC306D43:02 ",
+      {
+        cfg: SIGNAL_TEST_CFG,
+      },
+    );
+
+    expect(signalRpcRequestMock).toHaveBeenCalledWith(
+      "send",
+      {
+        account: "+15550001111",
+        groupId: "group-1",
+        sticker: "00abac3bc18d7f599bff2325dc306d43:2",
+      },
+      expect.any(Object),
+    );
+    expect(result.receipt.parts[0]?.kind).toBe("media");
+    expect(result.receipt.platformMessageIds).toEqual(["1234567897"]);
+  });
+
+  it("rejects malformed sticker specs before RPC dispatch", async () => {
+    const invalidSpecs = [
+      { spec: "missing-sticker-index", error: /packId:stickerId/ },
+      { spec: "abc:2", error: /even-length hex/ },
+      { spec: "aa:9007199254740992", error: /non-negative integer/ },
+      { spec: `${"aa".repeat(65)}:1`, error: /at most 128 hex characters/ },
+      { spec: `${"aa".repeat(128)}:1`, error: /at most 256 characters/ },
+    ];
+
+    for (const { spec, error } of invalidSpecs) {
+      await expect(
+        sendStickerSignal("+15551234567", spec, {
+          cfg: SIGNAL_TEST_CFG,
+        }),
+      ).rejects.toThrow(error);
+    }
+    expect(signalRpcRequestMock).not.toHaveBeenCalled();
   });
 
   it("attaches a media receipt for attachment sends", async () => {

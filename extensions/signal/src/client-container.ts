@@ -39,7 +39,12 @@ export type ContainerWebSocketMessage = {
         filename?: string;
         size?: number;
       }>;
-      quote?: { text?: string };
+      quote?: { text?: string; author?: string; authorUuid?: string };
+      sticker?: {
+        packId?: string;
+        stickerId?: number;
+        packKey?: string;
+      };
       reaction?: unknown;
     };
     editMessage?: { dataMessage?: unknown };
@@ -473,6 +478,9 @@ export async function containerSendMessage(params: {
   message: string;
   textStyles?: Array<{ start: number; length: number; style: string }>;
   attachments?: string[];
+  quoteTimestamp?: number;
+  quoteAuthor?: string;
+  sticker?: string;
   timeoutMs?: number;
 }): Promise<{ timestamp?: number }> {
   const payload: Record<string, unknown> = {
@@ -489,6 +497,15 @@ export async function containerSendMessage(params: {
   if (params.attachments && params.attachments.length > 0) {
     // Container API only accepts base64-encoded attachments, not file paths.
     payload.base64_attachments = await filesToBase64DataUris(params.attachments);
+  }
+  if (params.quoteTimestamp !== undefined) {
+    payload.quote_timestamp = params.quoteTimestamp;
+  }
+  if (params.quoteAuthor) {
+    payload.quote_author = stripUuidPrefix(params.quoteAuthor);
+  }
+  if (params.sticker) {
+    payload.sticker = params.sticker;
   }
 
   const result = await containerRestRequest<{ timestamp?: unknown }>(
@@ -672,6 +689,9 @@ export async function containerRpcRequest<T = unknown>(
         message: (p.message as string) ?? "",
         textStyles,
         attachments: p.attachments as string[] | undefined,
+        quoteTimestamp: p.quoteTimestamp as number | undefined,
+        quoteAuthor: p.quoteAuthor as string | undefined,
+        sticker: p.sticker as string | undefined,
         timeoutMs: opts.timeoutMs,
       });
       return result as T;

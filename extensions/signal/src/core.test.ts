@@ -225,6 +225,24 @@ describe("probeSignal", () => {
 });
 
 describe("signal outbound", () => {
+  it("resolves account-scoped reply modes", () => {
+    const cfg = {
+      channels: {
+        signal: {
+          replyToMode: "first",
+          accounts: {
+            work: { account: "+15550001111", replyToMode: "all" },
+          },
+        },
+      },
+    } as OpenClawConfig;
+
+    expect(signalPlugin.threading?.resolveReplyToMode?.({ cfg, accountId: "default" })).toBe(
+      "first",
+    );
+    expect(signalPlugin.threading?.resolveReplyToMode?.({ cfg, accountId: "work" })).toBe("all");
+  });
+
   it("resolves aliases through the message target resolver", async () => {
     const resolved = await signalPlugin.messaging?.targetResolver?.resolveTarget?.({
       cfg: {
@@ -340,6 +358,32 @@ describe("signal outbound", () => {
         cfg: expect.any(Object),
       }),
     );
+  });
+
+  it("quotes only the first formatted text chunk", async () => {
+    const send = vi.fn(async (_to: string, _text: string, _opts: Record<string, unknown>) => ({
+      messageId: "signal-1",
+      receipt: createMessageReceiptFromOutboundResults({
+        results: [{ channel: "signal", messageId: "signal-1" }],
+        kind: "text",
+      }),
+    }));
+
+    await signalPlugin.outbound?.sendFormattedText?.({
+      cfg: {
+        channels: { signal: { textChunkLimit: 3 } },
+      } as OpenClawConfig,
+      to: "+15551234567",
+      text: "abcdef",
+      replyToId: "1700000000000",
+      deps: { signal: send },
+    });
+
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls[0]?.[2]).toEqual(
+      expect.objectContaining({ replyToId: "1700000000000" }),
+    );
+    expect(send.mock.calls[1]?.[2]).not.toHaveProperty("replyToId");
   });
 
   it("resolves aliases before formatted Signal media sends", async () => {
@@ -695,16 +739,19 @@ describe("signal outbound", () => {
   });
 
   it("declares message adapter durable text and media with receipt proofs", async () => {
-    const send = vi.fn(async (_to: string, _text: string, opts: { mediaUrl?: string } = {}) => {
-      const messageId = opts.mediaUrl ? "signal-media-1" : "signal-text-1";
-      return {
-        messageId,
-        receipt: createMessageReceiptFromOutboundResults({
-          results: [{ channel: "signal", messageId }],
-          kind: opts.mediaUrl ? "media" : "text",
-        }),
-      };
-    });
+    const send = vi.fn(
+      async (_to: string, _text: string, opts: { mediaUrl?: string; replyToId?: string } = {}) => {
+        const messageId = opts.mediaUrl ? "signal-media-1" : "signal-text-1";
+        return {
+          messageId,
+          receipt: createMessageReceiptFromOutboundResults({
+            results: [{ channel: "signal", messageId }],
+            kind: opts.mediaUrl ? "media" : "text",
+            ...(opts.replyToId ? { replyToId: opts.replyToId } : {}),
+          }),
+        };
+      },
+    );
     const deps = { signal: send };
 
     const proofResults = await verifyChannelMessageAdapterCapabilityProofs({
@@ -745,6 +792,24 @@ describe("signal outbound", () => {
           });
           expect(result?.receipt.platformMessageIds).toEqual(["signal-media-1"]);
         },
+        replyTo: async () => {
+          const result = await signalPlugin.message?.send?.text?.({
+            cfg: {} as OpenClawConfig,
+            to: "signal:+15555550123",
+            text: "reply",
+            replyToId: "1700000000000",
+            deps,
+          } as Parameters<NonNullable<typeof signalPlugin.message.send.text>>[0] & {
+            deps: typeof deps;
+          });
+          expect(send).toHaveBeenCalledWith("+15555550123", "reply", {
+            cfg: {},
+            maxBytes: undefined,
+            accountId: undefined,
+            replyToId: "1700000000000",
+          });
+          expect(result?.receipt.replyToId).toBe("1700000000000");
+        },
       },
     });
 
@@ -754,7 +819,7 @@ describe("signal outbound", () => {
       { capability: "poll", status: "not_declared" },
       { capability: "payload", status: "not_declared" },
       { capability: "silent", status: "not_declared" },
-      { capability: "replyTo", status: "not_declared" },
+      { capability: "replyTo", status: "verified" },
       { capability: "thread", status: "not_declared" },
       { capability: "nativeQuote", status: "not_declared" },
       { capability: "messageSendingHooks", status: "not_declared" },

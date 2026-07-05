@@ -1785,6 +1785,35 @@ describe("signal createSignalEventHandler inbound context", () => {
     expect(context.MediaTypes).toEqual(["image/jpeg", "application/octet-stream"]);
   });
 
+  it("surfaces bounded Signal sticker metadata as inbound context", async () => {
+    const handler = createSignalEventHandler(
+      createBaseSignalEventHandlerDeps({
+        cfg: {
+          messages: { inbound: { debounceMs: 0 } },
+          channels: { signal: { dmPolicy: "open", allowFrom: ["*"] } },
+        },
+        historyLimit: 0,
+      }),
+    );
+
+    await handler(
+      createSignalReceiveEvent({
+        dataMessage: {
+          message: "",
+          attachments: [{ id: "downloaded-sticker", contentType: "image/webp" }],
+          sticker: {
+            packId: "00abac3bc18d7f599bff2325dc306d43",
+            stickerId: 2,
+          },
+        },
+      }),
+    );
+
+    const context = requireCapturedContext();
+    expect(context.BodyForAgent).toBe("[Signal sticker 00abac3bc18d7f599bff2325dc306d43:2]");
+    expect(context.MediaPath).toBeUndefined();
+  });
+
   it("threads resolved audio contentType for Signal voice attachments", async () => {
     const handler = createSignalEventHandler(
       createBaseSignalEventHandlerDeps({

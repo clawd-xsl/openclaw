@@ -598,6 +598,42 @@ describe("containerRpcRequest typing", () => {
   });
 });
 
+describe("containerRpcRequest rich sends", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("maps native quote and sticker fields onto the container send contract", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      ...bodyStream(JSON.stringify({ timestamp: "1700000000002" })),
+    });
+
+    await containerRpcRequest(
+      "send",
+      {
+        account: "+14259798283",
+        message: "",
+        recipient: ["uuid:123e4567-e89b-12d3-a456-426614174000"],
+        quoteTimestamp: 1700000000001,
+        quoteAuthor: "uuid:123e4567-e89b-12d3-a456-426614174001",
+        sticker: "00abac3bc18d7f599bff2325dc306d43:2",
+      },
+      { baseUrl: "http://localhost:8080" },
+    );
+
+    expect(parseFetchBody()).toEqual({
+      message: "",
+      number: "+14259798283",
+      recipients: ["123e4567-e89b-12d3-a456-426614174000"],
+      quote_timestamp: 1700000000001,
+      quote_author: "123e4567-e89b-12d3-a456-426614174001",
+      sticker: "00abac3bc18d7f599bff2325dc306d43:2",
+    });
+  });
+});
+
 describe("containerSendReceipt", () => {
   beforeEach(() => {
     vi.clearAllMocks();

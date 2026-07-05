@@ -9,6 +9,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { resolveMarkdownTableMode } from "openclaw/plugin-sdk/markdown-table-runtime";
 import { kindFromMime } from "openclaw/plugin-sdk/media-runtime";
 import { resolveOutboundAttachmentFromUrl } from "openclaw/plugin-sdk/media-runtime";
+import { parseStrictNonNegativeInteger } from "openclaw/plugin-sdk/number-runtime";
 import { requireRuntimeConfig } from "openclaw/plugin-sdk/plugin-config-runtime";
 import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { resolveSignalAccount } from "./accounts.js";
@@ -32,6 +33,8 @@ export type SignalSendOpts = {
   timeoutMs?: number;
   textMode?: "markdown" | "plain";
   textStyles?: SignalTextStyleRange[];
+  replyToId?: string;
+  quoteAuthor?: string;
 };
 
 export type SignalSendResult = {
@@ -135,6 +138,7 @@ function createSignalSendReceipt(params: {
   timestamp?: number;
   target: SignalTarget;
   kind: MessageReceiptPartKind;
+  replyToId?: string;
 }): MessageReceipt {
   const messageId = params.messageId.trim();
   const results: MessageReceiptSourceResult[] =
@@ -164,7 +168,58 @@ function createSignalSendReceipt(params: {
   return createMessageReceiptFromOutboundResults({
     results,
     kind: params.kind,
+    ...(params.replyToId ? { replyToId: params.replyToId } : {}),
   });
+}
+
+function resolveSignalQuote(params: {
+  target: SignalTarget;
+  replyToId?: string;
+  quoteAuthor?: string;
+}): { quoteTimestamp: number; quoteAuthor?: string } | null {
+  const quoteTimestamp = parseStrictNonNegativeInteger(params.replyToId);
+  if (quoteTimestamp === undefined || quoteTimestamp <= 0) {
+    return null;
+  }
+  const explicitAuthor = params.quoteAuthor?.replace(/^signal:/i, "").trim();
+  const quoteAuthor =
+    explicitAuthor || (params.target.type === "recipient" ? params.target.recipient : undefined);
+  return {
+    quoteTimestamp,
+    ...(quoteAuthor ? { quoteAuthor } : {}),
+  };
+}
+
+// Signal sticker specs are action input. Keep the accepted representation bounded
+// while leaving ample headroom for signal-cli pack identifiers.
+const MAX_SIGNAL_STICKER_SPEC_LENGTH = 256;
+const MAX_SIGNAL_STICKER_PACK_ID_LENGTH = 128;
+
+function normalizeSignalStickerSpec(raw: string): string {
+  const sticker = raw.trim();
+  if (sticker.length > MAX_SIGNAL_STICKER_SPEC_LENGTH) {
+    throw new Error(
+      `Signal sticker id must be at most ${MAX_SIGNAL_STICKER_SPEC_LENGTH} characters`,
+    );
+  }
+  const match = /^([0-9a-f]+):(\d+)$/i.exec(sticker);
+  if (!match) {
+    throw new Error("Signal sticker id must use packId:stickerId format");
+  }
+  const packId = match[1].toLowerCase();
+  if (packId.length > MAX_SIGNAL_STICKER_PACK_ID_LENGTH) {
+    throw new Error(
+      `Signal sticker pack id must be at most ${MAX_SIGNAL_STICKER_PACK_ID_LENGTH} hex characters`,
+    );
+  }
+  if (packId.length % 2 !== 0) {
+    throw new Error("Signal sticker pack id must be even-length hex");
+  }
+  const stickerId = Number(match[2]);
+  if (!Number.isSafeInteger(stickerId) || stickerId < 0) {
+    throw new Error("Signal sticker id must be a non-negative integer");
+  }
+  return `${packId}:${stickerId}`;
 }
 
 export async function sendMessageSignal(
@@ -255,6 +310,18 @@ export async function sendMessageSignal(
   }
   Object.assign(params, targetParams);
 
+  const quote = resolveSignalQuote({
+    target,
+    replyToId: opts.replyToId,
+    quoteAuthor: opts.quoteAuthor,
+  });
+  if (quote) {
+    params.quoteTimestamp = quote.quoteTimestamp;
+    if (quote.quoteAuthor) {
+      params.quoteAuthor = quote.quoteAuthor;
+    }
+  }
+
   const result = await signalRpcRequest<{ timestamp?: number }>("send", params, {
     baseUrl,
     timeoutMs: opts.timeoutMs,
@@ -269,6 +336,51 @@ export async function sendMessageSignal(
       messageId,
       target,
       kind: attachments && attachments.length > 0 ? "media" : "text",
+      ...(quote ? { replyToId: String(quote.quoteTimestamp) } : {}),
+      ...(timestamp != null ? { timestamp } : {}),
+    }),
+  };
+}
+
+export async function sendStickerSignal(
+  to: string,
+  stickerSpec: string,
+  opts: SignalRpcOpts,
+): Promise<SignalSendResult> {
+  const cfg = requireRuntimeConfig(opts.cfg, "Signal sticker send");
+  const apiMode = cfg.channels?.signal?.apiMode;
+  const accountInfo = await resolveSignalRpcAccountInfo(opts);
+  const { baseUrl, account } = resolveSignalRpcContext(opts, accountInfo);
+  const target = parseTarget(to);
+  const sticker = normalizeSignalStickerSpec(stickerSpec);
+  const params: Record<string, unknown> = { sticker };
+  if (account) {
+    params.account = account;
+  }
+  const targetParams = buildTargetParams(target, {
+    recipient: true,
+    group: true,
+    username: true,
+  });
+  if (!targetParams) {
+    throw new Error("Signal recipient is required");
+  }
+  Object.assign(params, targetParams);
+
+  const result = await signalRpcRequest<{ timestamp?: number }>("send", params, {
+    baseUrl,
+    timeoutMs: opts.timeoutMs,
+    apiMode,
+  });
+  const timestamp = result?.timestamp;
+  const messageId = timestamp ? String(timestamp) : "unknown";
+  return {
+    messageId,
+    timestamp,
+    receipt: createSignalSendReceipt({
+      messageId,
+      target,
+      kind: "media",
       ...(timestamp != null ? { timestamp } : {}),
     }),
   };
