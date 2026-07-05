@@ -14,6 +14,7 @@ import {
   CLAUDE_CLI_MODEL_ALIASES,
   CLAUDE_CLI_SESSION_ID_FIELDS,
   normalizeClaudeBackendConfig,
+  prepareClaudeCliExecution,
   resolveClaudeCliExecutionArgs,
 } from "./cli-shared.js";
 
@@ -101,6 +102,7 @@ export function buildAnthropicCliBackend(): CliBackendPlugin {
       serialize: true,
     },
     normalizeConfig: normalizeClaudeBackendConfig,
+    prepareExecution: prepareClaudeCliExecution,
     resolveExecutionArgs: resolveClaudeCliExecutionArgs,
   };
 }

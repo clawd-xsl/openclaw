@@ -1,6 +1,7 @@
 // Anthropic tests cover cli shared plugin behavior.
 import { describe, expect, it } from "vitest";
 import { buildAnthropicCliBackend } from "./cli-backend.js";
+import { buildClaudeCliCatalogEntries } from "./cli-catalog.js";
 import {
   CLAUDE_CLI_CLEAR_ENV,
   normalizeClaudeBackendConfig,
@@ -10,6 +11,7 @@ import {
   normalizeClaudeSettingSourcesArgs,
   normalizeClaudeSettingsArgs,
   normalizeClaudeSlashCommandArgs,
+  prepareClaudeCliExecution,
   resolveClaudePermissionMode,
   resolveClaudeCliExecutionArgs,
 } from "./cli-shared.js";
@@ -170,10 +172,55 @@ describe("Claude CLI model aliases", () => {
     expect(aliases?.["opus"]).toBe("opus");
     expect(aliases?.["opus-4.8"]).toBe("claude-opus-4-8");
     expect(aliases?.["opus-4.7"]).toBe("claude-opus-4-7");
-    expect(aliases?.["opus-4.6"]).toBe("claude-opus-4-6");
+    expect(aliases?.["opus-4.6"]).toBe("claude-opus-4-6[1m]");
+    expect(aliases?.["opus-4.6[1m]"]).toBe("claude-opus-4-6[1m]");
     expect(aliases?.["claude-opus-4-8"]).toBe("claude-opus-4-8");
     expect(aliases?.["claude-opus-4-7"]).toBe("claude-opus-4-7");
-    expect(aliases?.["claude-opus-4-6"]).toBe("claude-opus-4-6");
+    expect(aliases?.["claude-opus-4-6"]).toBe("claude-opus-4-6[1m]");
+    expect(aliases?.["claude-opus-4-6[1m]"]).toBe("claude-opus-4-6[1m]");
+  });
+});
+
+describe("prepareClaudeCliExecution", () => {
+  it.each([
+    { contextTokens: 50_000, expected: "100000" },
+    { contextTokens: 222_000, expected: "222000" },
+    { contextTokens: 1_048_576, expected: "1000000" },
+  ])(
+    "sets the native compact window for $contextTokens effective tokens",
+    ({ contextTokens, expected }) => {
+      expect(
+        prepareClaudeCliExecution({
+          workspaceDir: "/tmp",
+          provider: "claude-cli",
+          modelId: "claude-opus-4-6",
+          contextTokens,
+        }),
+      ).toEqual({
+        env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: expected },
+      });
+    },
+  );
+
+  it("does not override Claude Code when no effective context is available", () => {
+    expect(
+      prepareClaudeCliExecution({
+        workspaceDir: "/tmp",
+        provider: "claude-cli",
+        modelId: "claude-opus-4-6",
+      }),
+    ).toBeUndefined();
+  });
+});
+
+describe("Claude CLI catalog", () => {
+  it("advertises the retained Opus 4.6 long-context route", () => {
+    const opus46 = buildClaudeCliCatalogEntries().find((entry) => entry.id === "claude-opus-4-6");
+
+    expect(opus46).toMatchObject({
+      contextWindow: 1_048_576,
+      contextTokens: 1_048_576,
+    });
   });
 });
 
@@ -458,6 +505,7 @@ describe("normalizeClaudeBackendConfig", () => {
     expect(normalized?.resumeArgs).toContain("--permission-mode");
     expect(normalized?.resumeArgs).toContain("bypassPermissions");
     expect(normalized?.liveSession).toBe("claude-stdio");
+    expect(backend.prepareExecution).toBe(prepareClaudeCliExecution);
     expect(backend.resolveExecutionArgs).toBe(resolveClaudeCliExecutionArgs);
   });
 
@@ -502,6 +550,7 @@ describe("normalizeClaudeBackendConfig", () => {
     expect(backend.config.clearEnv).toContain("CLAUDE_CONFIG_DIR");
     expect(backend.config.clearEnv).toContain("CLAUDE_CODE_USE_BEDROCK");
     expect(backend.config.clearEnv).toContain("CLAUDE_CODE_OAUTH_TOKEN");
+    expect(backend.config.clearEnv).toContain("CLAUDE_CODE_AUTO_COMPACT_WINDOW");
     expect(backend.config.clearEnv).toContain("CLAUDE_CODE_PLUGIN_CACHE_DIR");
     expect(backend.config.clearEnv).toContain("CLAUDE_CODE_PLUGIN_SEED_DIR");
     expect(backend.config.clearEnv).toContain("CLAUDE_CODE_REMOTE");

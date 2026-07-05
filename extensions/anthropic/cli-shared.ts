@@ -6,6 +6,8 @@
 import type {
   CliBackendConfig,
   CliBackendNormalizeConfigContext,
+  CliBackendPreparedExecution,
+  CliBackendPrepareExecutionContext,
   CliBackendResolveExecutionArgsContext,
 } from "openclaw/plugin-sdk/cli-backend";
 import { normalizeOptionalLowercaseString } from "openclaw/plugin-sdk/string-coerce-runtime";
@@ -34,6 +36,7 @@ export const CLAUDE_CLI_CLEAR_ENV = [
   "ANTHROPIC_UNIX_SOCKET",
   "CLAUDE_CONFIG_DIR",
   "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR",
+  "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
   "CLAUDE_CODE_ENTRYPOINT",
   "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
   "CLAUDE_CODE_OAUTH_SCOPES",
@@ -63,6 +66,30 @@ export const CLAUDE_CLI_CLEAR_ENV = [
   "OTEL_SDK_DISABLED",
   "OTEL_TRACES_EXPORTER",
 ] as const;
+
+const CLAUDE_AUTO_COMPACT_MIN_TOKENS = 100_000;
+const CLAUDE_AUTO_COMPACT_MAX_TOKENS = 1_000_000;
+
+/** Apply OpenClaw's effective context cap to Claude Code's native compactor. */
+export function prepareClaudeCliExecution(
+  context: CliBackendPrepareExecutionContext,
+): CliBackendPreparedExecution | undefined {
+  const contextTokens = context.contextTokens;
+  if (typeof contextTokens !== "number" || !Number.isFinite(contextTokens) || contextTokens <= 0) {
+    return undefined;
+  }
+  const autoCompactTokens = Math.floor(
+    Math.max(
+      CLAUDE_AUTO_COMPACT_MIN_TOKENS,
+      Math.min(CLAUDE_AUTO_COMPACT_MAX_TOKENS, contextTokens),
+    ),
+  );
+  return {
+    env: {
+      CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(autoCompactTokens),
+    },
+  };
+}
 
 const CLAUDE_LEGACY_SKIP_PERMISSIONS_ARG = "--dangerously-skip-permissions";
 const CLAUDE_PERMISSION_MODE_ARG = "--permission-mode";
