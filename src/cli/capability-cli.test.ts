@@ -1058,6 +1058,7 @@ describe("capability cli", () => {
     expect(sessionId).toEqual(expect.stringMatching(/^model-run-[0-9a-f-]{36}$/));
     expect(gatewayCall?.params?.sessionKey).toBe(`agent:main:explicit:${sessionId}`);
     expect(gatewayCall?.params?.cleanupBundleMcpOnRunEnd).toBe(true);
+    expect(gatewayCall?.params?.cleanupCliLiveSessionOnRunEnd).toBe(true);
     expect(gatewayCall?.params?.modelRun).toBe(true);
     expect(gatewayCall?.params?.promptMode).toBe("none");
 

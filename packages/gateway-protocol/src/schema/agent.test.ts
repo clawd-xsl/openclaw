@@ -57,6 +57,16 @@ const musicCompletionEvent: AgentInternalEvent = {
 };
 
 describe("AgentParamsSchema", () => {
+  it("accepts explicit cleanup for ephemeral CLI live sessions", () => {
+    expect(
+      Value.Check(AgentParamsSchema, {
+        message: "one-shot model run",
+        idempotencyKey: "cleanup-live-session",
+        cleanupCliLiveSessionOnRunEnd: true,
+      }),
+    ).toBe(true);
+  });
+
   it("accepts generated music attachments on internal completion events", () => {
     const params = makeAgentParamsWithInternalEvent(musicCompletionEvent);
 

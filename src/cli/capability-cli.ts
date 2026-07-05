@@ -853,6 +853,7 @@ async function runModelRun(params: {
       modelRun: true,
       promptMode: "none",
       cleanupBundleMcpOnRunEnd: true,
+      cleanupCliLiveSessionOnRunEnd: true,
       idempotencyKey: randomIdempotencyKey(),
     },
     expectFinal: true,

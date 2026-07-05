@@ -315,6 +315,7 @@ describe("spawnSubagentDirect seam flow", () => {
     const agentParams = requireRecord(agentRequest.params);
     expect(agentParams.sessionKey).toBe(childSessionKey);
     expect(agentParams.cleanupBundleMcpOnRunEnd).toBe(true);
+    expect(agentParams.cleanupCliLiveSessionOnRunEnd).toBe(true);
   });
 
   it("dispatches spawned agent runs in process when a gateway context is available", async () => {

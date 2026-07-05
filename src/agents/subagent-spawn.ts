@@ -1566,6 +1566,7 @@ export async function spawnSubagentDirect(
         lane: AGENT_LANE_SUBAGENT,
         disableMessageTool: true,
         cleanupBundleMcpOnRunEnd: spawnMode !== "session",
+        cleanupCliLiveSessionOnRunEnd: spawnMode !== "session",
         extraSystemPrompt: childSystemPrompt,
         thinking: thinkingOverride,
         timeout: runTimeoutSeconds,

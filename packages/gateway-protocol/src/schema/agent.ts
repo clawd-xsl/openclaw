@@ -209,6 +209,9 @@ export const AgentParamsSchema = Type.Object(
     // One-shot CLI gateway requests can ask the gateway to close process-wide
     // bundle MCP resources after the run instead of keeping them warm.
     cleanupBundleMcpOnRunEnd: Type.Optional(Type.Boolean()),
+    // Ephemeral callers can also release a Claude CLI live-session process
+    // after the run; normal chat sessions leave this unset to stay warm.
+    cleanupCliLiveSessionOnRunEnd: Type.Optional(Type.Boolean()),
     modelRun: Type.Optional(Type.Boolean()),
     promptMode: Type.Optional(
       Type.Union([Type.Literal("full"), Type.Literal("minimal"), Type.Literal("none")]),
