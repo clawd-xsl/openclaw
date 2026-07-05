@@ -278,6 +278,47 @@ describe("withReplyDispatcher", () => {
     expect(typing.markDispatchIdle).toHaveBeenCalledTimes(1);
   });
 
+  it("passes the reply abort signal into the buffered dispatcher", async () => {
+    hoisted.createReplyDispatcherWithTypingMock.mockReturnValueOnce({
+      dispatcher: createDispatcher([]),
+      replyOptions: {},
+      markDispatchIdle: vi.fn(),
+      markRunComplete: vi.fn(),
+    });
+    hoisted.dispatchReplyFromConfigMock.mockResolvedValueOnce({
+      queuedFinal: false,
+      counts: { tool: 0, block: 0, final: 0 },
+    });
+    const abortController = new AbortController();
+
+    await dispatchInboundMessageWithBufferedDispatcher({
+      ctx: buildTestCtx(),
+      cfg: {} as OpenClawConfig,
+      dispatcherOptions: { deliver: async () => undefined },
+      replyOptions: { abortSignal: abortController.signal },
+    });
+
+    expect(lastTypingDispatcherOptions().abortSignal).toBe(abortController.signal);
+  });
+
+  it("passes the reply abort signal into the plain dispatcher", async () => {
+    hoisted.createReplyDispatcherMock.mockReturnValueOnce(createDispatcher([]));
+    hoisted.dispatchReplyFromConfigMock.mockResolvedValueOnce({
+      queuedFinal: false,
+      counts: { tool: 0, block: 0, final: 0 },
+    });
+    const abortController = new AbortController();
+
+    await dispatchInboundMessageWithDispatcher({
+      ctx: buildTestCtx(),
+      cfg: {} as OpenClawConfig,
+      dispatcherOptions: { deliver: async () => undefined },
+      replyOptions: { abortSignal: abortController.signal },
+    });
+
+    expect(requireReplyDispatcherOptions().abortSignal).toBe(abortController.signal);
+  });
+
   it("passes runtime toolsAllow from buffered dispatch into reply resolution", async () => {
     hoisted.createReplyDispatcherWithTypingMock.mockReturnValueOnce({
       dispatcher: createDispatcher([]),

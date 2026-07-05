@@ -620,6 +620,7 @@ export async function dispatchInboundMessageWithBufferedDispatcher(params: {
   const { dispatcher, replyOptions, markDispatchIdle, markRunComplete } =
     createReplyDispatcherWithTyping({
       ...params.dispatcherOptions,
+      abortSignal: params.dispatcherOptions.abortSignal ?? params.replyOptions?.abortSignal,
       deliver,
       beforeDeliver,
       silentReplyContext: params.dispatcherOptions.silentReplyContext ?? silentReplyContext,
@@ -685,6 +686,7 @@ export async function dispatchInboundMessageWithDispatcher(params: {
     : globalBeforeDeliver;
   const dispatcher = createReplyDispatcher({
     ...params.dispatcherOptions,
+    abortSignal: params.dispatcherOptions.abortSignal ?? params.replyOptions?.abortSignal,
     beforeDeliver: composedBeforeDeliver,
     silentReplyContext: params.dispatcherOptions.silentReplyContext ?? silentReplyContext,
   });

@@ -90,6 +90,8 @@ function getHumanDelayMax(config: HumanDelayConfig | undefined): number {
 
 export type ReplyDispatcherOptions = {
   deliver: ReplyDispatchDeliverer;
+  /** Cancels queued delivery owned by a superseded inbound turn. */
+  abortSignal?: AbortSignal;
   silentReplyContext?: {
     cfg?: OpenClawConfig;
     sessionKey?: string;
@@ -176,6 +178,7 @@ export function createReplyDispatcher(options: ReplyDispatcherOptions): ReplyDis
   let completeCalled = false;
   // Track whether we've sent a block reply (for human delay - skip delay on first block).
   let sentFirstBlock = false;
+  let aborted = options.abortSignal?.aborted === true;
   // Serialize outbound replies to preserve tool/block/final order.
   const queuedCounts: Record<ReplyDispatchKind, number> = {
     tool: 0,
@@ -193,13 +196,30 @@ export function createReplyDispatcher(options: ReplyDispatcherOptions): ReplyDis
     final: 0,
   };
 
+  const onAbort = () => {
+    aborted = true;
+  };
+  options.abortSignal?.addEventListener("abort", onAbort, { once: true });
+
   // Register this dispatcher globally for gateway restart coordination.
   const { unregister } = registerDispatcher({
     pending: () => pending,
     waitForIdle: () => sendChain,
   });
+  let finalized = false;
+  const finalizeDispatcher = () => {
+    if (finalized) {
+      return;
+    }
+    finalized = true;
+    options.abortSignal?.removeEventListener("abort", onAbort);
+    unregister();
+  };
 
   const enqueue = (kind: ReplyDispatchKind, payload: ReplyPayload) => {
+    if (aborted) {
+      return false;
+    }
     const originalWasExactSilent = isSilentReplyText(payload.text, SILENT_REPLY_TOKEN);
     const normalized = normalizeReplyPayloadInternal(payload, {
       responsePrefix: options.responsePrefix,
@@ -213,7 +233,7 @@ export function createReplyDispatcher(options: ReplyDispatcherOptions): ReplyDis
           reason,
         }),
     });
-    if (!normalized) {
+    if (!normalized || aborted) {
       if (kind === "final" && originalWasExactSilent) {
         silentReplyLogger.debug("exact NO_REPLY final payload was skipped before delivery", {
           hasSessionKey: Boolean(options.silentReplyContext?.sessionKey),
@@ -231,9 +251,30 @@ export function createReplyDispatcher(options: ReplyDispatcherOptions): ReplyDis
     if (kind === "block") {
       sentFirstBlock = true;
     }
+    const dispatchInfo = buildReplyDispatchRuntimeInfo(normalized, kind);
+    let cancellationRecorded = false;
+    const notifyBeforeDeliverCancelled = async () => {
+      try {
+        await options.onBeforeDeliverCancelled?.(normalized, dispatchInfo);
+      } catch (err: unknown) {
+        void options.onError?.(err, dispatchInfo);
+      }
+    };
+    const recordCancellation = async () => {
+      if (cancellationRecorded) {
+        return;
+      }
+      cancellationRecorded = true;
+      cancelledCounts[kind] += 1;
+      await notifyBeforeDeliverCancelled();
+    };
 
     sendChain = sendChain
       .then(async () => {
+        if (aborted) {
+          await recordCancellation();
+          return;
+        }
         // Add human-like delay between block replies for natural rhythm.
         if (shouldDelay) {
           const delayMs = getHumanDelay(options.humanDelay);
@@ -241,38 +282,43 @@ export function createReplyDispatcher(options: ReplyDispatcherOptions): ReplyDis
             await sleep(delayMs);
           }
         }
-        const dispatchInfo = buildReplyDispatchRuntimeInfo(normalized, kind);
+        if (aborted) {
+          await recordCancellation();
+          return;
+        }
         let deliverPayload: ReplyPayload | null = normalized;
         if (beforeDeliver) {
           try {
             deliverPayload = await beforeDeliver(normalized, dispatchInfo);
           } catch (err: unknown) {
-            try {
-              await options.onBeforeDeliverCancelled?.(normalized, dispatchInfo);
-            } catch (cancelErr: unknown) {
-              void options.onError?.(cancelErr, dispatchInfo);
+            if (aborted) {
+              await recordCancellation();
+              return;
             }
+            await notifyBeforeDeliverCancelled();
             throw err;
           }
           if (!deliverPayload) {
-            cancelledCounts[kind] += 1;
-            try {
-              await options.onBeforeDeliverCancelled?.(normalized, dispatchInfo);
-            } catch (err: unknown) {
-              void options.onError?.(err, dispatchInfo);
-            }
+            await recordCancellation();
             return;
           }
           deliverPayload = copyReplyPayloadMetadata(normalized, deliverPayload);
         }
+        if (aborted) {
+          await recordCancellation();
+          return;
+        }
         await options.deliver(deliverPayload, dispatchInfo);
       })
-      .catch((err: unknown) => {
+      .catch(async (err: unknown) => {
+        if (aborted) {
+          await recordCancellation();
+          return;
+        }
         failedCounts[kind] += 1;
         void options.onError?.(err, buildReplyDispatchRuntimeInfo(normalized, kind));
       })
       .finally(() => {
-        const dispatchInfo = buildReplyDispatchRuntimeInfo(normalized, kind);
         try {
           options.onDeliverySettled?.(dispatchInfo);
         } catch (err: unknown) {
@@ -288,7 +334,7 @@ export function createReplyDispatcher(options: ReplyDispatcherOptions): ReplyDis
         }
         if (pending === 0) {
           // Unregister from global tracking when idle.
-          unregister();
+          finalizeDispatcher();
           void options.onIdle?.();
         }
       });
@@ -308,7 +354,7 @@ export function createReplyDispatcher(options: ReplyDispatcherOptions): ReplyDis
         // Still just the reservation, no replies were enqueued
         pending -= 1;
         if (pending === 0) {
-          unregister();
+          finalizeDispatcher();
           void options.onIdle?.();
         }
       }

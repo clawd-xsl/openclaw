@@ -154,6 +154,63 @@ describe("createReplyDispatcher", () => {
     expect(delivered).toEqual(["tool", "block", "final"]);
   });
 
+  it("cancels queued deliveries when the owning turn is aborted", async () => {
+    const abortController = new AbortController();
+    let releaseFirstDelivery!: () => void;
+    const firstDeliveryReleased = new Promise<void>((resolve) => {
+      releaseFirstDelivery = resolve;
+    });
+    let markFirstDeliveryStarted!: () => void;
+    const firstDeliveryStarted = new Promise<void>((resolve) => {
+      markFirstDeliveryStarted = resolve;
+    });
+    const onBeforeDeliverCancelled = vi.fn();
+    const deliver = vi.fn(async (payload: DeliverPayload) => {
+      if (payload.text === "first") {
+        markFirstDeliveryStarted();
+        await firstDeliveryReleased;
+      }
+    });
+    const dispatcher = createReplyDispatcher({
+      abortSignal: abortController.signal,
+      deliver,
+      onBeforeDeliverCancelled,
+    });
+
+    expect(dispatcher.sendBlockReply({ text: "first" })).toBe(true);
+    expect(dispatcher.sendFinalReply({ text: "stale" })).toBe(true);
+    dispatcher.markComplete();
+    await firstDeliveryStarted;
+
+    abortController.abort(new Error("superseded"));
+    releaseFirstDelivery();
+    await dispatcher.waitForIdle();
+
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(deliveredText(deliver)).toBe("first");
+    expect(dispatcher.getCancelledCounts?.()).toEqual({ tool: 0, block: 0, final: 1 });
+    expect(onBeforeDeliverCancelled).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "stale" }),
+      { kind: "final" },
+    );
+  });
+
+  it("refuses replies when its owner was already aborted", async () => {
+    const abortController = new AbortController();
+    abortController.abort(new Error("superseded"));
+    const deliver = vi.fn();
+    const dispatcher = createReplyDispatcher({
+      abortSignal: abortController.signal,
+      deliver,
+    });
+
+    expect(dispatcher.sendFinalReply({ text: "stale" })).toBe(false);
+    dispatcher.markComplete();
+    await dispatcher.waitForIdle();
+
+    expect(deliver).not.toHaveBeenCalled();
+  });
+
   it("fires onIdle when the queue drains", async () => {
     const deliver: Parameters<typeof createReplyDispatcher>[0]["deliver"] = async () =>
       await Promise.resolve();
