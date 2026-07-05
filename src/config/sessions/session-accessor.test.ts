@@ -40,8 +40,17 @@ import {
   updateSessionEntry,
   upsertSessionEntry,
 } from "./session-accessor.js";
+import {
+  getSessionStoreSqliteStatsForTest,
+  resetSessionStoreSqliteStatsForTest,
+} from "./store-sqlite.js";
 import * as sessionStore from "./store.js";
-import { loadSessionStore, saveSessionStore, updateSessionStoreEntry } from "./store.js";
+import {
+  clearSessionStoreCacheForTest,
+  loadSessionStore,
+  saveSessionStore,
+  updateSessionStoreEntry,
+} from "./store.js";
 import { withOwnedSessionTranscriptWrites } from "./transcript-write-context.js";
 import type { SessionEntry } from "./types.js";
 
@@ -57,6 +66,8 @@ describe("session accessor file-backed seam", () => {
   });
 
   afterEach(() => {
+    clearSessionStoreCacheForTest();
+    resetSessionStoreSqliteStatsForTest();
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
@@ -958,6 +969,32 @@ describe("session accessor file-backed seam", () => {
     } finally {
       loadSessionStoreSpy.mockRestore();
     }
+  });
+
+  it("keeps latest borrowed SQLite reads on the keyed path", async () => {
+    const sqlitePath = path.join(tempDir, "sessions.sqlite");
+    await saveSessionStore(
+      sqlitePath,
+      {
+        "agent:main:main": { sessionId: "target", updatedAt: 10 },
+        "agent:main:other": { sessionId: "other", updatedAt: 20 },
+      },
+      { skipMaintenance: true },
+    );
+    resetSessionStoreSqliteStatsForTest();
+
+    expect(
+      loadSessionEntry({
+        clone: false,
+        readConsistency: "latest",
+        sessionKey: "agent:main:main",
+        storePath: sqlitePath,
+      })?.sessionId,
+    ).toBe("target");
+    expect(getSessionStoreSqliteStatsForTest()).toMatchObject({
+      selectAll: 0,
+      selectByKey: 1,
+    });
   });
 
   it("resolves canonical entry reads without requiring exact key casing", async () => {

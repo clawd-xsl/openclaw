@@ -913,15 +913,21 @@ export async function updateResolvedSessionEntry<T>(
 
 /** Returns the entry for a canonical or alias session key, if one exists. */
 export function loadSessionEntry(scope: SessionAccessScope): SessionEntry | undefined {
+  const storePath = resolveSessionStorePathForScope(scope);
+  if (isSqliteSessionStorePath(storePath)) {
+    // SQLite point reads already observe the latest committed row and return a
+    // detached value, so cache-bypass/borrowed-read hints must not force a full scan.
+    return getSessionEntry({ ...scope, storePath });
+  }
   if (scope.clone === false || scope.readConsistency === "latest") {
-    const store = loadSessionStore(resolveSessionStorePathForScope(scope), {
+    const store = loadSessionStore(storePath, {
       ...(scope.clone === false ? { clone: false } : {}),
       ...(scope.readConsistency === "latest" ? { skipCache: true } : {}),
       ...(scope.hydrateSkillPromptRefs === false ? { hydrateSkillPromptRefs: false } : {}),
     });
     return resolveSessionStoreEntry({ store, sessionKey: scope.sessionKey }).existing;
   }
-  return getSessionEntry(scope);
+  return getSessionEntry({ ...scope, storePath });
 }
 
 /** Lists entries from the resolved store, preserving the persisted key for each row. */
