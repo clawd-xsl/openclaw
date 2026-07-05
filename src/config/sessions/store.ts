@@ -855,6 +855,27 @@ function archiveExactLifecycleTranscriptPath(params: {
   }
 }
 
+async function persistSingleSessionEntryToSqlite(params: {
+  storePath: string;
+  sessionKey: string;
+  entry: SessionEntry;
+}): Promise<void> {
+  const persisted = projectSessionStoreForPersistence({
+    storePath: params.storePath,
+    store: { [params.sessionKey]: params.entry },
+  });
+  await ensureSessionStorePromptBlobsForPersistence({
+    storePath: params.storePath,
+    promptBlobs: persisted.promptBlobs.values(),
+  });
+  upsertSessionEntryInSqlite({
+    storePath: params.storePath,
+    sessionKey: params.sessionKey,
+    entry: persisted.store[params.sessionKey] ?? params.entry,
+  });
+  invalidateSessionStoreCache(params.storePath);
+}
+
 async function saveSessionStoreUnlocked(
   storePath: string,
   store: Record<string, SessionEntry>,
@@ -913,20 +934,11 @@ async function saveSessionStoreUnlocked(
     if (singleEntry && !maintenanceChangedStore) {
       const entry = store[singleEntry.sessionKey];
       if (entry) {
-        const persisted = projectSessionStoreForPersistence({
-          storePath,
-          store: { [singleEntry.sessionKey]: entry },
-        });
-        await ensureSessionStorePromptBlobsForPersistence({
-          storePath,
-          promptBlobs: persisted.promptBlobs.values(),
-        });
-        upsertSessionEntryInSqlite({
+        await persistSingleSessionEntryToSqlite({
           storePath,
           sessionKey: singleEntry.sessionKey,
-          entry: persisted.store[singleEntry.sessionKey] ?? entry,
+          entry,
         });
-        invalidateSessionStoreCache(storePath);
         return;
       }
     }
@@ -1128,6 +1140,42 @@ export type DeletedSessionStoreEntry = {
 };
 
 export type SessionStoreEntryDeletionTarget = SessionStoreSqliteEntryDeletionTarget;
+
+/** Replaces exactly one normalized entry without projecting an unrelated store snapshot. */
+export async function replaceExactSessionEntry(params: {
+  storePath: string;
+  sessionKey: string;
+  entry: SessionEntry;
+}): Promise<void> {
+  const sessionKey = normalizeStoreSessionKey(params.sessionKey);
+  const entry = cloneSessionEntry(params.entry);
+  await runExclusiveSessionStoreWrite(params.storePath, async () => {
+    if (isSqliteSessionStorePath(params.storePath)) {
+      // Resolve legacy JSON before the point write makes SQLite non-empty; otherwise
+      // the import source could be stranded and unrelated mappings lost.
+      ensureSqliteSessionStoreJsonImport(params.storePath);
+      const normalizedStore = { [sessionKey]: entry };
+      normalizeSessionStore(normalizedStore);
+      const normalizedEntry = normalizedStore[sessionKey] ?? entry;
+      await persistSingleSessionEntryToSqlite({
+        storePath: params.storePath,
+        sessionKey,
+        entry: normalizedEntry,
+      });
+      return;
+    }
+
+    const store = loadMutableSessionStoreForWriter(params.storePath);
+    store[sessionKey] = entry;
+    await saveSessionStoreUnlocked(params.storePath, store, {
+      activeSessionKey: sessionKey,
+      requireWriteSuccess: true,
+      singleEntryPersistence: { sessionKey, entry },
+      skipMaintenance: true,
+      takeCacheOwnership: true,
+    });
+  });
+}
 
 /** Deletes only the named entries without projecting a stale whole-store snapshot. */
 export async function deleteSessionEntries(params: {

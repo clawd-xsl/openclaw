@@ -25,6 +25,7 @@ import {
   persistSessionResetLifecycle,
   persistSessionRolloverLifecycle,
   persistSessionTranscriptTurn,
+  preserveTemporarySessionMapping,
   purgeDeletedAgentSessionEntries,
   publishTranscriptUpdate,
   readSessionUpdatedAt,
@@ -43,6 +44,7 @@ import {
 import {
   getSessionStoreSqliteStatsForTest,
   resetSessionStoreSqliteStatsForTest,
+  upsertSessionEntryInSqlite,
 } from "./store-sqlite.js";
 import * as sessionStore from "./store.js";
 import {
@@ -107,6 +109,149 @@ describe("session accessor file-backed seam", () => {
       sessionId: "session-1",
       updatedAt: expect.any(Number),
     });
+  });
+
+  it("restores an existing temporary SQLite mapping without scanning unrelated rows", async () => {
+    const sqlitePath = path.join(tempDir, "temporary-existing.sqlite");
+    const sessionKey = "agent:main:boot";
+    const unrelatedKey = "agent:main:unrelated";
+    const newKey = "agent:main:new";
+    await saveSessionStore(
+      sqlitePath,
+      {
+        [sessionKey]: { label: "original", sessionId: "boot-original", updatedAt: 10 },
+        [unrelatedKey]: { sessionId: "unrelated-original", updatedAt: 20 },
+      },
+      { skipMaintenance: true },
+    );
+    resetSessionStoreSqliteStatsForTest();
+
+    const result = await preserveTemporarySessionMapping(
+      { sessionKey, storePath: sqlitePath },
+      async () => {
+        await sessionStore.deleteSessionEntries({
+          storePath: sqlitePath,
+          targets: [{ sessionKey }],
+        });
+        upsertSessionEntryInSqlite({
+          storePath: sqlitePath,
+          sessionKey: unrelatedKey,
+          entry: { sessionId: "unrelated-updated", updatedAt: 30 },
+        });
+        upsertSessionEntryInSqlite({
+          storePath: sqlitePath,
+          sessionKey: newKey,
+          entry: { sessionId: "new-session", updatedAt: 40 },
+        });
+        return "done";
+      },
+    );
+    const stats = getSessionStoreSqliteStatsForTest();
+
+    expect(result).toEqual({ result: "done" });
+    expect(stats).toMatchObject({ selectAll: 0, selectByKey: 1 });
+    expect(loadSessionEntry({ sessionKey, storePath: sqlitePath })).toMatchObject({
+      label: "original",
+      sessionId: "boot-original",
+    });
+    expect(loadSessionEntry({ sessionKey: unrelatedKey, storePath: sqlitePath })?.sessionId).toBe(
+      "unrelated-updated",
+    );
+    expect(loadSessionEntry({ sessionKey: newKey, storePath: sqlitePath })?.sessionId).toBe(
+      "new-session",
+    );
+  });
+
+  it("removes a temporary SQLite mapping without scanning unrelated rows", async () => {
+    const sqlitePath = path.join(tempDir, "temporary-missing.sqlite");
+    const sessionKey = "agent:main:boot";
+    const unrelatedKey = "agent:main:unrelated";
+    await saveSessionStore(
+      sqlitePath,
+      { [unrelatedKey]: { sessionId: "unrelated-original", updatedAt: 10 } },
+      { skipMaintenance: true },
+    );
+    resetSessionStoreSqliteStatsForTest();
+
+    await preserveTemporarySessionMapping({ sessionKey, storePath: sqlitePath }, () => {
+      upsertSessionEntryInSqlite({
+        storePath: sqlitePath,
+        sessionKey,
+        entry: { sessionId: "temporary", updatedAt: 20 },
+      });
+      upsertSessionEntryInSqlite({
+        storePath: sqlitePath,
+        sessionKey: unrelatedKey,
+        entry: { sessionId: "unrelated-updated", updatedAt: 30 },
+      });
+    });
+    const stats = getSessionStoreSqliteStatsForTest();
+
+    expect(stats).toMatchObject({ selectAll: 0, selectByKey: 1 });
+    expect(loadSessionEntry({ sessionKey, storePath: sqlitePath })).toBeUndefined();
+    expect(loadSessionEntry({ sessionKey: unrelatedKey, storePath: sqlitePath })?.sessionId).toBe(
+      "unrelated-updated",
+    );
+  });
+
+  it("restores a temporary SQLite mapping before rethrowing the operation error", async () => {
+    const sqlitePath = path.join(tempDir, "temporary-error.sqlite");
+    const sessionKey = "agent:main:boot";
+    const operationError = new Error("operation failed");
+    await saveSessionStore(
+      sqlitePath,
+      { [sessionKey]: { sessionId: "boot-original", updatedAt: 10 } },
+      { skipMaintenance: true },
+    );
+    resetSessionStoreSqliteStatsForTest();
+
+    await expect(
+      preserveTemporarySessionMapping({ sessionKey, storePath: sqlitePath }, () => {
+        upsertSessionEntryInSqlite({
+          storePath: sqlitePath,
+          sessionKey,
+          entry: { sessionId: "temporary", updatedAt: 20 },
+        });
+        throw operationError;
+      }),
+    ).rejects.toBe(operationError);
+    const stats = getSessionStoreSqliteStatsForTest();
+
+    expect(stats).toMatchObject({ selectAll: 0, selectByKey: 1 });
+    expect(loadSessionEntry({ sessionKey, storePath: sqlitePath })?.sessionId).toBe(
+      "boot-original",
+    );
+  });
+
+  it("preserves temporary mappings for JSON stores", async () => {
+    const sessionKey = "agent:main:boot";
+    const unrelatedKey = "agent:main:unrelated";
+    await saveSessionStore(
+      storePath,
+      {
+        [sessionKey]: { sessionId: "boot-original", updatedAt: 10 },
+        [unrelatedKey]: { sessionId: "unrelated-original", updatedAt: 20 },
+      },
+      { skipMaintenance: true },
+    );
+
+    const result = await preserveTemporarySessionMapping({ sessionKey, storePath }, async () => {
+      await replaceSessionEntry(
+        { sessionKey, storePath },
+        { sessionId: "temporary", updatedAt: 30 },
+      );
+      await replaceSessionEntry(
+        { sessionKey: unrelatedKey, storePath },
+        { sessionId: "unrelated-updated", updatedAt: 40 },
+      );
+      return "done";
+    });
+
+    expect(result).toEqual({ result: "done" });
+    expect(loadSessionEntry({ sessionKey, storePath })?.sessionId).toBe("boot-original");
+    expect(loadSessionEntry({ sessionKey: unrelatedKey, storePath })?.sessionId).toBe(
+      "unrelated-updated",
+    );
   });
 
   it("keeps case-distinct Matrix sessions separate under nested agent ownership", async () => {

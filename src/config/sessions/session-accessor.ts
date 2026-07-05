@@ -66,6 +66,7 @@ import {
   purgeDeletedAgentSessionEntries as purgeFileDeletedAgentSessionEntries,
   projectSessionEntryForPersistenceRevision,
   readSessionUpdatedAt as readFileSessionUpdatedAt,
+  replaceExactSessionEntry as replaceFileExactSessionEntry,
   resolveSessionStoreEntry,
   resetSessionEntryLifecycle as resetFileSessionEntryLifecycle,
   updateSessionStore,
@@ -2919,19 +2920,22 @@ function snapshotTemporarySessionMapping(
   scope: SessionAccessScope,
 ): TemporarySessionMappingSnapshot {
   const storePath = resolveSessionStorePathForScope(scope);
+  const sqliteStore = isSqliteSessionStorePath(storePath);
+  const sessionKey = sqliteStore ? normalizeStoreSessionKey(scope.sessionKey) : scope.sessionKey;
   try {
-    const store = loadSessionStore(storePath, { skipCache: true });
-    const entry = store[scope.sessionKey];
+    const entry = sqliteStore
+      ? getExactSessionEntry({ sessionKey, storePath })
+      : loadSessionStore(storePath, { skipCache: true })[sessionKey];
     return {
       canRestore: true,
-      ...(entry ? { entry: structuredClone(entry), hadEntry: true } : { hadEntry: false }),
-      sessionKey: scope.sessionKey,
+      ...(entry ? { entry, hadEntry: true } : { hadEntry: false }),
+      sessionKey,
       storePath,
     };
   } catch (err) {
     return {
       canRestore: false,
-      sessionKey: scope.sessionKey,
+      sessionKey,
       snapshotFailure: formatErrorMessage(err),
       storePath,
     };
@@ -2945,17 +2949,18 @@ async function restoreTemporarySessionMapping(
     return undefined;
   }
   try {
-    await updateSessionStore(
-      snapshot.storePath,
-      (store) => {
-        if (snapshot.hadEntry) {
-          store[snapshot.sessionKey] = structuredClone(snapshot.entry);
-          return;
-        }
-        delete store[snapshot.sessionKey];
-      },
-      { activeSessionKey: snapshot.sessionKey },
-    );
+    if (snapshot.hadEntry) {
+      await replaceFileExactSessionEntry({
+        storePath: snapshot.storePath,
+        sessionKey: snapshot.sessionKey,
+        entry: snapshot.entry,
+      });
+    } else {
+      await deleteFileSessionEntries({
+        storePath: snapshot.storePath,
+        targets: [{ sessionKey: snapshot.sessionKey }],
+      });
+    }
     return undefined;
   } catch (err) {
     return formatErrorMessage(err);
