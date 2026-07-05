@@ -44,6 +44,7 @@ import {
   type ProviderAuthWarmSnapshot,
 } from "./model-provider-auth-state.js";
 import { normalizeProviderId } from "./model-selection.js";
+import { resolveSourceWorkerLaunch } from "./source-worker.js";
 import { resolveDefaultAgentWorkspaceDir } from "./workspace.js";
 
 type ProviderAuthWarmWorkerResult =
@@ -510,7 +511,10 @@ function runProviderAuthWarmWorker(params: {
   isCancelled: () => boolean;
   workerUrl?: URL;
 }): Promise<ProviderAuthWarmSnapshot> {
-  const worker = new Worker(params.workerUrl ?? resolveProviderAuthWarmWorkerUrl(import.meta.url), {
+  const launch = resolveSourceWorkerLaunch(
+    params.workerUrl ?? resolveProviderAuthWarmWorkerUrl(import.meta.url),
+  );
+  const worker = new Worker(launch.workerUrl, {
     workerData: {
       cfg: params.cfg,
       ...(params.runtimeAuthStores?.length ? { runtimeAuthStores: params.runtimeAuthStores } : {}),
@@ -519,6 +523,7 @@ function runProviderAuthWarmWorker(params: {
         : {}),
       ...(params.omitFalseProviderAuth ? { omitFalseProviderAuth: true } : {}),
     },
+    execArgv: launch.execArgv,
   });
   worker.unref?.();
   const handle = {

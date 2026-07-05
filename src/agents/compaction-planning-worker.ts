@@ -24,6 +24,7 @@ import type {
   CompactionPlanningWorkerValue,
 } from "./compaction-planning.worker.js";
 import type { AgentMessage } from "./runtime/index.js";
+import { resolveSourceWorkerLaunch } from "./source-worker.js";
 
 const COMPACTION_PLANNING_WORKER_TIMEOUT_MS = 60_000;
 // Worker startup is more expensive than local planning for tiny histories.
@@ -68,13 +69,14 @@ function runCompactionPlanningWorker(params: {
     );
   }
 
-  const workerUrl = params.workerUrl ?? resolveCompactionPlanningWorkerUrl();
-  const sourceWorkerExecArgv = workerUrl.pathname.endsWith(".ts") ? ["--import", "tsx"] : undefined;
+  const launch = resolveSourceWorkerLaunch(
+    params.workerUrl ?? resolveCompactionPlanningWorkerUrl(),
+  );
   let worker: Worker;
   try {
-    worker = new Worker(workerUrl, {
+    worker = new Worker(launch.workerUrl, {
       workerData: params.input,
-      execArgv: sourceWorkerExecArgv,
+      execArgv: launch.execArgv,
     });
   } catch (error) {
     return Promise.reject(

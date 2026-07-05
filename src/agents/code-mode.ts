@@ -33,6 +33,7 @@ import {
 import type { AgentToolUpdateCallback } from "./runtime/index.js";
 import { optionalStringEnum } from "./schema/typebox.js";
 import type { ToolDefinition } from "./sessions/index.js";
+import { resolveSourceWorkerLaunch } from "./source-worker.js";
 import {
   addClientToolsToToolCatalog,
   applyToolCatalogCompaction,
@@ -650,15 +651,12 @@ async function runCodeModeWorker(
   timeoutMs: number,
   workerUrl?: URL,
 ): Promise<CodeModeWorkerResult> {
-  const resolvedWorkerUrl = workerUrl ?? codeModeWorkerUrl();
-  const sourceWorkerExecArgv = resolvedWorkerUrl.pathname.endsWith(".ts")
-    ? ["--import", "tsx"]
-    : undefined;
+  const launch = resolveSourceWorkerLaunch(workerUrl ?? codeModeWorkerUrl());
   let worker: Worker;
   try {
-    worker = new Worker(resolvedWorkerUrl, {
+    worker = new Worker(launch.workerUrl, {
       workerData,
-      execArgv: sourceWorkerExecArgv,
+      execArgv: launch.execArgv,
     });
   } catch (error) {
     return failedCodeModeWorkerResult(error, "runtime_unavailable");
