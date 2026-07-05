@@ -60,18 +60,23 @@ import { getRuntimeConfig } from "../config/io.js";
 import { resolveAgentModelFallbackValues } from "../config/model-input.js";
 import {
   buildGroupDisplayName,
+  getExactSessionEntry,
   getSessionStoreCacheVersion,
   isTerminalSessionStatus,
+  normalizeStoreSessionKey,
   resolveAllAgentSessionStoreTargetsSync,
   resolveAgentMainSessionKey,
   resolveFreshSessionTotalTokens,
   resolveSessionGoalDisplayState,
+  resolveSessionStoreEntry,
   resolveStorePath,
   type SessionEntry,
   type SessionStoreTarget,
   type SessionScope,
 } from "../config/sessions.js";
 import { listSessionEntries as listAccessorSessionEntries } from "../config/sessions/session-accessor.js";
+import { foldedSessionKeyAliasCandidates } from "../config/sessions/store-entry.js";
+import { isSqliteSessionStorePath } from "../config/sessions/store-sqlite.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { openRootFileSync } from "../infra/boundary-file-read.js";
 import { projectPluginSessionExtensionsSync } from "../plugins/host-hook-state.js";
@@ -482,10 +487,15 @@ export type GatewaySessionStoreTargetWithStore = GatewaySessionStoreTarget & {
   store: Record<string, SessionEntry>;
 };
 
+type GatewaySessionStorePointTarget = GatewaySessionStoreTargetWithStore & {
+  match: { entry: SessionEntry; key: string } | undefined;
+};
+
 const singleRowChildSessionCandidateCache = new Map<
   string,
   SingleRowChildSessionCandidateCacheEntry
 >();
+const gatewayPointLookupStores = new WeakSet<Record<string, SessionEntry>>();
 
 function rememberSingleRowChildSessionCandidateCacheEntry(
   storePath: string,
@@ -1007,7 +1017,10 @@ export function resolveDeletedAgentIdFromSessionKey(
   return agentId;
 }
 
-export function loadSessionEntry(sessionKey: string, opts?: { agentId?: string; clone?: boolean }) {
+function loadSessionEntryFromFullStore(
+  sessionKey: string,
+  opts?: { agentId?: string; clone?: boolean },
+) {
   const cfg = getRuntimeConfig();
   const key = normalizeOptionalString(sessionKey) ?? "";
   const target = resolveGatewaySessionStoreTargetWithStore({
@@ -1025,6 +1038,27 @@ export function loadSessionEntry(sessionKey: string, opts?: { agentId?: string; 
     storePath,
     store,
     entry: freshestMatch?.entry,
+    canonicalKey: target.canonicalKey,
+    storeKeys: target.storeKeys,
+    legacyKey,
+  };
+}
+
+export function loadSessionEntry(sessionKey: string, opts?: { agentId?: string; clone?: boolean }) {
+  const cfg = getRuntimeConfig();
+  const key = normalizeOptionalString(sessionKey) ?? "";
+  const target = resolveGatewaySessionStorePointTarget({
+    cfg,
+    key,
+    ...(opts?.clone === false ? { clone: false } : {}),
+    ...(opts?.agentId ? { agentId: opts.agentId } : {}),
+  });
+  const legacyKey = target.match?.key !== target.canonicalKey ? target.match?.key : undefined;
+  return {
+    cfg,
+    storePath: target.storePath,
+    store: target.store,
+    entry: target.match?.entry,
     canonicalKey: target.canonicalKey,
     storeKeys: target.storeKeys,
     legacyKey,
@@ -1366,6 +1400,144 @@ function loadGatewaySessionLookupStore(
   );
 }
 
+function buildGatewaySessionPointLookupKeys(candidateKeys: readonly string[]): string[] {
+  const lookupKeys = new Set<string>();
+  for (const candidateKey of candidateKeys) {
+    const trimmedKey = candidateKey.trim();
+    if (!trimmedKey) {
+      continue;
+    }
+    const normalizedKey = normalizeStoreSessionKey(trimmedKey);
+    lookupKeys.add(normalizedKey);
+    for (const foldedKey of foldedSessionKeyAliasCandidates(normalizedKey)) {
+      lookupKeys.add(foldedKey);
+    }
+  }
+  return [...lookupKeys];
+}
+
+function loadGatewaySessionPointLookupStore(params: {
+  candidateKeys: readonly string[];
+  clone?: boolean;
+  storePath: string;
+}): Record<string, SessionEntry> {
+  if (!isSqliteSessionStorePath(params.storePath)) {
+    return loadGatewaySessionLookupStore(params.storePath, params.clone);
+  }
+  const store = Object.create(null) as Record<string, SessionEntry>;
+  for (const lookupKey of buildGatewaySessionPointLookupKeys(params.candidateKeys)) {
+    const entry = getExactSessionEntry({
+      sessionKey: lookupKey,
+      storePath: params.storePath,
+    });
+    if (entry) {
+      store[normalizeStoreSessionKey(lookupKey)] = entry;
+    }
+  }
+  gatewayPointLookupStores.add(store);
+  return store;
+}
+
+function findFreshestResolvedStoreMatch(
+  store: Record<string, SessionEntry>,
+  candidateKeys: readonly string[],
+): { entry: SessionEntry; key: string } | undefined {
+  let freshest: { entry: SessionEntry; key: string } | undefined;
+  for (const candidateKey of candidateKeys) {
+    const resolved = resolveSessionStoreEntry({ store, sessionKey: candidateKey });
+    if (!resolved.existing) {
+      continue;
+    }
+    const persisted = Object.entries(store).find(([, entry]) => entry === resolved.existing);
+    const match = {
+      entry: resolved.existing,
+      key: persisted?.[0] ?? resolved.normalizedKey,
+    };
+    if (!freshest || (match.entry.updatedAt ?? 0) > (freshest.entry.updatedAt ?? 0)) {
+      freshest = match;
+    }
+  }
+  return freshest;
+}
+
+type GatewaySessionStoreLookupResult = {
+  storePath: string;
+  store: Record<string, SessionEntry>;
+  match: { entry: SessionEntry; key: string } | undefined;
+};
+
+function selectGatewaySessionStoreLookup(params: {
+  agentId: string;
+  cfg: OpenClawConfig;
+  findMatch: (
+    store: Record<string, SessionEntry>,
+    storePath: string,
+  ) => { entry: SessionEntry; key: string } | undefined;
+  initialStore?: Record<string, SessionEntry>;
+  loadStore: (storePath: string) => Record<string, SessionEntry>;
+}): GatewaySessionStoreLookupResult {
+  const candidates = resolveGatewaySessionStoreCandidates(params.cfg, params.agentId);
+  const fallback = candidates[0] ?? {
+    agentId: params.agentId,
+    storePath: resolveStorePath(params.cfg.session?.store, { agentId: params.agentId }),
+  };
+  const loadCandidate = (storePath: string, initialStore?: Record<string, SessionEntry>) => {
+    const store = initialStore ?? params.loadStore(storePath);
+    return { store, match: params.findMatch(store, storePath) };
+  };
+  let selectedStorePath = fallback.storePath;
+  let selected = loadCandidate(fallback.storePath, params.initialStore);
+  let selectedUpdatedAt = selected.match?.entry.updatedAt ?? Number.NEGATIVE_INFINITY;
+
+  for (let index = 1; index < candidates.length; index += 1) {
+    const candidate = candidates[index];
+    if (!candidate) {
+      continue;
+    }
+    const next = loadCandidate(candidate.storePath);
+    if (!next.match) {
+      continue;
+    }
+    const updatedAt = next.match.entry.updatedAt ?? 0;
+    // Mirror combined-store merge behavior so follow-up mutations target the
+    // same backing store that won the listing merge when ids collide.
+    if (!selected.match || updatedAt >= selectedUpdatedAt) {
+      selectedStorePath = candidate.storePath;
+      selected = next;
+      selectedUpdatedAt = updatedAt;
+    }
+  }
+  return {
+    storePath: selectedStorePath,
+    store: selected.store,
+    match: selected.match,
+  };
+}
+
+function resolveGatewaySessionStorePointLookup(params: {
+  cfg: OpenClawConfig;
+  key: string;
+  canonicalKey: string;
+  agentId: string;
+  clone?: boolean;
+}): GatewaySessionStoreLookupResult {
+  const candidateKeys = buildGatewaySessionStoreScanTargets(params);
+  return selectGatewaySessionStoreLookup({
+    agentId: params.agentId,
+    cfg: params.cfg,
+    loadStore: (storePath) =>
+      loadGatewaySessionPointLookupStore({
+        candidateKeys,
+        clone: params.clone,
+        storePath,
+      }),
+    findMatch: (store, storePath) =>
+      isSqliteSessionStorePath(storePath)
+        ? findFreshestResolvedStoreMatch(store, candidateKeys)
+        : findFreshestStoreMatch(store, ...candidateKeys),
+  });
+}
+
 function resolveGatewaySessionStoreLookup(params: {
   cfg: OpenClawConfig;
   key: string;
@@ -1373,49 +1545,15 @@ function resolveGatewaySessionStoreLookup(params: {
   agentId: string;
   clone?: boolean;
   initialStore?: Record<string, SessionEntry>;
-}): {
-  storePath: string;
-  store: Record<string, SessionEntry>;
-  match: { entry: SessionEntry; key: string } | undefined;
-} {
+}): GatewaySessionStoreLookupResult {
   const scanTargets = buildGatewaySessionStoreScanTargets(params);
-  const candidates = resolveGatewaySessionStoreCandidates(params.cfg, params.agentId);
-  const fallback = candidates[0] ?? {
+  return selectGatewaySessionStoreLookup({
     agentId: params.agentId,
-    storePath: resolveStorePath(params.cfg.session?.store, { agentId: params.agentId }),
-  };
-  const loadStore = (storePath: string) => loadGatewaySessionLookupStore(storePath, params.clone);
-  let selectedStorePath = fallback.storePath;
-  let selectedStore = params.initialStore ?? loadStore(fallback.storePath);
-  let selectedMatch = findFreshestStoreMatch(selectedStore, ...scanTargets);
-  let selectedUpdatedAt = selectedMatch?.entry.updatedAt ?? Number.NEGATIVE_INFINITY;
-
-  for (let index = 1; index < candidates.length; index += 1) {
-    const candidate = candidates[index];
-    if (!candidate) {
-      continue;
-    }
-    const store = loadStore(candidate.storePath);
-    const match = findFreshestStoreMatch(store, ...scanTargets);
-    if (!match) {
-      continue;
-    }
-    const updatedAt = match.entry.updatedAt ?? 0;
-    // Mirror combined-store merge behavior so follow-up mutations target the
-    // same backing store that won the listing merge when ids collide.
-    if (!selectedMatch || updatedAt >= selectedUpdatedAt) {
-      selectedStorePath = candidate.storePath;
-      selectedStore = store;
-      selectedMatch = match;
-      selectedUpdatedAt = updatedAt;
-    }
-  }
-
-  return {
-    storePath: selectedStorePath,
-    store: selectedStore,
-    match: selectedMatch,
-  };
+    cfg: params.cfg,
+    findMatch: (store) => findFreshestStoreMatch(store, ...scanTargets),
+    initialStore: params.initialStore,
+    loadStore: (storePath) => loadGatewaySessionLookupStore(storePath, params.clone),
+  });
 }
 
 function resolveExplicitDeletedLegacyMainStoreTarget(params: {
@@ -1483,6 +1621,60 @@ function resolveExplicitDeletedLegacyMainStoreTarget(params: {
     canonicalKey,
     storeKeys: Array.from(storeKeys),
     store: best.store,
+  };
+}
+
+function resolveGatewaySessionStorePointTarget(params: {
+  cfg: OpenClawConfig;
+  key: string;
+  agentId?: string;
+  clone?: boolean;
+}): GatewaySessionStorePointTarget {
+  const key = normalizeOptionalString(params.key) ?? "";
+  const explicitDeletedMainTarget = resolveExplicitDeletedLegacyMainStoreTarget({
+    cfg: params.cfg,
+    key,
+    clone: params.clone,
+  });
+  if (explicitDeletedMainTarget) {
+    return {
+      ...explicitDeletedMainTarget,
+      match: resolveFreshestSessionStoreMatchFromStoreKeys(
+        explicitDeletedMainTarget.store,
+        explicitDeletedMainTarget.storeKeys,
+      ),
+    };
+  }
+
+  const canonicalKey = resolveSessionStoreKey({
+    cfg: params.cfg,
+    sessionKey: key,
+  });
+  const requestedAgentId = normalizeOptionalString(params.agentId);
+  const agentId =
+    canonicalKey === "global" && requestedAgentId
+      ? normalizeAgentId(requestedAgentId)
+      : resolveSessionStoreAgentId(params.cfg, canonicalKey);
+  const lookup = resolveGatewaySessionStorePointLookup({
+    cfg: params.cfg,
+    key,
+    canonicalKey,
+    agentId,
+    ...(params.clone === false ? { clone: false } : {}),
+  });
+  const storeKeys = new Set<string>(
+    buildGatewaySessionStoreScanTargets({ cfg: params.cfg, key, canonicalKey, agentId }),
+  );
+  if (lookup.match) {
+    storeKeys.add(lookup.match.key);
+  }
+  return {
+    agentId,
+    storePath: lookup.storePath,
+    canonicalKey,
+    storeKeys: [...storeKeys],
+    store: lookup.store,
+    match: lookup.match,
   };
 }
 
@@ -2346,7 +2538,9 @@ export function loadGatewaySessionRow(
   },
 ): GatewaySessionRow | null {
   const now = options?.now ?? Date.now();
-  const { cfg, storePath, store, entry, canonicalKey } = loadSessionEntry(sessionKey, {
+  // Single-row projections include persisted child-session relationships, so this
+  // explicit listing surface keeps the full-store compatibility path.
+  const { cfg, storePath, store, entry, canonicalKey } = loadSessionEntryFromFullStore(sessionKey, {
     clone: false,
     ...(options?.agentId ? { agentId: options.agentId } : {}),
   });
@@ -2385,16 +2579,19 @@ export function buildGatewaySessionInfo(params: {
   modelCatalog?: ModelCatalogEntry[];
 }): GatewaySessionRow {
   const now = params.now ?? Date.now();
+  const store = gatewayPointLookupStores.has(params.store)
+    ? loadGatewaySessionLookupStore(params.storePath, false)
+    : params.store;
   const storeChildSessionsByKey = buildSingleRowStoreChildSessionsByKey({
     storePath: params.storePath,
-    store: params.store,
+    store,
     key: params.key,
     now,
   });
   return buildGatewaySessionRow({
     cfg: params.cfg,
     storePath: params.storePath,
-    store: params.store,
+    store,
     key: params.key,
     entry: params.entry,
     agentId: params.agentId,
