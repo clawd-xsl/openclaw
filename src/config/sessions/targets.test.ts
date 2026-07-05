@@ -58,7 +58,15 @@ function countMatching<T>(items: readonly T[], predicate: (item: T) => boolean):
 
 async function resolveTargetsForCustomRoot(home: string, agentIds: string[]) {
   const customRoot = path.join(home, "custom-state");
-  const storePaths = await createAgentSessionStores(customRoot, agentIds);
+  const legacyStorePaths = await createAgentSessionStores(customRoot, agentIds);
+  const storePaths = Object.fromEntries(
+    await Promise.all(
+      Object.entries(legacyStorePaths).map(async ([agentId, jsonPath]) => [
+        agentId,
+        await resolveDefaultSqliteStorePath(path.dirname(jsonPath)),
+      ]),
+    ),
+  );
   const cfg = createCustomRootCfg(customRoot);
   const targets = resolveAllAgentSessionStoreTargetsSync(cfg, { env: process.env });
   return { storePaths, targets };
@@ -158,7 +166,7 @@ describe("resolveSessionStoreTargets", () => {
     };
 
     expect(resolveSessionStoreTargets(cfg, { allAgents: true })).toEqual([
-      { agentId: "main", storePath: path.resolve("/tmp/shared-sessions.json") },
+      { agentId: "main", storePath: path.resolve("/tmp/shared-sessions.sqlite") },
     ]);
   });
 
@@ -192,7 +200,7 @@ describe("resolveAgentSessionStoreTargetsSync", () => {
       expect(resolveAgentSessionStoreTargetsSync(cfg, "codex", { env: process.env })).toEqual([
         {
           agentId: "codex",
-          storePath: storePaths.codex,
+          storePath: await resolveDefaultSqliteStorePath(path.dirname(storePaths.codex)),
         },
       ]);
     });
@@ -209,7 +217,7 @@ describe("resolveAgentSessionStoreTargetsSync", () => {
       ).toEqual([
         {
           agentId: "retired-agent",
-          storePath: storePaths["Retired Agent"],
+          storePath: await resolveDefaultSqliteStorePath(path.dirname(storePaths["Retired Agent"])),
         },
       ]);
     });

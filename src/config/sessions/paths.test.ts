@@ -15,4 +15,24 @@ describe("resolveStorePath", () => {
     expect(resolveStorePath(undefined, { agentId: "work", env })).toBe(expected);
     expect(resolveStorePath("", { agentId: "work", env })).toBe(expected);
   });
+
+  it("keeps legacy configured JSON paths on their sibling SQLite store", () => {
+    const root = path.join(path.parse(process.cwd()).root, "openclaw-configured-store");
+
+    expect(resolveStorePath(path.join(root, "sessions.json"))).toBe(
+      path.join(root, "sessions.sqlite"),
+    );
+    expect(resolveStorePath(path.join(root, "sessions.hot.json"))).toBe(
+      path.join(root, "sessions.sqlite"),
+    );
+    expect(
+      resolveStorePath(path.join(root, "{agentId}", "sessions.json"), { agentId: "work" }),
+    ).toBe(path.join(root, "work", "sessions.sqlite"));
+  });
+
+  it("leaves explicitly configured database paths unchanged", () => {
+    const root = path.join(path.parse(process.cwd()).root, "openclaw-configured-store");
+
+    expect(resolveStorePath(path.join(root, "sessions.db"))).toBe(path.join(root, "sessions.db"));
+  });
 });
