@@ -2,19 +2,29 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { clearSessionStoreCacheForTest } from "openclaw/plugin-sdk/session-store-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readCodexAppServerBinding, writeCodexAppServerBinding } from "./session-binding.js";
 import { rotateOversizedCodexAppServerStartupBinding } from "./startup-binding.js";
 
 describe("Codex app-server startup binding", () => {
   let tempDir: string;
+  let previousStateDir: string | undefined;
 
   beforeEach(async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-codex-startup-binding-"));
+    previousStateDir = process.env.OPENCLAW_STATE_DIR;
+    process.env.OPENCLAW_STATE_DIR = tempDir;
   });
 
   afterEach(async () => {
     vi.restoreAllMocks();
+    clearSessionStoreCacheForTest();
+    if (previousStateDir === undefined) {
+      delete process.env.OPENCLAW_STATE_DIR;
+    } else {
+      process.env.OPENCLAW_STATE_DIR = previousStateDir;
+    }
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
@@ -33,9 +43,10 @@ describe("Codex app-server startup binding", () => {
   }
 
   async function writeSessionRecord(sessionFile: string, record: Record<string, unknown>) {
-    await fs.mkdir(path.dirname(sessionFile), { recursive: true });
+    const sessionsDir = path.join(tempDir, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
     await fs.writeFile(
-      path.join(path.dirname(sessionFile), "sessions.json"),
+      path.join(sessionsDir, "sessions.json"),
       JSON.stringify({
         "agent:main:session-1": {
           sessionFile,
@@ -78,18 +89,16 @@ describe("Codex app-server startup binding", () => {
     expect(savedBinding?.threadId).toBe("thread-existing");
   });
 
-  it("reuses the session record cache while sessions.json is unchanged", async () => {
+  it("reads session records through the canonical store without JSON polling", async () => {
     const sessionFile = path.join(tempDir, "session.jsonl");
     const workspaceDir = path.join(tempDir, "workspace");
     const agentDir = path.join(tempDir, "agent");
     await writeExistingBinding(sessionFile, workspaceDir, { dynamicToolsFingerprint: "[]" });
     await writeSessionRecord(sessionFile, { totalTokens: 12_000 });
-    const sessionsJson = path.join(path.dirname(sessionFile), "sessions.json");
-    const readFileSpy = vi.spyOn(fs, "readFile");
-
     for (let i = 0; i < 2; i += 1) {
       const binding = await rotateOversizedCodexAppServerStartupBinding({
         binding: await readCodexAppServerBinding(sessionFile),
+        sessionKey: "agent:main:session-1",
         sessionFile,
         agentDir,
         config: undefined,
@@ -97,10 +106,10 @@ describe("Codex app-server startup binding", () => {
       expect(binding?.threadId).toBe("thread-existing");
     }
 
-    const sessionStoreReads = readFileSpy.mock.calls.filter(
-      ([file]) => typeof file === "string" && file === sessionsJson,
-    );
-    expect(sessionStoreReads).toHaveLength(1);
+    const sessionsDir = path.join(tempDir, "agents", "main", "sessions");
+    const files = await fs.readdir(sessionsDir);
+    expect(files).toContain("sessions.sqlite");
+    expect(files).not.toContain("sessions.json");
   });
 
   it("checks native rollout token pressure under default compaction config", async () => {
@@ -128,6 +137,7 @@ describe("Codex app-server startup binding", () => {
 
     const binding = await rotateOversizedCodexAppServerStartupBinding({
       binding: await readCodexAppServerBinding(sessionFile),
+      sessionKey: "agent:main:session-1",
       sessionFile,
       agentDir,
       config: undefined,
@@ -486,6 +496,7 @@ describe("Codex app-server startup binding", () => {
 
     const binding = await rotateOversizedCodexAppServerStartupBinding({
       binding: await readCodexAppServerBinding(sessionFile),
+      sessionKey: "agent:main:session-1",
       sessionFile,
       agentDir,
       config: undefined,

@@ -9,6 +9,11 @@ import {
   embeddedAgentLog,
   type EmbeddedRunAttemptParams,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
+import {
+  getSessionEntry,
+  listSessionEntries,
+  resolveStorePath,
+} from "openclaw/plugin-sdk/session-store-runtime";
 import { resolveCodexAppServerHomeDir } from "./auth-bridge.js";
 import { isJsonObject, type JsonValue } from "./protocol.js";
 import { clearCodexAppServerBinding, type CodexAppServerThreadBinding } from "./session-binding.js";
@@ -34,15 +39,6 @@ const CODEX_APP_SERVER_BYTE_UNITS: Record<string, number> = {
   tb: 1024 * 1024 * 1024 * 1024,
   tib: 1024 * 1024 * 1024 * 1024,
 };
-type CodexSessionRecordCacheEntry = {
-  sessionsFile: string;
-  mtimeMs: number;
-  size: number;
-  record: (Record<string, unknown> & { sessionKey: string }) | undefined;
-};
-
-const codexSessionRecordCache = new Map<string, CodexSessionRecordCacheEntry>();
-
 function parseCodexAppServerByteLimit(value: unknown): number | undefined {
   if (typeof value === "number" && Number.isFinite(value) && value > 0) {
     return Math.floor(value);
@@ -120,55 +116,52 @@ async function listCodexAppServerRolloutFilesForThread(
   return files;
 }
 
-async function readCodexSessionRecordForSessionFile(
-  sessionFile: string,
-): Promise<(Record<string, unknown> & { sessionKey: string }) | undefined> {
-  const sessionsFile = path.join(path.dirname(sessionFile), "sessions.json");
-  const resolvedSessionFile = path.resolve(sessionFile);
-  let stat: Awaited<ReturnType<typeof fs.stat>>;
+function readCodexSessionRecordForSessionFile(params: {
+  agentId: string;
+  config: EmbeddedRunAttemptParams["config"] | undefined;
+  sessionFile: string;
+  sessionKey?: string;
+}): (Record<string, unknown> & { sessionKey: string }) | undefined {
+  const storePath = resolveStorePath(params.config?.session?.store, { agentId: params.agentId });
+  const sessionsDir = path.dirname(storePath);
+  const resolvedSessionFile = path.resolve(params.sessionFile);
   try {
-    stat = await fs.stat(sessionsFile);
-  } catch {
-    codexSessionRecordCache.delete(resolvedSessionFile);
-    return undefined;
-  }
-  const cached = codexSessionRecordCache.get(resolvedSessionFile);
-  if (
-    cached?.sessionsFile === sessionsFile &&
-    cached.mtimeMs === stat.mtimeMs &&
-    cached.size === stat.size
-  ) {
-    return cached.record;
-  }
-  let store: JsonValue | undefined;
-  try {
-    store = JSON.parse(await fs.readFile(sessionsFile, "utf8")) as JsonValue;
-  } catch {
-    codexSessionRecordCache.delete(resolvedSessionFile);
-    return undefined;
-  }
-  if (!isJsonObject(store)) {
-    codexSessionRecordCache.delete(resolvedSessionFile);
-    return undefined;
-  }
-  let found: (Record<string, unknown> & { sessionKey: string }) | undefined;
-  for (const [sessionKey, record] of Object.entries(store)) {
-    if (!isJsonObject(record) || typeof record.sessionFile !== "string") {
-      continue;
+    if (params.sessionKey) {
+      const entry = getSessionEntry({
+        agentId: params.agentId,
+        sessionKey: params.sessionKey,
+        storePath,
+        hydrateSkillPromptRefs: false,
+      });
+      if (!entry || typeof entry.sessionFile !== "string") {
+        return undefined;
+      }
+      const candidate = path.isAbsolute(entry.sessionFile)
+        ? entry.sessionFile
+        : path.resolve(sessionsDir, entry.sessionFile);
+      return path.resolve(candidate) === resolvedSessionFile
+        ? { sessionKey: params.sessionKey, ...entry }
+        : undefined;
     }
-    if (path.resolve(record.sessionFile) !== resolvedSessionFile) {
-      continue;
+    for (const { sessionKey, entry } of listSessionEntries({
+      agentId: params.agentId,
+      storePath,
+      hydrateSkillPromptRefs: false,
+    })) {
+      if (typeof entry.sessionFile !== "string") {
+        continue;
+      }
+      const candidate = path.isAbsolute(entry.sessionFile)
+        ? entry.sessionFile
+        : path.resolve(sessionsDir, entry.sessionFile);
+      if (path.resolve(candidate) === resolvedSessionFile) {
+        return { sessionKey, ...entry };
+      }
     }
-    found = { sessionKey, ...record };
-    break;
+  } catch {
+    return undefined;
   }
-  codexSessionRecordCache.set(resolvedSessionFile, {
-    sessionsFile,
-    mtimeMs: stat.mtimeMs,
-    size: stat.size,
-    record: found,
-  });
-  return found;
+  return undefined;
 }
 
 type CodexAppServerRolloutTokenSnapshot = {
@@ -327,6 +320,8 @@ function hasContextEngineThreadBootstrapProjection(binding: CodexAppServerThread
 /** Clears and drops a binding when the native Codex thread is too large to resume safely. */
 export async function rotateOversizedCodexAppServerStartupBinding(params: {
   binding: CodexAppServerThreadBinding | undefined;
+  agentId?: string;
+  sessionKey?: string;
   sessionFile: string;
   agentDir: string;
   codexHome?: string;
@@ -338,7 +333,12 @@ export async function rotateOversizedCodexAppServerStartupBinding(params: {
   if (!binding?.threadId) {
     return binding;
   }
-  const sessionRecord = await readCodexSessionRecordForSessionFile(params.sessionFile);
+  const sessionRecord = readCodexSessionRecordForSessionFile({
+    agentId: params.agentId ?? "main",
+    config: params.config,
+    sessionFile: params.sessionFile,
+    sessionKey: params.sessionKey,
+  });
   const rolloutFiles = await listCodexAppServerRolloutFilesForThread(
     params.agentDir,
     binding.threadId,

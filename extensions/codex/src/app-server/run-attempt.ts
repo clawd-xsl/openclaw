@@ -631,6 +631,8 @@ export async function runCodexAppServerAttempt(
 
   startupBinding = await rotateOversizedCodexAppServerStartupBinding({
     binding: startupBinding,
+    agentId: sessionAgentId,
+    sessionKey: contextSessionKey,
     sessionFile: params.sessionFile,
     agentDir,
     codexHome: appServer.start.env?.CODEX_HOME,
@@ -1358,6 +1360,8 @@ export async function runCodexAppServerAttempt(
     });
     startupBinding = await rotateOversizedCodexAppServerStartupBinding({
       binding: startupBinding,
+      agentId: sessionAgentId,
+      sessionKey: contextSessionKey,
       sessionFile: params.sessionFile,
       agentDir,
       codexHome: appServer.start.env?.CODEX_HOME,
