@@ -9,10 +9,12 @@ import {
   resetAgentEventsForTest,
 } from "../../infra/agent-events.js";
 import {
+  createCliAssistantBlockStreamer,
   createCliToolSummaryTracker,
   keepCliSessionBindingOnlyWhenReused,
   runCliAgentWithLifecycle,
 } from "./agent-runner-cli-dispatch.js";
+import { createBlockReplyPipeline } from "./block-reply-pipeline.js";
 
 const cliDispatchState = vi.hoisted(() => ({
   runCliAgentMock: vi.fn(),
@@ -165,6 +167,113 @@ describe("runCliAgentWithLifecycle", () => {
       livenessState: "paused",
       stopReason: "end_turn",
     });
+  });
+
+  it("keeps assistant deltas ordered across tool and commentary boundaries", async () => {
+    const delivered: string[] = [];
+    cliDispatchState.runCliAgentMock.mockImplementationOnce(async () => {
+      emitAgentEvent({
+        runId: "run-blocks",
+        stream: "assistant",
+        data: { text: "First", delta: "First" },
+      });
+      emitAgentEvent({
+        runId: "run-blocks",
+        stream: "tool",
+        data: { phase: "start", name: "Read", toolCallId: "tool-1" },
+      });
+      emitAgentEvent({
+        runId: "run-blocks",
+        stream: "assistant",
+        data: { text: "First second", delta: " second" },
+      });
+      emitAgentEvent({
+        runId: "run-blocks",
+        stream: "item",
+        data: { kind: "preamble", progressText: "Checking one more thing." },
+      });
+      emitAgentEvent({
+        runId: "run-blocks",
+        stream: "assistant",
+        data: { text: "First second third", delta: " third" },
+      });
+      return {
+        payloads: [{ text: "First second third" }],
+        meta: { durationMs: 1 },
+      } satisfies EmbeddedAgentRunResult;
+    });
+
+    await runCliAgentWithLifecycle({
+      runId: "run-blocks",
+      provider: "claude-cli",
+      onAssistantDelta: async (delta) => {
+        delivered.push(`delta:${delta}`);
+      },
+      onAssistantBoundary: async () => {
+        delivered.push("boundary");
+      },
+      runParams: {
+        sessionId: "session-1",
+        sessionFile: "/tmp/session.jsonl",
+        workspaceDir: "/tmp/workspace",
+        prompt: "hello",
+        provider: "claude-cli",
+        model: "claude",
+        thinkLevel: "off",
+        timeoutMs: 1_000,
+        runId: "run-blocks",
+      },
+    });
+
+    expect(delivered).toEqual([
+      "delta:First",
+      "boundary",
+      "delta: second",
+      "boundary",
+      "delta: third",
+      "boundary",
+    ]);
+  });
+});
+
+describe("createCliAssistantBlockStreamer", () => {
+  it("concatenates literal deltas and drops buffered text after abort", async () => {
+    const delivered: string[] = [];
+    let aborted = false;
+    const pipeline = createBlockReplyPipeline({
+      onBlockReply: async (payload) => {
+        if (payload.text) {
+          delivered.push(payload.text);
+        }
+      },
+      timeoutMs: 5_000,
+    });
+    const streamer = createCliAssistantBlockStreamer({
+      coalescing: {
+        minChars: 100,
+        maxChars: 1_000,
+        idleMs: 0,
+        joiner: "\n\n",
+      },
+      shouldAbort: () => aborted,
+      deliver: async (text) => {
+        pipeline.enqueue({ text });
+        await pipeline.flush({ force: true });
+      },
+    });
+
+    streamer.enqueue("Hello");
+    streamer.enqueue(" world");
+    await streamer.flush({ force: true });
+
+    streamer.enqueue(" stale");
+    aborted = true;
+    await streamer.flush({ force: true });
+    streamer.stop();
+
+    expect(delivered).toEqual(["Hello world"]);
+    expect(pipeline.didStream()).toBe(true);
+    expect(pipeline.hasSentPayload({ text: "Hello world" })).toBe(true);
   });
 });
 

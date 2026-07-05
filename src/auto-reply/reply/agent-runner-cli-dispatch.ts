@@ -31,6 +31,8 @@ import {
 import { FAST_MODE_AUTO_PROGRESS_KIND, type ReplyPayload } from "../reply-payload.js";
 import { formatToolAggregate } from "../tool-meta.js";
 import { resolveAgentLifecycleTerminalMetadata } from "./agent-lifecycle-terminal.js";
+import { createBlockReplyCoalescer } from "./block-reply-coalescer.js";
+import type { BlockStreamingCoalescing } from "./block-streaming.js";
 
 function isClaudeCliProvider(provider: string): boolean {
   return normalizeLowercaseStringOrEmpty(provider) === "claude-cli";
@@ -96,6 +98,54 @@ async function stopAgentEventBridges(bridges: readonly AgentEventBridge[]): Prom
   }
 }
 
+/** Coalesces raw CLI assistant deltas before handing complete blocks to reply delivery. */
+export function createCliAssistantBlockStreamer(params: {
+  coalescing: BlockStreamingCoalescing;
+  shouldAbort: () => boolean;
+  deliver: (text: string) => Promise<void>;
+}) {
+  let delivery = Promise.resolve();
+  const coalescer = createBlockReplyCoalescer({
+    config: {
+      ...params.coalescing,
+      // CLI events are literal text deltas. Inserting the normal block joiner
+      // between them would change the assistant's output.
+      joiner: "",
+    },
+    shouldAbort: params.shouldAbort,
+    onFlush: (payload) => {
+      const text = payload.text;
+      if (!text) {
+        return;
+      }
+      delivery = delivery
+        .then(async () => {
+          if (!params.shouldAbort()) {
+            await params.deliver(text);
+          }
+        })
+        .catch(() => undefined);
+      return delivery;
+    },
+  });
+
+  return {
+    enqueue(delta: string) {
+      if (!delta || params.shouldAbort()) {
+        return;
+      }
+      coalescer.enqueue({ text: delta });
+    },
+    async flush(options?: { force?: boolean }): Promise<void> {
+      await coalescer.flush(options);
+      await delivery;
+    },
+    stop() {
+      coalescer.stop();
+    },
+  };
+}
+
 function createAssistantTextBridge(params: {
   runId: string;
   suppressed?: boolean;
@@ -137,6 +187,42 @@ function readCommentaryTextPayload(evt: AgentEventPayload): CommentaryTextPayloa
     text,
     ...(typeof evt.data.itemId === "string" ? { itemId: evt.data.itemId } : {}),
   };
+}
+
+type CliAssistantBlockEvent = { kind: "delta"; delta: string } | { kind: "boundary" };
+
+function createAssistantBlockEventBridge(params: {
+  runId: string;
+  suppressed?: boolean;
+  onDelta?: (delta: string) => Promise<void>;
+  onBoundary?: () => Promise<void>;
+}) {
+  const deliver =
+    params.onDelta || params.onBoundary
+      ? async (event: CliAssistantBlockEvent) => {
+          if (event.kind === "delta") {
+            await params.onDelta?.(event.delta);
+            return;
+          }
+          await params.onBoundary?.();
+        }
+      : undefined;
+  return createAgentEventBridge({
+    runId: params.runId,
+    suppressed: params.suppressed,
+    deliver,
+    read: (evt): CliAssistantBlockEvent | undefined => {
+      if (evt.stream === "assistant") {
+        const delta = typeof evt.data.delta === "string" ? evt.data.delta : "";
+        return delta ? { kind: "delta", delta } : undefined;
+      }
+      if (evt.stream === "tool") {
+        const phase = evt.data.phase;
+        return phase === "start" || phase === "result" ? { kind: "boundary" } : undefined;
+      }
+      return readCommentaryTextPayload(evt) ? { kind: "boundary" } : undefined;
+    },
+  });
 }
 
 export type CliToolEventPayload = {
@@ -342,6 +428,8 @@ type RunCliAgentWithLifecycleParams = {
   onAgentRunStart?: () => void;
   suppressAssistantBridge?: boolean;
   onAssistantText?: (text: string) => Promise<void>;
+  onAssistantDelta?: (delta: string) => Promise<void>;
+  onAssistantBoundary?: () => Promise<void>;
   onReasoningText?: (text: string) => Promise<void>;
   onToolEvent?: (payload: CliToolEventPayload) => Promise<void>;
   onCommentaryText?: (payload: CommentaryTextPayload) => Promise<void>;
@@ -457,6 +545,12 @@ async function runCliAgentWithLifecycleInternal(
       ? params.onReasoningText
       : undefined,
   });
+  const assistantBlockBridge = createAssistantBlockEventBridge({
+    runId: params.runId,
+    suppressed: params.suppressAssistantBridge,
+    onDelta: params.onAssistantDelta,
+    onBoundary: params.onAssistantBoundary,
+  });
   const toolBridge = createToolEventBridge({
     runId: params.runId,
     suppressed: params.suppressAssistantBridge,
@@ -475,6 +569,7 @@ async function runCliAgentWithLifecycleInternal(
   const bridges = [
     assistantBridge,
     reasoningBridge,
+    assistantBlockBridge,
     toolBridge,
     commentaryBridge,
     toolBoundaryBridge,
@@ -491,6 +586,9 @@ async function runCliAgentWithLifecycleInternal(
     }
     const result = params.transformResult?.(rawResult) ?? rawResult;
     await stopAgentEventBridges(bridges);
+    if (!params.suppressAssistantBridge) {
+      await params.onAssistantBoundary?.();
+    }
 
     const cliText = normalizeOptionalString(result.payloads?.[0]?.text);
     if (cliText) {

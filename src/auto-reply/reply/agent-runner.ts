@@ -1736,6 +1736,7 @@ export async function runReplyAgent(params: {
         typingSignals,
         blockReplyPipeline,
         blockStreamingEnabled,
+        blockReplyCoalescing,
         blockReplyChunking,
         resolvedBlockStreamingBreak,
         applyReplyToMode,

@@ -117,6 +117,7 @@ import {
 import { resolveRunAuthProfile } from "./agent-runner-auth-profile.js";
 import {
   clearDroppedCliSessionBinding,
+  createCliAssistantBlockStreamer,
   createCliToolSummaryTracker,
   keepCliSessionBindingOnlyWhenReused,
   runCliAgentWithLifecycle,
@@ -132,6 +133,7 @@ import {
   resolveRunFastModeForFallbackCandidate,
 } from "./agent-runner-utils.js";
 import type { BlockReplyPipeline } from "./block-reply-pipeline.js";
+import type { BlockStreamingCoalescing } from "./block-streaming.js";
 import {
   createCompactionHookNoticePayload,
   createCompactionNoticePayload,
@@ -1615,6 +1617,7 @@ async function runAgentTurnWithFallbackInternal(
     typingSignals: TypingSignaler;
     blockReplyPipeline: BlockReplyPipeline | null;
     blockStreamingEnabled: boolean;
+    blockReplyCoalescing?: BlockStreamingCoalescing;
     blockReplyChunking?: {
       minChars: number;
       maxChars: number;
@@ -2352,7 +2355,23 @@ async function runAgentTurnWithFallbackInternal(
                   await params.opts?.onToolResult?.(payload);
                 },
               });
-              const result = await agentTurnTiming.measure("cli_run", () =>
+              const cliAssistantBlockStreamer =
+                params.blockStreamingEnabled &&
+                params.blockReplyCoalescing &&
+                blockReplyHandler &&
+                blockReplyPipeline &&
+                !params.followupRun.run.silentExpected
+                  ? createCliAssistantBlockStreamer({
+                      coalescing: params.blockReplyCoalescing,
+                      shouldAbort: () =>
+                        runAbortSignal?.aborted === true || blockReplyPipeline.isAborted(),
+                      deliver: async (text) => {
+                        await blockReplyHandler({ text });
+                        await blockReplyPipeline.flush({ force: true });
+                      },
+                    })
+                  : undefined;
+              const runCliTurn = () =>
                 runCliAgentWithLifecycle({
                   runId,
                   lifecycleGeneration,
@@ -2362,12 +2381,27 @@ async function runAgentTurnWithFallbackInternal(
                   onAgentRunStart: notifyAgentRunStart,
                   suppressAssistantBridge: params.followupRun.run.silentExpected,
                   onAssistantText: async (text) => {
-                    const textForTyping = await handlePartialForTyping({ text } as ReplyPayload);
+                    const textForTyping = cliAssistantBlockStreamer
+                      ? (() => {
+                          const normalized = normalizeStreamingText({ text });
+                          return normalized.skip ? undefined : normalized.text;
+                        })()
+                      : await handlePartialForTyping({ text } as ReplyPayload);
                     if (textForTyping === undefined || !params.opts?.onPartialReply) {
                       return;
                     }
                     await params.opts.onPartialReply({ text: textForTyping });
                   },
+                  onAssistantDelta: cliAssistantBlockStreamer
+                    ? async (delta) => {
+                        cliAssistantBlockStreamer.enqueue(delta);
+                      }
+                    : undefined,
+                  onAssistantBoundary: cliAssistantBlockStreamer
+                    ? async () => {
+                        await cliAssistantBlockStreamer.flush({ force: true });
+                      }
+                    : undefined,
                   onReasoningText: async (text) => {
                     await params.opts?.onReasoningStream?.({
                       text,
@@ -2503,8 +2537,13 @@ async function runAgentTurnWithFallbackInternal(
                     onExecutionPhase: signalExecutionPhaseForTyping,
                     replyOperation: params.replyOperation,
                   },
-                }),
-              );
+                });
+              let result: EmbeddedAgentRunResult;
+              try {
+                result = await agentTurnTiming.measure("cli_run", runCliTurn);
+              } finally {
+                cliAssistantBlockStreamer?.stop();
+              }
               if (droppedCliSessionReplacement) {
                 await clearDroppedCliSessionBinding({
                   provider: cliExecutionProvider,

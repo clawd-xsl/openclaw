@@ -3080,6 +3080,89 @@ describe("runAgentTurnWithFallback", () => {
     expect(partialTexts).toEqual(["Hello", "Hello world"]);
   });
 
+  it("delivers CLI assistant deltas as blocks at tool, commentary, and final boundaries", async () => {
+    state.isCliProviderMock.mockReturnValue(true);
+    state.runWithModelFallbackMock.mockImplementationOnce(async (params: FallbackRunnerParams) => ({
+      result: await params.run("claude-cli", "claude-opus-4-8"),
+      provider: "claude-cli",
+      model: "claude-opus-4-8",
+      attempts: [],
+    }));
+    state.runCliAgentMock.mockImplementationOnce(async (params: { runId: string }) => {
+      const agentEvents = await vi.importActual<typeof import("../../infra/agent-events.js")>(
+        "../../infra/agent-events.js",
+      );
+      agentEvents.emitAgentEvent({
+        runId: params.runId,
+        stream: "assistant",
+        data: { text: "First", delta: "First" },
+      });
+      agentEvents.emitAgentEvent({
+        runId: params.runId,
+        stream: "tool",
+        data: { phase: "start", name: "Read", toolCallId: "tool-1", args: {} },
+      });
+      agentEvents.emitAgentEvent({
+        runId: params.runId,
+        stream: "item",
+        data: { kind: "preamble", progressText: "Checking another file." },
+      });
+      agentEvents.emitAgentEvent({
+        runId: params.runId,
+        stream: "assistant",
+        data: { text: "First second", delta: " second" },
+      });
+      return { payloads: [{ text: "First second" }], meta: {} };
+    });
+
+    const deliveredBlocks: string[] = [];
+    state.createBlockReplyDeliveryHandlerMock.mockImplementationOnce(
+      () => async (payload: ReplyPayload) => {
+        if (payload.text) {
+          deliveredBlocks.push(payload.text);
+        }
+      },
+    );
+    const blockReplyPipeline = {
+      enqueue: vi.fn(),
+      flush: vi.fn(async () => {}),
+      stop: vi.fn(),
+      hasBuffered: vi.fn(() => false),
+      didStream: vi.fn(() => true),
+      isAborted: vi.fn(() => false),
+      hasSentPayload: vi.fn(() => true),
+      getSentMediaUrls: vi.fn(() => []),
+    };
+    const followupRun = createFollowupRun();
+    followupRun.run.provider = "claude-cli";
+    followupRun.run.model = "claude-opus-4-8";
+    const onItemEvent = vi.fn<NonNullable<GetReplyOptions["onItemEvent"]>>(async () => undefined);
+    const runAgentTurnWithFallback = await getRunAgentTurnWithFallback();
+
+    await runAgentTurnWithFallback({
+      ...createMinimalRunAgentTurnParams({
+        followupRun,
+        opts: {
+          onBlockReply: vi.fn(async () => undefined),
+          onItemEvent,
+          commentaryProgressEnabled: true,
+        },
+      }),
+      blockReplyPipeline,
+      blockStreamingEnabled: true,
+      blockReplyCoalescing: {
+        minChars: 100,
+        maxChars: 1_000,
+        idleMs: 5_000,
+        joiner: "\n\n",
+      },
+    });
+
+    expect(deliveredBlocks).toEqual(["First", " second"]);
+    expect(blockReplyPipeline.flush).toHaveBeenCalledTimes(2);
+    expect(onItemEvent).toHaveBeenCalledOnce();
+  });
+
   it("serializes and drains bridged CLI assistant previews before completing (#76869)", async () => {
     state.isCliProviderMock.mockReturnValue(true);
     state.runWithModelFallbackMock.mockImplementationOnce(async (params: FallbackRunnerParams) => ({
