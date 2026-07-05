@@ -171,13 +171,17 @@ describe("Claude CLI model aliases", () => {
 
     expect(aliases?.["fable"]).toBe("fable");
     expect(aliases?.["fable-5"]).toBe("fable");
+    expect(aliases?.["fable[1m]"]).toBe("fable[1m]");
     expect(aliases?.["claude-fable-5"]).toBe("fable");
+    expect(aliases?.["claude-fable-5[1m]"]).toBe("fable[1m]");
     expect(aliases?.["opus"]).toBe("opus");
     expect(aliases?.["opus-4.8"]).toBe("claude-opus-4-8");
+    expect(aliases?.["opus-4.8[1m]"]).toBe("claude-opus-4-8[1m]");
     expect(aliases?.["opus-4.7"]).toBe("claude-opus-4-7");
     expect(aliases?.["opus-4.6"]).toBe("claude-opus-4-6[1m]");
     expect(aliases?.["opus-4.6[1m]"]).toBe("claude-opus-4-6[1m]");
     expect(aliases?.["claude-opus-4-8"]).toBe("claude-opus-4-8");
+    expect(aliases?.["claude-opus-4-8[1m]"]).toBe("claude-opus-4-8[1m]");
     expect(aliases?.["claude-opus-4-7"]).toBe("claude-opus-4-7");
     expect(aliases?.["claude-opus-4-6"]).toBe("claude-opus-4-6[1m]");
     expect(aliases?.["claude-opus-4-6[1m]"]).toBe("claude-opus-4-6[1m]");
@@ -228,6 +232,25 @@ describe("Claude CLI catalog", () => {
         image: { maxSidePx: 2576, preferredSidePx: 2576, tokenMode: "provider" },
       },
     });
+  });
+
+  it("advertises explicit Claude Code 1M selectors", () => {
+    expect(buildClaudeCliCatalogEntries()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "claude-fable-5[1m]",
+          name: "Claude Fable 5 1M (Claude CLI)",
+          contextWindow: 1_000_000,
+          contextTokens: 1_000_000,
+        }),
+        expect.objectContaining({
+          id: "claude-opus-4-8[1m]",
+          name: "Claude Opus 4.8 1M (Claude CLI)",
+          contextWindow: 1_048_576,
+          contextTokens: 1_048_576,
+        }),
+      ]),
+    );
   });
 
   it("advertises the retained Opus 4.6 long-context route", () => {

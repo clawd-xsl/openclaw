@@ -16,7 +16,9 @@ const CLAUDE_CLI_FABLE_CONTEXT_WINDOW = 1_000_000;
 
 const CLAUDE_CLI_MODEL_LABELS: Record<string, string> = {
   [CLAUDE_CLI_FABLE_MODEL_ID]: "Claude Fable 5 (Claude CLI)",
+  [`${CLAUDE_CLI_FABLE_MODEL_ID}[1m]`]: "Claude Fable 5 1M (Claude CLI)",
   "claude-opus-4-8": "Claude Opus 4.8 (Claude CLI)",
+  "claude-opus-4-8[1m]": "Claude Opus 4.8 1M (Claude CLI)",
   "claude-opus-4-7": "Claude Opus 4.7 (Claude CLI)",
   "claude-opus-4-6": "Claude Opus 4.6 (Claude CLI)",
   "claude-sonnet-4-6": "Claude Sonnet 4.6 (Claude CLI)",
@@ -24,7 +26,9 @@ const CLAUDE_CLI_MODEL_LABELS: Record<string, string> = {
 
 function resolveClaudeCliImageMediaInput(id: string): ModelCatalogEntry["mediaInput"] {
   const maxSidePx =
-    id === CLAUDE_CLI_FABLE_MODEL_ID || id === "claude-opus-4-8" || id === "claude-opus-4-7"
+    id.startsWith(CLAUDE_CLI_FABLE_MODEL_ID) ||
+    id.startsWith("claude-opus-4-8") ||
+    id === "claude-opus-4-7"
       ? 2576
       : 1568;
   return {
@@ -56,12 +60,11 @@ function extractClaudeCliModelIds(): string[] {
 /** Build catalog entries for the default Claude CLI allowlist. */
 export function buildClaudeCliCatalogEntries(): ModelCatalogEntry[] {
   return extractClaudeCliModelIds().map((id) => {
-    const contextWindow =
-      id === CLAUDE_CLI_FABLE_MODEL_ID
-        ? CLAUDE_CLI_FABLE_CONTEXT_WINDOW
-        : id === "claude-opus-4-8" || id === "claude-opus-4-6"
-          ? CLAUDE_CLI_LONG_CONTEXT_WINDOW
-          : CLAUDE_CLI_DEFAULT_CONTEXT_WINDOW;
+    const contextWindow = id.startsWith(CLAUDE_CLI_FABLE_MODEL_ID)
+      ? CLAUDE_CLI_FABLE_CONTEXT_WINDOW
+      : id.startsWith("claude-opus-4-8") || id === "claude-opus-4-6"
+        ? CLAUDE_CLI_LONG_CONTEXT_WINDOW
+        : CLAUDE_CLI_DEFAULT_CONTEXT_WINDOW;
     return {
       id,
       name: CLAUDE_CLI_MODEL_LABELS[id] ?? `${id} (Claude CLI)`,
