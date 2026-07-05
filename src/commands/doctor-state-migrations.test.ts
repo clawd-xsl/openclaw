@@ -7,7 +7,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
-import type { SessionEntry } from "../config/sessions/types.js";
+import { clearSessionStoreCacheForTest, loadSessionStore } from "../config/sessions.js";
 import { requireNodeSqlite } from "../infra/node-sqlite.js";
 import {
   createPluginStateKeyedStore,
@@ -139,12 +139,17 @@ vi.mock("../channels/plugins/bundled.js", async () => {
   };
 });
 
-vi.mock("../config/sessions.js", () => ({
-  saveSessionStore: async (storePath: string, store: Record<string, unknown>) => {
-    await fs.promises.mkdir(path.dirname(storePath), { recursive: true });
-    await fs.promises.writeFile(storePath, `${JSON.stringify(store, null, 2)}\n`, "utf-8");
-  },
-}));
+vi.mock("../config/sessions.js", async () => {
+  const actual =
+    await vi.importActual<typeof import("../config/sessions.js")>("../config/sessions.js");
+  return {
+    ...actual,
+    saveSessionStore: async (storePath: string, store: Record<string, unknown>) => {
+      await fs.promises.mkdir(path.dirname(storePath), { recursive: true });
+      await fs.promises.writeFile(storePath, `${JSON.stringify(store, null, 2)}\n`, "utf-8");
+    },
+  };
+});
 
 vi.mock("../infra/json-files.js", async () => {
   const actual =
@@ -209,6 +214,7 @@ async function runTelegramAllowFromMigration(params: { root: string; cfg: OpenCl
 }
 
 afterEach(async () => {
+  clearSessionStoreCacheForTest();
   resetAutoMigrateLegacyStateForTest();
   resetAutoMigrateLegacyStateDirForTest();
   resetAutoMigrateLegacyTaskStateSidecarsForTest();
@@ -651,7 +657,7 @@ async function detectAndRunMigrations(params: {
     cfg: params.cfg,
     env: { OPENCLAW_STATE_DIR: params.root } as NodeJS.ProcessEnv,
   });
-  await runLegacyStateMigrations({ detected, now: params.now });
+  await runLegacyStateMigrations({ detected, config: params.cfg, now: params.now });
 }
 
 async function withStateDir<T>(root: string, run: () => Promise<T>): Promise<T> {
@@ -669,10 +675,9 @@ async function withStateDir<T>(root: string, run: () => Promise<T>): Promise<T> 
 }
 
 function readSessionsStore(targetDir: string) {
-  return JSON.parse(fs.readFileSync(path.join(targetDir, "sessions.json"), "utf-8")) as Record<
-    string,
-    { sessionId: string }
-  >;
+  return loadSessionStore(path.join(targetDir, "sessions.sqlite"), {
+    skipCache: true,
+  }) as Record<string, { sessionId: string }>;
 }
 
 async function runAndReadSessionsStore(params: {
@@ -800,9 +805,9 @@ describe("doctor legacy state migrations", () => {
       now: () => 123,
     });
     const targetDir = path.join(root, "agents", "main", "sessions");
-    const store = JSON.parse(
-      fs.readFileSync(path.join(targetDir, "sessions.json"), "utf-8"),
-    ) as Record<string, { sessionId: string; sessionFile?: string }>;
+    const store = loadSessionStore(path.join(targetDir, "sessions.sqlite"), {
+      skipCache: true,
+    }) as Record<string, { sessionId: string; sessionFile?: string }>;
 
     migratedLegacySessionsCase = { result, targetDir, legacySessionsDir, store };
   });
@@ -849,15 +854,15 @@ describe("doctor legacy state migrations", () => {
       env: { OPENCLAW_STATE_DIR: root } as NodeJS.ProcessEnv,
     });
     expect(detected.preview).toContain(
-      `- Sessions: repair migrated transcript paths in ${path.join(targetDir, "sessions.json")}`,
+      `- Sessions: repair migrated transcript paths in ${path.join(targetDir, "sessions.sqlite")}`,
     );
 
-    const result = await runLegacyStateMigrations({ detected });
+    const result = await runLegacyStateMigrations({ detected, config: {} });
     expect(result.warnings).toStrictEqual([]);
     expect(result.changes).toContain("Repaired migrated session transcript paths");
-    const store = JSON.parse(
-      fs.readFileSync(path.join(targetDir, "sessions.json"), "utf8"),
-    ) as Record<string, { sessionFile?: string }>;
+    const store = loadSessionStore(path.join(targetDir, "sessions.sqlite"), {
+      skipCache: true,
+    });
     expect(store["agent:main:main"]?.sessionFile).toBe(path.join(targetDir, "legacy.jsonl"));
   });
 
@@ -888,9 +893,9 @@ describe("doctor legacy state migrations", () => {
       cfg: {},
       env: { OPENCLAW_STATE_DIR: root } as NodeJS.ProcessEnv,
     });
-    expect(detected.sessions.hasLegacy).toBe(false);
+    expect(detected.sessions.hasLegacy).toBe(true);
     expect(detected.preview).not.toContain(
-      `- Sessions: repair migrated transcript paths in ${path.join(targetDir, "sessions.json")}`,
+      `- Sessions: repair migrated transcript paths in ${path.join(targetDir, "sessions.sqlite")}`,
     );
   });
 
@@ -1040,9 +1045,10 @@ describe("doctor legacy state migrations", () => {
 
     expect(result.warnings).toStrictEqual([]);
     expect(result.changes.some((change) => change.includes("ACP session metadata"))).toBe(true);
-    const storePath = path.join(root, "agents", "main", "sessions", "sessions.json");
-    const store = JSON.parse(fs.readFileSync(storePath, "utf8")) as Record<string, SessionEntry>;
-    expect(store[legacySessionKey]?.acp).toBeUndefined();
+    const storePath = path.join(root, "agents", "main", "sessions", "sessions.sqlite");
+    const store = loadSessionStore(storePath, { skipCache: true });
+    expect(store[legacySessionKey]).toBeUndefined();
+    expect(store[sessionKey]?.acp).toBeUndefined();
 
     const sqlite = requireNodeSqlite();
     const db = new sqlite.DatabaseSync(path.join(root, "state", "openclaw.sqlite"));
@@ -1156,7 +1162,7 @@ describe("doctor legacy state migrations", () => {
     const targetDir = path.join(root, "agents", "main", "sessions");
     expect(fs.existsSync(path.join(targetDir, "a.jsonl"))).toBe(true);
     expect(fs.existsSync(path.join(legacySessionsDir, "a.jsonl"))).toBe(false);
-    expect(fs.existsSync(path.join(targetDir, "sessions.json"))).toBe(true);
+    expect(fs.existsSync(path.join(targetDir, "sessions.sqlite"))).toBe(true);
   });
 
   it("migrates legacy WhatsApp auth files without touching oauth.json", async () => {
@@ -3276,9 +3282,9 @@ describe("doctor legacy state migrations", () => {
 
     const { result, log } = await runAutoMigrateLegacyStateWithLog({ root, cfg });
 
-    const store = JSON.parse(
-      fs.readFileSync(path.join(targetDir, "sessions.json"), "utf-8"),
-    ) as Record<string, { sessionId: string }>;
+    const store = loadSessionStore(path.join(targetDir, "sessions.sqlite"), {
+      skipCache: true,
+    });
     expect(result.migrated).toBe(true);
     expect(log.info).toHaveBeenCalled();
     expect(store["main"]).toBeUndefined();

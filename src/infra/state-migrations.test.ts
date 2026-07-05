@@ -425,6 +425,7 @@ async function createLegacyStateFixture(params?: { includePreKey?: boolean }) {
 
 afterEach(async () => {
   vi.useRealTimers();
+  sessionStore.clearSessionStoreCacheForTest();
   pluginDoctorStateMigrationEntries.entries = [];
   resetAutoMigrateLegacyStateForTest();
   resetAutoMigrateLegacyStateDirForTest();
@@ -462,7 +463,8 @@ describe("state migrations", () => {
     ]);
     expect(detectionCase.preview).toEqual([
       `- Sessions: ${path.join(detectionCase.stateDir, "sessions")} → ${path.join(detectionCase.stateDir, "agents", "worker-1", "sessions")}`,
-      `- Sessions: canonicalize legacy keys in ${path.join(detectionCase.stateDir, "agents", "worker-1", "sessions", "sessions.json")}`,
+      `- Sessions: ${path.join(detectionCase.stateDir, "agents", "worker-1", "sessions", "sessions.json")} → ${path.join(detectionCase.stateDir, "agents", "worker-1", "sessions", "sessions.sqlite")}`,
+      `- Sessions: canonicalize legacy keys in ${path.join(detectionCase.stateDir, "agents", "worker-1", "sessions", "sessions.sqlite")}`,
       `- Agent dir: ${path.join(detectionCase.stateDir, "agent")} → ${path.join(detectionCase.stateDir, "agents", "worker-1", "agent")}`,
       `- MobileAuth auth creds.json: ${path.join(detectionCase.stateDir, "credentials", "creds.json")} → ${path.join(detectionCase.stateDir, "credentials", "mobileauth", "default", "creds.json")}`,
       `- ChatApp pairing allowFrom: ${resolveChannelAllowFromPath("chatapp", detectionCase.env)} → ${resolveChannelAllowFromPath("chatapp", detectionCase.env, "alpha")}`,
@@ -620,15 +622,15 @@ describe("state migrations", () => {
       }),
       "utf8",
     );
+    const targetStorePath = path.join(stateDir, "agents", "main", "sessions", "sessions.json");
     const cfg = {
-      session: { mainKey: "work" },
+      session: { mainKey: "work", store: targetStorePath },
       agents: { list: [{ id: "main", default: true }] },
     } as OpenClawConfig;
     const detected = await detectLegacyStateMigrations({ cfg, env, homedir: () => root });
 
     await runLegacyStateMigrations({ detected, config: cfg, now: () => 1234 });
 
-    const targetStorePath = path.join(stateDir, "agents", "main", "sessions", "sessions.json");
     const store = JSON.parse(await fs.readFile(targetStorePath, "utf8")) as Record<
       string,
       { sessionId: string }
@@ -704,7 +706,10 @@ describe("state migrations", () => {
       }),
       "utf8",
     );
-    const cfg = { agents: { list: [{ id: "main", default: true }] } } as OpenClawConfig;
+    const cfg = {
+      session: { store: targetStorePath },
+      agents: { list: [{ id: "main", default: true }] },
+    } as OpenClawConfig;
     const detected = await detectLegacyStateMigrations({ cfg, env, homedir: () => root });
 
     const result = await runLegacyStateMigrations({ detected, config: cfg, now: () => 1234 });
@@ -758,7 +763,11 @@ describe("state migrations", () => {
       expect.stringContaining("filesystem identity could not be established"),
     );
     await expect(fs.readFile(legacyStorePath, "utf8")).resolves.toContain("legacy");
-    await expect(fs.readFile(targetStorePath, "utf8")).resolves.toBe("{}\n");
+    const migratedTarget = sessionStore.loadSessionStore(
+      path.join(stateDir, "agents", "main", "sessions", "sessions.sqlite"),
+      { skipCache: true },
+    );
+    expect(migratedTarget).toEqual({});
   });
 
   it("keeps the legacy source when its store write fails", async () => {
@@ -776,6 +785,7 @@ describe("state migrations", () => {
       "utf8",
     );
     const cfg = {
+      session: { store: targetStorePath },
       agents: { list: [{ id: "main", default: true }] },
     } as OpenClawConfig;
     const detected = await detectLegacyStateMigrations({ cfg, env, homedir: () => root });
@@ -902,7 +912,6 @@ describe("state migrations", () => {
     expect(result.warnings).toEqual(
       expect.arrayContaining([
         expect.stringContaining(`aliased store ${configuredStorePath}`),
-        expect.stringContaining(`aliased store ${targetStorePath}`),
         expect.stringContaining("Deferred ACP metadata migration"),
       ]),
     );
@@ -923,7 +932,10 @@ describe("state migrations", () => {
     const storePath = path.join(stateDir, "agents", "main", "sessions", "sessions.json");
     await fs.mkdir(path.dirname(storePath), { recursive: true });
     await fs.symlink(outsideStorePath, storePath);
-    const cfg = { agents: { list: [{ id: "main", default: true }] } } as OpenClawConfig;
+    const cfg = {
+      session: { store: storePath },
+      agents: { list: [{ id: "main", default: true }] },
+    } as OpenClawConfig;
 
     const result = await autoMigrateLegacyState({ cfg, env, homedir: () => root });
 
@@ -1125,10 +1137,10 @@ describe("state migrations", () => {
 
     const result = await autoMigrateLegacyState({ cfg, env, homedir: () => root });
 
-    const store = JSON.parse(await fs.readFile(storePath, "utf8")) as Record<
-      string,
-      { sessionId: string; acp?: unknown }
-    >;
+    const migratedStorePath = templated
+      ? storePath
+      : path.join(stateDir, "agents", "voice", "sessions", "sessions.sqlite");
+    const store = sessionStore.loadSessionStore(migratedStorePath, { skipCache: true });
     expect(store["agent:main:main"]?.sessionId).toBe("foreign-main");
     expect(store["agent:main:main"]?.acp).toBeDefined();
     expect(store.global).toBeUndefined();
@@ -2544,6 +2556,7 @@ describe("state migrations", () => {
     });
     const result = await runLegacyStateMigrations({
       detected,
+      config: cfg,
       now: () => 1234,
     });
 
@@ -2579,6 +2592,7 @@ describe("state migrations", () => {
     const { root, stateDir, env, cfg } = await createLegacyStateFixture();
 
     const targetStorePath = path.join(stateDir, "agents", "worker-1", "sessions", "sessions.json");
+    cfg.session = { ...cfg.session, store: targetStorePath };
     const corruptBytes = `${JSON.stringify({
       "agent:worker-1:desk:target-only": { sessionId: "target-only-session", updatedAt: 99 },
     })}\n<<<corrupt trailing garbage>>>`;
@@ -2591,6 +2605,7 @@ describe("state migrations", () => {
     });
     const result = await runLegacyStateMigrations({
       detected,
+      config: cfg,
       now: () => 1234,
       recoverCorruptTargetStore: true,
     });

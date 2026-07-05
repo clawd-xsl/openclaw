@@ -1,4 +1,5 @@
 // Applies persisted state migrations across OpenClaw config files.
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -18,9 +19,23 @@ import {
   resolveStateDir,
 } from "../config/paths.js";
 import type { SessionEntry } from "../config/sessions.js";
-import { saveSessionStore } from "../config/sessions.js";
+import { resolveStorePath, saveSessionStore } from "../config/sessions.js";
 import { canonicalizeMainSessionAlias } from "../config/sessions/main-session.js";
 import { normalizePersistedSessionEntryShape } from "../config/sessions/store-entry-shape.js";
+import {
+  archiveImportedSessionStoreJson,
+  listSessionStoreJsonImportStagePaths,
+} from "../config/sessions/store-json-import.js";
+import { normalizeSessionStore } from "../config/sessions/store-load.js";
+import { applySessionStoreMigrations } from "../config/sessions/store-migrations.js";
+import {
+  clearSessionStoreSqliteJsonImportArchivePending,
+  inspectSessionStoreSqliteImportStateReadOnly,
+  inspectSessionStoreSqliteReadOnly,
+  isSqliteSessionStorePath,
+  resolveSessionStoreJsonImportPath,
+  transformSessionStoreInSqliteForMigration,
+} from "../config/sessions/store-sqlite.js";
 import {
   listConfiguredSessionStoreAgentIds,
   resolveAllAgentSessionStoreTargetsSync,
@@ -102,6 +117,177 @@ type SessionStoreAliasPlan = {
   hasFinalSymlink: boolean;
   hasUnresolvedIdentity: boolean;
 };
+
+function sessionStoreSourceExists(storePath: string): boolean {
+  return (
+    fileExists(storePath) ||
+    (isSqliteSessionStorePath(storePath) &&
+      (fileExists(resolveSessionStoreJsonImportPath(storePath)) ||
+        listSessionStoreJsonImportStagePaths(resolveSessionStoreJsonImportPath(storePath)).length >
+          0))
+  );
+}
+
+function readSessionStoreJson5WithDigest(filePath: string): SessionStoreMigrationRead {
+  try {
+    const raw = fs.readFileSync(filePath, "utf8");
+    return {
+      ...parseSessionStoreJson5(raw),
+      pendingJsonDigest: crypto.createHash("sha256").update(raw, "utf8").digest("hex"),
+    };
+  } catch {
+    return { store: {}, ok: false };
+  }
+}
+
+function finalizeMigratedSessionStoreJson(params: {
+  storePath: string;
+  jsonPath: string | undefined;
+  archivePendingDigest: string | undefined;
+  changes: string[];
+  warnings: string[];
+  now?: () => number;
+}): void {
+  if (!params.archivePendingDigest || !params.jsonPath) {
+    return;
+  }
+  const now = params.now?.() ?? Date.now();
+  let archiveResult: ReturnType<typeof archiveImportedSessionStoreJson>;
+  try {
+    archiveResult = archiveImportedSessionStoreJson({
+      jsonPath: params.jsonPath,
+      expectedDigest: params.archivePendingDigest,
+      archivePath: (nonce) => `${params.jsonPath}.migrated-${now}-${nonce}`,
+      quarantinePath: (nonce) => `${params.jsonPath}.unimported-${now}-${nonce}`,
+    });
+  } catch (err) {
+    params.warnings.push(
+      `Imported ${params.jsonPath} into SQLite but could not archive the JSON source: ${String(err)}`,
+    );
+    return;
+  }
+  for (const quarantinedPath of archiveResult.quarantinedPaths) {
+    params.warnings.push(
+      `The JSON session store changed after SQLite import; preserved the unimported replacement at ${quarantinedPath}`,
+    );
+  }
+  for (const archivedPath of archiveResult.archivedPaths) {
+    params.changes.push(`Archived imported sessions store → ${archivedPath}`);
+  }
+  if (!archiveResult.complete) {
+    params.warnings.push(
+      `Imported ${params.jsonPath} into SQLite but its staged JSON archive is still pending`,
+    );
+    return;
+  }
+  try {
+    clearSessionStoreSqliteJsonImportArchivePending(params.storePath);
+  } catch (err) {
+    params.warnings.push(
+      `Archived ${params.jsonPath}, but its SQLite cleanup marker could not be cleared in ${params.storePath}: ${String(err)}`,
+    );
+  }
+}
+
+type SessionStoreMigrationRead = {
+  store: Record<string, SessionEntryLike>;
+  ok: boolean;
+  pendingJsonPath?: string;
+  pendingJsonDigest?: string;
+  sourcePath?: string;
+};
+
+function readSessionStoreForMigration(storePath: string): SessionStoreMigrationRead {
+  if (!isSqliteSessionStorePath(storePath)) {
+    return { ...readSessionStoreJson5(storePath), sourcePath: storePath };
+  }
+  const jsonPath = resolveSessionStoreJsonImportPath(storePath);
+  if (fileExists(storePath)) {
+    try {
+      const snapshot = inspectSessionStoreSqliteReadOnly(storePath);
+      if (snapshot.jsonImportArchivePendingDigest) {
+        return {
+          store: snapshot.store,
+          ok: true,
+          pendingJsonPath: jsonPath,
+          pendingJsonDigest: snapshot.jsonImportArchivePendingDigest,
+          sourcePath: storePath,
+        };
+      }
+      if (snapshot.entryCount > 0 || snapshot.jsonImportResolved || !fileExists(jsonPath)) {
+        return { store: snapshot.store, ok: true, sourcePath: storePath };
+      }
+    } catch {
+      return { store: {}, ok: false, sourcePath: storePath };
+    }
+  }
+  if (!fileExists(jsonPath)) {
+    return { store: {}, ok: true };
+  }
+  return {
+    ...readSessionStoreJson5WithDigest(jsonPath),
+    pendingJsonPath: jsonPath,
+    sourcePath: jsonPath,
+  };
+}
+
+function resolveSessionStoreMigrationAliasPlan(
+  storePath: string,
+  candidatePaths: Iterable<string>,
+): SessionStoreAliasPlan {
+  const candidates = [...candidatePaths];
+  let plan = resolveSessionStoreAliasPlan(storePath, candidates);
+  const identityStorePaths = resolveSessionStorePathsParticipatingInMigration(storePath);
+  const identityCandidates = [
+    ...new Set(
+      candidates.flatMap((candidate) =>
+        resolveSessionStorePathsParticipatingInMigration(candidate),
+      ),
+    ),
+  ];
+  for (const identityStorePath of identityStorePaths) {
+    plan = mergeSessionStoreAliasPlans(
+      plan,
+      resolveSessionStoreAliasPlan(identityStorePath, identityCandidates),
+    );
+  }
+  return plan;
+}
+
+function resolveSessionStorePathsParticipatingInMigration(storePath: string): string[] {
+  if (!isSqliteSessionStorePath(storePath)) {
+    return [storePath];
+  }
+  const jsonPath = resolveSessionStoreJsonImportPath(storePath);
+  const identityPaths = [storePath];
+  if (!fileExists(jsonPath)) {
+    if (fileExists(storePath)) {
+      try {
+        const state = inspectSessionStoreSqliteImportStateReadOnly(storePath);
+        if (!state.jsonImportArchivePendingDigest) {
+          return identityPaths;
+        }
+      } catch {
+        return identityPaths;
+      }
+    }
+    return [...identityPaths, ...listSessionStoreJsonImportStagePaths(jsonPath)];
+  }
+  if (!fileExists(storePath)) {
+    return [...identityPaths, jsonPath, ...listSessionStoreJsonImportStagePaths(jsonPath)];
+  }
+  try {
+    const state = inspectSessionStoreSqliteImportStateReadOnly(storePath);
+    if (state.jsonImportArchivePendingDigest) {
+      return [...identityPaths, jsonPath, ...listSessionStoreJsonImportStagePaths(jsonPath)];
+    }
+    return state.entryCount === 0 && !state.jsonImportResolved
+      ? [...identityPaths, jsonPath]
+      : identityPaths;
+  } catch {
+    return identityPaths;
+  }
+}
 
 export type LegacyStateDetection = {
   targetAgentId: string;
@@ -3245,6 +3431,21 @@ function normalizeSessionEntry(entry: SessionEntryLike): SessionEntry | null {
   return normalized;
 }
 
+function normalizeSessionStoreEntries(
+  store: Record<string, SessionEntryLike>,
+): Record<string, SessionEntry> {
+  const normalized = Object.create(null) as Record<string, SessionEntry>;
+  for (const [key, entry] of Object.entries(store)) {
+    const normalizedEntry = normalizeSessionEntry(entry);
+    if (normalizedEntry) {
+      normalized[key] = normalizedEntry;
+    }
+  }
+  applySessionStoreMigrations(normalized);
+  normalizeSessionStore(normalized);
+  return normalized;
+}
+
 function resolveUpdatedAt(entry: SessionEntryLike): number {
   return typeof entry.updatedAt === "number" && Number.isFinite(entry.updatedAt)
     ? entry.updatedAt
@@ -4126,8 +4327,11 @@ export async function detectLegacyStateMigrations(params: {
 
   const sessionsLegacyDir = path.join(stateDir, "sessions");
   const sessionsLegacyStorePath = path.join(sessionsLegacyDir, "sessions.json");
-  const sessionsTargetDir = path.join(stateDir, "agents", targetAgentId, "sessions");
-  const sessionsTargetStorePath = path.join(sessionsTargetDir, "sessions.json");
+  const sessionsTargetStorePath = resolveStorePath(params.cfg.session?.store, {
+    agentId: targetAgentId,
+    env,
+  });
+  const sessionsTargetDir = path.dirname(sessionsTargetStorePath);
   const pluginConfig = params.pluginDoctorConfig ?? params.cfg;
   const pluginSessionStoreAgentIds =
     params.pluginSessionStoreAgentIds ??
@@ -4160,10 +4364,14 @@ export async function detectLegacyStateMigrations(params: {
   const hasLegacySessions =
     fileExists(sessionsLegacyStorePath) ||
     legacySessionEntries.some((e) => e.isFile() && e.name.endsWith(".jsonl"));
-
-  const targetSessionParsed = fileExists(sessionsTargetStorePath)
-    ? readSessionStoreJson5(sessionsTargetStorePath)
+  const targetSessionParsed: SessionStoreMigrationRead = sessionStoreSourceExists(
+    sessionsTargetStorePath,
+  )
+    ? readSessionStoreForMigration(sessionsTargetStorePath)
     : { store: {}, ok: true };
+  const hasPendingTargetJsonImport =
+    isSqliteSessionStorePath(sessionsTargetStorePath) &&
+    targetSessionParsed.pendingJsonPath !== undefined;
   const legacyKeys = targetSessionParsed.ok
     ? listLegacySessionKeys({
         store: targetSessionParsed.store,
@@ -4269,6 +4477,11 @@ export async function detectLegacyStateMigrations(params: {
   if (hasLegacySessions) {
     preview.push(`- Sessions: ${sessionsLegacyDir} → ${sessionsTargetDir}`);
   }
+  if (hasPendingTargetJsonImport) {
+    preview.push(
+      `- Sessions: ${resolveSessionStoreJsonImportPath(sessionsTargetStorePath)} → ${sessionsTargetStorePath}`,
+    );
+  }
   if (legacyKeys.length > 0) {
     preview.push(`- Sessions: canonicalize legacy keys in ${sessionsTargetStorePath}`);
   }
@@ -4346,7 +4559,11 @@ export async function detectLegacyStateMigrations(params: {
       legacyStorePath: sessionsLegacyStorePath,
       targetDir: sessionsTargetDir,
       targetStorePath: sessionsTargetStorePath,
-      hasLegacy: hasLegacySessions || legacyKeys.length > 0 || hasStaleSessionFiles,
+      hasLegacy:
+        hasLegacySessions ||
+        hasPendingTargetJsonImport ||
+        legacyKeys.length > 0 ||
+        hasStaleSessionFiles,
       legacyKeys,
       preserveAmbiguousKeys: sessionStoreOwnership.preserveAmbiguousKeys,
       preserveForeignMainAliases,
@@ -4429,9 +4646,12 @@ async function migrateLegacySessions(
   const legacyParsed = fileExists(detected.sessions.legacyStorePath)
     ? readSessionStoreJson5(detected.sessions.legacyStorePath)
     : { store: {}, ok: true };
-  const targetParsed = fileExists(detected.sessions.targetStorePath)
-    ? readSessionStoreJson5(detected.sessions.targetStorePath)
+  const targetParsed: SessionStoreMigrationRead = sessionStoreSourceExists(
+    detected.sessions.targetStorePath,
+  )
+    ? readSessionStoreForMigration(detected.sessions.targetStorePath)
     : { store: {}, ok: true };
+  const targetJsonImportPath = targetParsed.pendingJsonPath;
   const legacyStore = legacyParsed.store;
   const targetStore = targetParsed.store;
   if (detected.sessions.targetStoreAliases.hasUnresolvedIdentity) {
@@ -4486,6 +4706,7 @@ async function migrateLegacySessions(
     preserveAmbiguousKeys: detected.sessions.preserveAmbiguousKeys,
     preserveForeignMainAliases: detected.sessions.preserveForeignMainAliases,
   });
+  let canonicalizedTargetLegacyKeyCount = canonicalizedTarget.legacyKeys.length;
   const canonicalizedLegacy = canonicalizeSessionStore({
     store: legacyStore,
     agentId: detected.targetAgentId,
@@ -4513,7 +4734,7 @@ async function migrateLegacySessions(
     }
   }
 
-  const merged = Object.create(null) as Record<string, SessionEntryLike>;
+  let merged = Object.create(null) as Record<string, SessionEntryLike>;
   for (const [key, entry] of Object.entries(canonicalizedTarget.store)) {
     merged[key] = entry;
   }
@@ -4544,23 +4765,28 @@ async function migrateLegacySessions(
     );
   }
 
-  const targetExists = fileExists(detected.sessions.targetStorePath);
-  let targetReadable = !targetExists || targetParsed.ok;
-  if (!targetReadable) {
-    if (options.recoverCorruptTargetStore) {
-      const archivedTargetPath = `${detected.sessions.targetStorePath}.corrupt-${now()}`;
+  const targetSourcePath = targetParsed.sourcePath;
+  let targetReadable = targetSourcePath === undefined || targetParsed.ok;
+  if (!targetReadable && targetSourcePath) {
+    const unreadableSqliteTarget =
+      isSqliteSessionStorePath(detected.sessions.targetStorePath) &&
+      targetSourcePath === detected.sessions.targetStorePath;
+    if (options.recoverCorruptTargetStore && !unreadableSqliteTarget) {
+      const archivedTargetPath = `${targetSourcePath}.corrupt-${now()}`;
       try {
-        fs.renameSync(detected.sessions.targetStorePath, archivedTargetPath);
+        fs.renameSync(targetSourcePath, archivedTargetPath);
         changes.push(`Archived corrupt target sessions store → ${archivedTargetPath}`);
         targetReadable = true;
       } catch (err) {
         warnings.push(
-          `Target sessions store unreadable; failed to archive ${detected.sessions.targetStorePath}: ${String(err)}`,
+          `Target sessions store unreadable; failed to archive ${targetSourcePath}: ${String(err)}`,
         );
       }
     } else {
       warnings.push(
-        `Target sessions store unreadable; left untouched to avoid overwriting at ${detected.sessions.targetStorePath}. Run openclaw doctor --fix to archive it and retry the legacy merge.`,
+        unreadableSqliteTarget
+          ? `Target SQLite sessions store unreadable or uses a newer schema; left it and its sidecars untouched at ${detected.sessions.targetStorePath}. Repair or downgrade it before retrying the legacy merge.`
+          : `Target sessions store unreadable; left untouched to avoid overwriting at ${detected.sessions.targetStorePath}. Run openclaw doctor --fix to archive it and retry the legacy merge.`,
       );
     }
   }
@@ -4568,7 +4794,9 @@ async function migrateLegacySessions(
   if (
     targetReadable &&
     (legacyParsed.ok || targetParsed.ok) &&
-    (Object.keys(legacyStore).length > 0 || Object.keys(targetStore).length > 0)
+    (Object.keys(legacyStore).length > 0 ||
+      Object.keys(targetStore).length > 0 ||
+      targetJsonImportPath !== undefined)
   ) {
     const normalized = Object.create(null) as Record<string, SessionEntry>;
     for (const [key, entry] of Object.entries(merged)) {
@@ -4578,7 +4806,100 @@ async function migrateLegacySessions(
       }
       normalized[key] = normalizedEntry;
     }
-    await saveSessionStoreStrict(detected.sessions.targetStorePath, normalized);
+    if (isSqliteSessionStorePath(detected.sessions.targetStorePath)) {
+      const normalizedFallback =
+        targetJsonImportPath && targetParsed.sourcePath === targetJsonImportPath
+          ? normalizeSessionStoreEntries(targetStore)
+          : undefined;
+      const transformed = transformSessionStoreInSqliteForMigration({
+        storePath: detected.sessions.targetStorePath,
+        fallbackStore: normalizedFallback,
+        fallbackSourceDigest:
+          targetParsed.sourcePath === targetJsonImportPath
+            ? targetParsed.pendingJsonDigest
+            : undefined,
+        transform: (currentStore) => {
+          const latestCanonicalizedTarget = canonicalizeSessionStore({
+            store: currentStore,
+            agentId: detected.targetAgentId,
+            mainKey: detected.targetMainKey,
+            scope: detected.targetScope,
+            skipCrossAgentRemap: detected.sessions.preserveAmbiguousKeys,
+            preserveCanonicalAgentOwner: true,
+            preserveAmbiguousKeys: detected.sessions.preserveAmbiguousKeys,
+            preserveForeignMainAliases: detected.sessions.preserveForeignMainAliases,
+          });
+          const latestTarget = latestCanonicalizedTarget.store;
+          const latestMerged = Object.create(null) as Record<string, SessionEntryLike>;
+          for (const [key, entry] of Object.entries(latestTarget)) {
+            latestMerged[key] = entry;
+          }
+          for (const [key, entry] of Object.entries(canonicalizedLegacy.store)) {
+            latestMerged[key] = mergeSessionEntry({
+              existing: latestMerged[key],
+              incoming: entry,
+              preferIncomingOnTie: false,
+            });
+          }
+          let latestMigratedDirectChatKey: string | undefined;
+          if (!latestMerged[mainKey]) {
+            const latest = pickLatestLegacyDirectEntry(legacyStore);
+            if (latest?.sessionId) {
+              latestMerged[mainKey] = latest;
+              latestMigratedDirectChatKey = mainKey;
+            }
+          }
+          let latestRepairedStaleSessionFiles = false;
+          for (const entry of Object.values(latestMerged)) {
+            const targetSessionFile = resolveStaleLegacySessionFile({
+              entry,
+              legacyDir: detected.sessions.legacyDir,
+              targetDir: detected.sessions.targetDir,
+            });
+            if (targetSessionFile) {
+              entry.sessionFile = targetSessionFile;
+              latestRepairedStaleSessionFiles = true;
+            }
+          }
+          const store = normalizeSessionStoreEntries(latestMerged);
+          return {
+            store,
+            result: {
+              store,
+              migratedDirectChatKey: latestMigratedDirectChatKey,
+              canonicalizedTargetLegacyKeyCount: latestCanonicalizedTarget.legacyKeys.length,
+              repairedStaleSessionFiles: latestRepairedStaleSessionFiles,
+            },
+          };
+        },
+      });
+      merged = transformed.result.store;
+      if (transformed.adoptedFallbackStore) {
+        // Preflight canonicalization can share entry objects with the adopted JSON fallback.
+        // Preserve changes already applied to that fallback even when the transaction's second
+        // pass sees the repaired value and therefore reports no additional mutation.
+        migratedDirectChatKey = transformed.result.migratedDirectChatKey ?? migratedDirectChatKey;
+        canonicalizedTargetLegacyKeyCount = Math.max(
+          canonicalizedTargetLegacyKeyCount,
+          transformed.result.canonicalizedTargetLegacyKeyCount,
+        );
+        repairedStaleSessionFiles ||= transformed.result.repairedStaleSessionFiles;
+      } else {
+        migratedDirectChatKey = transformed.result.migratedDirectChatKey;
+        canonicalizedTargetLegacyKeyCount = transformed.result.canonicalizedTargetLegacyKeyCount;
+        repairedStaleSessionFiles = transformed.result.repairedStaleSessionFiles;
+      }
+      finalizeMigratedSessionStoreJson({
+        storePath: detected.sessions.targetStorePath,
+        jsonPath: targetJsonImportPath,
+        archivePendingDigest: transformed.jsonImportArchivePendingDigest,
+        changes,
+        warnings,
+        now,
+      });
+    } else {
+      await saveSessionStoreStrict(detected.sessions.targetStorePath, normalized);
+    }
     if (migratedDirectChatKey) {
       changes.push(`Migrated latest direct-chat session → ${migratedDirectChatKey}`);
     }
@@ -4588,8 +4909,8 @@ async function migrateLegacySessions(
         `Preserved ${preservedLegacyForeignMainAliasCount} ambiguous session key(s) while importing legacy sessions into ${detected.sessions.targetStorePath}`,
       );
     }
-    if (canonicalizedTarget.legacyKeys.length > 0) {
-      changes.push(`Canonicalized ${canonicalizedTarget.legacyKeys.length} legacy session key(s)`);
+    if (canonicalizedTargetLegacyKeyCount > 0) {
+      changes.push(`Canonicalized ${canonicalizedTargetLegacyKeyCount} legacy session key(s)`);
     }
     if (repairedStaleSessionFiles) {
       changes.push("Repaired migrated session transcript paths");
@@ -4644,14 +4965,37 @@ async function migrateLegacySessions(
       rewroteSessionFiles = true;
     }
     if (rewroteSessionFiles) {
-      const normalized = Object.create(null) as Record<string, SessionEntry>;
-      for (const [key, entry] of Object.entries(merged)) {
-        const normalizedEntry = normalizeSessionEntry(entry);
-        if (normalizedEntry) {
-          normalized[key] = normalizedEntry;
-        }
+      if (isSqliteSessionStorePath(detected.sessions.targetStorePath)) {
+        transformSessionStoreInSqliteForMigration({
+          storePath: detected.sessions.targetStorePath,
+          transform: (currentStore) => {
+            for (const entry of Object.values(currentStore)) {
+              const rawSessionFile = entry.sessionFile;
+              const legacySessionFile =
+                typeof rawSessionFile === "string"
+                  ? path.resolve(detected.sessions.legacyDir, rawSessionFile)
+                  : typeof entry.sessionId === "string"
+                    ? path.join(detected.sessions.legacyDir, `${entry.sessionId}.jsonl`)
+                    : undefined;
+              const movedSessionFile = legacySessionFile
+                ? movedSessionFiles.get(path.resolve(legacySessionFile))
+                : undefined;
+              if (movedSessionFile) {
+                entry.sessionFile = movedSessionFile;
+              }
+            }
+            return {
+              store: normalizeSessionStoreEntries(currentStore),
+              result: undefined,
+            };
+          },
+        });
+      } else {
+        await saveSessionStoreStrict(
+          detected.sessions.targetStorePath,
+          normalizeSessionStoreEntries(merged),
+        );
       }
-      await saveSessionStoreStrict(detected.sessions.targetStorePath, normalized);
       changes.push("Rewrote migrated session transcript paths");
     }
   }
@@ -5194,7 +5538,7 @@ export async function migrateOrphanedSessionKeys(params: {
     const id = normalizeAgentId(configuredAgentId);
     const p = storeConfig
       ? resolveStorePathFromTemplate(storeConfig, id, env)
-      : path.join(stateDir, "agents", id, "sessions", "sessions.json");
+      : resolveStorePath(undefined, { agentId: id, env });
     addToStoreMap(p, id);
   }
   // Plugins can route core sessions to agents that are not declared in
@@ -5203,7 +5547,7 @@ export async function migrateOrphanedSessionKeys(params: {
     const id = normalizeAgentId(pluginAgentId);
     const p = storeConfig
       ? resolveStorePathFromTemplate(storeConfig, id, env)
-      : path.join(stateDir, "agents", id, "sessions", "sessions.json");
+      : resolveStorePath(undefined, { agentId: id, env });
     addToStoreMap(p, id);
   }
   // Agent directories present on disk.
@@ -5216,7 +5560,7 @@ export async function migrateOrphanedSessionKeys(params: {
       if (dirEntry.isDirectory()) {
         const diskAgentId = normalizeAgentId(dirEntry.name);
         if (diskAgentId) {
-          const diskPath = path.join(agentsDir, diskAgentId, "sessions", "sessions.json");
+          const diskPath = path.join(agentsDir, dirEntry.name, "sessions", "sessions.sqlite");
           addToStoreMap(diskPath, diskAgentId);
         }
       }
@@ -5228,51 +5572,51 @@ export async function migrateOrphanedSessionKeys(params: {
     // An unknown relationship may have grouped a readable store behind an
     // inaccessible pathname. Read from a usable alias so the group still gets
     // the unresolved-identity warning before any rewrite is attempted.
-    const storePath = [...storePaths].find((candidate) => fileExists(candidate));
+    const storePath = [...storePaths].find((candidate) => sessionStoreSourceExists(candidate));
     if (!storePath) {
       continue;
     }
     const pluginForeignMainAliasRisk = [...storeAgentIds].some(
       (id) => pluginAgentIdSet.has(id) && id !== DEFAULT_AGENT_ID,
     );
-    let raw: string;
-    try {
-      raw = fs.readFileSync(storePath, "utf-8");
-    } catch (err) {
-      warnings.push(`Could not read ${storePath}: ${String(err)}`);
-      continue;
-    }
-    if (
-      !sessionStoreTextMayNeedCanonicalization({
-        raw,
-        storeAgentIds,
-        mainKey,
-        scope,
-        preserveForeignMainAliases: pluginForeignMainAliasRisk,
-      })
-    ) {
-      continue;
-    }
-    let parsed: ReturnType<typeof readSessionStoreJson5>;
-    try {
-      parsed = parseSessionStoreJson5(raw);
-    } catch (err) {
-      warnings.push(`Could not read ${storePath}: ${String(err)}`);
-      continue;
+    let parsed: SessionStoreMigrationRead;
+    if (isSqliteSessionStorePath(storePath)) {
+      parsed = readSessionStoreForMigration(storePath);
+    } else {
+      let raw: string;
+      try {
+        raw = fs.readFileSync(storePath, "utf-8");
+      } catch (err) {
+        warnings.push(`Could not read ${storePath}: ${String(err)}`);
+        continue;
+      }
+      if (
+        !sessionStoreTextMayNeedCanonicalization({
+          raw,
+          storeAgentIds,
+          mainKey,
+          scope,
+          preserveForeignMainAliases: pluginForeignMainAliasRisk,
+        })
+      ) {
+        continue;
+      }
+      parsed = { ...parseSessionStoreJson5(raw), sourcePath: storePath };
     }
     if (!parsed.ok) {
+      warnings.push(
+        `Could not parse session store ${parsed.sourcePath ?? storePath}; left untouched`,
+      );
       continue;
     }
 
     // A physical store can have several owners. Canonicalize valid scoped rows
     // within their declared owner on every pass so iteration order cannot move
     // one agent's history into another namespace.
-    let working = parsed.store;
-    let totalLegacy = 0;
-    const storeAliases = resolveSessionStoreAliasPlan(storePath, storePaths);
+    const storeAliases = resolveSessionStoreMigrationAliasPlan(storePath, storePaths);
     const hasDistinctAliases = storeAliases.hasDistinctAliases;
     const preserveAmbiguousKeys = storeAgentIds.size > 1;
-    const preservedAmbiguousKeyCount = Object.keys(working).filter(
+    const preservedAmbiguousKeyCount = Object.keys(parsed.store).filter(
       (key) =>
         (preserveAmbiguousKeys && isAmbiguousSharedStoreKey(key, mainKey, scope)) ||
         (pluginForeignMainAliasRisk && isLegacyDefaultMainAliasKey(key, mainKey)),
@@ -5301,40 +5645,78 @@ export async function migrateOrphanedSessionKeys(params: {
       warnings.push(distinctSessionStoreAliasWarning("session key migration", storePath));
       continue;
     }
-    for (const storeAgentId of storeAgentIds) {
-      const { store: canonicalized, legacyKeys } = canonicalizeSessionStore({
-        store: working,
-        agentId: storeAgentId,
-        mainKey,
-        scope,
-        skipCrossAgentRemap: preserveAmbiguousKeys,
-        preserveCanonicalAgentOwner: true,
-        preserveAmbiguousKeys,
-        preserveForeignMainAliases: pluginForeignMainAliasRisk,
-      });
-      working = canonicalized;
-      // Each pass only counts keys it changed from the current working store, so
-      // once a key is canonicalized it is not counted again by later agent passes.
-      totalLegacy += legacyKeys.length;
-    }
+    const canonicalizeForOwners = (input: Record<string, SessionEntryLike>) => {
+      let working = input;
+      let totalLegacy = 0;
+      for (const storeAgentId of storeAgentIds) {
+        const { store: canonicalized, legacyKeys } = canonicalizeSessionStore({
+          store: working,
+          agentId: storeAgentId,
+          mainKey,
+          scope,
+          skipCrossAgentRemap: preserveAmbiguousKeys,
+          preserveCanonicalAgentOwner: true,
+          preserveAmbiguousKeys,
+          preserveForeignMainAliases: pluginForeignMainAliasRisk,
+        });
+        working = canonicalized;
+        // Each pass only counts keys changed from the current working store, so later owner passes
+        // do not recount a key that was already canonicalized.
+        totalLegacy += legacyKeys.length;
+      }
+      return { store: normalizeSessionStoreEntries(working), totalLegacy };
+    };
+    const canonicalized = canonicalizeForOwners(parsed.store);
     if (preservedAmbiguousKeyCount > 0) {
       warnings.push(
         `Preserved ${preservedAmbiguousKeyCount} ambiguous session key(s) in potentially shared store ${storePath}`,
       );
     }
-    if (totalLegacy === 0) {
+    if (canonicalized.totalLegacy === 0 && parsed.pendingJsonPath === undefined) {
       continue;
     }
-    const normalized = Object.create(null) as Record<string, SessionEntry>;
-    for (const [key, entry] of Object.entries(working)) {
-      const ne = normalizeSessionEntry(entry);
-      if (ne) {
-        normalized[key] = ne;
+    if (isSqliteSessionStorePath(storePath)) {
+      try {
+        const transformed = transformSessionStoreInSqliteForMigration({
+          storePath,
+          fallbackStore:
+            parsed.pendingJsonPath && parsed.sourcePath === parsed.pendingJsonPath
+              ? normalizeSessionStoreEntries(parsed.store)
+              : undefined,
+          fallbackSourceDigest:
+            parsed.pendingJsonPath && parsed.sourcePath === parsed.pendingJsonPath
+              ? parsed.pendingJsonDigest
+              : undefined,
+          transform: (currentStore) => {
+            const result = canonicalizeForOwners(currentStore);
+            return { store: result.store, result: result.totalLegacy };
+          },
+        });
+        finalizeMigratedSessionStoreJson({
+          storePath,
+          jsonPath: parsed.pendingJsonPath,
+          archivePendingDigest: transformed.jsonImportArchivePendingDigest,
+          changes,
+          warnings,
+        });
+        if (transformed.result > 0) {
+          changes.push(
+            `Canonicalized ${transformed.result} orphaned session key(s) in ${storePath}`,
+          );
+        }
+      } catch (err) {
+        warnings.push(`Failed to write canonicalized store ${storePath}: ${String(err)}`);
       }
+      continue;
+    }
+    if (canonicalized.totalLegacy === 0) {
+      continue;
     }
     try {
-      await saveSessionStoreStrict(storePath, normalized);
-      changes.push(`Canonicalized ${totalLegacy} orphaned session key(s) in ${storePath}`);
+      await saveSessionStoreStrict(storePath, canonicalized.store);
+      changes.push(
+        `Canonicalized ${canonicalized.totalLegacy} orphaned session key(s) in ${storePath}`,
+      );
     } catch (err) {
       warnings.push(`Failed to write canonicalized store ${storePath}: ${String(err)}`);
     }
@@ -5353,7 +5735,6 @@ async function migrateLegacyAcpSessionMetadata(params: {
   const warnings: string[] = [];
   const env = params.env ?? process.env;
   const now = params.now ?? (() => Date.now());
-  const stateDir = resolveStateDir(env);
   const storeConfig = params.cfg.session?.store;
   const pluginAgentIds =
     params.pluginSessionStoreAgentIds ??
@@ -5371,7 +5752,7 @@ async function migrateLegacyAcpSessionMetadata(params: {
     agentId,
     storePath: storeConfig
       ? resolveStorePathFromTemplate(storeConfig, agentId, env)
-      : path.join(stateDir, "agents", agentId, "sessions", "sessions.json"),
+      : resolveStorePath(undefined, { agentId, env }),
   }));
   const pluginTargets = declaredTargets.filter(
     ({ agentId }) => agentId !== DEFAULT_AGENT_ID && normalizedPluginAgentIds.has(agentId),
@@ -5406,7 +5787,7 @@ async function migrateLegacyAcpSessionMetadata(params: {
   }> = [];
 
   for (const target of targets) {
-    if (!fileExists(target.storePath)) {
+    if (!sessionStoreSourceExists(target.storePath)) {
       continue;
     }
     const group = storeGroups.find(({ target: existing }) =>
@@ -5439,18 +5820,15 @@ async function migrateLegacyAcpSessionMetadata(params: {
 
   for (const { target, agentIds, aliasCandidates } of storeGroups) {
     const storePath = target.storePath;
-    const storeAliases = resolveSessionStoreAliasPlan(storePath, aliasCandidates);
+    const storeAliases = resolveSessionStoreMigrationAliasPlan(storePath, aliasCandidates);
     const pluginForeignMainAliasRisk = pluginTargets.some((pluginTarget) =>
       sessionStorePathsMatch(storePath, pluginTarget.storePath),
     );
-    let parsed: ReturnType<typeof readSessionStoreJson5>;
-    try {
-      parsed = readSessionStoreJson5(storePath);
-    } catch (err) {
-      warnings.push(`Could not read ${storePath}: ${String(err)}`);
-      continue;
-    }
+    const parsed = readSessionStoreForMigration(storePath);
     if (!parsed.ok) {
+      warnings.push(
+        `Could not parse session store ${parsed.sourcePath ?? storePath}; left untouched`,
+      );
       continue;
     }
     const ambiguousKeyCount = Object.keys(parsed.store).filter(
@@ -5461,17 +5839,21 @@ async function migrateLegacyAcpSessionMetadata(params: {
     const hasLegacyAcpMetadata = Object.values(parsed.store).some(
       (entry) => normalizeSessionEntry(entry)?.acp !== undefined,
     );
-    if (hasLegacyAcpMetadata && storeAliases.hasUnresolvedIdentity) {
+    const willRewriteStore = hasLegacyAcpMetadata || parsed.pendingJsonPath !== undefined;
+    if (!willRewriteStore) {
+      continue;
+    }
+    if (willRewriteStore && storeAliases.hasUnresolvedIdentity) {
       warnings.push(unresolvedSessionStoreIdentityWarning("ACP metadata migration", storePath));
       continue;
     }
-    if (hasLegacyAcpMetadata && storeAliases.hasFinalSymlink) {
+    if (willRewriteStore && storeAliases.hasFinalSymlink) {
       warnings.push(
         `Deferred ACP metadata migration in final-component symlink store ${storePath}; configure one canonical session.store path, then rerun openclaw doctor --fix`,
       );
       continue;
     }
-    if (hasLegacyAcpMetadata && storeAliases.hasDistinctAliases) {
+    if (willRewriteStore && storeAliases.hasDistinctAliases) {
       // Removing ACP metadata rewrites the store and would split its aliases.
       warnings.push(
         ambiguousKeyCount > 0
@@ -5485,32 +5867,62 @@ async function migrateLegacyAcpSessionMetadata(params: {
       continue;
     }
 
-    const normalized = Object.create(null) as Record<string, SessionEntry>;
-    let migrated = 0;
-    let preserved = 0;
-    for (const [sessionKey, entry] of Object.entries(parsed.store)) {
-      const normalizedEntry = normalizeSessionEntry(entry);
-      if (!normalizedEntry) {
+    const shouldPreserveAcpForKey = (sessionKey: string) => {
+      const ambiguousSharedStoreKey = isAmbiguousSharedStoreKey(sessionKey, mainKey, scope);
+      return (
+        (agentIds.size > 1 && ambiguousSharedStoreKey) ||
+        (pluginForeignMainAliasRisk && isLegacyDefaultMainAliasKey(sessionKey, mainKey))
+      );
+    };
+    let migrationInput: Record<string, SessionEntryLike> = parsed.store;
+    if (isSqliteSessionStorePath(storePath)) {
+      try {
+        const adopted = transformSessionStoreInSqliteForMigration({
+          storePath,
+          fallbackStore:
+            parsed.pendingJsonPath && parsed.sourcePath === parsed.pendingJsonPath
+              ? normalizeSessionStoreEntries(parsed.store)
+              : undefined,
+          fallbackSourceDigest:
+            parsed.pendingJsonPath && parsed.sourcePath === parsed.pendingJsonPath
+              ? parsed.pendingJsonDigest
+              : undefined,
+          transform: (currentStore) => {
+            const store = normalizeSessionStoreEntries(currentStore);
+            return { store, result: store };
+          },
+        });
+        migrationInput = adopted.result;
+        finalizeMigratedSessionStoreJson({
+          storePath,
+          jsonPath: parsed.pendingJsonPath,
+          archivePendingDigest: adopted.jsonImportArchivePendingDigest,
+          changes,
+          warnings,
+          now,
+        });
+      } catch (err) {
+        warnings.push(
+          `Failed to prepare ACP metadata migration source ${storePath}: ${String(err)}`,
+        );
         continue;
       }
-      if (normalizedEntry.acp) {
-        const ambiguousSharedStoreKey = isAmbiguousSharedStoreKey(sessionKey, mainKey, scope);
-        const ambiguousMultiOwnerKey = agentIds.size > 1 && ambiguousSharedStoreKey;
-        const foreignMainAlias =
-          pluginForeignMainAliasRisk && isLegacyDefaultMainAliasKey(sessionKey, mainKey);
-        if (ambiguousMultiOwnerKey || foreignMainAlias) {
-          preserved++;
-          normalized[sessionKey] = normalizedEntry;
-          continue;
-        }
-        const rowAgentId = resolveCanonicalAgentSessionOwner(sessionKey) ?? target.agentId;
-        const canonicalSessionKey = canonicalizeSessionKeyForAgent({
-          key: sessionKey,
-          agentId: rowAgentId,
-          mainKey,
-          scope,
-          skipCrossAgentRemap: true,
-        });
+    }
+    const plannedAcpBySessionKey = new Map<string, string>();
+    for (const [sessionKey, entry] of Object.entries(migrationInput)) {
+      const normalizedEntry = normalizeSessionEntry(entry);
+      if (!normalizedEntry?.acp || shouldPreserveAcpForKey(sessionKey)) {
+        continue;
+      }
+      const rowAgentId = resolveCanonicalAgentSessionOwner(sessionKey) ?? target.agentId;
+      const canonicalSessionKey = canonicalizeSessionKeyForAgent({
+        key: sessionKey,
+        agentId: rowAgentId,
+        mainKey,
+        scope,
+        skipCrossAgentRemap: true,
+      });
+      try {
         writeAcpSessionMetaForMigration({
           sessionKey: canonicalSessionKey,
           sessionId: normalizedEntry.sessionId,
@@ -5518,27 +5930,73 @@ async function migrateLegacyAcpSessionMetadata(params: {
           env,
           now,
         });
-        delete normalizedEntry.acp;
-        migrated++;
+        plannedAcpBySessionKey.set(
+          sessionKey,
+          JSON.stringify([normalizedEntry.sessionId, normalizedEntry.acp]),
+        );
+      } catch (err) {
+        warnings.push(`Failed to persist ACP metadata for ${sessionKey}: ${String(err)}`);
       }
-      normalized[sessionKey] = normalizedEntry;
     }
-    if (preserved > 0) {
-      warnings.push(
-        `Preserved ACP metadata for ${preserved} ambiguous session key(s) in potentially shared store ${storePath}`,
-      );
-    }
-    if (migrated === 0) {
-      continue;
-    }
+
+    const migrateStore = (input: Record<string, SessionEntryLike>) => {
+      const store = Object.create(null) as Record<string, SessionEntry>;
+      let migrated = 0;
+      let preserved = 0;
+      for (const [sessionKey, entry] of Object.entries(input)) {
+        const normalizedEntry = normalizeSessionEntry(entry);
+        if (!normalizedEntry) {
+          continue;
+        }
+        if (normalizedEntry.acp) {
+          const plannedAcp = plannedAcpBySessionKey.get(sessionKey);
+          if (
+            shouldPreserveAcpForKey(sessionKey) ||
+            plannedAcp !== JSON.stringify([normalizedEntry.sessionId, normalizedEntry.acp])
+          ) {
+            preserved++;
+            store[sessionKey] = normalizedEntry;
+            continue;
+          }
+          delete normalizedEntry.acp;
+          migrated++;
+        }
+        store[sessionKey] = normalizedEntry;
+      }
+      return { store: normalizeSessionStoreEntries(store), migrated, preserved };
+    };
+    let result: ReturnType<typeof migrateStore>;
     try {
-      await saveSessionStoreStrict(storePath, normalized);
-      changes.push(
-        `Migrated ${migrated} ACP session metadata ${migrated === 1 ? "row" : "rows"} → shared SQLite state`,
-      );
+      if (isSqliteSessionStorePath(storePath)) {
+        const transformed = transformSessionStoreInSqliteForMigration({
+          storePath,
+          transform: (currentStore) => {
+            const migratedStore = migrateStore(currentStore);
+            return { store: migratedStore.store, result: migratedStore };
+          },
+        });
+        result = transformed.result;
+      } else {
+        result = migrateStore(migrationInput);
+        if (result.migrated > 0) {
+          await saveSessionStoreStrict(storePath, result.store);
+        }
+      }
     } catch (err) {
       warnings.push(`Failed to write ACP metadata migration source ${storePath}: ${String(err)}`);
+      continue;
     }
+    if (result.preserved > 0) {
+      warnings.push(
+        `Preserved ACP metadata for ${result.preserved} ambiguous session key(s) in potentially shared store ${storePath}`,
+      );
+    }
+    if (result.migrated === 0) {
+      continue;
+    }
+    changes.push(
+      `Migrated ${result.migrated} ACP session metadata ${result.migrated === 1 ? "row" : "rows"} → shared SQLite state`,
+    );
   }
 
   return { changes, warnings };
@@ -5585,7 +6043,23 @@ function resolveSessionStorePathRelationship(
 function sessionStorePathsMatch(left: string, right: string): boolean {
   // Ownership checks must fail closed: an inaccessible path may still alias the
   // readable store, so preserve shared-owner policy until identity is known.
-  return resolveSessionStorePathRelationship(left, right) !== "different";
+  const directRelationship = resolveSessionStorePathRelationship(left, right);
+  if (directRelationship !== "different") {
+    return true;
+  }
+  const leftIdentities = resolveSessionStorePathsParticipatingInMigration(left);
+  const rightIdentities = resolveSessionStorePathsParticipatingInMigration(right);
+  for (const leftIdentity of leftIdentities) {
+    for (const rightIdentity of rightIdentities) {
+      if (leftIdentity === left && rightIdentity === right) {
+        continue;
+      }
+      if (resolveSessionStorePathRelationship(leftIdentity, rightIdentity) !== "different") {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 function resolvePathThroughExistingParents(filePath: string): string | undefined {
@@ -5706,18 +6180,12 @@ function resolveSessionStoreOwnership(params: {
   targetAgentId: string;
   pluginSessionStoreAgentIds: readonly string[];
 }): SessionStoreOwnership {
-  const targetStorePath = path.join(
-    params.stateDir,
-    "agents",
-    params.targetAgentId,
-    "sessions",
-    "sessions.json",
-  );
   const configuredStore = params.cfg.session?.store;
   const resolveAgentStorePath = (agentId: string) =>
     configuredStore
       ? resolveStorePathFromTemplate(configuredStore, agentId, params.env)
-      : path.join(params.stateDir, "agents", agentId, "sessions", "sessions.json");
+      : resolveStorePath(undefined, { agentId, env: params.env });
+  const targetStorePath = resolveAgentStorePath(params.targetAgentId);
   const preserveForeignMainAliases = params.pluginSessionStoreAgentIds.some((pluginAgentId) => {
     const id = normalizeAgentId(pluginAgentId);
     if (id === DEFAULT_AGENT_ID) {
@@ -5738,10 +6206,13 @@ function resolveSessionStoreOwnership(params: {
   const agentsDir = path.join(params.stateDir, "agents");
   for (const entry of safeReadDir(agentsDir)) {
     if (entry.isDirectory()) {
-      candidateStorePaths.push(path.join(agentsDir, entry.name, "sessions", "sessions.json"));
+      candidateStorePaths.push(path.join(agentsDir, entry.name, "sessions", "sessions.sqlite"));
     }
   }
-  const targetStoreAliases = resolveSessionStoreAliasPlan(targetStorePath, candidateStorePaths);
+  const targetStoreAliases = resolveSessionStoreMigrationAliasPlan(
+    targetStorePath,
+    candidateStorePaths,
+  );
   return { preserveAmbiguousKeys, preserveForeignMainAliases, targetStoreAliases };
 }
 

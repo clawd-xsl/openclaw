@@ -1,9 +1,20 @@
 // Tests migration cleanup for orphaned state keys.
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
+import {
+  clearSessionStoreCacheForTest,
+  loadSessionStore,
+  saveSessionStore,
+} from "../config/sessions.js";
+import {
+  inspectSessionStoreSqliteImportStateReadOnly,
+  transformSessionStoreInSqliteForMigration,
+} from "../config/sessions/store-sqlite.js";
 import { withTempDir } from "../test-helpers/temp-dir.js";
+import { requireNodeSqlite } from "./node-sqlite.js";
 import {
   migrateOrphanedSessionKeys,
   sessionStoreTextMayNeedCanonicalization,
@@ -70,8 +81,18 @@ async function migrateFixtureState(
   cfg: OpenClawConfig = OPS_WORK_CONFIG,
   additionalAgentIds?: readonly string[],
 ) {
+  const sessionStore = cfg.session?.store?.trim();
+  const testConfig = sessionStore
+    ? cfg
+    : ({
+        ...cfg,
+        session: {
+          ...cfg.session,
+          store: path.join(stateDir, "agents", "{agentId}", "sessions", "sessions.json"),
+        },
+      } as OpenClawConfig);
   return migrateOrphanedSessionKeys({
-    cfg,
+    cfg: testConfig,
     env: { OPENCLAW_STATE_DIR: stateDir },
     additionalAgentIds,
   });
@@ -81,6 +102,10 @@ describe("migrateOrphanedSessionKeys", () => {
   beforeEach(() => {
     listPluginDoctorSessionStoreAgentIdsMock.mockReset();
     listPluginDoctorSessionStoreAgentIdsMock.mockReturnValue([]);
+  });
+
+  afterEach(() => {
+    clearSessionStoreCacheForTest();
   });
 
   it("recognizes canonical stores without parsing them for migration", () => {
@@ -195,6 +220,282 @@ describe("migrateOrphanedSessionKeys", () => {
       const store = readStore(storePath);
       expect(requireStoreEntry(store, "agent:ops:work").sessionId).toBe("abc-123");
       expect(store["agent:main:main"]).toBeUndefined();
+    });
+  });
+
+  it("imports and canonicalizes the default JSON store into SQLite", async () => {
+    await withStateFixture(async ({ stateDir }) => {
+      const jsonPath = path.join(stateDir, "agents", "ops", "sessions", "sessions.json");
+      const sqlitePath = path.join(stateDir, "agents", "ops", "sessions", "sessions.sqlite");
+      writeStore(jsonPath, {
+        "agent:main:main": { sessionId: "abc-123", updatedAt: 1000 },
+      });
+
+      const result = await migrateOrphanedSessionKeys({
+        cfg: OPS_WORK_CONFIG,
+        env: { OPENCLAW_STATE_DIR: stateDir },
+        additionalAgentIds: [],
+      });
+
+      const store = loadSessionStore(sqlitePath, { skipCache: true });
+      expect(requireStoreEntry(store, "agent:ops:work").sessionId).toBe("abc-123");
+      expect(store["agent:main:main"]).toBeUndefined();
+      expect(fs.existsSync(jsonPath)).toBe(false);
+      expect(result.changes).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining("Canonicalized 1 orphaned session key"),
+          expect.stringContaining("Archived imported sessions store"),
+        ]),
+      );
+    });
+  });
+
+  it("quarantines JSON changed after import without replacing authoritative SQLite rows", async () => {
+    await withStateFixture(async ({ stateDir }) => {
+      const jsonPath = path.join(stateDir, "agents", "main", "sessions", "sessions.json");
+      const sqlitePath = path.join(stateDir, "agents", "main", "sessions", "sessions.sqlite");
+      const key = "agent:main:main";
+      const importedStore = { [key]: { sessionId: "imported", updatedAt: 1 } };
+      const importedRaw = JSON.stringify(importedStore);
+      writeStore(jsonPath, importedStore);
+      transformSessionStoreInSqliteForMigration({
+        storePath: sqlitePath,
+        fallbackStore: importedStore,
+        fallbackSourceDigest: crypto.createHash("sha256").update(importedRaw).digest("hex"),
+        transform: (store) => ({ store, result: undefined }),
+      });
+      writeStore(jsonPath, { [key]: { sessionId: "replacement", updatedAt: 2 } });
+
+      const result = await migrateOrphanedSessionKeys({
+        cfg: { agents: { list: [{ id: "main", default: true }] } },
+        env: { OPENCLAW_STATE_DIR: stateDir },
+        additionalAgentIds: [],
+      });
+
+      expect(loadSessionStore(sqlitePath, { skipCache: true })[key]?.sessionId).toBe("imported");
+      expect(fs.existsSync(jsonPath)).toBe(false);
+      const quarantinedPath = fs
+        .readdirSync(path.dirname(jsonPath))
+        .find((name) => name.startsWith("sessions.json.unimported-"));
+      expect(quarantinedPath).toBeDefined();
+      expect(
+        readStore(path.join(path.dirname(jsonPath), quarantinedPath as string))[key],
+      ).toMatchObject({ sessionId: "replacement" });
+      expect(result.warnings).toContainEqual(
+        expect.stringContaining("changed after SQLite import"),
+      );
+      expect(
+        inspectSessionStoreSqliteImportStateReadOnly(sqlitePath).jsonImportArchivePendingDigest,
+      ).toBeUndefined();
+    });
+  });
+
+  it("resumes a JSON archive staged before doctor crashed", async () => {
+    await withStateFixture(async ({ stateDir }) => {
+      const jsonPath = path.join(stateDir, "agents", "main", "sessions", "sessions.json");
+      const sqlitePath = path.join(stateDir, "agents", "main", "sessions", "sessions.sqlite");
+      const store = { "agent:main:main": { sessionId: "imported", updatedAt: 1 } };
+      const raw = JSON.stringify(store);
+      writeStore(jsonPath, store);
+      transformSessionStoreInSqliteForMigration({
+        storePath: sqlitePath,
+        fallbackStore: store,
+        fallbackSourceDigest: crypto.createHash("sha256").update(raw).digest("hex"),
+        transform: (current) => ({ store: current, result: undefined }),
+      });
+      const stagedPath = `${jsonPath}.archive-pending.crashed-doctor`;
+      fs.renameSync(jsonPath, stagedPath);
+      clearSessionStoreCacheForTest();
+
+      const result = await migrateOrphanedSessionKeys({
+        cfg: { agents: { list: [{ id: "main", default: true }] } },
+        env: { OPENCLAW_STATE_DIR: stateDir },
+        additionalAgentIds: [],
+      });
+
+      expect(fs.existsSync(stagedPath)).toBe(false);
+      expect(result.changes).toContainEqual(
+        expect.stringContaining("Archived imported sessions store"),
+      );
+      expect(result.warnings).toStrictEqual([]);
+      expect(
+        inspectSessionStoreSqliteImportStateReadOnly(sqlitePath).jsonImportArchivePendingDigest,
+      ).toBeUndefined();
+    });
+  });
+
+  it("defers default SQLite imports whose sibling JSON stores are hard-linked", async () => {
+    await withStateFixture(async ({ stateDir }) => {
+      const mainJson = path.join(stateDir, "agents", "main", "sessions", "sessions.json");
+      const voiceJson = path.join(stateDir, "agents", "voice", "sessions", "sessions.json");
+      writeStore(mainJson, { main: { sessionId: "shared", updatedAt: 1 } });
+      fs.mkdirSync(path.dirname(voiceJson), { recursive: true });
+      fs.linkSync(mainJson, voiceJson);
+
+      const result = await migrateOrphanedSessionKeys({
+        cfg: {
+          agents: { list: [{ id: "main", default: true }, { id: "voice" }] },
+        },
+        env: { OPENCLAW_STATE_DIR: stateDir },
+        additionalAgentIds: [],
+      });
+
+      expect(result.changes).toStrictEqual([]);
+      expect(result.warnings).toContainEqual(expect.stringContaining("aliased store"));
+      expect(fs.existsSync(mainJson)).toBe(true);
+      expect(fs.existsSync(voiceJson)).toBe(true);
+      expect(
+        fs.existsSync(path.join(stateDir, "agents", "main", "sessions", "sessions.sqlite")),
+      ).toBe(false);
+      expect(
+        fs.existsSync(path.join(stateDir, "agents", "voice", "sessions", "sessions.sqlite")),
+      ).toBe(false);
+    });
+  });
+
+  it("keeps a crashed SQLite import tied to its hard-linked sibling source", async () => {
+    await withStateFixture(async ({ stateDir }) => {
+      const mainJson = path.join(stateDir, "agents", "main", "sessions", "sessions.json");
+      const mainSqlite = path.join(stateDir, "agents", "main", "sessions", "sessions.sqlite");
+      const voiceJson = path.join(stateDir, "agents", "voice", "sessions", "sessions.json");
+      const voiceSqlite = path.join(stateDir, "agents", "voice", "sessions", "sessions.sqlite");
+      const store = { main: { sessionId: "shared", updatedAt: 1 } };
+      const raw = JSON.stringify(store);
+      writeStore(mainJson, store);
+      fs.mkdirSync(path.dirname(voiceJson), { recursive: true });
+      fs.linkSync(mainJson, voiceJson);
+      transformSessionStoreInSqliteForMigration({
+        storePath: mainSqlite,
+        fallbackStore: store,
+        fallbackSourceDigest: crypto.createHash("sha256").update(raw).digest("hex"),
+        transform: (current) => ({ store: current, result: undefined }),
+      });
+      const stagedPath = `${mainJson}.archive-pending.crashed-hardlink-import`;
+      fs.renameSync(mainJson, stagedPath);
+      clearSessionStoreCacheForTest();
+
+      const result = await migrateOrphanedSessionKeys({
+        cfg: {
+          agents: { list: [{ id: "main", default: true }, { id: "voice" }] },
+        },
+        env: { OPENCLAW_STATE_DIR: stateDir },
+        additionalAgentIds: [],
+      });
+
+      expect(result.changes).toStrictEqual([]);
+      expect(result.warnings).toContainEqual(expect.stringContaining("aliased store"));
+      expect(fs.existsSync(stagedPath)).toBe(true);
+      expect(fs.existsSync(voiceJson)).toBe(true);
+      expect(fs.existsSync(voiceSqlite)).toBe(false);
+
+      expect(loadSessionStore(mainSqlite, { skipCache: true }).main?.sessionId).toBe("shared");
+      expect(fs.existsSync(stagedPath)).toBe(false);
+      expect(() => loadSessionStore(voiceSqlite, { skipCache: true })).toThrow(
+        "Refusing to import hard-linked legacy JSON session store",
+      );
+      expect(inspectSessionStoreSqliteImportStateReadOnly(voiceSqlite).entryCount).toBe(0);
+    });
+  });
+
+  it("defers an explicit JSON store aliased by a default SQLite sibling symlink", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+    await withStateFixture(async ({ tmpDir, stateDir }) => {
+      const configuredJson = path.join(tmpDir, "configured-sessions.json");
+      const voiceJson = path.join(stateDir, "agents", "voice", "sessions", "sessions.json");
+      writeStore(configuredJson, { main: { sessionId: "shared", updatedAt: 1 } });
+      fs.mkdirSync(path.dirname(voiceJson), { recursive: true });
+      fs.symlinkSync(configuredJson, voiceJson);
+
+      const result = await migrateOrphanedSessionKeys({
+        cfg: {
+          session: { store: configuredJson },
+          agents: { list: [{ id: "main", default: true }] },
+        },
+        env: { OPENCLAW_STATE_DIR: stateDir },
+        additionalAgentIds: [],
+      });
+
+      expect(result.changes).toStrictEqual([]);
+      expect(result.warnings).toContainEqual(expect.stringContaining("aliased store"));
+      expect(fs.lstatSync(voiceJson).isSymbolicLink()).toBe(true);
+      expect(readStore(configuredJson).main).toMatchObject({ sessionId: "shared" });
+      expect(
+        fs.existsSync(path.join(stateDir, "agents", "voice", "sessions", "sessions.sqlite")),
+      ).toBe(false);
+    });
+  });
+
+  it("does not fall back to sibling JSON when the SQLite store is corrupt", async () => {
+    await withStateFixture(async ({ stateDir }) => {
+      const sqlitePath = path.join(stateDir, "agents", "main", "sessions", "sessions.sqlite");
+      const jsonPath = path.join(stateDir, "agents", "main", "sessions", "sessions.json");
+      await saveSessionStore(
+        sqlitePath,
+        { corrupt: { sessionId: "sqlite", updatedAt: 1 } },
+        { skipMaintenance: true },
+      );
+      clearSessionStoreCacheForTest();
+      const sqlite = requireNodeSqlite();
+      const db = new sqlite.DatabaseSync(sqlitePath);
+      db.prepare("UPDATE session_entries SET entry_json = ? WHERE session_key = ?").run(
+        "{",
+        "corrupt",
+      );
+      db.close();
+      writeStore(jsonPath, { main: { sessionId: "json", updatedAt: 2 } });
+
+      const result = await migrateOrphanedSessionKeys({
+        cfg: { agents: { list: [{ id: "main", default: true }] } },
+        env: { OPENCLAW_STATE_DIR: stateDir },
+        additionalAgentIds: [],
+      });
+
+      expect(result.changes).toStrictEqual([]);
+      expect(result.warnings).toContainEqual(
+        expect.stringContaining("Could not parse session store"),
+      );
+      expect(fs.existsSync(jsonPath)).toBe(true);
+      const verify = new sqlite.DatabaseSync(sqlitePath, { readOnly: true });
+      expect(
+        (
+          verify
+            .prepare("SELECT entry_json FROM session_entries WHERE session_key = ?")
+            .get("corrupt") as { entry_json: string }
+        ).entry_json,
+      ).toBe("{");
+      verify.close();
+    });
+  });
+
+  it("does not import sibling JSON into a newer SQLite schema", async () => {
+    await withStateFixture(async ({ stateDir }) => {
+      const sqlitePath = path.join(stateDir, "agents", "main", "sessions", "sessions.sqlite");
+      const jsonPath = path.join(stateDir, "agents", "main", "sessions", "sessions.json");
+      fs.mkdirSync(path.dirname(sqlitePath), { recursive: true });
+      const sqlite = requireNodeSqlite();
+      const db = new sqlite.DatabaseSync(sqlitePath);
+      db.exec("PRAGMA user_version = 999");
+      db.close();
+      writeStore(jsonPath, { main: { sessionId: "json", updatedAt: 2 } });
+
+      const result = await migrateOrphanedSessionKeys({
+        cfg: { agents: { list: [{ id: "main", default: true }] } },
+        env: { OPENCLAW_STATE_DIR: stateDir },
+        additionalAgentIds: [],
+      });
+
+      expect(result.changes).toStrictEqual([]);
+      expect(result.warnings).toContainEqual(
+        expect.stringContaining("Could not parse session store"),
+      );
+      expect(fs.existsSync(jsonPath)).toBe(true);
+      const verify = new sqlite.DatabaseSync(sqlitePath, { readOnly: true });
+      expect(
+        (verify.prepare("PRAGMA user_version").get() as { user_version: number }).user_version,
+      ).toBe(999);
+      verify.close();
     });
   });
 
@@ -483,7 +784,7 @@ describe("migrateOrphanedSessionKeys", () => {
 
       expect(result.changes).toHaveLength(0);
       expect(result.warnings).toEqual([
-        `Deferred session key migration for ${standardStorePath}; filesystem identity could not be established for every configured store path. Restore path access or configure one canonical session.store path, then rerun openclaw doctor --fix`,
+        `Deferred session key migration for ${path.join(stateDir, "agents", "voice", "sessions", "sessions.sqlite")}; filesystem identity could not be established for every configured store path. Restore path access or configure one canonical session.store path, then rerun openclaw doctor --fix`,
       ]);
       expect(requireStoreEntry(readStore(standardStorePath), "voice:15550001111").sessionId).toBe(
         "legacy-voice",
@@ -723,8 +1024,12 @@ describe("migrateOrphanedSessionKeys", () => {
       });
 
       const env = { OPENCLAW_STATE_DIR: stateDir };
-      await migrateOrphanedSessionKeys({ cfg: OPS_WORK_CONFIG, env });
-      const result2 = await migrateOrphanedSessionKeys({ cfg: OPS_WORK_CONFIG, env });
+      const cfg = {
+        ...OPS_WORK_CONFIG,
+        session: { ...OPS_WORK_CONFIG.session, store: storePath },
+      } as OpenClawConfig;
+      await migrateOrphanedSessionKeys({ cfg, env });
+      const result2 = await migrateOrphanedSessionKeys({ cfg, env });
 
       expect(result2.changes).toHaveLength(0);
       const store = readStore(storePath);
@@ -971,12 +1276,18 @@ describe("migrateOrphanedSessionKeys", () => {
         "legacy-voice",
       );
       expect(store["voice:15550001111"]).toBeUndefined();
-      const opsStore = readStore(discoveredOpsStorePath);
+      const opsStore = loadSessionStore(
+        path.join(stateDir, "agents", "ops", "sessions", "sessions.sqlite"),
+        { skipCache: true },
+      );
       expect(requireStoreEntry(opsStore, "agent:ops:voice:15550002222").sessionId).toBe(
         "ops-voice",
       );
       expect(opsStore["voice:15550002222"]).toBeUndefined();
-      expect(first.changes).toHaveLength(2);
+      expect(first.changes).toHaveLength(3);
+      expect(first.changes).toContainEqual(
+        expect.stringContaining("Archived imported sessions store"),
+      );
       expect(first.warnings).toHaveLength(0);
       expect(second).toEqual({ changes: [], warnings: [] });
     });
@@ -1000,7 +1311,7 @@ describe("migrateOrphanedSessionKeys", () => {
     });
   });
 
-  it("no-ops when default agentId is main and mainKey is main", async () => {
+  it("imports a canonical default JSON store without changing its key", async () => {
     await withStateFixture(async ({ stateDir }) => {
       const storePath = path.join(stateDir, "agents", "main", "sessions", "sessions.json");
       writeStore(storePath, {
@@ -1014,8 +1325,11 @@ describe("migrateOrphanedSessionKeys", () => {
         env: { OPENCLAW_STATE_DIR: stateDir },
       });
 
-      expect(result.changes).toHaveLength(0);
-      const store = readStore(storePath);
+      expect(result.changes).toEqual([expect.stringContaining("Archived imported sessions store")]);
+      const store = loadSessionStore(
+        path.join(stateDir, "agents", "main", "sessions", "sessions.sqlite"),
+        { skipCache: true },
+      );
       expect(requireStoreEntry(store, "agent:main:main").sessionId).toBe("abc-123");
     });
   });
