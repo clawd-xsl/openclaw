@@ -209,6 +209,7 @@ only for behavior that really belongs to the backend.
 | `nativeToolMode`                   | Declare whether the CLI has always-on native tools                          |
 | `sideQuestionToolMode`             | Declare disabled native tools for `/btw` side questions                     |
 | `bundleMcp` / `bundleMcpMode`      | Opt into OpenClaw's loopback MCP tool bridge                                |
+| `bundleMcpToolSurface`             | Choose the native-complement or policy-filtered OpenClaw MCP tool surface   |
 | `ownsNativeCompaction`             | Backend owns its own compaction - OpenClaw defers                           |
 
 Keep these hooks provider-owned. Do not add CLI-specific branches to core when a
@@ -220,6 +221,13 @@ as disabling native tools, session persistence, or resume behavior for BTW. If a
 backend normally has `nativeToolMode: "always-on"` but its side-question argv
 reliably disables those tools, also set `sideQuestionToolMode: "disabled"`;
 otherwise OpenClaw fails closed when BTW requires a no-tools CLI run.
+
+`resolveExecutionArgs(ctx)` also receives the resolved `thinkingLevel` and
+effective boolean `fastMode` for the invocation. A backend that maps either
+value into argv or settings automatically includes that result in live-session
+fingerprinting because the final execution args are fingerprinted. Elapsed
+`fastMode: "auto"` is resolved after the run acquires its serialized execution
+slot, so queue wait time cannot leave a stale fast-mode decision in argv.
 
 ### `ownsNativeCompaction`: opting out of OpenClaw compaction
 
@@ -242,6 +250,11 @@ stay over budget / go stale (OpenClaw no longer rescues it):
 
 CLI backends do not receive OpenClaw tools by default. If the CLI can consume an
 MCP configuration, opt in explicitly:
+
+- `bundleMcpToolSurface: "native-complement"` omits coding tools that a CLI's
+  native runtime normally supplies.
+- `bundleMcpToolSurface: "openclaw"` keeps policy-approved OpenClaw coding tools
+  in the bridge for a backend that disables its native tools.
 
 ```typescript
 return {

@@ -592,6 +592,7 @@ When Mattermost native commands are enabled:
       dmPolicy: "pairing",
       allowFrom: ["+15551234567", "uuid:123e4567-e89b-12d3-a456-426614174000"],
       configWrites: true,
+      replyToMode: "off", // off | first | all | batched
       reactionNotifications: "own", // off | own | all | allowlist
       reactionAllowlist: ["+15551234567", "uuid:123e4567-e89b-12d3-a456-426614174000"],
       historyLimit: 50,
@@ -604,6 +605,7 @@ When Mattermost native commands are enabled:
 
 - `channels.signal.account`: pin channel startup to a specific Signal account identity.
 - `channels.signal.configWrites`: allow or deny Signal-initiated config writes.
+- `channels.signal.replyToMode`: control native quoted replies (`off` by default); account-level overrides are supported.
 - Optional `channels.signal.defaultAccount` overrides default account selection when it matches a configured account id.
 
 ### iMessage

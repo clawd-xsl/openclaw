@@ -635,6 +635,90 @@ When gateway-start QMD initialization is enabled, OpenClaw starts QMD only for e
 
 ---
 
+## Session summaries
+
+Durable session summaries are configured under
+`plugins.entries.memory-core.config.summaries`.
+
+| Key               | Type      | Default       | Description                                                                                                     |
+| ----------------- | --------- | ------------- | --------------------------------------------------------------------------------------------------------------- |
+| `enabled`         | `boolean` | `true`        | Generate and auto-inject summaries for eligible completed sessions; existing records remain readable when false |
+| `autoInject`      | `boolean` | `true`        | Inject the direct predecessor summary as bounded untrusted continuity context                                   |
+| `lookbackDays`    | `number`  | `30`          | Recall, retry-recovery, and predecessor lookup window (`1..3650`); not a physical TTL                           |
+| `maxPromptTokens` | `number`  | `16000`       | Maximum estimated prompt tokens for each map or reduce model call (`1024..65536`)                               |
+| `minMessages`     | `number`  | `3`           | Minimum extracted user and assistant messages before model generation (`1..1000`)                               |
+| `model`           | `string`  | default model | Optional non-empty provider/model override, up to 256 characters                                                |
+
+```json5
+{
+  plugins: {
+    entries: {
+      "memory-core": {
+        config: {
+          summaries: {
+            enabled: true,
+            autoInject: true,
+            lookbackDays: 30,
+            maxPromptTokens: 16000,
+            minMessages: 3,
+          },
+        },
+      },
+    },
+  },
+}
+```
+
+An explicit `summaries.model` requires
+`plugins.entries.memory-core.llm.allowModelOverride: true`. Summary generation
+for a non-default agent also requires
+`plugins.entries.memory-core.llm.allowAgentIdOverride: true`. See
+[Memory Core plugin](/plugins/reference/memory-core#durable-session-summaries)
+for lifecycle, recovery, and visibility behavior.
+
+---
+
+## Completed-session memory flush
+
+The bundled memory-core plugin can project durable facts from an ended default
+main/global session into the canonical daily Markdown file. Configure this path
+under `plugins.entries.memory-core.config.completedSessionFlush`.
+
+| Key               | Type      | Default | Description                                                                                      |
+| ----------------- | --------- | ------- | ------------------------------------------------------------------------------------------------ |
+| `enabled`         | `boolean` | `true`  | Run after eligible `new`, `reset`, `idle`, or `daily` rollover events                            |
+| `maxPromptTokens` | `number`  | `16000` | Maximum estimated system and user prompt tokens for the isolated extraction call (`1024..65536`) |
+
+```json5
+{
+  plugins: {
+    entries: {
+      "memory-core": {
+        config: {
+          completedSessionFlush: {
+            enabled: true,
+            maxPromptTokens: 16000,
+          },
+        },
+      },
+    },
+  },
+}
+```
+
+This path is restricted to the configured default agent's main or global
+session and can add one model call for a non-empty eligible transcript. The
+model produces a candidate only; memory-core performs the host-side append
+through a restart-safe outbox and operation marker. The outbox records and
+revalidates the enqueue-time workspace identity, while a stable state-directory
+lock coordinates projection with durable cancellation and startup cleanup.
+Model, prompt, system prompt, and timezone-derived daily path come from the standard
+`agents.defaults.compaction.memoryFlush` plan. Set
+`agents.defaults.compaction.memoryFlush.enabled: false` to disable this path
+together with pre-compaction and CLI-pressure memory flushes.
+
+---
+
 ## Dreaming
 
 Dreaming is configured under `plugins.entries.memory-core.config.dreaming`, not under `agents.defaults.memorySearch`.

@@ -154,7 +154,10 @@ The provider id becomes the left side of your model ref:
 3. **Executes the CLI** with a session id (if supported) so history stays consistent.
    The bundled `claude-cli` backend keeps a Claude stdio process alive per
    OpenClaw session and sends follow-up turns over stream-json stdin.
-4. **Parses output** (JSON or plain text) and returns the final text.
+4. **Normalizes output** (JSON, JSONL, or plain text). When block streaming is
+   enabled, assistant deltas enter the normal block-delivery pipeline,
+   including text/tool boundaries, while the final payload is deduplicated
+   against blocks already delivered.
 5. **Persists session ids** per backend, so follow-ups reuse the same CLI session.
 
 <Note>
@@ -164,14 +167,11 @@ told us OpenClaw-style Claude CLI usage is allowed again, so OpenClaw treats
 a new policy.
 </Note>
 
-The bundled Anthropic `claude-cli` backend prefers Claude Code's native skill
-resolver for OpenClaw skills. When the current skills snapshot includes at least
-one selected skill with a materialized path, OpenClaw passes a temporary Claude
-Code plugin with `--plugin-dir` and omits the duplicate OpenClaw skills catalog
-from the appended system prompt. If the snapshot has no materialized plugin
-skill, OpenClaw keeps the prompt catalog as a fallback. Skill env/API key
-overrides are still applied by OpenClaw to the child process environment for the
-run.
+The bundled Anthropic `claude-cli` backend disables Claude slash commands for
+managed runs, so it does not pass OpenClaw skills through `--plugin-dir`.
+Instead, selected skills remain in OpenClaw's replacement system prompt. Skill
+environment and API-key overrides are still applied to the child process for
+the run.
 
 Claude CLI also has its own noninteractive permission mode. OpenClaw maps that
 to the existing exec policy instead of adding Claude-specific policy config.
@@ -184,11 +184,35 @@ launches Claude with `--permission-mode default`. Per-agent
 agent. Raw Claude backend args may still include `--permission-mode`, but live
 Claude launches normalize that flag to match the effective OpenClaw exec policy.
 
+### Claude tool and prompt isolation
+
+The bundled `claude-cli` backend treats Claude Code as a model transport, not
+as a second policy engine:
+
+- Claude's native tool list is limited to `ToolSearch`.
+- Policy-approved OpenClaw tools, including coding tools, are exposed through
+  the authenticated loopback MCP bridge and remain subject to OpenClaw sandbox,
+  allowlist, and approval policy.
+- Local and project Claude setting sources, hooks, slash commands, and
+  `CLAUDE.md` discovery are disabled for the managed process.
+- OpenClaw supplies a replacement system prompt on every fresh or resumed
+  live session.
+
+This keeps tool execution and prompt policy on the OpenClaw side of the
+boundary. Changing those policy inputs invalidates the live-session launch
+fingerprint, so a process created under stale policy is not silently reused.
+
 The bundled Anthropic `claude-cli` backend also maps OpenClaw `/think` levels
 to Claude Code's native `--effort` flag for non-off levels. `minimal` and
 `low` map to `low`, `adaptive` and `medium` map to `medium`, and `high`,
 `xhigh`, and `max` map directly. Other CLI backends need their owning plugin to
 declare an equivalent argv mapper before `/think` can affect the spawned CLI.
+
+OpenClaw `/fast` state is also forwarded to managed Claude CLI runs through
+Claude Code's isolated `--settings` overlay. Explicit `on` and `off` values are
+preserved, while `auto` is resolved against its elapsed-time cutoff when the
+CLI invocation begins. A changed fast-mode value changes the live-session
+launch fingerprint, so a process created with stale settings is restarted.
 
 Before OpenClaw can use the bundled `claude-cli` backend, Claude Code itself
 must already be logged in on the same host:
@@ -417,6 +441,14 @@ must reliably bound its own transcript as it nears its context window and persis
 resumable session (e.g. `--resume` / `--session-id`); otherwise a deferred session can
 stay over budget. Matching `agentHarnessId` sessions still route to the harness endpoint.
 
+OpenClaw still runs its memory-pressure check before a CLI turn reaches the
+native compaction boundary. When a flush is due, it creates a separate one-shot
+maintenance session with a bounded, sanitized view of the OpenClaw transcript.
+The maintenance session cannot reuse or mutate the user-owned CLI thread. A
+successful run updates only its receipt fields in the OpenClaw session record;
+a failed run retains bounded retry diagnostics without adopting maintenance
+identity or compaction state.
+
 ## Bundle MCP overlays
 
 CLI backends do **not** receive OpenClaw tool calls directly, but a backend can
@@ -477,6 +509,11 @@ backends keep the conservative default.
 - **No session continuity**: ensure `sessionArg` is set and `sessionMode` is not
   `none`.
 - **Images ignored**: set `imageArg` (and verify CLI supports file paths).
+- **Upgrading from `claude-cli-streaming`**: run `openclaw doctor --fix`. The
+  migration rewrites model, runtime, backend, and provider references to
+  `claude-cli`. It drops retired native-session bindings instead of renaming
+  them, so the canonical backend starts or reseeds under its current launch
+  fingerprint.
 
 ## Related
 

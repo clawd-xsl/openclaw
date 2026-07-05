@@ -51,13 +51,14 @@ Minimal config:
 
 Field reference:
 
-| Field        | Description                                       |
-| ------------ | ------------------------------------------------- |
-| `account`    | Bot phone number in E.164 format (`+15551234567`) |
-| `cliPath`    | Path to `signal-cli` (`signal-cli` if on `PATH`)  |
-| `configPath` | signal-cli config dir passed as `--config`        |
-| `dmPolicy`   | DM access policy (`pairing` recommended)          |
-| `allowFrom`  | Phone numbers or `uuid:<id>` values allowed to DM |
+| Field         | Description                                                                                           |
+| ------------- | ----------------------------------------------------------------------------------------------------- |
+| `account`     | Bot phone number in E.164 format (`+15551234567`)                                                     |
+| `cliPath`     | Path to `signal-cli` (`signal-cli` if on `PATH`)                                                      |
+| `configPath`  | signal-cli config dir passed as `--config`                                                            |
+| `dmPolicy`    | DM access policy (`pairing` recommended)                                                              |
+| `allowFrom`   | Phone numbers or `uuid:<id>` values allowed to DM                                                     |
+| `replyToMode` | Native quoted replies: `off` (default), `first`, `all`, or `batched`; account overrides are supported |
 
 ## What it is
 
@@ -76,6 +77,28 @@ Disable with:
   channels: { signal: { configWrites: false } },
 }
 ```
+
+## Quoted replies and stickers
+
+Set `channels.signal.replyToMode` to control native Signal quotes on automatic
+replies. The default is `off`; `first` quotes only the first reply payload,
+`all` quotes every payload, and `batched` follows the shared batched-reply
+policy. In a chunked text or media payload, OpenClaw attaches the quote only to
+the first actual platform send.
+
+Automatic replies use the inbound Signal timestamp as the quote id. Group
+quotes also carry the original sender as the quote author. For each eligible
+logical reply payload, only its first actual Signal text or media send carries
+the quote, so chunked delivery does not repeat it.
+
+Inbound sticker messages are exposed to the agent as bounded text in the form
+`[Signal sticker <packId>:<stickerId>]`; the sticker attachment is not surfaced
+as ordinary inbound image media. The `message` tool can send a sticker already
+installed in signal-cli with
+`action=sticker channel=signal target=<target> stickerId=<hex-pack-id>:<nonnegative-id>`.
+Native and container transports both support that action. OpenClaw validates
+and bounds the identifier before dispatch; it does not install or upload
+sticker packs.
 
 ## The number model (important)
 
@@ -236,7 +259,7 @@ The `apiMode` field controls which protocol OpenClaw uses:
 
 When `apiMode` is `"auto"`, OpenClaw caches the detected mode for 30 seconds to avoid repeated probes. Container receive is only selected for streaming after `/v1/receive/{account}` upgrades to WebSocket, which requires `MODE=json-rpc`.
 
-Container mode supports the same Signal channel operations as native mode where the container exposes matching APIs: sends, receives, attachments, typing indicators, read/viewed receipts, reactions, groups, and styled text. OpenClaw translates its native Signal RPC calls into the container's REST payloads, including `group.{base64(internal_id)}` group IDs and `text_mode: "styled"` for formatted text.
+Container mode supports the same Signal channel operations as native mode where the container exposes matching APIs: sends, receives, attachments, typing indicators, read/viewed receipts, reactions, quoted replies, stickers, groups, and styled text. OpenClaw translates its native Signal RPC calls into the container's REST payloads, including `group.{base64(internal_id)}` group IDs and `text_mode: "styled"` for formatted text.
 
 Operational notes:
 

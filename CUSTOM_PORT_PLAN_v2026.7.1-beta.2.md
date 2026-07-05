@@ -26,6 +26,28 @@ changes on `custom/20260705`.
   changes.
 - Each commit must compile and pass the narrow tests for its own behavior.
 
+## Implemented commit ledger
+
+The implementation follows the dependency order above. Hashes are grouped by
+reviewable behavior rather than by the chronology of the old branch:
+
+| Area                                               | Commits on `custom/20260705`                                         |
+| -------------------------------------------------- | -------------------------------------------------------------------- |
+| Audit baseline                                     | `f96fdd95aa`                                                         |
+| Generic coding surface and Anthropic isolation     | `fc5b8d5fc1`, `7c5504cce5`, `3b80939b61`, `cb33c75017`               |
+| CLI streaming and bounded transcript contract      | `b07bcaabae`, `1c819e6024`, `9117d4b37e`, `660630a217`               |
+| Retired Claude provider and session state          | `b00de71aa4`, `1942f32d23`                                           |
+| Summary product, UI, migration, and boundaries     | `afdd58eade`, `3b713fcce1`, `8f2d2d067e`, `ae5d89ab9e`, `dedbbedf5b` |
+| CLI pressure memory and queue-time fast mode       | `a38c54d954`, `c596546b2c`, `00374ed4b5`, `a728b5be59`               |
+| Retired custom configuration and generated schema  | `31abc29687`, `931b191e42`, `974030fc71`                             |
+| Completed-session Markdown projection              | `fcfdd96258`, `b4dd9b3536`, `d9bf14acce`                             |
+| Signal reply and sticker continuity                | `c86830fd87`                                                         |
+| Doctor capacity contract and legacy summary import | `a91b3331c1`, `9b9f23a6a3`                                           |
+
+No commit from `origin/custom/20260415` was replayed. The source ref remains at
+`0f4877e7cf`; these commits rebuild only the retained behavior on target-owned
+abstractions.
+
 ## Phase 0: audit and reproducible baseline
 
 Commit:
@@ -94,8 +116,9 @@ Scope:
 - Enforce the public session visibility policy and same-agent ownership.
 - Search literal normalized terms; `%` and `_` have no wildcard meaning.
 - Add hard result/text limits and stable newest-first cursors.
-- Register `memory.summaries.list` as a plugin RPC with the same pagination and
-  scoping rules.
+- Register `memory.summaries.list` as an `operator.read` plugin RPC that shares
+  bounded filtering and pagination with the tool. The RPC is an operator
+  surface and does not impersonate the tool's requester-session visibility.
 - Add `openclaw memory summaries list` through the existing plugin CLI seam if
   it can remain lazy and plugin-local.
 - Optionally inject only the completed direct predecessor into
@@ -129,26 +152,33 @@ Tests:
 
 ## Phase 2: durable memory at session boundaries
 
-### Commit 5: `Memory: flush completed sessions on rollover`
+### Commits 5a and 5b: completed-session memory projection
 
 Scope:
 
-- Subscribe in memory-core to completed-session lifecycle events whose reasons
-  are explicitly configured for capture.
+- Subscribe in memory-core to the fixed `new`, `reset`, `idle`, and `daily`
+  lifecycle reasons. Deliberately restrict this default-on product behavior to
+  the dynamically configured default agent's main/global session, avoiding
+  surprise model calls and durable writes from channel-isolated or worker
+  sessions.
 - Use the canonical bounded transcript and the existing `MemoryFlushPlan` for
-  model, prompts, and write target.
-- Run an isolated maintenance turn that may append only to the canonical daily
-  memory file.
-- Persist a receipt keyed by agent, session, transcript fingerprint, and plan
-  version. Advance the receipt only after success; retry failures safely.
-- Do not hard-code the `main` agent/session and do not feed the entire raw
-  transcript in one prompt.
+  model, prompts, timezone-derived write target, and global kill switch.
+- Run an isolated read-only maintenance turn that returns a closed JSON union;
+  the host, not the model, appends only to the canonical daily memory file.
+- Persist a CAS outbox operation keyed by agent and session. Store the frozen
+  plan, transcript fingerprint, generated candidate, integrity hashes, lease,
+  and retry state before projection. Reconcile operation/hash markers after a
+  crash so the same operation is not appended twice.
+- Never feed the entire raw transcript in one prompt, resume the ended session,
+  or allow user-visible delivery.
 
 Tests:
 
-- reason/agent/session filtering, bounded transcript, configured model;
-- exactly-once successful receipt, failed retry, changed transcript/plan;
-- no user-visible delivery and no mutation of the ended transcript.
+- reason/default-agent/main-session filtering, bounded transcript, frozen plan;
+- candidate-before-projection, lease fencing, failed retry, restart reconcile,
+  marker conflict and partial-write fail-closed behavior;
+- private 0700/0600 maintenance artifacts, 10-minute run cap, no delivery, and
+  no mutation of the ended transcript.
 
 ### Commit 6: `Memory: flush CLI sessions before native compaction`
 
@@ -222,11 +252,12 @@ Tests:
 - policy/model/auth/prompt/MCP/cwd/skills changes rotate the live session;
 - consecutive turns and restart reseed retain conversation continuity.
 
-### Optional commit 10: `CLI: forward fast mode to backend execution hooks`
+### Commit 10: `CLI: forward fast mode to backend execution hooks`
 
-Only land this if the deployed fork uses `/fast`. Add an additive SDK field,
-forward it to the Anthropic plugin, map the CLI setting, and include it in the
-live fingerprint. Generate and verify the Plugin SDK API baseline.
+The deployed fork uses `/fast`. Add an additive SDK field, resolve `auto` at
+the invocation boundary, forward the effective boolean to the Anthropic
+plugin, map it into the isolated Claude settings overlay, and include the final
+argv in the live fingerprint. Generate and verify the Plugin SDK API baseline.
 
 Do not add a Fable CLI alias unless a live `claude --model fable` probe proves
 the alias is accepted by the installed CLI. The API catalog already contains
@@ -234,7 +265,7 @@ Fable 5.
 
 ## Phase 4: configuration migration and documentation
 
-### Commit 11: `Config: migrate custom Claude and summary settings`
+### Commits 11a through 11d: custom config and state migration
 
 Scope:
 
@@ -246,6 +277,13 @@ Scope:
   do not rename a provider-owner key blindly.
 - Remove obsolete compaction-overlay, prompt-invalidation, hook/fs bypass, and
   unauthenticated-bind settings with explicit doctor diagnostics.
+- Import legacy SQLite `session_summaries` into memory-core plugin state before
+  a legacy memory sidecar can be archived. Sanitize and bound the old text,
+  preserve only unambiguous reversed lineage, and never overwrite a current
+  record.
+- Remove retired per-session custom compaction fields. Preserve the supported
+  loopback `gateway.auth.mode: "none"`; the dropped behavior is only the old
+  exposed-bind bypass.
 - Do not keep runtime compatibility shims after migration.
 
 Tests:
@@ -267,11 +305,19 @@ Scope:
 Run `pnpm docs:list` before editing and use root-relative Mintlify links in
 `docs/**`.
 
-## Phase 5: Signal follow-up, currently blocked
+## Phase 5: Signal adapter continuity and blocked direct transport
 
-No placeholder integration commit should land. Work resumes only after the
-`signal-ts` source is available as a legal exact runtime dependency that passes
-Node 22 and deployment-platform installation tests.
+The reproducible official signal-cli native/container adapters now retain the
+product-level quoted-reply and installed-sticker behavior:
+
+- account-scoped `replyToMode` and original-sender group quote metadata;
+- one quote on the first actual text/media send of each logical payload;
+- bounded inbound sticker context and an outbound `sticker` message action;
+- native JSON-RPC and container REST parameter translation.
+
+Direct `signal-ts` transport remains blocked. No direct-transport integration
+will land until the source is available as a legal exact runtime dependency
+that passes Node 22 and deployment-platform installation tests.
 
 Future commit order:
 
@@ -299,7 +345,8 @@ CODEOWNERS-restricted, so this phase also needs the appropriate owner review.
 For each commit:
 
 - run the smallest colocated tests that prove its behavior;
-- run `pnpm check` before committing;
+- keep staging scoped with `scripts/committer`; use the final repo-wide gate to
+  cover cross-commit lint and type interactions;
 - run the relevant drift check whenever config or Plugin SDK contracts change.
 
 Before the final branch handoff:

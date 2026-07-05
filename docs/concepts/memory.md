@@ -6,9 +6,12 @@ read_when:
   - You want to know what memory files to write
 ---
 
-OpenClaw remembers things by writing **plain Markdown files** in your agent's
-workspace. The model only "remembers" what gets saved to disk — there is no
-hidden state.
+OpenClaw's durable, agent-editable memory lives in **plain Markdown files** in
+the agent workspace. The model does not retain hidden conversational memory
+between sessions. Separate continuity features can keep bounded plugin state,
+such as session summaries, and add it to a prompt only under their documented
+scope and visibility rules; that state does not replace the Markdown memory
+source of truth.
 
 ## How it works
 
@@ -116,6 +119,41 @@ The agent has two tools for working with memory:
 
 Both tools are provided by the active memory plugin (default: `memory-core`).
 
+## Session continuity summaries
+
+The bundled `memory-core` plugin also provides `session_summaries`. It stores a
+bounded model-generated summary when a session ends because of `new`, `reset`,
+`idle`, or `daily`, and can inject the completed summary into that session's
+direct successor. This continuity layer is enabled by default.
+
+Session summaries are durable plugin records, not Markdown memory files. They
+help the next session recover conversational context, but they do not add facts
+to `MEMORY.md` or `memory/YYYY-MM-DD.md`. Use `memory_search` and `memory_get`
+for durable file-backed memory; use `session_summaries` for bounded historical
+session context.
+
+Summary generation and direct-successor injection are restart-safe and
+bounded. Recall follows the normal session-history visibility policy. You can
+search and page through the records with the tool or inspect them on the
+**Summaries** page in the Control UI. See the
+[Memory Core plugin](/plugins/reference/memory-core) for configuration and
+model-override policy.
+
+`summaries.enabled: false` stops new generation and automatic injection but
+does not erase existing records. `autoInject: false` disables only prompt
+injection. The configured `lookbackDays` is a query, recovery, and predecessor
+lookup window, not a physical deletion timer. Deleting a session purges its
+summary record; content already projected into a Markdown memory file is not
+removed automatically.
+
+The three automatic continuity paths have different outputs:
+
+| Path                    | Trigger                                       | Durable output                                                               |
+| ----------------------- | --------------------------------------------- | ---------------------------------------------------------------------------- |
+| Session summary         | Eligible session rollover                     | Bounded plugin-state record for direct-successor context and history queries |
+| Completed-session flush | Eligible default main/global rollover         | Host-appended `memory/YYYY-MM-DD.md` content                                 |
+| Pressure flush          | Approaching OpenClaw or CLI-native compaction | Agent-written Markdown memory                                                |
+
 ## Memory Wiki companion plugin
 
 If you want durable memory to behave more like a maintained knowledge base than
@@ -208,6 +246,38 @@ override:
 
 The override applies only to the memory-flush turn and does not inherit the
 active session fallback chain.
+
+CLI backends that own their native compaction still receive the same
+memory-pressure protection. OpenClaw runs that housekeeping step in a separate,
+one-shot maintenance session with a bounded, sanitized transcript view. It does
+not append the maintenance prompt to, resume, or replace the user-owned CLI
+session. A success updates only the flush receipt; a failure retains bounded
+retry diagnostics so a later turn can try again.
+
+### Completed-session memory flush
+
+The bundled `memory-core` plugin also performs a durable-memory pass after an
+eligible rollover of the default agent's main or global session. It runs for
+`new`, `reset`, `idle`, and `daily` endings, is enabled by default, and can add
+one model call when the ended transcript contains conversation content.
+
+This pass is distinct from session summaries: the model returns a bounded
+candidate, then the host appends accepted content to the canonical
+`memory/YYYY-MM-DD.md` file. A durable outbox, operation markers, and a file
+lock make the plugin's own retries restart-safe and prevent the same operation
+from being appended twice. The extraction run is isolated, read-only, and
+cannot send user-visible messages.
+
+It reuses the normal memory-flush model, prompt, system prompt, and timezone
+date plan. Deleting the source session later cleans the pending outbox state but
+does not reverse an append that already reached the Markdown file.
+
+Disable only the completed-session pass with
+`plugins.entries.memory-core.config.completedSessionFlush.enabled: false`. Set
+`agents.defaults.compaction.memoryFlush.enabled: false` to disable every
+memory-flush path, including pre-compaction, CLI pressure, and completed-session
+capture. See [Memory Core plugin](/plugins/reference/memory-core) for the full
+configuration.
 
 <Tip>
 The memory flush prevents context loss during compaction. If your agent has
