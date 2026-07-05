@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { stripInboundMetadata } from "../auto-reply/reply/strip-inbound-meta.js";
 import { readFileRangeAsync } from "../config/sessions/file-range.js";
 import {
+  appendTranscriptEvent,
   appendTranscriptMessage,
   publishTranscriptUpdate,
   resolveSessionTranscriptRuntimeReadTarget,
@@ -49,6 +50,10 @@ export type {
 };
 
 export type SessionTranscriptEvent = unknown;
+
+export type SessionTranscriptAppendEventParams = SessionTranscriptTargetParams & {
+  event: SessionTranscriptEvent;
+};
 
 export type SessionTranscriptMessageRole = "user" | "assistant";
 
@@ -392,6 +397,13 @@ export async function appendSessionTranscriptMessageByIdentity<TMessage>(
   params: SessionTranscriptAppendMessageParams<TMessage>,
 ): Promise<TranscriptMessageAppendResult<TMessage> | undefined> {
   return await appendTranscriptMessage(params, params);
+}
+
+/** Appends a non-message transcript event by scoped session identity. */
+export async function appendSessionTranscriptEventByIdentity(
+  params: SessionTranscriptAppendEventParams,
+): Promise<void> {
+  await appendTranscriptEvent(params, params.event);
 }
 
 /**
