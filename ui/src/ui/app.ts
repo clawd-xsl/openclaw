@@ -137,7 +137,12 @@ import type { GatewayBrowserClient, GatewayHelloOk } from "./gateway.ts";
 import type { Tab } from "./navigation.ts";
 import { resolveAgentIdFromSessionKey } from "./session-key.ts";
 import type { SidebarContent } from "./sidebar-content.ts";
-import { loadLocalUserIdentity, loadSettings, type UiSettings } from "./storage.ts";
+import {
+  loadLocalUserIdentity,
+  loadSettings,
+  resolveGatewayTokenForUrlEdit,
+  type UiSettings,
+} from "./storage.ts";
 import { VALID_THEME_NAMES, type ResolvedTheme, type ThemeMode, type ThemeName } from "./theme.ts";
 import type {
   AgentsListResult,
@@ -1456,7 +1461,9 @@ export class OpenClawApp extends LitElement {
     if (!nextGatewayUrl) {
       return;
     }
-    const nextToken = this.pendingGatewayToken?.trim() || "";
+    const nextToken =
+      this.pendingGatewayToken?.trim() ||
+      resolveGatewayTokenForUrlEdit(this.settings.gatewayUrl, nextGatewayUrl, this.settings.token);
     this.pendingGatewayUrl = null;
     this.pendingGatewayToken = null;
     applySettingsInternal(this as unknown as Parameters<typeof applySettingsInternal>[0], {

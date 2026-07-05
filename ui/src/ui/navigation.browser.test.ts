@@ -910,4 +910,21 @@ describe("control UI routing", () => {
 
     expectConfirmedGatewayChange(app);
   });
+
+  it("restores the scoped token for a confirmed tokenless gateway URL", async () => {
+    sessionStorage.setItem(
+      "openclaw.control.token.v1:wss://other-gateway.example/openclaw",
+      "remembered-token",
+    );
+    const app = mountApp("/ui/overview?gatewayUrl=wss://other-gateway.example/openclaw");
+    await app.updateComplete;
+
+    expect(app.settings.gatewayUrl).not.toBe("wss://other-gateway.example/openclaw");
+    expect(app.settings.token).toBe("");
+
+    await confirmPendingGatewayChange(app);
+
+    expect(app.settings.gatewayUrl).toBe("wss://other-gateway.example/openclaw");
+    expect(app.settings.token).toBe("remembered-token");
+  });
 });
