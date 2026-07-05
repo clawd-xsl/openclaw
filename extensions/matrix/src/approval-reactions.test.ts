@@ -9,10 +9,19 @@ import {
   resolveMatrixApprovalReactionTargetWithPersistence,
   unregisterMatrixApprovalReactionTarget,
 } from "./approval-reactions.js";
-import { setMatrixRuntime } from "./runtime.js";
+import { clearMatrixRuntime, setMatrixRuntime } from "./runtime.js";
+
+function createRuntimeLogger() {
+  return {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  };
+}
 
 afterEach(() => {
   clearMatrixApprovalReactionTargetsForTest();
+  clearMatrixRuntime();
   vi.restoreAllMocks();
 });
 
@@ -125,7 +134,7 @@ describe("matrix approval reactions", () => {
     }));
     setMatrixRuntime({
       state: { openKeyedStore },
-      logging: { getChildLogger: () => ({ warn: vi.fn() }) },
+      logging: { getChildLogger: () => createRuntimeLogger() },
     } as never);
 
     registerMatrixApprovalReactionTarget({
@@ -159,14 +168,14 @@ describe("matrix approval reactions", () => {
   });
 
   it("falls back to in-memory approval reaction targets when persistent state cannot open", () => {
-    const warn = vi.fn();
+    const logger = createRuntimeLogger();
     setMatrixRuntime({
       state: {
         openKeyedStore: vi.fn(() => {
           throw new Error("sqlite unavailable");
         }),
       },
-      logging: { getChildLogger: () => ({ warn }) },
+      logging: { getChildLogger: () => logger },
     } as never);
 
     registerMatrixApprovalReactionTarget({
@@ -183,6 +192,6 @@ describe("matrix approval reactions", () => {
         reactionKey: "❌",
       }),
     ).toEqual({ approvalId: "req-fallback", decision: "deny" });
-    expect(warn).toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalled();
   });
 });
