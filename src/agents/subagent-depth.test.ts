@@ -5,6 +5,14 @@ import os from "node:os";
 import path from "node:path";
 import { MAX_TIMER_TIMEOUT_MS } from "@openclaw/normalization-core/number-coercion";
 import { describe, expect, it } from "vitest";
+import { resolveDefaultSessionStorePath } from "../config/sessions/paths.js";
+import { clearSessionStoreCaches } from "../config/sessions/store-cache.js";
+import {
+  closeSessionStoreSqliteDatabasesForTest,
+  getSessionStoreSqliteStatsForTest,
+  resetSessionStoreSqliteStatsForTest,
+} from "../config/sessions/store-sqlite.js";
+import { saveSessionStore } from "../config/sessions/store.js";
 import { getSubagentDepthFromSessionStore } from "./subagent-depth.js";
 import { resolveAgentTimeoutMs } from "./timeout.js";
 
@@ -128,6 +136,53 @@ describe("getSubagentDepthFromSessionStore", () => {
     });
 
     expect(depth).toBe(2);
+  });
+
+  it("recovers persisted lineage from the default SQLite store with point reads", async () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-subagent-depth-sqlite-"));
+    const previousStateDir = process.env.OPENCLAW_STATE_DIR;
+    process.env.OPENCLAW_STATE_DIR = stateDir;
+    try {
+      const parentKey = "agent:main:subagent:parent";
+      const childKey = "agent:main:subagent:child";
+      const storePath = resolveDefaultSessionStorePath("main");
+      await saveSessionStore(
+        storePath,
+        {
+          [parentKey]: {
+            sessionId: "subagent-parent-session",
+            updatedAt: 1,
+            spawnDepth: 1,
+          },
+          [childKey]: {
+            sessionId: "subagent-child-session",
+            updatedAt: 2,
+            spawnedBy: parentKey,
+          },
+        },
+        { skipMaintenance: true },
+      );
+
+      // Drop both database handles and metadata caches to model a fresh process.
+      closeSessionStoreSqliteDatabasesForTest();
+      clearSessionStoreCaches();
+      resetSessionStoreSqliteStatsForTest();
+
+      expect(getSubagentDepthFromSessionStore(childKey, { cfg: {} })).toBe(2);
+      expect(getSessionStoreSqliteStatsForTest()).toMatchObject({
+        selectAll: 0,
+        selectByKey: 2,
+      });
+    } finally {
+      closeSessionStoreSqliteDatabasesForTest();
+      clearSessionStoreCaches();
+      if (previousStateDir === undefined) {
+        delete process.env.OPENCLAW_STATE_DIR;
+      } else {
+        process.env.OPENCLAW_STATE_DIR = previousStateDir;
+      }
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
   });
 
   it("falls back to session-key segment counting when metadata is missing", () => {
