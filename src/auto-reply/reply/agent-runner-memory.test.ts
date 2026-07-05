@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { testing as cliBackendsTesting } from "../../agents/cli-backends.js";
 import type { SessionEntry } from "../../config/sessions.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
   clearMemoryPluginState,
   registerMemoryCapability,
@@ -937,6 +938,112 @@ describe("runMemoryFlushIfNeeded", () => {
     expect(
       requireModelFallbackCall().resolveAgentHarnessRuntimeOverride?.("openai", "gpt-5.4"),
     ).toBeUndefined();
+  });
+
+  it.each([
+    ["direct CLI provider", "provider"],
+    ["session runtime pin", "session"],
+    ["model runtime policy", "model-policy"],
+    ["selected CLI auth profile", "auth-profile"],
+  ] as const)("uses isolated CLI pressure handling for a %s", async (_label, selectionSource) => {
+    cliBackendsTesting.setDepsForTest({
+      resolveRuntimeCliBackends: () => [
+        {
+          id: "claude-cli",
+          modelProvider: "anthropic",
+          pluginId: "anthropic",
+          config: { command: "claude" },
+        },
+      ],
+    });
+    const cfg: OpenClawConfig = {
+      ...(selectionSource === "auth-profile"
+        ? {
+            auth: {
+              order: { anthropic: ["anthropic:api"] },
+              profiles: {
+                "anthropic:api": { provider: "anthropic", mode: "api_key" as const },
+                "anthropic:claude-cli": { provider: "claude-cli", mode: "oauth" as const },
+              },
+            },
+          }
+        : {}),
+      agents: {
+        defaults: {
+          ...(selectionSource === "model-policy"
+            ? {
+                models: {
+                  "anthropic/claude-opus-4-6": {
+                    agentRuntime: { id: "claude-cli" },
+                  },
+                },
+              }
+            : {}),
+          compaction: { memoryFlush: {} },
+        },
+      },
+    };
+    const sessionFile = path.join(rootDir, `runtime-${selectionSource}.jsonl`);
+    const storePath = path.join(rootDir, `sessions-${selectionSource}.json`);
+    await fs.writeFile(sessionFile, "", "utf8");
+    const sessionEntry: SessionEntry = {
+      sessionId: "session",
+      sessionFile,
+      updatedAt: Date.now(),
+      totalTokens: 80_000,
+      totalTokensFresh: true,
+      compactionCount: 1,
+      ...(selectionSource === "session" ? { agentRuntimeOverride: "claude-cli" } : {}),
+    };
+    await writeTestSessionStore(storePath, "main", sessionEntry);
+    const provider = selectionSource === "provider" ? "claude-cli" : "anthropic";
+    const followupRun = createTestFollowupRun({
+      provider,
+      model: "claude-opus-4-6",
+      sessionId: sessionEntry.sessionId,
+      sessionFile,
+      workspaceDir: rootDir,
+      ...(selectionSource === "auth-profile"
+        ? { authProfileId: "anthropic:claude-cli", authProfileIdSource: "user" as const }
+        : {}),
+    });
+
+    await runMemoryFlushIfNeeded({
+      cfg,
+      followupRun,
+      sessionCtx: { Provider: "whatsapp" } as unknown as TemplateContext,
+      defaultModel: `${provider}/claude-opus-4-6`,
+      agentCfgContextTokens: 100_000,
+      resolvedVerboseLevel: "off",
+      sessionEntry,
+      sessionStore: { main: sessionEntry },
+      sessionKey: "main",
+      storePath,
+      isHeartbeat: false,
+      replyOperation: createReplyOperation(),
+    });
+
+    expect(runEmbeddedAgentMock).toHaveBeenCalledTimes(1);
+    const embeddedCall = requireEmbeddedAgentCall();
+    expect(embeddedCall.sessionId).not.toBe(sessionEntry.sessionId);
+    expect(embeddedCall.disableMessageTool).toBe(true);
+    expect(embeddedCall.cleanupBundleMcpOnRunEnd).toBe(true);
+    expect(embeddedCall.replyOperation).toBeUndefined();
+
+    await runPreflightCompactionIfNeeded({
+      cfg,
+      followupRun,
+      defaultModel: `${provider}/claude-opus-4-6`,
+      agentCfgContextTokens: 100_000,
+      sessionEntry,
+      sessionStore: { main: sessionEntry },
+      sessionKey: "main",
+      storePath,
+      isHeartbeat: false,
+      replyOperation: createReplyOperation(),
+    });
+
+    expect(compactEmbeddedAgentSessionMock).not.toHaveBeenCalled();
   });
 
   it.each([

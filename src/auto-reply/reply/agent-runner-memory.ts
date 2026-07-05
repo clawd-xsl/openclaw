@@ -12,7 +12,10 @@ import { classifyCompactionReason } from "../../agents/embedded-agent-runner/com
 import { resolveAgentHarnessPolicy } from "../../agents/harness/policy.js";
 import { ensureSelectedAgentHarnessPlugin } from "../../agents/harness/runtime-plugin.js";
 import { runWithModelFallback } from "../../agents/model-fallback.js";
-import { isCliRuntimeAliasForProvider } from "../../agents/model-runtime-aliases.js";
+import {
+  isCliRuntimeAliasForProvider,
+  resolveCliRuntimeExecutionProvider,
+} from "../../agents/model-runtime-aliases.js";
 import { isCliProvider } from "../../agents/model-selection.js";
 import { resolveContextConfigProviderForRuntime } from "../../agents/openai-routing.js";
 import type { AgentMessage } from "../../agents/runtime/index.js";
@@ -43,6 +46,7 @@ import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import type { TemplateContext } from "../templating.js";
 import type { VerboseLevel } from "../thinking.js";
 import type { GetReplyOptions, ReplyPayload } from "../types.js";
+import { resolveRunAuthProfile } from "./agent-runner-auth-profile.js";
 import {
   buildEmbeddedRunExecutionParams,
   resolveModelFallbackOptions,
@@ -284,14 +288,27 @@ function followupUsesCliRuntime(params: {
   sessionEntry?: Pick<SessionEntry, "agentRuntimeOverride">;
 }): boolean {
   const provider = params.followupRun.run.provider;
-  if (isCliProvider(provider, params.cfg)) {
-    return true;
-  }
-  return isCliRuntimeAliasForProvider({
+  const sessionRuntimeOverride = resolveMemoryFlushRuntimeOverrideForProvider({
     provider,
-    runtime: params.sessionEntry?.agentRuntimeOverride,
+    entry: params.sessionEntry,
     cfg: params.cfg,
   });
+  const selectedAuthProfile = resolveRunAuthProfile(params.followupRun.run, provider, {
+    config: params.cfg,
+  });
+  const executionProvider =
+    (sessionRuntimeOverride && isCliProvider(sessionRuntimeOverride, params.cfg)
+      ? sessionRuntimeOverride
+      : undefined) ??
+    resolveCliRuntimeExecutionProvider({
+      provider,
+      cfg: params.cfg,
+      agentId: params.followupRun.run.agentId,
+      modelId: params.followupRun.run.model,
+      authProfileId: selectedAuthProfile.authProfileId,
+    }) ??
+    provider;
+  return isCliProvider(executionProvider, params.cfg);
 }
 
 function resolveFollowupContextConfigProvider(params: {
