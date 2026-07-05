@@ -8,7 +8,7 @@ import {
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
 import { resolveStorePath } from "../config/sessions/paths.js";
-import { loadSessionStore } from "../config/sessions/store-load.js";
+import { loadSessionEntry } from "../config/sessions/session-accessor.js";
 import { emitDiagnosticEvent } from "../infra/diagnostic-events.js";
 import {
   resolveExternalBestEffortDeliveryTarget,
@@ -130,7 +130,11 @@ function isExecApprovalFollowupDirectDeliveryStale(params: {
       agentId: resolveAgentIdFromSessionKey(sessionKey),
     });
     const resolvedSessionId = normalizeOptionalString(
-      loadSessionStore(storePath)?.[sessionKey]?.sessionId,
+      loadSessionEntry({
+        storePath,
+        sessionKey,
+        hydrateSkillPromptRefs: false,
+      })?.sessionId,
     );
     return isExecApprovalFollowupSessionRebound({ expectedSessionId, resolvedSessionId });
   } catch (err) {
