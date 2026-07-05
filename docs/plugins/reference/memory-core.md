@@ -1,15 +1,13 @@
 ---
-summary: "File-backed memory tools, durable session summaries, and session-boundary memory capture"
+summary: "Adds agent-callable tools."
 read_when:
   - You are installing, configuring, or auditing the memory-core plugin
-  - You want to configure durable session summaries
 title: "Memory Core plugin"
 ---
 
 # Memory Core plugin
 
-`memory-core` is the bundled memory plugin. It owns the default Markdown memory
-search surface and durable session-summary continuity.
+Adds agent-callable tools.
 
 ## Distribution
 
@@ -17,6 +15,17 @@ search surface and durable session-summary continuity.
 - Install route: included in OpenClaw
 
 ## Surface
+
+contracts: tools
+
+<!-- openclaw-plugin-reference:manual-start -->
+
+## Memory Core capabilities
+
+`memory-core` is the bundled memory plugin. It owns the default Markdown memory
+search surface and durable session-summary continuity.
+
+### Agent tools
 
 The plugin registers these agent tools:
 
@@ -161,3 +170,5 @@ rows block archival and remain in a retry source. For a shared SQLite path,
 doctor records the complete owner set in one shared retry database before
 moving the original path aside, so a later run still has the ownership map
 after retired `memorySearch.store.path` configuration is removed.
+
+<!-- openclaw-plugin-reference:manual-end -->
