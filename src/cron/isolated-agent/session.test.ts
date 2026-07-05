@@ -265,6 +265,13 @@ describe("resolveCronSession", () => {
           contextTokens: 200_000,
           compactionCount: 9,
           memoryFlushAt: NOW_MS - 500,
+          memoryFlushContextHash: "retired-tail-hash",
+          memoryFlushCliPromptTokens: 176_000,
+          memoryFlushCliTranscriptBytes: 2_000_000,
+          memoryFlushCliFingerprint: "old-cli-cycle",
+          memoryFlushFailureCount: 2,
+          memoryFlushLastFailedAt: NOW_MS - 250,
+          memoryFlushLastFailureError: "old failure",
           abortCutoffMessageSid: "old-message",
           spawnedBy: "agent:main:session:parent",
           skillsSnapshot: {
@@ -353,6 +360,13 @@ describe("resolveCronSession", () => {
       expect(result.sessionEntry.contextTokens).toBeUndefined();
       expect(result.sessionEntry.compactionCount).toBeUndefined();
       expect(result.sessionEntry.memoryFlushAt).toBeUndefined();
+      expect(result.sessionEntry.memoryFlushContextHash).toBeUndefined();
+      expect(result.sessionEntry.memoryFlushCliPromptTokens).toBeUndefined();
+      expect(result.sessionEntry.memoryFlushCliTranscriptBytes).toBeUndefined();
+      expect(result.sessionEntry.memoryFlushCliFingerprint).toBeUndefined();
+      expect(result.sessionEntry.memoryFlushFailureCount).toBeUndefined();
+      expect(result.sessionEntry.memoryFlushLastFailedAt).toBeUndefined();
+      expect(result.sessionEntry.memoryFlushLastFailureError).toBeUndefined();
       expect(result.sessionEntry.abortCutoffMessageSid).toBeUndefined();
       expect(result.sessionEntry.spawnedBy).toBeUndefined();
       expect(result.sessionEntry.skillsSnapshot).toBeUndefined();

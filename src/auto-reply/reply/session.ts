@@ -860,6 +860,13 @@ async function initSessionStateAttemptLocked(
     sessionEntry.compactionCount = 0;
     sessionEntry.memoryFlushCompactionCount = undefined;
     sessionEntry.memoryFlushAt = undefined;
+    sessionEntry.memoryFlushContextHash = undefined;
+    sessionEntry.memoryFlushCliPromptTokens = undefined;
+    sessionEntry.memoryFlushCliTranscriptBytes = undefined;
+    sessionEntry.memoryFlushCliFingerprint = undefined;
+    sessionEntry.memoryFlushFailureCount = undefined;
+    sessionEntry.memoryFlushLastFailedAt = undefined;
+    sessionEntry.memoryFlushLastFailureError = undefined;
     // Runtime model fields are persisted last-run cache, not user selection.
     // Reset must drop them so the next turn resolves current defaults or the
     // explicit providerOverride/modelOverride values preserved above.
@@ -869,9 +876,6 @@ async function initSessionStateAttemptLocked(
     sessionEntry.fallbackNoticeActiveModel = undefined;
     sessionEntry.fallbackNoticeReason = undefined;
     sessionEntry.systemPromptReport = undefined;
-    // Clear stale context hash so the first flush in the new session is not
-    // incorrectly skipped due to a hash match with the old transcript (#30115).
-    sessionEntry.memoryFlushContextHash = undefined;
     sessionEntry.startedAt = undefined;
     sessionEntry.endedAt = undefined;
     sessionEntry.runtimeMs = undefined;

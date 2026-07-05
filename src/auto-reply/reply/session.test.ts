@@ -3144,6 +3144,15 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
         },
       },
       claudeCliSessionId: "cli-session-123",
+      memoryFlushAt: 10,
+      memoryFlushCompactionCount: 2,
+      memoryFlushContextHash: "retired-tail-hash",
+      memoryFlushCliPromptTokens: 176_000,
+      memoryFlushCliTranscriptBytes: 2_000_000,
+      memoryFlushCliFingerprint: "old-cli-cycle",
+      memoryFlushFailureCount: 2,
+      memoryFlushLastFailedAt: 11,
+      memoryFlushLastFailureError: "old failure",
     } as const;
     const cases = [
       {
@@ -3201,6 +3210,15 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
       expect(result.sessionEntry.cliSessionIds).toBeUndefined();
       expect(result.sessionEntry.cliSessionBindings).toBeUndefined();
       expect(result.sessionEntry.claudeCliSessionId).toBeUndefined();
+      expect(result.sessionEntry.memoryFlushAt).toBeUndefined();
+      expect(result.sessionEntry.memoryFlushCompactionCount).toBeUndefined();
+      expect(result.sessionEntry.memoryFlushContextHash).toBeUndefined();
+      expect(result.sessionEntry.memoryFlushCliPromptTokens).toBeUndefined();
+      expect(result.sessionEntry.memoryFlushCliTranscriptBytes).toBeUndefined();
+      expect(result.sessionEntry.memoryFlushCliFingerprint).toBeUndefined();
+      expect(result.sessionEntry.memoryFlushFailureCount).toBeUndefined();
+      expect(result.sessionEntry.memoryFlushLastFailedAt).toBeUndefined();
+      expect(result.sessionEntry.memoryFlushLastFailureError).toBeUndefined();
 
       const stored = JSON.parse(await fs.readFile(storePath, "utf-8"));
       expect(stored[sessionKey].cliSessionIds).toBeUndefined();

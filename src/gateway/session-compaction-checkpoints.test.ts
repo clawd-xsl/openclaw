@@ -663,6 +663,19 @@ describe("session-compaction-checkpoints", () => {
       sessionFile,
       updatedAt: Date.now() - 1,
       totalTokens: 200,
+      compactionCount: 9,
+      memoryFlushAt: 10,
+      memoryFlushCompactionCount: 9,
+      memoryFlushContextHash: "retired-tail-hash",
+      memoryFlushCliPromptTokens: 176_000,
+      memoryFlushCliTranscriptBytes: 2_000_000,
+      memoryFlushCliFingerprint: "future-cli",
+      memoryFlushFailureCount: 2,
+      memoryFlushLastFailedAt: 11,
+      memoryFlushLastFailureError: "failed",
+      cliSessionIds: { "claude-cli": "future-cli" },
+      cliSessionBindings: { "claude-cli": { sessionId: "future-cli" } },
+      claudeCliSessionId: "future-cli",
       compactionCheckpoints: [
         {
           checkpointId: "checkpoint-1",
@@ -691,6 +704,19 @@ describe("session-compaction-checkpoints", () => {
       throw new Error("expected restored checkpoint transcript");
     }
     expect(restored.entry.totalTokens).toBe(45);
+    expect(restored.entry.compactionCount).toBe(0);
+    expect(restored.entry.memoryFlushAt).toBeUndefined();
+    expect(restored.entry.memoryFlushCompactionCount).toBeUndefined();
+    expect(restored.entry.memoryFlushContextHash).toBeUndefined();
+    expect(restored.entry.memoryFlushCliPromptTokens).toBeUndefined();
+    expect(restored.entry.memoryFlushCliTranscriptBytes).toBeUndefined();
+    expect(restored.entry.memoryFlushCliFingerprint).toBeUndefined();
+    expect(restored.entry.memoryFlushFailureCount).toBeUndefined();
+    expect(restored.entry.memoryFlushLastFailedAt).toBeUndefined();
+    expect(restored.entry.memoryFlushLastFailureError).toBeUndefined();
+    expect(restored.entry.cliSessionIds).toBeUndefined();
+    expect(restored.entry.cliSessionBindings).toBeUndefined();
+    expect(restored.entry.claudeCliSessionId).toBeUndefined();
     const restoredSessionFile = requireNonEmptyString(
       restored.entry.sessionFile,
       "restored session file missing",

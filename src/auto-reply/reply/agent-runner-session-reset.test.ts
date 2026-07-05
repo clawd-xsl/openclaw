@@ -74,6 +74,30 @@ describe("resetReplyRunSession", () => {
       fallbackNoticeSelectedModel: "anthropic/claude",
       fallbackNoticeActiveModel: "openai/gpt",
       fallbackNoticeReason: "rate limit",
+      compactionCount: 4,
+      compactionCheckpoints: [
+        {
+          checkpointId: "future-checkpoint",
+          sessionKey: "main",
+          sessionId: "session",
+          createdAt: 1,
+          reason: "auto-threshold",
+          preCompaction: { sessionId: "session", leafId: "pre" },
+          postCompaction: { sessionId: "session", leafId: "post" },
+        },
+      ],
+      memoryFlushAt: 11,
+      memoryFlushCompactionCount: 4,
+      memoryFlushContextHash: "retired-tail-hash",
+      memoryFlushCliPromptTokens: 176_000,
+      memoryFlushCliTranscriptBytes: 2_000_000,
+      memoryFlushCliFingerprint: "future-cli",
+      memoryFlushFailureCount: 2,
+      memoryFlushLastFailedAt: 12,
+      memoryFlushLastFailureError: "failed",
+      cliSessionIds: { "claude-cli": "future-cli" },
+      cliSessionBindings: { "claude-cli": { sessionId: "future-cli" } },
+      claudeCliSessionId: "future-cli",
       systemPromptReport: {
         source: "run",
         generatedAt: 1,
@@ -120,6 +144,20 @@ describe("resetReplyRunSession", () => {
     expect(activeSessionEntry?.fallbackNoticeActiveModel).toBeUndefined();
     expect(activeSessionEntry?.fallbackNoticeReason).toBeUndefined();
     expect(activeSessionEntry?.systemPromptReport).toBeUndefined();
+    expect(activeSessionEntry?.compactionCount).toBe(4);
+    expect(activeSessionEntry?.compactionCheckpoints).toEqual(sessionEntry.compactionCheckpoints);
+    expect(activeSessionEntry?.memoryFlushAt).toBeUndefined();
+    expect(activeSessionEntry?.memoryFlushCompactionCount).toBeUndefined();
+    expect(activeSessionEntry?.memoryFlushContextHash).toBeUndefined();
+    expect(activeSessionEntry?.memoryFlushCliPromptTokens).toBeUndefined();
+    expect(activeSessionEntry?.memoryFlushCliTranscriptBytes).toBeUndefined();
+    expect(activeSessionEntry?.memoryFlushCliFingerprint).toBeUndefined();
+    expect(activeSessionEntry?.memoryFlushFailureCount).toBeUndefined();
+    expect(activeSessionEntry?.memoryFlushLastFailedAt).toBeUndefined();
+    expect(activeSessionEntry?.memoryFlushLastFailureError).toBeUndefined();
+    expect(activeSessionEntry?.cliSessionIds).toEqual(sessionEntry.cliSessionIds);
+    expect(activeSessionEntry?.cliSessionBindings).toEqual(sessionEntry.cliSessionBindings);
+    expect(activeSessionEntry?.claudeCliSessionId).toBe(sessionEntry.claudeCliSessionId);
     expect(refreshQueuedFollowupSessionMock).toHaveBeenCalledWith({
       key: "main",
       previousSessionId: "session",

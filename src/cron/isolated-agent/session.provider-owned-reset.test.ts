@@ -17,6 +17,10 @@ function providerOwnedEntry(): SessionEntry {
     model: "claude-opus-4-6",
     modelProvider: "claude-cli",
     cliSessionBindings: { "claude-cli": { sessionId: "cli-conversation-xyz" } },
+    memoryFlushCliPromptTokens: 176_000,
+    memoryFlushCliTranscriptBytes: 2_000_000,
+    memoryFlushCliFingerprint: "active-cli-cycle",
+    memoryFlushFailureCount: 1,
   };
 }
 
@@ -39,6 +43,10 @@ describe("resolveCronSession provider-owned daily reset", () => {
     expect(getCliSessionBinding(result.sessionEntry, "claude-cli")).toEqual({
       sessionId: "cli-conversation-xyz",
     });
+    expect(result.sessionEntry.memoryFlushCliPromptTokens).toBe(176_000);
+    expect(result.sessionEntry.memoryFlushCliTranscriptBytes).toBe(2_000_000);
+    expect(result.sessionEntry.memoryFlushCliFingerprint).toBe("active-cli-cycle");
+    expect(result.sessionEntry.memoryFlushFailureCount).toBe(1);
   });
 
   it("still rotates a non-provider-owned session across the daily boundary", () => {
@@ -80,5 +88,9 @@ describe("resolveCronSession provider-owned daily reset", () => {
     expect(result.isNewSession).toBe(true);
     expect(result.sessionEntry.sessionId).not.toBe("old-session-id");
     expect(getCliSessionBinding(result.sessionEntry, "claude-cli")).toBeUndefined();
+    expect(result.sessionEntry.memoryFlushCliPromptTokens).toBeUndefined();
+    expect(result.sessionEntry.memoryFlushCliTranscriptBytes).toBeUndefined();
+    expect(result.sessionEntry.memoryFlushCliFingerprint).toBeUndefined();
+    expect(result.sessionEntry.memoryFlushFailureCount).toBeUndefined();
   });
 });

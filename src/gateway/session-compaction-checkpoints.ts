@@ -559,6 +559,19 @@ function cloneCheckpointSessionEntry(params: {
     cacheRead: undefined,
     cacheWrite: undefined,
     estimatedCostUsd: undefined,
+    compactionCount: 0,
+    memoryFlushAt: undefined,
+    memoryFlushCompactionCount: undefined,
+    memoryFlushContextHash: undefined,
+    memoryFlushCliPromptTokens: undefined,
+    memoryFlushCliTranscriptBytes: undefined,
+    memoryFlushCliFingerprint: undefined,
+    memoryFlushFailureCount: undefined,
+    memoryFlushLastFailedAt: undefined,
+    memoryFlushLastFailureError: undefined,
+    cliSessionIds: undefined,
+    cliSessionBindings: undefined,
+    claudeCliSessionId: undefined,
     totalTokens:
       typeof params.totalTokens === "number" && Number.isFinite(params.totalTokens)
         ? params.totalTokens
