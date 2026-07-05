@@ -4087,6 +4087,12 @@ function createPluginDoctorStateMigrationContext(
   env: NodeJS.ProcessEnv,
 ): PluginDoctorStateMigrationContext {
   return {
+    getPluginStateCapacity() {
+      return {
+        liveEntries: countPluginStateLiveEntries(pluginId, env),
+        maxEntries: MAX_PLUGIN_STATE_ENTRIES_PER_PLUGIN,
+      };
+    },
     openPluginStateKeyedStore<T>(options: OpenKeyedStoreOptions) {
       return createPluginStateKeyedStore<T>(pluginId, {
         ...options,

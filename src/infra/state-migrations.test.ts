@@ -1669,10 +1669,28 @@ describe("state migrations", () => {
     } finally {
       db.close();
     }
-    const migrateLegacyState = vi.fn(() => ({
-      changes: ["plugin state migrated"],
-      warnings: [],
-    }));
+    let observedCapacity: { liveEntries: number; maxEntries: number } | undefined;
+    const migrateLegacyState = vi.fn(async (params: unknown) => {
+      const context = (params as {
+        context: {
+          getPluginStateCapacity?: () => { liveEntries: number; maxEntries: number };
+          openPluginStateKeyedStore: (options: {
+            namespace: string;
+            maxEntries: number;
+          }) => { register: (key: string, value: unknown) => Promise<void> };
+        };
+      }).context;
+      const store = context.openPluginStateKeyedStore({
+        namespace: "capacity-test",
+        maxEntries: 10,
+      });
+      await store.register("seed", { ok: true });
+      observedCapacity = context.getPluginStateCapacity?.();
+      return {
+        changes: ["plugin state migrated"],
+        warnings: [],
+      };
+    });
     pluginDoctorStateMigrationEntries.entries = [
       {
         pluginId: "memory-core",
@@ -1697,6 +1715,7 @@ describe("state migrations", () => {
     );
     expect(result.changes).toContain("plugin state migrated");
     expect(migrateLegacyState).toHaveBeenCalledOnce();
+    expect(observedCapacity).toEqual({ liveEntries: 1, maxEntries: 50_000 });
   });
 
   it("does not run plugin doctor migrations after shared state schema repair fails", async () => {

@@ -62,6 +62,8 @@ export type PluginDoctorStateMigrationDetection = {
 
 export type PluginDoctorStateMigrationContext = {
   openPluginStateKeyedStore: <T>(options: OpenKeyedStoreOptions) => PluginStateKeyedStore<T>;
+  /** Host-wide capacity for this plugin across all namespaces. */
+  getPluginStateCapacity?: () => { liveEntries: number; maxEntries: number };
 };
 
 export type PluginDoctorStateMigration = {

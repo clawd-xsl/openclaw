@@ -782,9 +782,9 @@ export function setMaxPluginStateEntriesPerPluginForTests(value?: number): void 
   maxPluginStateEntriesPerPluginForTests = value;
 }
 
-export function countPluginStateLiveEntries(pluginId: string): number {
+export function countPluginStateLiveEntries(pluginId: string, env?: NodeJS.ProcessEnv): number {
   try {
-    const { db } = openPluginStateDatabase("entries");
+    const { db } = openPluginStateDatabase("entries", envOptions(env));
     return countLivePluginStateEntries(db, { pluginId, now: Date.now() });
   } catch (error) {
     throw wrapPluginStateError(
