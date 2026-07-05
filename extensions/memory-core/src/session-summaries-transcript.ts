@@ -9,7 +9,7 @@ import type { SessionSummariesConfig } from "./session-summaries-config.js";
 const MAX_EXTRACTED_MESSAGES = 600;
 const MAX_MESSAGE_TOKENS = 1_200;
 const MAX_MAP_CHUNKS = 8;
-const MAX_STORED_SUMMARY_BYTES = 8 * 1024;
+export const SESSION_SUMMARY_MAX_STORED_BYTES = 8 * 1024;
 const PROMPT_OVERHEAD_TOKENS = 900;
 
 const SUMMARY_SYSTEM_PROMPT = [
@@ -31,6 +31,12 @@ const SECRET_PATTERNS: readonly SecretPattern[] = [
   {
     pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/giu,
     replacement: "[REDACTED PRIVATE KEY]",
+  },
+  {
+    // Legacy imports are read through a bounded prefix. Fail closed when a
+    // private-key block starts inside that prefix but ends beyond the boundary.
+    pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*$/giu,
+    replacement: "[REDACTED PARTIAL PRIVATE KEY]",
   },
   {
     pattern: /\b(?:Authorization\s*[:=]\s*)?(?:Basic|Bearer|Bot)\s+[A-Za-z0-9._~+/=-]{8,}/giu,
@@ -164,6 +170,14 @@ export function redactSessionSummarySecrets(text: string): string {
   // summary-specific pass above removes complete credential values rather than
   // retaining the diagnostic prefixes/suffixes used in normal logs.
   return sanitizeModelSpecialTokens(redactToolPayloadText(redacted));
+}
+
+/** Apply the complete at-rest safety and size policy to generated or imported summaries. */
+export function sanitizeSessionSummaryForStorage(text: string): string {
+  return truncateUtf8Bytes(
+    normalizeText(redactSessionSummarySecrets(text)),
+    SESSION_SUMMARY_MAX_STORED_BYTES,
+  );
 }
 
 export function extractSessionSummaryMessages(
@@ -477,10 +491,7 @@ export async function generateSessionSummary(params: {
     fingerprint,
     messageCount: params.messages.length,
     model: completed.model,
-    summary: truncateUtf8Bytes(
-      redactSessionSummarySecrets(completed.text),
-      MAX_STORED_SUMMARY_BYTES,
-    ),
+    summary: sanitizeSessionSummaryForStorage(completed.text),
   };
 }
 
@@ -498,5 +509,10 @@ function truncateUtf8Bytes(text: string, maxBytes: number): string {
       high = midpoint - 1;
     }
   }
-  return text.slice(0, low).trimEnd();
+  let bounded = text.slice(0, low);
+  const lastCodeUnit = bounded.charCodeAt(bounded.length - 1);
+  if (lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff) {
+    bounded = bounded.slice(0, -1);
+  }
+  return bounded.trimEnd();
 }

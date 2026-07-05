@@ -18,7 +18,11 @@ import {
 } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
 import { resolveMemoryDreamingWorkspaces } from "openclaw/plugin-sdk/memory-core-host-status";
 import { normalizeAgentId } from "openclaw/plugin-sdk/routing";
-import type { PluginDoctorStateMigration } from "openclaw/plugin-sdk/runtime-doctor";
+import type {
+  OpenKeyedStoreOptions,
+  PluginDoctorStateMigration,
+  PluginDoctorStateMigrationContext,
+} from "openclaw/plugin-sdk/runtime-doctor";
 import {
   ensureOpenClawAgentDatabaseSchema,
   resolveOpenClawAgentSqlitePath,
@@ -43,6 +47,17 @@ import {
   writeMemoryCoreWorkspaceEntry,
 } from "./src/dreaming-state.js";
 import {
+  importLegacySessionSummarySources,
+  inspectLegacySessionSummaryOwners,
+  type LegacySessionSummarySourceResult,
+} from "./src/session-summaries-legacy-import.js";
+import {
+  SESSION_SUMMARY_STORE_MAX_ENTRIES,
+  SessionSummaryRepository,
+  type SessionSummaryPredecessorIndexRecord,
+  type SessionSummaryRecord,
+} from "./src/session-summaries-store.js";
+import {
   SHORT_TERM_PHASE_SIGNAL_RELATIVE_PATH,
   SHORT_TERM_STORE_RELATIVE_PATH,
   normalizeShortTermPhaseSignalStore,
@@ -60,12 +75,19 @@ type LegacyMemorySidecarSource = {
   legacyPath: string;
   stateDir: string;
   agentDatabasePath: string;
+  summaryPriority: number;
 };
 
 const LEGACY_MEMORY_SIDECAR_SUFFIXES = ["", "-wal", "-shm", "-journal"] as const;
 const LEGACY_MEMORY_SIDECAR_SCHEMA = "legacy_memory_sidecar";
 const LEGACY_MEMORY_VECTOR_TABLE = "chunks_vec";
 const MEMORY_INDEX_META_KEY = "memory_index_meta_v1";
+const LEGACY_SHARED_RETRY_FILE_PREFIX = "legacy-shared.retry-";
+const LEGACY_SHARED_RETRY_OWNER_TABLE = "openclaw_legacy_retry_owners_v1";
+const LEGACY_SHARED_RETRY_MAX_OWNERS = 256;
+const LEGACY_SUMMARY_CONFIGURED_PATH_PRIORITY = 0;
+const LEGACY_SUMMARY_DEFAULT_PATH_PRIORITY = 1_000;
+const LEGACY_SUMMARY_RETRY_PATH_PRIORITY = 2_000;
 
 const LEGACY_MEMORY_SOURCE_COLUMNS = ["path", "source", "hash", "mtime", "size"] as const;
 const LEGACY_MEMORY_CHUNK_COLUMNS = [
@@ -694,6 +716,53 @@ function resolveLegacyMemorySearchStorePath(
   return resolveUserPath(rawPath.replaceAll("{agentId}", agentId), env);
 }
 
+function isSharedLegacyMemoryRetryPath(legacyPath: string): boolean {
+  const name = path.basename(legacyPath);
+  return name.startsWith(LEGACY_SHARED_RETRY_FILE_PREFIX) && name.endsWith(".sqlite");
+}
+
+function readSharedLegacyMemoryRetryOwners(legacyPath: string): string[] | undefined {
+  if (!isSharedLegacyMemoryRetryPath(legacyPath)) {
+    return undefined;
+  }
+  const sqlite = requireNodeSqlite();
+  const db = new sqlite.DatabaseSync(legacyPath, { readOnly: true });
+  try {
+    const table = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+      .get(LEGACY_SHARED_RETRY_OWNER_TABLE);
+    if (!table) {
+      return undefined;
+    }
+    const columns = db
+      .prepare(`PRAGMA table_info(${LEGACY_SHARED_RETRY_OWNER_TABLE})`)
+      .all() as Array<{
+      name?: unknown;
+    }>;
+    if (columns.length !== 1 || columns[0]?.name !== "agent_id") {
+      return undefined;
+    }
+    const rows = db
+      .prepare(`SELECT agent_id FROM ${LEGACY_SHARED_RETRY_OWNER_TABLE} ORDER BY agent_id LIMIT ?`)
+      .all(LEGACY_SHARED_RETRY_MAX_OWNERS + 1) as Array<{ agent_id?: unknown }>;
+    if (rows.length === 0 || rows.length > LEGACY_SHARED_RETRY_MAX_OWNERS) {
+      return undefined;
+    }
+    const owners = rows.flatMap((row) => {
+      if (typeof row.agent_id !== "string") {
+        return [];
+      }
+      const agentId = normalizeAgentId(row.agent_id);
+      return agentId && agentId === row.agent_id ? [agentId] : [];
+    });
+    return owners.length === rows.length && new Set(owners).size === owners.length
+      ? owners
+      : undefined;
+  } finally {
+    db.close();
+  }
+}
+
 async function collectLegacyMemorySidecarSources(params: {
   config: unknown;
   env: NodeJS.ProcessEnv;
@@ -702,17 +771,27 @@ async function collectLegacyMemorySidecarSources(params: {
   const agentIds = new Set(resolveConfiguredAgentIds(params.config));
   const legacyDir = path.join(params.stateDir, "memory");
   const retrySidecars: Array<{ agentId: string; legacyPath: string }> = [];
+  const sharedRetrySidecars: Array<{ agentIds: string[]; legacyPath: string }> = [];
   try {
     const entries = await fs.readdir(legacyDir, { withFileTypes: true });
     for (const entry of entries) {
       if (entry.isFile() && entry.name.endsWith(".sqlite")) {
+        const legacyPath = path.join(legacyDir, entry.name);
+        let sharedOwners: string[] | undefined;
+        try {
+          sharedOwners = readSharedLegacyMemoryRetryOwners(legacyPath);
+        } catch {}
+        if (sharedOwners) {
+          sharedRetrySidecars.push({ agentIds: sharedOwners, legacyPath });
+          continue;
+        }
         const stem = entry.name.slice(0, -".sqlite".length);
         const retryMarker = ".retry-";
         const retryIndex = stem.indexOf(retryMarker);
         const rawAgentId = retryIndex === -1 ? stem : stem.slice(0, retryIndex);
         const agentId = normalizeAgentId(rawAgentId);
         if (retryIndex !== -1 && rawAgentId === agentId && agentIds.has(agentId)) {
-          retrySidecars.push({ agentId, legacyPath: path.join(legacyDir, entry.name) });
+          retrySidecars.push({ agentId, legacyPath });
         }
       }
     }
@@ -721,7 +800,11 @@ async function collectLegacyMemorySidecarSources(params: {
   const migrationEnv = { ...params.env, OPENCLAW_STATE_DIR: params.stateDir };
   const sources: LegacyMemorySidecarSource[] = [];
   const seen = new Set<string>();
-  async function addSource(agentId: string, legacyPath: string): Promise<void> {
+  async function addSource(
+    agentId: string,
+    legacyPath: string,
+    summaryPriority: number,
+  ): Promise<void> {
     const normalizedPath = path.resolve(legacyPath);
     const key = `${agentId}\0${normalizedPath}`;
     if (seen.has(key) || !(await fileExists(normalizedPath))) {
@@ -733,19 +816,39 @@ async function collectLegacyMemorySidecarSources(params: {
       legacyPath: normalizedPath,
       stateDir: params.stateDir,
       agentDatabasePath: resolveOpenClawAgentSqlitePath({ agentId, env: migrationEnv }),
+      summaryPriority,
     });
   }
   for (const agentId of agentIds) {
-    for (const configuredPath of readLegacyMemorySearchStorePaths(params.config, agentId)) {
+    for (const [priority, configuredPath] of readLegacyMemorySearchStorePaths(
+      params.config,
+      agentId,
+    ).entries()) {
       await addSource(
         agentId,
         resolveLegacyMemorySearchStorePath(configuredPath, agentId, migrationEnv),
+        LEGACY_SUMMARY_CONFIGURED_PATH_PRIORITY + priority,
       );
     }
-    await addSource(agentId, path.join(legacyDir, `${agentId}.sqlite`));
+    await addSource(
+      agentId,
+      path.join(legacyDir, `${agentId}.sqlite`),
+      LEGACY_SUMMARY_DEFAULT_PATH_PRIORITY,
+    );
   }
   for (const retrySidecar of retrySidecars) {
-    await addSource(retrySidecar.agentId, retrySidecar.legacyPath);
+    await addSource(
+      retrySidecar.agentId,
+      retrySidecar.legacyPath,
+      LEGACY_SUMMARY_RETRY_PATH_PRIORITY,
+    );
+  }
+  for (const retrySidecar of sharedRetrySidecars) {
+    for (const agentId of retrySidecar.agentIds) {
+      if (agentIds.has(agentId)) {
+        await addSource(agentId, retrySidecar.legacyPath, LEGACY_SUMMARY_RETRY_PATH_PRIORITY);
+      }
+    }
   }
   return sources;
 }
@@ -754,7 +857,9 @@ async function archiveLegacyMemorySidecar(params: {
   source: LegacyMemorySidecarSource;
   changes: string[];
   warnings: string[];
-}): Promise<void> {
+  archiveSuffix?: ".migrated" | ".retry-source";
+}): Promise<boolean> {
+  const archiveSuffix = params.archiveSuffix ?? ".migrated";
   const existingSources = (
     await Promise.all(
       LEGACY_MEMORY_SIDECAR_SUFFIXES.map(async (suffix) => {
@@ -764,12 +869,12 @@ async function archiveLegacyMemorySidecar(params: {
     )
   ).filter((filePath): filePath is string => filePath !== null);
   if (existingSources.length === 0) {
-    return;
+    return true;
   }
   const existingArchives = (
     await Promise.all(
       existingSources.map(async (sourcePath) => {
-        const archivedPath = `${sourcePath}.migrated`;
+        const archivedPath = `${sourcePath}${archiveSuffix}`;
         return (await fileExists(archivedPath)) ? archivedPath : null;
       }),
     )
@@ -778,11 +883,11 @@ async function archiveLegacyMemorySidecar(params: {
     params.warnings.push(
       `Left migrated Memory Core legacy memory index sidecar in place because ${existingArchives[0]} already exists`,
     );
-    return;
+    return false;
   }
   const renamed: Array<{ sourcePath: string; archivedPath: string }> = [];
   for (const sourcePath of existingSources) {
-    const archivedPath = `${sourcePath}.migrated`;
+    const archivedPath = `${sourcePath}${archiveSuffix}`;
     try {
       await fs.rename(sourcePath, archivedPath);
       renamed.push({ sourcePath, archivedPath });
@@ -801,12 +906,15 @@ async function archiveLegacyMemorySidecar(params: {
       params.warnings.push(
         `Failed archiving Memory Core legacy memory index sidecar ${sourcePath}: ${String(err)}; restored ${renamed.length} already archived file(s)`,
       );
-      return;
+      return false;
     }
   }
   params.changes.push(
-    `Archived Memory Core legacy memory index sidecar -> ${params.source.legacyPath}.migrated`,
+    archiveSuffix === ".migrated"
+      ? `Archived Memory Core legacy memory index sidecar -> ${params.source.legacyPath}.migrated`
+      : `Preserved Memory Core shared legacy retry source -> ${params.source.legacyPath}.retry-source`,
   );
+  return true;
 }
 
 async function preserveLegacyMemorySidecarRetryPath(params: {
@@ -831,17 +939,18 @@ async function preserveLegacyMemorySidecarRetryPath(params: {
       }),
     )
   ).filter((targetPath): targetPath is string => targetPath !== null);
+  const retryDigest = crypto
+    .createHash("sha256")
+    .update(path.resolve(params.source.legacyPath))
+    .digest("hex")
+    .slice(0, 12);
   const targetBasePath =
     existingTargets.length === 0
       ? retryPath
       : path.join(
           params.source.stateDir,
           "memory",
-          `${params.source.agentId}.retry-${crypto
-            .createHash("sha256")
-            .update(path.resolve(params.source.legacyPath))
-            .digest("hex")
-            .slice(0, 12)}.sqlite`,
+          `${params.source.agentId}.retry-${retryDigest}.sqlite`,
         );
   if (await fileExists(targetBasePath)) {
     return;
@@ -882,13 +991,188 @@ async function preserveLegacyMemorySidecarRetryPath(params: {
   );
 }
 
+async function preserveSharedLegacyMemorySidecarRetryPath(params: {
+  sources: readonly LegacyMemorySidecarSource[];
+  changes: string[];
+  warnings: string[];
+}): Promise<boolean> {
+  const source = params.sources[0];
+  if (!source) {
+    return false;
+  }
+  if (isSharedLegacyMemoryRetryPath(source.legacyPath)) {
+    return true;
+  }
+  const configuredOwners = [...new Set(params.sources.map((entry) => entry.agentId))];
+  let discoveredOwners: string[] = [];
+  try {
+    const sqlite = requireNodeSqlite();
+    const db = new sqlite.DatabaseSync(source.legacyPath, { readOnly: true });
+    try {
+      const inspection = inspectLegacySessionSummaryOwners(db, LEGACY_SHARED_RETRY_MAX_OWNERS);
+      if (inspection.kind === "unsafe") {
+        params.warnings.push(
+          `Could not preserve shared Memory Core legacy retry source ${source.legacyPath}: ${inspection.reason}`,
+        );
+        return false;
+      }
+      if (inspection.kind === "tagged") {
+        discoveredOwners = inspection.owners;
+      }
+    } finally {
+      db.close();
+    }
+  } catch (err) {
+    params.warnings.push(
+      `Could not inspect shared Memory Core legacy retry owners for ${source.legacyPath}: ${String(err)}`,
+    );
+    return false;
+  }
+  const owners = [...new Set([...configuredOwners, ...discoveredOwners])].toSorted();
+  if (owners.length < 2 || owners.length > LEGACY_SHARED_RETRY_MAX_OWNERS) {
+    params.warnings.push(
+      `Could not preserve shared Memory Core legacy retry source ${source.legacyPath}: invalid owner count ${owners.length}`,
+    );
+    return false;
+  }
+  const digest = crypto
+    .createHash("sha256")
+    .update(`${path.resolve(source.legacyPath)}\0${owners.join("\0")}`)
+    .digest("hex")
+    .slice(0, 12);
+  const retryPath = path.join(
+    source.stateDir,
+    "memory",
+    `${LEGACY_SHARED_RETRY_FILE_PREFIX}${digest}.sqlite`,
+  );
+  const existingOwners = (await fileExists(retryPath))
+    ? readSharedLegacyMemoryRetryOwners(retryPath)
+    : undefined;
+  if (existingOwners && existingOwners.join("\0") === owners.join("\0")) {
+    return await archiveLegacyMemorySidecar({
+      source,
+      changes: params.changes,
+      warnings: params.warnings,
+      archiveSuffix: ".retry-source",
+    });
+  }
+  if (await fileExists(retryPath)) {
+    params.warnings.push(
+      `Could not preserve shared Memory Core legacy retry source because ${retryPath} already exists without the expected owner manifest`,
+    );
+    return false;
+  }
+
+  await fs.mkdir(path.dirname(retryPath), { recursive: true });
+  const tempPath = `${retryPath}.tmp-${process.pid}-${crypto.randomUUID()}`;
+  const copiedTempPaths: string[] = [];
+  const publishedPaths: string[] = [];
+  try {
+    for (const suffix of LEGACY_MEMORY_SIDECAR_SUFFIXES) {
+      const sourcePath = `${source.legacyPath}${suffix}`;
+      if (!(await fileExists(sourcePath))) {
+        continue;
+      }
+      const tempSourcePath = `${tempPath}${suffix}`;
+      await fs.copyFile(sourcePath, tempSourcePath, fsSync.constants.COPYFILE_EXCL);
+      copiedTempPaths.push(tempSourcePath);
+    }
+    if (!copiedTempPaths.includes(tempPath)) {
+      throw new Error("shared retry source database disappeared before it could be copied");
+    }
+    const sqlite = requireNodeSqlite();
+    const db = new sqlite.DatabaseSync(tempPath);
+    try {
+      db.exec(`
+        CREATE TABLE ${LEGACY_SHARED_RETRY_OWNER_TABLE} (
+          agent_id TEXT PRIMARY KEY NOT NULL
+        )
+      `);
+      const insert = db.prepare(
+        `INSERT INTO ${LEGACY_SHARED_RETRY_OWNER_TABLE} (agent_id) VALUES (?)`,
+      );
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        for (const agentId of owners) {
+          insert.run(agentId);
+        }
+        db.exec("COMMIT");
+      } catch (err) {
+        db.exec("ROLLBACK");
+        throw err;
+      }
+    } finally {
+      db.close();
+    }
+    const publishEntries = (
+      await Promise.all(
+        LEGACY_MEMORY_SIDECAR_SUFFIXES.map(async (suffix) => {
+          const tempSourcePath = `${tempPath}${suffix}`;
+          return (await fileExists(tempSourcePath))
+            ? { tempSourcePath, targetPath: `${retryPath}${suffix}`, suffix }
+            : null;
+        }),
+      )
+    ).filter(
+      (
+        entry,
+      ): entry is {
+        tempSourcePath: string;
+        targetPath: string;
+        suffix: (typeof LEGACY_MEMORY_SIDECAR_SUFFIXES)[number];
+      } => entry !== null,
+    );
+    // Publish sidecars first and the base database last so discovery never sees
+    // a retry database before its owner manifest is durable.
+    publishEntries.sort((left, right) => (left.suffix === "" ? 1 : right.suffix === "" ? -1 : 0));
+    for (const entry of publishEntries) {
+      await fs.rename(entry.tempSourcePath, entry.targetPath);
+      publishedPaths.push(entry.targetPath);
+    }
+    const verifiedOwners = readSharedLegacyMemoryRetryOwners(retryPath);
+    if (!verifiedOwners || verifiedOwners.join("\0") !== owners.join("\0")) {
+      throw new Error("published shared retry owner manifest could not be verified");
+    }
+  } catch (err) {
+    for (const targetPath of [...publishedPaths, ...copiedTempPaths]) {
+      try {
+        await fs.rm(targetPath, { force: true });
+      } catch {}
+    }
+    params.warnings.push(
+      `Failed preserving shared Memory Core legacy retry source ${source.legacyPath}: ${String(err)}`,
+    );
+    return false;
+  }
+  params.changes.push(`Copied shared Memory Core legacy retry source -> ${retryPath}`);
+  return await archiveLegacyMemorySidecar({
+    source,
+    changes: params.changes,
+    warnings: params.warnings,
+    archiveSuffix: ".retry-source",
+  });
+}
+
+function legacyMemorySidecarHasIndexSchema(legacyPath: string): boolean {
+  const sqlite = requireNodeSqlite();
+  const db = new sqlite.DatabaseSync(legacyPath, { readOnly: true });
+  try {
+    return hasLegacyMemoryIndexTables(db);
+  } finally {
+    db.close();
+  }
+}
+
 async function migrateLegacyMemorySidecarSource(params: {
   source: LegacyMemorySidecarSource;
   config: unknown;
   env: NodeJS.ProcessEnv;
   changes: string[];
   warnings: string[];
-}): Promise<{ archiveReady: boolean }> {
+}): Promise<{ archiveReady: boolean; recognized: boolean }> {
+  if (!legacyMemorySidecarHasIndexSchema(params.source.legacyPath)) {
+    return { archiveReady: true, recognized: false };
+  }
   await fs.mkdir(path.dirname(params.source.agentDatabasePath), { recursive: true });
   const sqlite = requireNodeSqlite();
   const db = new sqlite.DatabaseSync(params.source.agentDatabasePath, { allowExtension: true });
@@ -926,38 +1210,31 @@ async function migrateLegacyMemorySidecarSource(params: {
         requireVectorRows: vectorEnabled,
       });
     } catch (err) {
-      await preserveLegacyMemorySidecarRetryPath(params);
       params.warnings.push(
         `Skipped Memory Core legacy memory index import for agent ${params.source.agentId} because legacy rows could not be imported: ${String(err)}`,
       );
-      return { archiveReady: false };
+      return { archiveReady: false, recognized: true };
     }
     if (result.reason === "legacy-schema-missing") {
-      await preserveLegacyMemorySidecarRetryPath(params);
-      params.warnings.push(
-        `Skipped Memory Core legacy memory index import for agent ${params.source.agentId} because the sidecar schema is not a legacy memory index`,
-      );
-      return { archiveReady: false };
+      return { archiveReady: true, recognized: false };
     }
     if (!result.imported) {
-      await preserveLegacyMemorySidecarRetryPath(params);
-      return { archiveReady: false };
+      return { archiveReady: false, recognized: true };
     }
     ensureMemoryIndexSchema({ db, cacheEnabled: true, ftsEnabled: true, ftsTokenizer });
     params.changes.push(
       `Migrated Memory Core legacy memory index for agent ${params.source.agentId} -> per-agent SQLite (${result.sources} source(s), ${result.chunks} chunk(s), ${result.cacheEntries} cache row(s))`,
     );
     if (!result.vectorEntriesImported) {
-      await preserveLegacyMemorySidecarRetryPath(params);
       const vectorReason = loadedVector.ok
         ? "legacy vector table could not be validated"
         : (loadedVector.error ?? "unknown sqlite-vec load error");
       params.warnings.push(
         `Left Memory Core legacy memory index sidecar in place for agent ${params.source.agentId} because ${formatLegacyVectorRows(result.vectorEntries)} still require sqlite-vec: ${vectorReason}`,
       );
-      return { archiveReady: false };
+      return { archiveReady: false, recognized: true };
     }
-    return { archiveReady: true };
+    return { archiveReady: true, recognized: true };
   } finally {
     db.close();
   }
@@ -976,6 +1253,67 @@ function groupLegacyMemorySidecarSourcesByPath(
     }
   }
   return [...groups.values()];
+}
+
+function createLegacySessionSummaryRepository(params: {
+  context: PluginDoctorStateMigrationContext;
+  env: NodeJS.ProcessEnv;
+}): SessionSummaryRepository {
+  return new SessionSummaryRepository({
+    openStore: () =>
+      params.context.openPluginStateKeyedStore<SessionSummaryRecord>({
+        namespace: "session-summaries",
+        maxEntries: SESSION_SUMMARY_STORE_MAX_ENTRIES,
+        env: params.env,
+      } satisfies OpenKeyedStoreOptions),
+    openPredecessorIndexStore: () =>
+      params.context.openPluginStateKeyedStore<SessionSummaryPredecessorIndexRecord>({
+        namespace: "session-summary-predecessors",
+        maxEntries: SESSION_SUMMARY_STORE_MAX_ENTRIES,
+        env: params.env,
+      } satisfies OpenKeyedStoreOptions),
+  });
+}
+
+function appendLegacySessionSummaryDiagnostics(params: {
+  result: LegacySessionSummarySourceResult;
+  changes: string[];
+  warnings: string[];
+}): void {
+  const result = params.result;
+  if (!result.recognized) {
+    for (const error of result.errors) {
+      params.warnings.push(
+        `Skipped Memory Core legacy session summaries at ${result.legacyPath}: ${error}`,
+      );
+    }
+    return;
+  }
+  const action = result.archiveReady ? "Migrated" : "Partially migrated";
+  params.changes.push(
+    `${action} Memory Core legacy session summaries -> SQLite plugin state ` +
+      `(${result.importedRows} imported, ${result.existingRows} existing, ` +
+      `${result.duplicateRows} duplicate, ${result.sanitizedRows} sanitized, ` +
+      `${result.omittedRows} omitted by bounded retention)`,
+  );
+  if (result.invalidRows > 0) {
+    params.warnings.push(
+      `Left Memory Core legacy session summary sidecar in place because ${result.invalidRows} row(s) have invalid metadata`,
+    );
+  }
+  for (const error of result.errors) {
+    params.warnings.push(
+      `Left Memory Core legacy session summary sidecar in place at ${result.legacyPath}: ${error}`,
+    );
+  }
+  if (result.omittedRows > 0) {
+    const sourceDisposition = result.archiveReady
+      ? "the archived source"
+      : "the source retained for retry";
+    params.warnings.push(
+      `Memory Core retained a bounded recent legacy summary set and left ${result.omittedRows} older row occurrence(s) in ${sourceDisposition}`,
+    );
+  }
 }
 
 function resolveConfiguredWorkspaces(config: unknown, env: NodeJS.ProcessEnv): string[] {
@@ -1239,8 +1577,41 @@ export const stateMigrations: PluginDoctorStateMigration[] = [
           stateDir: params.stateDir,
         }),
       );
-      for (const sources of groups) {
-        let archiveReady = true;
+      let summaryResults: LegacySessionSummarySourceResult[] | undefined;
+      let summaryImportError: string | undefined;
+      try {
+        const sqlite = requireNodeSqlite();
+        const migrated = await importLegacySessionSummarySources({
+          sources: groups.map((sources) => ({
+            legacyPath: sources[0]?.legacyPath ?? "",
+            scopes: sources.map((source) => ({
+              agentId: source.agentId,
+              priority: source.summaryPriority,
+            })),
+          })),
+          openReadOnlyDatabase: (legacyPath) =>
+            new sqlite.DatabaseSync(legacyPath, { readOnly: true }),
+          repository: createLegacySessionSummaryRepository({
+            context: params.context,
+            env: params.env,
+          }),
+          getPluginStateCapacity: params.context.getPluginStateCapacity,
+        });
+        summaryResults = migrated.sources;
+      } catch (err) {
+        summaryImportError = String(err);
+        warnings.push(
+          `Skipped Memory Core legacy session summary import because plugin state could not be prepared: ${summaryImportError}`,
+        );
+      }
+
+      for (const [groupIndex, sources] of groups.entries()) {
+        const summaryResult = summaryResults?.[groupIndex];
+        if (summaryResult) {
+          appendLegacySessionSummaryDiagnostics({ result: summaryResult, changes, warnings });
+        }
+        let archiveReady = summaryResult?.archiveReady ?? !summaryImportError;
+        let recognizedPayload = summaryResult?.recognized ?? false;
         for (const source of sources) {
           try {
             const result = await migrateLegacyMemorySidecarSource({
@@ -1251,12 +1622,35 @@ export const stateMigrations: PluginDoctorStateMigration[] = [
               warnings,
             });
             archiveReady &&= result.archiveReady;
+            recognizedPayload ||= result.recognized;
           } catch (err) {
             archiveReady = false;
-            await preserveLegacyMemorySidecarRetryPath({ source, changes, warnings });
+            try {
+              recognizedPayload ||= legacyMemorySidecarHasIndexSchema(source.legacyPath);
+            } catch {}
             warnings.push(
               `Skipped Memory Core legacy memory index import for agent ${source.agentId} because the sidecar could not be imported: ${String(err)}`,
             );
+          }
+        }
+        if (!recognizedPayload) {
+          archiveReady = false;
+          warnings.push(
+            `Left Memory Core legacy memory index sidecar in place because ${sources[0]?.legacyPath ?? "the source"} contains no recognized memory index or session summary schema`,
+          );
+        }
+        if (!archiveReady) {
+          if (
+            sources.length > 1 ||
+            (summaryResult?.unownedRows ?? 0) > 0 ||
+            isSharedLegacyMemoryRetryPath(sources[0]?.legacyPath ?? "")
+          ) {
+            await preserveSharedLegacyMemorySidecarRetryPath({ sources, changes, warnings });
+          } else {
+            const source = sources[0];
+            if (source) {
+              await preserveLegacyMemorySidecarRetryPath({ source, changes, warnings });
+            }
           }
         }
         if (archiveReady && sources[0]) {

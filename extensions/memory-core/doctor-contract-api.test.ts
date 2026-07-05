@@ -9,7 +9,9 @@ import {
   loadSqliteVecExtension,
 } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
 import {
+  countPluginStateLiveEntriesForTests,
   createPluginStateKeyedStoreForTests,
+  MAX_PLUGIN_STATE_ENTRIES_PER_PLUGIN,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import type {
@@ -25,10 +27,22 @@ import {
 } from "./src/dreaming-state.js";
 import { bm25RankToScore, buildFtsQuery } from "./src/memory/hybrid.js";
 import { searchKeyword, searchVector } from "./src/memory/manager-search.js";
+import {
+  SESSION_SUMMARY_STORE_MAX_ENTRIES,
+  SessionSummaryRepository,
+  type SessionSummaryPredecessorIndexRecord,
+  type SessionSummaryRecord,
+} from "./src/session-summaries-store.js";
 import { testing as shortTermTesting } from "./src/short-term-promotion.js";
 
 function createDoctorContext(env: NodeJS.ProcessEnv): PluginDoctorStateMigrationContext {
   return {
+    getPluginStateCapacity() {
+      return {
+        liveEntries: countPluginStateLiveEntriesForTests("memory-core", env),
+        maxEntries: MAX_PLUGIN_STATE_ENTRIES_PER_PLUGIN,
+      };
+    },
     openPluginStateKeyedStore<T>(options: OpenKeyedStoreOptions) {
       return createPluginStateKeyedStoreForTests<T>("memory-core", {
         ...options,
@@ -134,6 +148,97 @@ async function writeLegacyMemorySidecar(
   } finally {
     db.close();
   }
+}
+
+async function writeLegacySessionSummaries(
+  legacyPath: string,
+  rows: Array<{
+    sessionId: string;
+    previousSessionId?: string | null;
+    sessionKey?: string;
+    agentId?: string;
+    createdAt: number;
+    endedAt: number;
+    summary: string;
+    summaryModel?: string | null;
+  }>,
+  options: { includeAgentId?: boolean } = {},
+): Promise<void> {
+  await fs.mkdir(path.dirname(legacyPath), { recursive: true });
+  const db = new DatabaseSync(legacyPath);
+  try {
+    const includeAgentId = options.includeAgentId !== false;
+    db.exec(`
+      CREATE TABLE session_summaries (
+        session_id TEXT PRIMARY KEY,
+        previous_session_id TEXT,
+        session_key TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        ended_at INTEGER NOT NULL,
+        message_count INTEGER NOT NULL,
+        summary TEXT NOT NULL,
+        model TEXT,
+        generated_at INTEGER NOT NULL
+        ${includeAgentId ? ", agent_id TEXT NOT NULL, summary_model TEXT" : ""}
+      )
+    `);
+    for (const row of rows) {
+      if (includeAgentId) {
+        db.prepare(
+          `INSERT INTO session_summaries (
+             session_id, previous_session_id, session_key, created_at, ended_at,
+             message_count, summary, model, generated_at, agent_id, summary_model
+           ) VALUES (?, ?, ?, ?, ?, 4, ?, 'conversation-model', ?, ?, ?)`,
+        ).run(
+          row.sessionId,
+          row.previousSessionId ?? null,
+          row.sessionKey ?? `agent:${row.agentId ?? "main"}:main`,
+          row.createdAt,
+          row.endedAt,
+          row.summary,
+          row.endedAt + 1,
+          row.agentId ?? "main",
+          row.summaryModel ?? null,
+        );
+      } else {
+        db.prepare(
+          `INSERT INTO session_summaries (
+             session_id, previous_session_id, session_key, created_at, ended_at,
+             message_count, summary, model, generated_at
+           ) VALUES (?, ?, ?, ?, ?, 4, ?, 'conversation-model', ?)`,
+        ).run(
+          row.sessionId,
+          row.previousSessionId ?? null,
+          row.sessionKey ?? "agent:main:main",
+          row.createdAt,
+          row.endedAt,
+          row.summary,
+          row.endedAt + 1,
+        );
+      }
+    }
+  } finally {
+    db.close();
+  }
+}
+
+function createSessionSummaryRepositoryForDoctor(env: NodeJS.ProcessEnv) {
+  const doctorContext = createDoctorContext(env);
+  return new SessionSummaryRepository({
+    now: () => Date.now(),
+    openStore: () =>
+      doctorContext.openPluginStateKeyedStore<SessionSummaryRecord>({
+        namespace: "session-summaries",
+        maxEntries: SESSION_SUMMARY_STORE_MAX_ENTRIES,
+        env,
+      }),
+    openPredecessorIndexStore: () =>
+      doctorContext.openPluginStateKeyedStore<SessionSummaryPredecessorIndexRecord>({
+        namespace: "session-summary-predecessors",
+        maxEntries: SESSION_SUMMARY_STORE_MAX_ENTRIES,
+        env,
+      }),
+  });
 }
 
 async function createCanonicalMemoryIndex(agentPath: string, text: string): Promise<void> {
@@ -636,6 +741,430 @@ describe("memory-core doctor dreaming migration", () => {
       cache: [{ provider: "openai", hash: "chunk-hash" }],
     });
     await expect(fs.access(`${legacyPath}.migrated`)).resolves.toBeUndefined();
+  });
+
+  it("migrates and archives a summary-only legacy sidecar", async () => {
+    const stateDir = path.join(rootDir, "state");
+    const legacyPath = path.join(stateDir, "memory", "main.sqlite");
+    await writeLegacySessionSummaries(legacyPath, [
+      {
+        sessionId: "session-a",
+        createdAt: 100,
+        endedAt: 200,
+        summary: "Keep this <|im_start|> apiKey=super-secret-value",
+        summaryModel: "anthropic/claude-sonnet-4-6",
+      },
+      {
+        sessionId: "session-b",
+        previousSessionId: "session-a",
+        createdAt: 200,
+        endedAt: 300,
+        summary: "Follow-up",
+      },
+    ]);
+
+    const result = await legacyMemoryIndexMigration().migrateLegacyState(migrationParams());
+
+    expect(result.warnings).toEqual([]);
+    expect(result.changes).toEqual([
+      expect.stringContaining(
+        "Migrated Memory Core legacy session summaries -> SQLite plugin state (2 imported",
+      ),
+      expect.stringContaining("Archived Memory Core legacy memory index sidecar"),
+    ]);
+    const summaries = await createSessionSummaryRepositoryForDoctor(env).readAllRecords();
+    expect(summaries.find((record) => record.sessionId === "session-a")).toMatchObject({
+      nextSessionId: "session-b",
+      model: "anthropic/claude-sonnet-4-6",
+    });
+    const summary = summaries.find((record) => record.sessionId === "session-a")?.summary ?? "";
+    expect(summary).not.toContain("<|im_start|>");
+    expect(summary).not.toContain("super-secret-value");
+    expect(summary).not.toContain("\u0000");
+    await expect(fs.access(`${legacyPath}.migrated`)).resolves.toBeUndefined();
+  });
+
+  it("deduplicates configured and fallback summaries with configured precedence", async () => {
+    const stateDir = path.join(rootDir, "state");
+    const configuredPath = path.join(rootDir, "custom-memory", "main.sqlite");
+    const fallbackPath = path.join(stateDir, "memory", "main.sqlite");
+    await writeLegacySessionSummaries(configuredPath, [
+      {
+        sessionId: "same-session",
+        createdAt: 100,
+        endedAt: 200,
+        summary: "configured summary",
+      },
+    ]);
+    await writeLegacySessionSummaries(fallbackPath, [
+      {
+        sessionId: "same-session",
+        createdAt: 100,
+        endedAt: 300,
+        summary: "newer fallback summary",
+      },
+    ]);
+    const config = {
+      agents: {
+        defaults: {
+          memorySearch: { store: { path: configuredPath } },
+        },
+        list: [{ id: "main", workspace: workspaceDir }],
+      },
+    } as unknown as OpenClawConfig;
+
+    const result = await legacyMemoryIndexMigration().migrateLegacyState(migrationParams(config));
+
+    expect(result.warnings).toEqual([]);
+    expect(result.changes).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("1 imported"),
+        expect.stringContaining("1 duplicate"),
+      ]),
+    );
+    const summaries = await createSessionSummaryRepositoryForDoctor(env).readAllRecords();
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]?.summary).toBe("configured summary");
+    await expect(fs.access(`${configuredPath}.migrated`)).resolves.toBeUndefined();
+    await expect(fs.access(`${fallbackPath}.migrated`)).resolves.toBeUndefined();
+  });
+
+  it("isolates tagged summaries in a shared sidecar", async () => {
+    const taggedPath = path.join(rootDir, "tagged", "shared.sqlite");
+    await writeLegacySessionSummaries(taggedPath, [
+      {
+        sessionId: "main-session",
+        agentId: "main",
+        createdAt: 100,
+        endedAt: 200,
+        summary: "main",
+      },
+      {
+        sessionId: "work-session",
+        agentId: "work",
+        createdAt: 100,
+        endedAt: 200,
+        summary: "work",
+      },
+    ]);
+    const taggedConfig = {
+      agents: {
+        defaults: { memorySearch: { store: { path: taggedPath } } },
+        list: [
+          { id: "main", workspace: workspaceDir },
+          { id: "work", workspace: path.join(rootDir, "work") },
+        ],
+      },
+    } as unknown as OpenClawConfig;
+
+    const tagged = await legacyMemoryIndexMigration().migrateLegacyState(
+      migrationParams(taggedConfig),
+    );
+
+    expect(tagged.warnings).toEqual([]);
+    expect(
+      (await createSessionSummaryRepositoryForDoctor(env).readAllRecords())
+        .map((record) => [record.agentId, record.sessionId])
+        .toSorted((left, right) => left[0].localeCompare(right[0])),
+    ).toEqual([
+      ["main", "main-session"],
+      ["work", "work-session"],
+    ]);
+    await expect(fs.access(`${taggedPath}.migrated`)).resolves.toBeUndefined();
+  });
+
+  it.each(["external", "default"] as const)(
+    "retries a partially migrated shared summary sidecar from an owner-manifest copy (%s path)",
+    async (sourceKind) => {
+      const stateDir = path.join(rootDir, "state");
+      const sharedPath =
+        sourceKind === "default"
+          ? path.join(stateDir, "memory", "main.sqlite")
+          : path.join(rootDir, "shared-memory", "summaries.sqlite");
+      await writeLegacySessionSummaries(sharedPath, [
+        {
+          sessionId: "main-valid",
+          agentId: "main",
+          createdAt: 100,
+          endedAt: 200,
+          summary: "main",
+        },
+        {
+          sessionId: "work-valid",
+          agentId: "work",
+          createdAt: 110,
+          endedAt: 210,
+          summary: "work",
+        },
+        {
+          sessionId: "main-retry",
+          agentId: "main",
+          createdAt: 120,
+          endedAt: 220,
+          summary: "retry",
+        },
+      ]);
+      const invalidDb = new DatabaseSync(sharedPath);
+      try {
+        invalidDb.exec(
+          "UPDATE session_summaries SET created_at = ended_at + 1 WHERE session_id = 'main-retry'",
+        );
+      } finally {
+        invalidDb.close();
+      }
+      const sharedConfig = {
+        agents: {
+          defaults: { memorySearch: { store: { path: sharedPath } } },
+          list: [
+            { id: "main", workspace: workspaceDir },
+            { id: "work", workspace: path.join(rootDir, "work") },
+          ],
+        },
+      } as unknown as OpenClawConfig;
+
+      const first = await legacyMemoryIndexMigration().migrateLegacyState(
+        migrationParams(sharedConfig),
+      );
+      const memoryEntries = await fs.readdir(path.join(stateDir, "memory"));
+      const retryName = memoryEntries.find((entry) =>
+        /^legacy-shared\.retry-[a-f0-9]{12}\.sqlite$/u.test(entry),
+      );
+      expect(retryName).toBeDefined();
+      const retryPath = path.join(stateDir, "memory", retryName ?? "");
+      expect(first.changes).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining("Copied shared Memory Core legacy retry source"),
+          expect.stringContaining("Preserved Memory Core shared legacy retry source"),
+        ]),
+      );
+      await expect(fs.access(`${sharedPath}.retry-source`)).resolves.toBeUndefined();
+
+      const repairedDb = new DatabaseSync(retryPath);
+      try {
+        repairedDb.exec(
+          "UPDATE session_summaries SET created_at = ended_at - 1 WHERE session_id = 'main-retry'",
+        );
+      } finally {
+        repairedDb.close();
+      }
+      const repairedConfig = {
+        agents: {
+          list: [
+            { id: "main", workspace: workspaceDir },
+            { id: "work", workspace: path.join(rootDir, "work") },
+          ],
+        },
+      } as OpenClawConfig;
+
+      const second = await legacyMemoryIndexMigration().migrateLegacyState(
+        migrationParams(repairedConfig),
+      );
+      expect(second.warnings).toEqual([]);
+      expect(
+        (await createSessionSummaryRepositoryForDoctor(env).readAllRecords())
+          .map((record) => [record.agentId, record.sessionId])
+          .toSorted(
+            (left, right) => left[0].localeCompare(right[0]) || left[1].localeCompare(right[1]),
+          ),
+      ).toEqual([
+        ["main", "main-retry"],
+        ["main", "main-valid"],
+        ["work", "work-valid"],
+      ]);
+      await expect(fs.access(`${retryPath}.migrated`)).resolves.toBeUndefined();
+      await expect(
+        legacyMemoryIndexMigration().detectLegacyState(migrationParams(repairedConfig)),
+      ).resolves.toBeNull();
+    },
+  );
+
+  it("keeps shared memory-index-only retries discoverable after legacy config repair", async () => {
+    const stateDir = path.join(rootDir, "state");
+    const sharedPath = path.join(rootDir, "shared-memory", "index.sqlite");
+    const mainAgentPath = path.join(stateDir, "agents", "main", "agent", "openclaw-agent.sqlite");
+    const workAgentPath = path.join(stateDir, "agents", "work", "agent", "openclaw-agent.sqlite");
+    await writeLegacyMemorySidecar(sharedPath);
+    await createCanonicalMemoryIndex(mainAgentPath, "main conflict");
+    await createCanonicalMemoryIndex(workAgentPath, "work conflict");
+    const sharedConfig = {
+      agents: {
+        defaults: { memorySearch: { store: { path: sharedPath } } },
+        list: [
+          { id: "main", workspace: workspaceDir },
+          { id: "work", workspace: path.join(rootDir, "work") },
+        ],
+      },
+    } as unknown as OpenClawConfig;
+
+    const first = await legacyMemoryIndexMigration().migrateLegacyState(
+      migrationParams(sharedConfig),
+    );
+    const retryName = (await fs.readdir(path.join(stateDir, "memory"))).find((entry) =>
+      /^legacy-shared\.retry-[a-f0-9]{12}\.sqlite$/u.test(entry),
+    );
+    expect(retryName).toBeDefined();
+    const retryPath = path.join(stateDir, "memory", retryName ?? "");
+    expect(first.changes).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("Copied shared Memory Core legacy retry source"),
+      ]),
+    );
+    await fs.rm(mainAgentPath, { force: true });
+    await fs.rm(workAgentPath, { force: true });
+    const repairedConfig = {
+      agents: {
+        list: [
+          { id: "main", workspace: workspaceDir },
+          { id: "work", workspace: path.join(rootDir, "work") },
+        ],
+      },
+    } as OpenClawConfig;
+    const preview = await legacyMemoryIndexMigration().detectLegacyState(
+      migrationParams(repairedConfig),
+    );
+    expect(preview?.preview).toEqual(
+      expect.arrayContaining([
+        `- Memory Core legacy memory index: ${retryPath} -> ${mainAgentPath}`,
+        `- Memory Core legacy memory index: ${retryPath} -> ${workAgentPath}`,
+      ]),
+    );
+
+    const second = await legacyMemoryIndexMigration().migrateLegacyState(
+      migrationParams(repairedConfig),
+    );
+    expect(second.warnings).toEqual([]);
+    await expect(fs.access(`${retryPath}.migrated`)).resolves.toBeUndefined();
+    await expect(
+      legacyMemoryIndexMigration().detectLegacyState(migrationParams(repairedConfig)),
+    ).resolves.toBeNull();
+  });
+
+  it("preserves every tagged owner in a shared retry manifest", async () => {
+    const stateDir = path.join(rootDir, "state");
+    const sharedPath = path.join(rootDir, "shared-memory", "summaries.sqlite");
+    await writeLegacySessionSummaries(sharedPath, [
+      { sessionId: "main-summary", agentId: "main", createdAt: 10, endedAt: 20, summary: "main" },
+      {
+        sessionId: "removed-summary",
+        agentId: "removed",
+        createdAt: 12,
+        endedAt: 22,
+        summary: "removed",
+      },
+    ]);
+    const initialConfig = {
+      agents: {
+        defaults: { memorySearch: { store: { path: sharedPath } } },
+        list: [{ id: "main", workspace: workspaceDir }],
+      },
+    } as unknown as OpenClawConfig;
+
+    const first = await legacyMemoryIndexMigration().migrateLegacyState(
+      migrationParams(initialConfig),
+    );
+    const retryName = (await fs.readdir(path.join(stateDir, "memory"))).find((entry) =>
+      /^legacy-shared\.retry-[a-f0-9]{12}\.sqlite$/u.test(entry),
+    );
+    expect(retryName).toBeDefined();
+    expect(first.warnings).toEqual(
+      expect.arrayContaining([expect.stringContaining("do not belong to a configured agent")]),
+    );
+    await expect(fs.access(`${sharedPath}.retry-source`)).resolves.toBeUndefined();
+
+    const repairedConfig = {
+      agents: {
+        list: [
+          { id: "main", workspace: workspaceDir },
+          { id: "removed", workspace: path.join(rootDir, "removed") },
+        ],
+      },
+    } as OpenClawConfig;
+    const retryPath = path.join(stateDir, "memory", retryName ?? "");
+    const preview = await legacyMemoryIndexMigration().detectLegacyState(
+      migrationParams(repairedConfig),
+    );
+    expect(preview?.preview).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining(`${retryPath} -> ${path.join(stateDir, "agents", "removed")}`),
+      ]),
+    );
+
+    const second = await legacyMemoryIndexMigration().migrateLegacyState(
+      migrationParams(repairedConfig),
+    );
+    expect(second.warnings).toEqual([]);
+    expect(
+      (await createSessionSummaryRepositoryForDoctor(env).readAllRecords())
+        .map((record) => [record.agentId, record.sessionId])
+        .toSorted((left, right) => left[0].localeCompare(right[0])),
+    ).toEqual([
+      ["main", "main-summary"],
+      ["removed", "removed-summary"],
+    ]);
+    await expect(fs.access(`${retryPath}.migrated`)).resolves.toBeUndefined();
+  });
+
+  it("refuses ambiguous untagged summary ownership in a shared sidecar", async () => {
+    const ambiguousPath = path.join(rootDir, "ambiguous", "shared.sqlite");
+    await writeLegacySessionSummaries(
+      ambiguousPath,
+      [{ sessionId: "unknown", createdAt: 100, endedAt: 200, summary: "unknown" }],
+      { includeAgentId: false },
+    );
+    const ambiguousConfig = {
+      agents: {
+        defaults: { memorySearch: { store: { path: ambiguousPath } } },
+        list: [
+          { id: "main", workspace: workspaceDir },
+          { id: "work", workspace: path.join(rootDir, "work") },
+        ],
+      },
+    } as unknown as OpenClawConfig;
+
+    const ambiguous = await legacyMemoryIndexMigration().migrateLegacyState(
+      migrationParams(ambiguousConfig),
+    );
+
+    expect(ambiguous.warnings).toEqual(
+      expect.arrayContaining([expect.stringContaining("has no agent_id column")]),
+    );
+    expect(ambiguous.changes).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("Copied shared Memory Core legacy retry source"),
+        expect.stringContaining("Preserved Memory Core shared legacy retry source"),
+      ]),
+    );
+    expect(await createSessionSummaryRepositoryForDoctor(env).readAllRecords()).toEqual([]);
+    await expect(fs.access(ambiguousPath)).rejects.toThrow();
+    await expect(fs.access(`${ambiguousPath}.retry-source`)).resolves.toBeUndefined();
+    await expect(fs.access(`${ambiguousPath}.migrated`)).rejects.toThrow();
+  });
+
+  it("does not archive when summary migration fails after the memory index succeeds", async () => {
+    const stateDir = path.join(rootDir, "state");
+    const legacyPath = path.join(stateDir, "memory", "main.sqlite");
+    await writeLegacyMemorySidecar(legacyPath);
+    await writeLegacySessionSummaries(legacyPath, [
+      { sessionId: "invalid-time", createdAt: 100, endedAt: 200, summary: "invalid" },
+    ]);
+    const db = new DatabaseSync(legacyPath);
+    try {
+      db.exec("UPDATE session_summaries SET created_at = ended_at + 1");
+    } finally {
+      db.close();
+    }
+
+    const result = await legacyMemoryIndexMigration().migrateLegacyState(migrationParams());
+
+    expect(result.changes).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("Partially migrated Memory Core legacy session summaries"),
+        expect.stringContaining("Migrated Memory Core legacy memory index"),
+      ]),
+    );
+    expect(result.warnings).toEqual([expect.stringContaining("row(s) have invalid metadata")]);
+    await expect(fs.access(legacyPath)).resolves.toBeUndefined();
+    await expect(fs.access(`${legacyPath}.migrated`)).rejects.toThrow();
   });
 
   it("creates migrated FTS tables with the configured legacy tokenizer", async () => {

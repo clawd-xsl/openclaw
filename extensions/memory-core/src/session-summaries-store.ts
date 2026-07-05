@@ -17,6 +17,7 @@ export const SESSION_SUMMARY_MAX_ATTEMPTS = 5;
 export const SESSION_SUMMARY_RETRY_BASE_MS = 30_000;
 export const SESSION_SUMMARY_RETRY_MAX_MS = 6 * 60 * 60 * 1_000;
 export const SESSION_SUMMARY_PROCESSING_LEASE_MS = 5 * 60 * 1_000;
+export const SESSION_SUMMARY_LEGACY_IMPORT_FINGERPRINT = "legacy-import:v1";
 
 export type SessionSummaryStatus = "pending" | "processing" | "complete" | "failed";
 
@@ -77,6 +78,24 @@ export type SessionSummaryEnqueueInput = {
   generationConfigFingerprint?: string;
   sessionFile?: string;
   transcriptArchived?: boolean;
+};
+
+export type LegacySessionSummaryImportInput = {
+  agentId: string;
+  sessionId: string;
+  sessionKey: string;
+  nextSessionId?: string;
+  endedAt: number;
+  messageCount: number;
+  summary: string;
+  model: string | null;
+  generatedAt: number;
+};
+
+export type LegacySessionSummaryImportResult = {
+  key: string;
+  record?: SessionSummaryRecord;
+  status: "inserted" | "existing" | "conflict";
 };
 
 export type SessionSummaryPredecessorIndexRecord = {
@@ -284,10 +303,7 @@ function decodeCursor(cursor: string): CursorPayload {
   }
 }
 
-export function validateSessionSummaryCursor(params: {
-  agentId: string;
-  cursor: string;
-}): void {
+export function validateSessionSummaryCursor(params: { agentId: string; cursor: string }): void {
   const cursor = decodeCursor(params.cursor);
   const agentIdHash = createHash("sha256")
     .update(normalizeAgentId(params.agentId))
@@ -610,6 +626,89 @@ export class SessionSummaryRepository {
     return { key, record, shouldProcess };
   }
 
+  async importLegacyComplete(
+    input: LegacySessionSummaryImportInput,
+  ): Promise<LegacySessionSummaryImportResult> {
+    const agentId = normalizeAgentId(input.agentId);
+    const sessionId = normalizeString(input.sessionId);
+    const sessionKey = normalizeString(input.sessionKey);
+    const nextSessionId = input.nextSessionId?.trim() || null;
+    const summary = input.summary.trim();
+    if (!agentId || !sessionId || !sessionKey || !summary) {
+      throw new Error(
+        "legacy session summary import requires agentId, sessionId, sessionKey, and summary",
+      );
+    }
+    if (
+      !Number.isSafeInteger(input.endedAt) ||
+      input.endedAt < 0 ||
+      !Number.isSafeInteger(input.messageCount) ||
+      input.messageCount < 0 ||
+      !Number.isSafeInteger(input.generatedAt) ||
+      input.generatedAt < 0
+    ) {
+      throw new Error("legacy session summary import requires safe non-negative metadata");
+    }
+    const key = buildSessionSummaryStoreKey(agentId, sessionId);
+    const initial: SessionSummaryRecord = {
+      recordVersion: 1,
+      agentId,
+      sessionId,
+      sessionKey,
+      status: "complete",
+      promptVersion: SESSION_SUMMARY_PROMPT_VERSION,
+      summaryVersion: SESSION_SUMMARY_VERSION,
+      transcriptFingerprint: null,
+      attemptCount: 0,
+      revision: 1,
+      generationConfigFingerprint: SESSION_SUMMARY_LEGACY_IMPORT_FINGERPRINT,
+      lastError: null,
+      nextAttemptAt: null,
+      nextSessionId,
+      endedAt: input.endedAt,
+      messageCount: input.messageCount,
+      extractedMessageCount: input.messageCount,
+      model: input.model?.trim() || null,
+      generatedAt: input.generatedAt,
+      summary,
+      skipReason: null,
+      processingAt: null,
+      leaseExpiresAt: null,
+      updatedAt: input.generatedAt,
+      sessionFile: null,
+      transcriptArchived: false,
+    };
+    const inserted = await this.getStore().registerIfAbsent(key, initial);
+    if (inserted) {
+      await this.writePredecessorIndex(key, initial);
+      return { key, record: initial, status: "inserted" };
+    }
+
+    const existingValue = await this.getStore().lookup(key);
+    const existing = isSessionSummaryRecord(existingValue) ? existingValue : undefined;
+    if (!existing || existing.agentId !== agentId || existing.sessionId !== sessionId) {
+      return { key, status: "conflict" };
+    }
+    // A crash may persist the record before its predecessor index. Repair only
+    // indexes for records this importer owns; current generated records win untouched.
+    if (existing.generationConfigFingerprint === SESSION_SUMMARY_LEGACY_IMPORT_FINGERPRINT) {
+      await this.writePredecessorIndex(key, existing);
+    }
+    return { key, record: existing, status: "existing" };
+  }
+
+  async repairLegacyPredecessorIndex(key: string): Promise<void> {
+    const existingValue = await this.getStore().lookup(key);
+    const existing = isSessionSummaryRecord(existingValue) ? existingValue : undefined;
+    if (
+      !existing ||
+      existing.generationConfigFingerprint !== SESSION_SUMMARY_LEGACY_IMPORT_FINGERPRINT
+    ) {
+      throw new Error("legacy session summary record is missing or is not importer-owned");
+    }
+    await this.writePredecessorIndex(key, existing);
+  }
+
   async claim(key: string): Promise<SessionSummaryRecord | undefined> {
     const now = this.now();
     let claimed = false;
@@ -774,8 +873,26 @@ export class SessionSummaryRepository {
   }
 
   async readAllRecords(): Promise<SessionSummaryRecord[]> {
+    return (await this.readAllRecordEntries()).map((entry) => entry.value);
+  }
+
+  async readAllRecordEntries(): Promise<PluginStateEntry<SessionSummaryRecord>[]> {
     const entries: PluginStateEntry<SessionSummaryRecord>[] = await this.getStore().entries();
-    return entries.map((entry) => entry.value).filter(isSessionSummaryRecord);
+    return entries.filter((entry) => isSessionSummaryRecord(entry.value));
+  }
+
+  async readAllPredecessorIndexEntries(): Promise<
+    PluginStateEntry<SessionSummaryPredecessorIndexRecord>[]
+  > {
+    return await this.getPredecessorIndexStore().entries();
+  }
+
+  async countStoredEntries(): Promise<number> {
+    return (await this.getStore().entries()).length;
+  }
+
+  async countPredecessorIndexEntries(): Promise<number> {
+    return (await this.getPredecessorIndexStore().entries()).length;
   }
 
   async queryRecords(

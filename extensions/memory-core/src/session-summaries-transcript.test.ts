@@ -5,6 +5,8 @@ import {
   extractSessionSummaryMessages,
   generateSessionSummary,
   redactSessionSummarySecrets,
+  sanitizeSessionSummaryForStorage,
+  SESSION_SUMMARY_MAX_STORED_BYTES,
   truncateSessionSummaryText,
 } from "./session-summaries-transcript.js";
 
@@ -121,6 +123,32 @@ describe("session summary transcript processing", () => {
     expect(redacted).toContain("[REDACTED TOKEN]");
     expect(redacted).toContain("access_token=");
     expect(redacted).toMatch(/access_token=(?:\*\*\*|\[REDACTED)/u);
+  });
+
+  it("uses one bounded sanitizer for generated and imported storage", () => {
+    const sanitized = sanitizeSessionSummaryForStorage(
+      `  before\r\n<|im_start|> apiKey=super-secret-value\u0000 ${"会".repeat(10_000)}  `,
+    );
+
+    expect(sanitized).not.toContain("<|im_start|>");
+    expect(sanitized).not.toContain("super-secret-value");
+    expect(sanitized).not.toContain("\u0000");
+    expect(sanitized).not.toContain("\r");
+    expect(Buffer.byteLength(sanitized, "utf8")).toBeLessThanOrEqual(
+      SESSION_SUMMARY_MAX_STORED_BYTES,
+    );
+    expect(sanitized.endsWith("\ud800")).toBe(false);
+  });
+
+  it("drops a private-key span that crosses a bounded import prefix", () => {
+    const secretFragment = "sensitive-private-material";
+    const summary = sanitizeSessionSummaryForStorage(
+      `safe prefix\n-----BEGIN PRIVATE KEY-----\n${secretFragment.repeat(600)}`,
+    );
+
+    expect(summary).toContain("[REDACTED PARTIAL PRIVATE KEY]");
+    expect(summary).not.toContain("-----BEGIN PRIVATE KEY-----");
+    expect(summary).not.toContain(secretFragment);
   });
 
   it("removes model special tokens before transcript text reaches the model", async () => {
