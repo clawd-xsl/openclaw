@@ -143,7 +143,9 @@ export async function monitorSignalTsProvider(params: SignalTsMonitorParams): Pr
         message,
         envelope: result.diagnosticEnvelope,
       });
-      throw result.fatalError;
+      throw result.fatalError instanceof Error
+        ? result.fatalError
+        : new Error(message, { cause: result.fatalError });
     }
     reconnectAttempts += 1;
     const delayMs = computeBackoff(reconnectPolicy, reconnectAttempts);
