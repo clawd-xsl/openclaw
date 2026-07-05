@@ -31,22 +31,73 @@ changes on `custom/20260705`.
 The implementation follows the dependency order above. Hashes are grouped by
 reviewable behavior rather than by the chronology of the old branch:
 
-| Area                                               | Commits on `custom/20260705`                                         |
-| -------------------------------------------------- | -------------------------------------------------------------------- |
-| Audit baseline                                     | `f96fdd95aa`                                                         |
-| Generic coding surface and Anthropic isolation     | `fc5b8d5fc1`, `7c5504cce5`, `3b80939b61`, `cb33c75017`               |
-| CLI streaming and bounded transcript contract      | `b07bcaabae`, `1c819e6024`, `9117d4b37e`, `660630a217`               |
-| Retired Claude provider and session state          | `b00de71aa4`, `1942f32d23`                                           |
-| Summary product, UI, migration, and boundaries     | `afdd58eade`, `3b713fcce1`, `8f2d2d067e`, `ae5d89ab9e`, `dedbbedf5b` |
-| CLI pressure memory and queue-time fast mode       | `a38c54d954`, `c596546b2c`, `00374ed4b5`, `a728b5be59`               |
-| Retired custom configuration and generated schema  | `31abc29687`, `931b191e42`, `974030fc71`                             |
-| Completed-session Markdown projection              | `fcfdd96258`, `b4dd9b3536`, `d9bf14acce`                             |
-| Signal reply and sticker continuity                | `c86830fd87`                                                         |
-| Doctor capacity contract and legacy summary import | `a91b3331c1`, `9b9f23a6a3`                                           |
+| Area                                               | Commits on `custom/20260705`                                                       |
+| -------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| Audit baseline                                     | `f96fdd95aa`                                                                       |
+| Generic coding surface and Anthropic isolation     | `fc5b8d5fc1`, `7c5504cce5`, `3b80939b61`, `cb33c75017`                             |
+| CLI streaming and bounded transcript contract      | `b07bcaabae`, `1c819e6024`, `9117d4b37e`, `660630a217`                             |
+| Retired Claude provider and session state          | `b00de71aa4`, `1942f32d23`                                                         |
+| Summary product, UI, migration, and boundaries     | `afdd58eade`, `3b713fcce1`, `8f2d2d067e`, `ae5d89ab9e`, `dedbbedf5b`, `dee063f31c` |
+| Summary tool policy and safe continuity injection  | `2dcbf4ade6`, `8e668c60a4`, `a9194042ab`                                           |
+| CLI pressure memory and queue-time fast mode       | `a38c54d954`, `c596546b2c`, `00374ed4b5`, `a728b5be59`, `481f3205d3`, `2d7f2d59ff` |
+| Retired custom configuration and generated schema  | `31abc29687`, `931b191e42`, `974030fc71`                                           |
+| Completed-session Markdown projection              | `fcfdd96258`, `b4dd9b3536`, `d9bf14acce`                                           |
+| Signal reply and sticker continuity                | `c86830fd87`                                                                       |
+| Doctor capacity contract and legacy summary import | `a91b3331c1`, `9b9f23a6a3`                                                         |
+| Migration docs and mechanical gate cleanup         | `71d97e388d`, `8225c24011`, `6cdb51409e`, `ef9678f149`, `f08c52d711`               |
 
 No commit from `origin/custom/20260415` was replayed. The source ref remains at
 `0f4877e7cf`; these commits rebuild only the retained behavior on target-owned
 abstractions.
+
+## Final product decisions
+
+- Keep Claude Code as the persistent streaming backend, but implement it through
+  the target's canonical `claude-cli` runtime and the Anthropic plugin. The old
+  `claude-cli-streaming` provider id, direct core provider branches, and stale
+  session bindings are migrated away rather than preserved as aliases.
+- Keep custom summaries as a memory-core product with durable plugin state,
+  recovery, bounded transcript processing, Control UI history, operator RPC,
+  and a visibility-checked read-only agent tool. `session_summaries` is present
+  in the normal coding/messaging and session tool groups; the minimal profile
+  remains unchanged.
+- Inject a completed direct-predecessor summary when available. A bounded,
+  sanitized predecessor tail is allowed only while that summary is pending or
+  processing. A failed summary never falls back to raw predecessor text.
+- Keep completed-session durable-memory projection, including the restart-safe
+  outbox and exactly-once file markers. Do not revive the old memory database or
+  session metadata SQLite designs.
+- Keep repeated CLI pressure flushes because a runtime that owns native
+  compaction does not advance OpenClaw's compaction counter. Memory-core uses a
+  fixed 20,000-token stride and a 2 MiB transcript stride after the existing
+  absolute transcript-size pressure threshold activates. The existing
+  `forceFlushTranscriptBytes: 0` setting disables the byte path. Optional plan
+  hints form an additive Plugin SDK seam; plugins that omit them retain legacy
+  once-per-compaction gating.
+- Treat a pressure-flush receipt as native-thread-local state. Normal rollover,
+  configured cron rollover, and checkpoint restore clear it; provider-owned
+  implicit reuse preserves it; internal role-order recovery keeps the native
+  binding but clears the receipt and failure budget.
+- Keep Signal quoted replies and sticker delivery on the supported signal-cli
+  adapters. Continue to reject the unreproducible direct `signal-ts` transport.
+- Drop old one-off prompt invalidation, compaction overlay, hook bypass,
+  unauthenticated bind, and retired provider shims after their state/config
+  migrations have run.
+
+## Protected ratchets awaiting approval
+
+The remaining failing checks are intentional ratchets, not runtime defects.
+Repository policy requires explicit approval before changing them:
+
+- config documentation baseline for the clarified existing transcript-pressure
+  help text;
+- Plugin SDK API baseline for the additive plan/receipt types;
+- Plugin SDK public export and callable-export budgets;
+- bundled typed-hook registration allowlist and hook-name guards for the two
+  memory-core lifecycle modules.
+
+The restricted sandbox/tool-policy reference also has one stale tool list, but
+it remains untouched pending its security CODEOWNER.
 
 ## Phase 0: audit and reproducible baseline
 
@@ -190,8 +241,14 @@ Scope:
   maintenance prompt into or restart the user-owned Claude live session.
 - Native provider history may only be consulted inside its provider adapter as
   a fallback; core must not scan `~/.claude`.
-- Persist successful flush position/fingerprint. Any repeat interval is a
-  configuration value with hysteresis, not a hard-coded 20,000-token loop.
+- Persist a native-thread fingerprint plus frozen prompt-token and OpenClaw
+  transcript-byte baselines. Re-arm without immediately flushing when native
+  compaction, transcript rotation, or runtime identity moves backward/changes.
+- Expose optional repeat hints through the memory plan contract. The bundled
+  memory-core policy deliberately retains the deployed fork's 20,000-token
+  cadence and adds a 2 MiB byte fallback without creating new user config keys.
+- Freeze the receipt at the pre-maintenance snapshot, bound retries, and wait
+  for a newly eligible pressure cycle after exhaustion.
 
 Tests:
 
@@ -351,7 +408,7 @@ For each commit:
 
 Before the final branch handoff:
 
-1. `pnpm format`
+1. changed-file Oxfmt check and `git diff --check`
 2. `pnpm check`
 3. `pnpm config:docs:check`
 4. `pnpm plugin-sdk:api:check` when the SDK changed
