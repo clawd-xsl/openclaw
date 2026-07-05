@@ -6,12 +6,16 @@ import type { SessionEntry } from "../../config/sessions/types.js";
 const hoisted = vi.hoisted(() => ({
   loadSessionStoreMock:
     vi.fn<(storePath: string, opts?: { clone?: boolean }) => Record<string, SessionEntry>>(),
+  readSessionEntryMock:
+    vi.fn<(storePath: string, sessionKey: string) => SessionEntry | undefined>(),
   listAgentIdsMock: vi.fn<() => string[]>(),
 }));
 
 vi.mock("../../config/sessions/store-load.js", () => ({
   loadSessionStore: (storePath: string, opts?: { clone?: boolean }) =>
     hoisted.loadSessionStoreMock(storePath, opts),
+  readSessionEntry: (storePath: string, sessionKey: string) =>
+    hoisted.readSessionEntryMock(storePath, sessionKey),
 }));
 
 vi.mock("../../config/sessions/paths.js", () => ({
@@ -36,6 +40,9 @@ function mockSessionStores(storesByPath: Record<string, Record<string, SessionEn
   // Store paths are the routing boundary here; returning the exact object lets
   // tests assert whether callers borrowed or cloned the selected store.
   hoisted.loadSessionStoreMock.mockImplementation((storePath) => storesByPath[storePath] ?? {});
+  hoisted.readSessionEntryMock.mockImplementation(
+    (storePath, sessionKey) => storesByPath[storePath]?.[sessionKey],
+  );
 }
 
 function expectResolvedRequestSession(params: {
@@ -61,8 +68,35 @@ function expectResolvedRequestSession(params: {
 describe("resolveSessionKeyForRequest", () => {
   beforeEach(() => {
     hoisted.loadSessionStoreMock.mockReset();
+    hoisted.readSessionEntryMock.mockReset();
     hoisted.listAgentIdsMock.mockReset();
     hoisted.listAgentIdsMock.mockReturnValue(["main", "other"]);
+  });
+
+  it("uses a point read when the canonical session key is known", () => {
+    const entry = { sessionId: "sid", updatedAt: 10 } satisfies SessionEntry;
+    mockSessionStores({
+      "/stores/main.json": {
+        "agent:main:main": entry,
+        "agent:main:other": { sessionId: "other", updatedAt: 20 },
+      },
+    });
+
+    const result = resolveSessionKeyForRequest({
+      cfg: {
+        session: {
+          store: "/stores/{agentId}.json",
+        },
+      } satisfies OpenClawConfig,
+      sessionKey: "agent:main:main",
+    });
+
+    expect(result.sessionStore).toEqual({ "agent:main:main": entry });
+    expect(hoisted.readSessionEntryMock).toHaveBeenCalledWith(
+      "/stores/main.json",
+      "agent:main:main",
+    );
+    expect(hoisted.loadSessionStoreMock).not.toHaveBeenCalled();
   });
 
   it("prefers the current store when equal duplicates exist across stores", () => {

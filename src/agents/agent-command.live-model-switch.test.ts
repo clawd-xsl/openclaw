@@ -47,6 +47,7 @@ const state = vi.hoisted(() => ({
   registerAgentRunContextMock: vi.fn(),
   clearAgentRunContextMock: vi.fn(),
   updateSessionStoreAfterAgentRunMock: vi.fn(),
+  readSessionEntryMock: vi.fn(),
   deliverAgentCommandResultMock: vi.fn(),
   resolveAgentDeliveryPlanMock: vi.fn(),
   resolveAgentOutboundTargetMock: vi.fn(),
@@ -151,6 +152,7 @@ vi.mock("./command/run-context.js", () => ({
 }));
 
 vi.mock("./command/session-store.runtime.js", () => ({
+  readSessionEntry: (...args: unknown[]) => state.readSessionEntryMock(...args),
   updateSessionStoreAfterAgentRun: (...args: unknown[]) =>
     state.updateSessionStoreAfterAgentRunMock(...args),
 }));
@@ -1019,6 +1021,10 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
     state.sessionStoreMock = undefined;
     state.storePathMock = undefined;
     state.resolvedSessionKeyMock = undefined;
+    state.readSessionEntryMock.mockImplementation(
+      (_storePath: string, sessionKey: string) =>
+        (state.sessionStoreMock as Record<string, SessionEntry> | undefined)?.[sessionKey],
+    );
     state.persistSessionEntryMock.mockImplementation(async (...args: unknown[]) => {
       const params = args[0] as {
         sessionStore?: Record<string, unknown>;
@@ -2332,6 +2338,47 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
           restartRecoveryDeliveryRunId: "session-1",
         }),
       }),
+    );
+  });
+
+  it("refreshes delivery state with a keyed session read", async () => {
+    setupSingleAttemptFallback();
+    state.runAgentAttemptMock.mockResolvedValue(makeSuccessResult("openai", "gpt-5.4"));
+    const sessionEntry: SessionEntry = {
+      sessionId: "session-1",
+      updatedAt: 1,
+    };
+    const freshEntry: SessionEntry = {
+      ...sessionEntry,
+      updatedAt: 2,
+    };
+    const sessionStore: Record<string, SessionEntry> = { "agent:main:main": sessionEntry };
+    state.sessionEntryMock = sessionEntry;
+    state.sessionStoreMock = sessionStore;
+    state.storePathMock = "/tmp/openclaw-sessions.sqlite";
+    state.readSessionEntryMock.mockReturnValue(freshEntry);
+    state.deliverAgentCommandResultMock.mockImplementation(async (params: unknown) => {
+      const resolveFresh = (
+        params as {
+          resolveFreshSessionEntryForDelivery?: () => Promise<SessionEntry | undefined>;
+        }
+      ).resolveFreshSessionEntryForDelivery;
+      expect(await resolveFresh?.()).toEqual(freshEntry);
+      return { deliverySucceeded: true };
+    });
+
+    await agentCommand({
+      message: "hello",
+      channel: "discord",
+      to: "discord:dm:123",
+      accountId: "main",
+      deliver: true,
+    });
+
+    expect(state.readSessionEntryMock).toHaveBeenCalledWith(
+      "/tmp/openclaw-sessions.sqlite",
+      "agent:main:main",
+      { exact: true },
     );
   });
 

@@ -25,7 +25,7 @@ import {
 } from "../../config/sessions/reset-policy.js";
 import { resolveChannelResetConfig, resolveSessionResetType } from "../../config/sessions/reset.js";
 import { resolveSessionKey } from "../../config/sessions/session-key.js";
-import { loadSessionStore } from "../../config/sessions/store-load.js";
+import { loadSessionStore, readSessionEntry } from "../../config/sessions/store-load.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
@@ -55,6 +55,7 @@ type SessionResolution = {
 
 type SessionKeyResolution = {
   sessionKey?: string;
+  /** Known-key paths contain only the selected entry; sessionId compatibility scans return the store. */
   sessionStore: Record<string, SessionEntry>;
   storePath: string;
 };
@@ -101,7 +102,6 @@ function resolveLegacyMainStoreSessionForDefaultAgent(opts: {
   sessionKey?: string;
   sessionStore: Record<string, SessionEntry>;
   storePath: string;
-  cloneOnWrite?: boolean;
 }): SessionKeyResolution | undefined {
   if (opts.defaultAgentId === DEFAULT_AGENT_ID || !opts.sessionKey) {
     return undefined;
@@ -117,42 +117,38 @@ function resolveLegacyMainStoreSessionForDefaultAgent(opts: {
   const legacyStorePath = resolveStorePath(opts.cfg.session?.store, {
     agentId: DEFAULT_AGENT_ID,
   });
-  const legacyKeys = [
+  const legacyKeys = new Set([
     buildAgentMainSessionKey({ agentId: DEFAULT_AGENT_ID, mainKey: opts.mainKey }),
     buildAgentMainSessionKey({ agentId: DEFAULT_AGENT_ID, mainKey: "main" }),
-  ];
-  if (legacyStorePath === opts.storePath) {
-    for (const legacyKey of legacyKeys) {
-      const legacyEntry = opts.sessionStore[legacyKey];
-      if (legacyEntry) {
-        const sessionStore = opts.cloneOnWrite ? { ...opts.sessionStore } : opts.sessionStore;
-        sessionStore[opts.sessionKey] = { ...legacyEntry };
-        return {
-          sessionKey: opts.sessionKey,
-          sessionStore,
-          storePath: opts.storePath,
-        };
-      }
-    }
-    return undefined;
-  }
-  const legacyStore = loadSessionStore(
-    legacyStorePath,
-    opts.cloneOnWrite ? { clone: false } : undefined,
-  );
+  ]);
   for (const legacyKey of legacyKeys) {
-    const legacyEntry = legacyStore[legacyKey];
+    const legacyEntry = readSessionEntry(legacyStorePath, legacyKey, { exact: true });
     if (legacyEntry) {
-      const sessionStore = opts.cloneOnWrite ? { ...opts.sessionStore } : opts.sessionStore;
-      sessionStore[opts.sessionKey] = { ...legacyEntry };
       return {
         sessionKey: opts.sessionKey,
-        sessionStore,
+        sessionStore: {
+          [opts.sessionKey]: structuredClone(legacyEntry) as SessionEntry,
+        },
         storePath: opts.storePath,
       };
     }
   }
   return undefined;
+}
+
+function resolveKnownSessionKey(params: {
+  sessionKey?: string;
+  storePath: string;
+}): SessionKeyResolution {
+  if (!params.sessionKey) {
+    return { sessionKey: undefined, sessionStore: {}, storePath: params.storePath };
+  }
+  const entry = readSessionEntry(params.storePath, params.sessionKey, { exact: true });
+  return {
+    sessionKey: params.sessionKey,
+    sessionStore: entry ? { [params.sessionKey]: structuredClone(entry) as SessionEntry } : {},
+    storePath: params.storePath,
+  };
 }
 
 function collectSessionIdMatchesForRequest(opts: {
@@ -223,6 +219,8 @@ export function resolveStoredSessionKeyForSessionId(opts: {
   const storePath = resolveStorePath(opts.cfg.session?.store, {
     agentId: storeAgentId,
   });
+  // Session ids are values rather than keys, so compatibility lookup must scan
+  // the selected store. Known-key command paths stay on resolveKnownSessionKey.
   const sessionStore = loadSessionStore(storePath);
   if (!sessionId) {
     return { sessionKey: undefined, sessionStore, storePath };
@@ -277,11 +275,51 @@ export function resolveSessionKeyForRequest(opts: {
     agentId: storeAgentId,
   });
   const loadOptions = opts.clone === false ? { clone: false as const } : undefined;
-  const sessionStore = loadSessionStore(storePath, loadOptions);
 
   const ctx: MsgContext | undefined = opts.to?.trim() ? { From: opts.to } : undefined;
   let sessionKey: string | undefined =
     explicitSessionKey ?? (ctx ? resolveSessionKey(scope, ctx, mainKey, storeAgentId) : undefined);
+
+  // A session-id-only request is the legacy compatibility path: sessionId is
+  // stored inside entries, so resolving it necessarily scans candidate stores.
+  // Every normal command request already has a canonical session key and uses
+  // the point-read path below.
+  if (requestedSessionId && !explicitSessionKey) {
+    const sessionStore = loadSessionStore(storePath, loadOptions);
+    if (!sessionKey || sessionStore[sessionKey]?.sessionId !== requestedSessionId) {
+      const { matches, primaryStoreMatches, storeByKey } = collectSessionIdMatchesForRequest({
+        cfg: opts.cfg,
+        sessionStore,
+        storePath,
+        storeAgentId,
+        sessionId: requestedSessionId,
+        searchOtherAgentStores: requestedAgentId === undefined,
+        ...(opts.clone === false ? { clone: false } : {}),
+      });
+      const preferredSelection = resolveSessionIdMatchSelection(matches, requestedSessionId);
+      const currentStoreSelection =
+        preferredSelection.kind === "selected"
+          ? preferredSelection
+          : resolveSessionIdMatchSelection(primaryStoreMatches, requestedSessionId);
+      if (currentStoreSelection.kind === "selected") {
+        const preferred = storeByKey.get(currentStoreSelection.sessionKey);
+        if (preferred) {
+          return preferred;
+        }
+        sessionKey = currentStoreSelection.sessionKey;
+      }
+    }
+
+    if (!sessionKey) {
+      sessionKey = buildExplicitSessionIdSessionKey({
+        sessionId: requestedSessionId,
+        agentId: opts.agentId,
+      });
+    }
+    return { sessionKey, sessionStore, storePath };
+  }
+
+  const keyedResolution = resolveKnownSessionKey({ sessionKey, storePath });
 
   if (ctx && !requestedAgentId && !requestedSessionId && !explicitSessionKey) {
     const legacyMainSession = resolveLegacyMainStoreSessionForDefaultAgent({
@@ -289,55 +327,14 @@ export function resolveSessionKeyForRequest(opts: {
       defaultAgentId,
       mainKey,
       sessionKey,
-      sessionStore,
+      sessionStore: keyedResolution.sessionStore,
       storePath,
-      cloneOnWrite: opts.clone === false,
     });
     if (legacyMainSession) {
       return legacyMainSession;
     }
   }
-
-  // If a session id was provided, prefer to re-use its existing entry (by id) even when no key was
-  // derived. When duplicates exist across agent stores, pick the same deterministic best match used
-  // by the shared gateway/session resolver helpers instead of whichever store happens to be scanned
-  // first.
-  if (
-    requestedSessionId &&
-    !explicitSessionKey &&
-    (!sessionKey || sessionStore[sessionKey]?.sessionId !== requestedSessionId)
-  ) {
-    const { matches, primaryStoreMatches, storeByKey } = collectSessionIdMatchesForRequest({
-      cfg: opts.cfg,
-      sessionStore,
-      storePath,
-      storeAgentId,
-      sessionId: requestedSessionId,
-      searchOtherAgentStores: requestedAgentId === undefined,
-      ...(opts.clone === false ? { clone: false } : {}),
-    });
-    const preferredSelection = resolveSessionIdMatchSelection(matches, requestedSessionId);
-    const currentStoreSelection =
-      preferredSelection.kind === "selected"
-        ? preferredSelection
-        : resolveSessionIdMatchSelection(primaryStoreMatches, requestedSessionId);
-    if (currentStoreSelection.kind === "selected") {
-      const preferred = storeByKey.get(currentStoreSelection.sessionKey);
-      if (preferred) {
-        return preferred;
-      }
-      sessionKey = currentStoreSelection.sessionKey;
-    }
-  }
-
-  if (requestedSessionId && !sessionKey) {
-    sessionKey = buildExplicitSessionIdSessionKey({
-      sessionId: requestedSessionId,
-      agentId: opts.agentId,
-    });
-  }
-
-  return { sessionKey, sessionStore, storePath };
+  return keyedResolution;
 }
 
 /** Resolves or creates the session used by one agent command request. */

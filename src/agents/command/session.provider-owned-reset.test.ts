@@ -8,6 +8,7 @@ const hoisted = vi.hoisted(() => ({
 
 vi.mock("../../config/sessions/store-load.js", () => ({
   loadSessionStore: () => hoisted.store,
+  readSessionEntry: (_storePath: string, sessionKey: string) => hoisted.store[sessionKey],
 }));
 
 vi.mock("../../config/sessions/paths.js", () => ({

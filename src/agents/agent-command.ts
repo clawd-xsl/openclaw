@@ -2337,15 +2337,12 @@ async function agentCommandInternal(
       const resolveFreshSessionEntryForDelivery =
         sessionStore && sessionKey && !suppressVisibleSessionEffects
           ? async (): Promise<SessionEntry | undefined> => {
-              const { loadSessionStore } = await loadSessionStoreRuntime();
-              const freshStore = loadSessionStore(storePath, {
-                skipCache: true,
-                clone: false,
-              });
-              const freshEntry = freshStore[sessionKey];
-              if (!freshEntry || freshEntry.sessionId !== effectiveSessionId) {
+              const { readSessionEntry } = await loadSessionStoreRuntime();
+              const freshSnapshot = readSessionEntry(storePath, sessionKey, { exact: true });
+              if (!freshSnapshot || freshSnapshot.sessionId !== effectiveSessionId) {
                 return undefined;
               }
+              const freshEntry = structuredClone(freshSnapshot) as SessionEntry;
               sessionStore[sessionKey] = freshEntry;
               return freshEntry;
             }
