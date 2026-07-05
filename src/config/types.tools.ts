@@ -382,6 +382,11 @@ export type FsToolsConfig = {
    * Default: false (unrestricted, matches legacy behavior).
    */
   workspaceOnly?: boolean;
+  /**
+   * Allow any file type for host-local outbound attachments after normal read capability,
+   * root, safe-open, and size checks succeed. Default: false.
+   */
+  allowAllHostSendFileTypes?: boolean;
 };
 
 export type SessionsSpawnToolsConfig = {

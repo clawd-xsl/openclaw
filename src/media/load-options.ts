@@ -7,6 +7,8 @@ export type OutboundMediaAccess = {
   readFile?: OutboundMediaReadFile;
   /** Agent workspace directory for resolving relative media paths. */
   workspaceDir?: string;
+  /** Allow any host-local file type after the read capability and root checks succeed. */
+  allowAllHostSendFileTypes?: boolean;
 };
 
 /** Legacy and current knobs accepted by outbound media loaders before normalization. */
@@ -34,6 +36,7 @@ export type OutboundMediaLoadOptions = {
   requestInit?: RequestInit;
   trustExplicitProxyDns?: boolean;
   hostReadCapability?: boolean;
+  hostReadAllowAllFileTypes?: boolean;
   optimizeImages?: boolean;
   /** Agent workspace directory for resolving relative media paths. */
   workspaceDir?: string;
@@ -63,6 +66,7 @@ export function resolveOutboundMediaAccess(
   const localRoots = resolvedLocalRoots === "any" ? undefined : resolvedLocalRoots;
   const readFile = params.mediaAccess?.readFile ?? params.mediaReadFile;
   const workspaceDir = params.mediaAccess?.workspaceDir;
+  const allowAllHostSendFileTypes = params.mediaAccess?.allowAllHostSendFileTypes;
   if (!localRoots && !readFile && !workspaceDir) {
     return undefined;
   }
@@ -70,6 +74,7 @@ export function resolveOutboundMediaAccess(
     ...(localRoots ? { localRoots } : {}),
     ...(readFile ? { readFile } : {}),
     ...(workspaceDir ? { workspaceDir } : {}),
+    ...(allowAllHostSendFileTypes ? { allowAllHostSendFileTypes: true } : {}),
   };
 }
 
@@ -104,6 +109,7 @@ export function buildOutboundMediaLoadOptions(
         ? { trustExplicitProxyDns: params.trustExplicitProxyDns }
         : {}),
       hostReadCapability: true,
+      ...(mediaAccess?.allowAllHostSendFileTypes ? { hostReadAllowAllFileTypes: true } : {}),
       ...(params.optimizeImages !== undefined ? { optimizeImages: params.optimizeImages } : {}),
       ...(workspaceDir ? { workspaceDir } : {}),
     };

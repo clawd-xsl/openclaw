@@ -649,6 +649,21 @@ describe("loadWebMedia", () => {
     });
   });
 
+  it("allows host-read LOG files only with the explicit file type bypass", async () => {
+    const logFile = path.join(fixtureRoot, "debug-opt-in.log");
+    await fs.writeFile(logFile, "plain text\n", "utf8");
+    const result = await loadWebMedia(logFile, {
+      maxBytes: 1024 * 1024,
+      localRoots: "any",
+      readFile: async (filePath) => await fs.readFile(filePath),
+      hostReadCapability: true,
+      hostReadAllowAllFileTypes: true,
+    });
+
+    expect(result.buffer.toString("utf8")).toBe("plain text\n");
+    expect(result.fileName).toBe("debug-opt-in.log");
+  });
+
   it("rejects renamed host-read text files even when the extension looks allowed", async () => {
     const disguisedPdf = path.join(fixtureRoot, "secret.pdf");
     await fs.writeFile(disguisedPdf, "secret", "utf8");

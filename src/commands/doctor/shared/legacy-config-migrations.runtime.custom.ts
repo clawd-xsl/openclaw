@@ -8,18 +8,15 @@ import {
 
 const ALLOW_ALL_HOST_SEND_FILE_TYPES = "allowAllHostSendFileTypes";
 
-function getToolsFs(owner: Record<string, unknown> | null): Record<string, unknown> | null {
-  return getRecord(getRecord(owner?.tools)?.fs);
+function getLegacyDefaultFs(raw: Record<string, unknown>): Record<string, unknown> | null {
+  const defaults = getRecord(getRecord(raw.agents)?.defaults);
+  return getRecord(getRecord(defaults?.tools)?.fs);
 }
 
-function hasAllowAllHostSendFileTypes(owner: Record<string, unknown> | null): boolean {
-  return Object.hasOwn(getToolsFs(owner) ?? {}, ALLOW_ALL_HOST_SEND_FILE_TYPES);
-}
-
-function hasLegacyAgentListFsConfig(value: unknown): boolean {
-  return (
-    Array.isArray(value) && value.some((entry) => hasAllowAllHostSendFileTypes(getRecord(entry)))
-  );
+function hasLegacyDefaultFsPolicy(value: unknown): boolean {
+  const defaults = getRecord(value);
+  const fs = getRecord(getRecord(defaults?.tools)?.fs);
+  return Object.hasOwn(fs ?? {}, ALLOW_ALL_HOST_SEND_FILE_TYPES);
 }
 
 function hasLegacyHookMappingDeleteAfterRun(value: unknown): boolean {
@@ -35,20 +32,10 @@ const REMOVED_CUSTOM_CONFIG_RULES: LegacyConfigRule[] = [
     message: 'gateway.cliMcp is no longer supported. Run "openclaw doctor --fix" to remove it.',
   },
   {
-    path: ["tools", "fs", ALLOW_ALL_HOST_SEND_FILE_TYPES],
+    path: ["agents", "defaults"],
     message:
-      'tools.fs.allowAllHostSendFileTypes is no longer supported. Run "openclaw doctor --fix" to remove it.',
-  },
-  {
-    path: ["agents", "defaults", "tools", "fs", ALLOW_ALL_HOST_SEND_FILE_TYPES],
-    message:
-      'agents.defaults.tools.fs.allowAllHostSendFileTypes is no longer supported. Run "openclaw doctor --fix" to remove it.',
-  },
-  {
-    path: ["agents", "list"],
-    message:
-      'agents.list[].tools.fs.allowAllHostSendFileTypes is no longer supported. Run "openclaw doctor --fix" to remove it.',
-    match: hasLegacyAgentListFsConfig,
+      'agents.defaults.tools.fs.allowAllHostSendFileTypes moved to tools.fs.allowAllHostSendFileTypes. Run "openclaw doctor --fix" to migrate it.',
+    match: hasLegacyDefaultFsPolicy,
   },
   {
     path: ["hooks", "mappings"],
@@ -63,19 +50,6 @@ const REMOVED_CUSTOM_CONFIG_RULES: LegacyConfigRule[] = [
   },
 ];
 
-function removeAllowAllHostSendFileTypes(params: {
-  changes: string[];
-  owner: Record<string, unknown> | null;
-  path: string;
-}): void {
-  const fs = getToolsFs(params.owner);
-  if (!fs || !Object.hasOwn(fs, ALLOW_ALL_HOST_SEND_FILE_TYPES)) {
-    return;
-  }
-  delete fs[ALLOW_ALL_HOST_SEND_FILE_TYPES];
-  params.changes.push(`Removed unsupported ${params.path}.`);
-}
-
 /** Runtime migrations for config keys retired with custom/20260415. */
 export const LEGACY_CONFIG_MIGRATIONS_RUNTIME_CUSTOM: LegacyConfigMigrationSpec[] = [
   defineLegacyConfigMigration({
@@ -89,30 +63,33 @@ export const LEGACY_CONFIG_MIGRATIONS_RUNTIME_CUSTOM: LegacyConfigMigrationSpec[
         changes.push("Removed unsupported gateway.cliMcp.");
       }
 
-      removeAllowAllHostSendFileTypes({
-        changes,
-        owner: raw,
-        path: "tools.fs.allowAllHostSendFileTypes",
-      });
-
       const agents = getRecord(raw.agents);
       const defaults = getRecord(agents?.defaults);
-      removeAllowAllHostSendFileTypes({
-        changes,
-        owner: defaults,
-        path: "agents.defaults.tools.fs.allowAllHostSendFileTypes",
-      });
-
-      if (Array.isArray(agents?.list)) {
-        agents.list.forEach((entry, index) => {
-          removeAllowAllHostSendFileTypes({
-            changes,
-            owner: getRecord(entry),
-            path: `agents.list.${index}.tools.fs.allowAllHostSendFileTypes`,
-          });
-        });
+      const legacyDefaultFs = getLegacyDefaultFs(raw);
+      if (legacyDefaultFs && Object.hasOwn(legacyDefaultFs, ALLOW_ALL_HOST_SEND_FILE_TYPES)) {
+        const legacyValue = legacyDefaultFs[ALLOW_ALL_HOST_SEND_FILE_TYPES];
+        const tools = getRecord(raw.tools) ?? {};
+        const fs = getRecord(tools.fs) ?? {};
+        const alreadyConfigured = Object.hasOwn(fs, ALLOW_ALL_HOST_SEND_FILE_TYPES);
+        if (!alreadyConfigured) {
+          fs[ALLOW_ALL_HOST_SEND_FILE_TYPES] = legacyValue;
+          tools.fs = fs;
+          raw.tools = tools;
+        }
+        delete legacyDefaultFs[ALLOW_ALL_HOST_SEND_FILE_TYPES];
+        const defaultTools = getRecord(defaults?.tools);
+        if (Object.keys(legacyDefaultFs).length === 0 && defaultTools) {
+          delete defaultTools.fs;
+        }
+        if (defaultTools && Object.keys(defaultTools).length === 0 && defaults) {
+          delete defaults.tools;
+        }
+        changes.push(
+          alreadyConfigured
+            ? "Removed obsolete agents.defaults.tools.fs.allowAllHostSendFileTypes; tools.fs.allowAllHostSendFileTypes is already configured."
+            : "Moved agents.defaults.tools.fs.allowAllHostSendFileTypes to tools.fs.allowAllHostSendFileTypes.",
+        );
       }
-
       const mappings = getRecord(raw.hooks)?.mappings;
       if (Array.isArray(mappings)) {
         mappings.forEach((entry, index) => {

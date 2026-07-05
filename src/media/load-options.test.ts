@@ -44,6 +44,7 @@ describe("media load options", () => {
         mediaAccess: {
           localRoots: ["/tmp/workspace"],
           readFile: readMediaAccessFile,
+          allowAllHostSendFileTypes: true,
         },
       },
       expected: {
@@ -51,6 +52,7 @@ describe("media load options", () => {
         localRoots: ["/tmp/workspace"],
         readFile: readMediaAccessFile,
         hostReadCapability: true,
+        hostReadAllowAllFileTypes: true,
       },
     },
     {
@@ -85,5 +87,17 @@ describe("media load options", () => {
         mediaReadFile: async () => Buffer.from("x"),
       }),
     ).toThrow("Host media read requires explicit localRoots");
+  });
+
+  it("does not grant an allow-all file type bypass without a host reader", () => {
+    expect(
+      buildOutboundMediaLoadOptions({
+        maxBytes: 1024,
+        mediaAccess: {
+          localRoots: ["/tmp/workspace"],
+          allowAllHostSendFileTypes: true,
+        },
+      }),
+    ).toEqual({ maxBytes: 1024, localRoots: ["/tmp/workspace"] });
   });
 });

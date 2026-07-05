@@ -12,14 +12,19 @@ import { mergeAlsoAllowPolicy, resolveToolProfilePolicy } from "./tool-policy.js
 
 export type { ToolFsPolicy } from "./tool-fs-policy.types.js";
 
-export function createToolFsPolicy(params: { workspaceOnly?: boolean }): ToolFsPolicy {
+export function createToolFsPolicy(params: {
+  workspaceOnly?: boolean;
+  allowAllHostSendFileTypes?: boolean;
+}): ToolFsPolicy {
   return {
     workspaceOnly: params.workspaceOnly === true,
+    ...(params.allowAllHostSendFileTypes === true ? { allowAllHostSendFileTypes: true } : {}),
   };
 }
 
 export function resolveToolFsConfig(params: { cfg?: OpenClawConfig; agentId?: string }): {
   workspaceOnly?: boolean;
+  allowAllHostSendFileTypes?: boolean;
 } {
   const cfg = params.cfg;
   const globalFs = cfg?.tools?.fs;
@@ -27,6 +32,8 @@ export function resolveToolFsConfig(params: { cfg?: OpenClawConfig; agentId?: st
     cfg && params.agentId ? resolveAgentConfig(cfg, params.agentId)?.tools?.fs : undefined;
   return {
     workspaceOnly: agentFs?.workspaceOnly ?? globalFs?.workspaceOnly,
+    allowAllHostSendFileTypes:
+      agentFs?.allowAllHostSendFileTypes ?? globalFs?.allowAllHostSendFileTypes,
   };
 }
 
@@ -35,6 +42,13 @@ export function resolveEffectiveToolFsWorkspaceOnly(params: {
   agentId?: string;
 }): boolean {
   return resolveToolFsConfig(params).workspaceOnly === true;
+}
+
+export function resolveEffectiveToolFsAllowAllHostSendFileTypes(params: {
+  cfg?: OpenClawConfig;
+  agentId?: string;
+}): boolean {
+  return resolveToolFsConfig(params).allowAllHostSendFileTypes === true;
 }
 
 export function resolveEffectiveToolFsRootExpansionAllowed(params: {

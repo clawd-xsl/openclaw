@@ -184,6 +184,34 @@ describe("resolveAgentScopedOutboundMediaAccess", () => {
     expect(result.readFile).toBeTypeOf("function");
   });
 
+  it("propagates the allow-all file type policy only with host read capability", () => {
+    const allowed = resolveAgentScopedOutboundMediaAccess({
+      cfg: {
+        tools: {
+          allow: ["read"],
+          fs: { allowAllHostSendFileTypes: true },
+        },
+      } as OpenClawConfig,
+      messageProvider: "requestchat",
+      requesterSenderId: "trusted-user",
+    });
+    expect(allowed.readFile).toBeTypeOf("function");
+    expect(allowed.allowAllHostSendFileTypes).toBe(true);
+
+    const denied = resolveAgentScopedOutboundMediaAccess({
+      cfg: {
+        tools: {
+          profile: "messaging",
+          fs: { allowAllHostSendFileTypes: true },
+        },
+      } as OpenClawConfig,
+      messageProvider: "requestchat",
+      requesterSenderId: "trusted-user",
+    });
+    expect(denied.readFile).toBeUndefined();
+    expect(denied.allowAllHostSendFileTypes).toBeUndefined();
+  });
+
   it("keeps host reads enabled for DM sender when no group context exists", () => {
     const result = resolveAgentScopedOutboundMediaAccess({
       cfg: {

@@ -131,6 +131,27 @@ describe("collectEnabledInsecureOrDangerousFlags", () => {
     ).toContain("security.audit.suppressions configured (1)");
   });
 
+  it("collects host attachment file type bypasses at every config scope", () => {
+    expect(
+      collectEnabledInsecureOrDangerousFlagsFromContracts(
+        asConfig({
+          tools: { fs: { allowAllHostSendFileTypes: true } },
+          agents: {
+            list: [
+              {
+                id: "worker",
+                tools: { fs: { allowAllHostSendFileTypes: true } },
+              },
+            ],
+          },
+        }),
+      ),
+    ).toEqual([
+      "tools.fs.allowAllHostSendFileTypes=true",
+      'agents.list[id="worker"].tools.fs.allowAllHostSendFileTypes=true',
+    ]);
+  });
+
   it("uses stable agent ids for per-agent dangerous sandbox flags", () => {
     expect(
       collectEnabledInsecureOrDangerousFlagsFromContracts(

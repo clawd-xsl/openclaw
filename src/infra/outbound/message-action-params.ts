@@ -455,6 +455,7 @@ function buildAttachmentMediaLoadOptions(params: {
       localRoots?: readonly string[] | "any";
       readFile?: OutboundMediaReadFile;
       hostReadCapability?: boolean;
+      hostReadAllowAllFileTypes?: boolean;
       optimizeImages?: boolean;
     } {
   if (params.policy.mode === "sandbox") {

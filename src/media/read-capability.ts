@@ -3,7 +3,10 @@ import path from "node:path";
 import { resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
 import { resolveGroupToolPolicy } from "../agents/agent-tools.policy.js";
 import { resolvePathFromInput } from "../agents/path-policy.js";
-import { resolveEffectiveToolFsRootExpansionAllowed } from "../agents/tool-fs-policy.js";
+import {
+  resolveEffectiveToolFsAllowAllHostSendFileTypes,
+  resolveEffectiveToolFsRootExpansionAllowed,
+} from "../agents/tool-fs-policy.js";
 import { isToolAllowedByPolicies } from "../agents/tool-policy-match.js";
 import { resolveWorkspaceRoot } from "../agents/workspace-dir.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -146,9 +149,16 @@ export function resolveAgentScopedOutboundMediaAccess(
           requesterSenderE164: params.requesterSenderE164,
         })
       : undefined);
+  const allowAllHostSendFileTypes =
+    hostMediaReadAllowed &&
+    resolveEffectiveToolFsAllowAllHostSendFileTypes({
+      cfg: params.cfg,
+      agentId: params.agentId,
+    });
   return {
     ...(localRoots?.length ? { localRoots } : {}),
     ...(readFile ? { readFile } : {}),
     ...(resolvedWorkspaceDir ? { workspaceDir: resolvedWorkspaceDir } : {}),
+    ...(allowAllHostSendFileTypes ? { allowAllHostSendFileTypes: true } : {}),
   };
 }

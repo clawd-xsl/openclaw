@@ -97,6 +97,9 @@ export function collectEnabledInsecureOrDangerousFlagsFromContracts(
   if (cfg.tools?.fs?.workspaceOnly === false) {
     enabledFlags.push("tools.fs.workspaceOnly=false");
   }
+  if (cfg.tools?.fs?.allowAllHostSendFileTypes === true) {
+    enabledFlags.push("tools.fs.allowAllHostSendFileTypes=true");
+  }
   collectSandboxDockerDangerousFlags(
     isRecord(cfg.agents?.defaults?.sandbox?.docker)
       ? cfg.agents?.defaults?.sandbox?.docker
@@ -105,6 +108,11 @@ export function collectEnabledInsecureOrDangerousFlagsFromContracts(
   );
   if (Array.isArray(cfg.agents?.list)) {
     for (const [index, agent] of cfg.agents.list.entries()) {
+      if (agent?.tools?.fs?.allowAllHostSendFileTypes === true) {
+        enabledFlags.push(
+          `${getAgentDangerousFlagPathSegment(agent, index)}.tools.fs.allowAllHostSendFileTypes=true`,
+        );
+      }
       collectSandboxDockerDangerousFlags(
         isRecord(agent?.sandbox?.docker) ? agent.sandbox.docker : undefined,
         `${getAgentDangerousFlagPathSegment(agent, index)}.sandbox.docker`,

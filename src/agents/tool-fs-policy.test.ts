@@ -3,6 +3,8 @@
 import { describe, expect, it } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 import {
+  createToolFsPolicy,
+  resolveEffectiveToolFsAllowAllHostSendFileTypes,
   resolveEffectiveToolFsRootExpansionAllowed,
   resolveEffectiveToolFsWorkspaceOnly,
 } from "./tool-fs-policy.js";
@@ -51,6 +53,43 @@ describe("resolveEffectiveToolFsWorkspaceOnly", () => {
       },
     };
     expect(resolveEffectiveToolFsWorkspaceOnly({ cfg, agentId: "main" })).toBe(true);
+  });
+});
+
+describe("resolveEffectiveToolFsAllowAllHostSendFileTypes", () => {
+  it("keeps the enabled policy in normalized tool context", () => {
+    expect(createToolFsPolicy({ allowAllHostSendFileTypes: true })).toEqual({
+      workspaceOnly: false,
+      allowAllHostSendFileTypes: true,
+    });
+  });
+
+  it("defaults to false", () => {
+    expect(resolveEffectiveToolFsAllowAllHostSendFileTypes({ cfg: {}, agentId: "main" })).toBe(
+      false,
+    );
+  });
+
+  it("uses the global policy when no agent override exists", () => {
+    const cfg: OpenClawConfig = {
+      tools: { fs: { allowAllHostSendFileTypes: true } },
+    };
+    expect(resolveEffectiveToolFsAllowAllHostSendFileTypes({ cfg, agentId: "main" })).toBe(true);
+  });
+
+  it("prefers an agent-specific override", () => {
+    const cfg: OpenClawConfig = {
+      tools: { fs: { allowAllHostSendFileTypes: true } },
+      agents: {
+        list: [
+          {
+            id: "main",
+            tools: { fs: { allowAllHostSendFileTypes: false } },
+          },
+        ],
+      },
+    };
+    expect(resolveEffectiveToolFsAllowAllHostSendFileTypes({ cfg, agentId: "main" })).toBe(false);
   });
 });
 

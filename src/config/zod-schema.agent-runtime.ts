@@ -611,6 +611,7 @@ const ToolExecSchema = z
 const ToolFsSchema = z
   .object({
     workspaceOnly: z.boolean().optional(),
+    allowAllHostSendFileTypes: z.boolean().optional(),
   })
   .strict()
   .optional();

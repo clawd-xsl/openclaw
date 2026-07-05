@@ -749,6 +749,47 @@ describe("runMessageAction media behavior", () => {
       }
     });
 
+    it("hydrates arbitrary host-local attachment types only with explicit opt-in", async () => {
+      await restoreRealMediaLoader();
+
+      const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "msg-attachment-log-opt-in-"));
+      try {
+        const outsidePath = path.join(tempDir, "debug.log");
+        await fs.writeFile(outsidePath, "diagnostic", "utf8");
+
+        const result = await runMessageAction({
+          cfg: {
+            ...cfg,
+            tools: {
+              fs: {
+                workspaceOnly: false,
+                allowAllHostSendFileTypes: true,
+              },
+            },
+          },
+          action: "sendAttachment",
+          params: {
+            channel: "attachmentchat",
+            target: "+15551234567",
+            media: outsidePath,
+            message: "caption",
+          },
+        });
+
+        expect(result.kind).toBe("action");
+        expect(result.payload).toMatchObject({
+          ok: true,
+          filename: "debug.log",
+          caption: "caption",
+        });
+        expect((result.payload as { buffer?: string }).buffer).toBe(
+          Buffer.from("diagnostic").toString("base64"),
+        );
+      } finally {
+        await fs.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("hydrates buffer and filename from media for attachment upload-file", async () => {
       const result = await runAttachmentRemoteMediaAction({ cfg, action: "upload-file" });
 

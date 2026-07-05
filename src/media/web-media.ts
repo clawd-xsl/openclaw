@@ -67,6 +67,8 @@ type WebMediaOptions = {
   readFile?: (filePath: string) => Promise<Buffer>;
   /** Host-local fs-policy read piggyback; rejects plaintext-like document sends. */
   hostReadCapability?: boolean;
+  /** Skip only the host-read file-type assertion after capability and path checks pass. */
+  hostReadAllowAllFileTypes?: boolean;
 };
 
 /** Compression preference used to tune image size/quality search grids. */
@@ -867,6 +869,7 @@ async function loadWebMediaInternal(
     sandboxValidated = false,
     readFile: readFileOverride,
     hostReadCapability = false,
+    hostReadAllowAllFileTypes = false,
     imageCompression,
   } = options;
   mediaUrl = stripLegacyMediaDirectivePrefix(mediaUrl);
@@ -1029,7 +1032,8 @@ async function loadWebMediaInternal(
     await assertLocalMediaAllowed(mediaUrl, localRoots, { inboundRoots });
   }
 
-  const hostReadDeclaredMime = hostReadCapability
+  const enforceHostReadFileType = hostReadCapability && !hostReadAllowAllFileTypes;
+  const hostReadDeclaredMime = enforceHostReadFileType
     ? normalizeMimeType(mimeTypeFromFilePath(mediaUrl))
     : undefined;
   const trustedGeneratedHtmlPath =
@@ -1073,7 +1077,7 @@ async function loadWebMediaInternal(
   const sniffedMime = await detectMime({ buffer: data });
   const mime = await detectMime({ buffer: data, filePath: mediaUrl });
   const kind = kindFromMime(mime);
-  if (hostReadCapability) {
+  if (enforceHostReadFileType) {
     assertHostReadMediaAllowed({
       sniffedContentType: sniffedMime,
       contentType: mime,
