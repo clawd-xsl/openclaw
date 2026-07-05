@@ -772,7 +772,7 @@ export function detectStateIntegrityHealthIssues(
   const oauthDir = resolveOAuthDir(env, stateDir);
   const agentId = resolveDefaultAgentId(cfg);
   const sessionsDir = resolveSessionTranscriptsDirForAgent(agentId, env, homedir);
-  const storePath = resolveStorePath(cfg.session?.store, { agentId });
+  const storePath = resolveStorePath(cfg.session?.store, { agentId, env });
   const storeDir = path.dirname(storePath);
   const requireOAuthDir = shouldRequireOAuthDir(cfg, env);
 
@@ -1038,7 +1038,7 @@ export async function noteStateIntegrity(
   const oauthDir = resolveOAuthDir(env, stateDir);
   const agentId = resolveDefaultAgentId(cfg);
   const sessionsDir = resolveSessionTranscriptsDirForAgent(agentId, env, homedir);
-  const storePath = resolveStorePath(cfg.session?.store, { agentId });
+  const storePath = resolveStorePath(cfg.session?.store, { agentId, env });
   const storeDir = path.dirname(storePath);
   const absoluteStorePath = path.resolve(storePath);
   const displayStateDir = shortenHomePath(stateDir);
@@ -1270,7 +1270,7 @@ export async function noteStateIntegrity(
   }
 
   // Read-only diagnostic load: skip the cache and the defensive return clone so a
-  // very large monolithic sessions.json is materialized once, not several times.
+  // very large session store is materialized once, not several times.
   // Re-cloning a multi-hundred-MB store here is what made `doctor` OOM (#56827).
   const store = loadSessionStore(storePath, { skipCache: true, clone: false });
   const sessionPathOpts = resolveSessionFilePathOptions({ agentId, storePath });
@@ -1432,7 +1432,7 @@ export async function noteStateIntegrity(
       warnings.push(
         [
           `- Found ${orphanCount} in ${displaySessionsDir}.`,
-          "  These .jsonl files are no longer referenced by sessions.json, so they are not part of any active session history.",
+          "  These .jsonl files are no longer referenced by the active session store, so they are not part of any active session history.",
           "  Doctor can archive them safely by renaming each file to *.deleted.<timestamp>.",
           `  Examples: ${orphanPreview}`,
         ].join("\n"),
