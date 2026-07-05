@@ -11,8 +11,13 @@ import {
   registerMemoryCapability,
   type MemoryFlushPlanResolver,
 } from "../../plugins/memory-state.js";
+import { CHARS_PER_TOKEN_ESTIMATE, estimateStringChars } from "../../utils/cjk-chars.js";
 import type { TemplateContext } from "../templating.js";
 import type { ReplyPayload } from "../types.js";
+import {
+  buildCliMemoryFlushPromptFromMessages,
+  CLI_MEMORY_FLUSH_PROMPT_MAX_ESTIMATED_TOKENS,
+} from "./agent-runner-memory-cli.runtime.js";
 import {
   runMemoryFlushIfNeeded,
   runPreflightCompactionIfNeeded,
@@ -77,6 +82,7 @@ type RefreshQueuedFollowupSessionParams = {
 type ModelFallbackParams = {
   provider?: string;
   model?: string;
+  runId?: string;
   abortSignal?: AbortSignal;
   agentId?: string;
   sessionId?: string;
@@ -91,6 +97,10 @@ type ModelFallbackParams = {
 };
 
 type EmbeddedAgentParams = {
+  sessionId?: string;
+  sessionKey?: string;
+  sessionFile?: string;
+  sandboxSessionKey?: string;
   provider?: string;
   model?: string;
   authProfileId?: unknown;
@@ -98,12 +108,20 @@ type EmbeddedAgentParams = {
   prompt?: string;
   transcriptPrompt?: string;
   memoryFlushWritePath?: string;
+  trigger?: string;
+  disableMessageTool?: boolean;
+  cleanupBundleMcpOnRunEnd?: boolean;
+  allowGatewaySubagentBinding?: boolean;
+  agentHarnessRuntimeOverride?: string;
+  promptCacheKey?: string;
+  replyOperation?: ReplyOperation;
   silentExpected?: boolean;
   extraSystemPrompt?: string;
   bootstrapPromptWarningSignaturesSeen?: string[];
   bootstrapPromptWarningSignature?: string;
   abortSignal?: AbortSignal;
   isFinalFallbackAttempt?: boolean;
+  onAgentEvent?: (evt: { stream: string; data: { phase?: string } }) => void;
 };
 
 type CompactEmbeddedAgentSessionParams = {
@@ -216,6 +234,7 @@ describe("runMemoryFlushIfNeeded", () => {
       }
       return nextEntry.compactionCount;
     });
+    let randomUuidIndex = 0;
     setAgentRunnerMemoryTestDeps({
       compactEmbeddedAgentSession: compactEmbeddedAgentSessionMock as never,
       runWithModelFallback: runWithModelFallbackMock as never,
@@ -226,7 +245,10 @@ describe("runMemoryFlushIfNeeded", () => {
       ensureSelectedAgentHarnessPlugin: ensureSelectedAgentHarnessPluginMock as never,
       registerAgentRunContext: vi.fn() as never,
       emitAgentEvent: emitAgentEventMock as never,
-      randomUUID: () => "00000000-0000-0000-0000-000000000001",
+      randomUUID: () => {
+        randomUuidIndex += 1;
+        return `00000000-0000-0000-0000-${String(randomUuidIndex).padStart(12, "0")}`;
+      },
       now: () => 1_700_000_000_000,
     });
   });
@@ -295,6 +317,10 @@ describe("runMemoryFlushIfNeeded", () => {
     expect(flushCall.prompt).not.toBe(flushCall.transcriptPrompt);
     expect(flushCall.memoryFlushWritePath).toMatch(/^memory\/\d{4}-\d{2}-\d{2}\.md$/);
     expect(flushCall.silentExpected).toBe(true);
+    expect(flushCall.allowGatewaySubagentBinding).toBe(true);
+    expect(flushCall.replyOperation).toBeDefined();
+    expect(flushCall).not.toHaveProperty("disableMessageTool");
+    expect(flushCall).not.toHaveProperty("cleanupBundleMcpOnRunEnd");
     expect(ensureMemoryFlushTargetFileMock).toHaveBeenCalledWith({
       workspaceDir: followupRun.run.workspaceDir,
       relativePath: flushCall.memoryFlushWritePath,
@@ -843,7 +869,7 @@ describe("runMemoryFlushIfNeeded", () => {
         agentId: "main",
         sessionKey: "main",
         runtimePolicySessionKey,
-        workspaceDir: "/workspace",
+        workspaceDir: rootDir,
         provider: "openai",
         model: "gpt-5.4",
       }),
@@ -878,7 +904,7 @@ describe("runMemoryFlushIfNeeded", () => {
       agentId: "main",
       sessionKey: runtimePolicySessionKey,
       agentHarnessRuntimeOverride: "codex",
-      workspaceDir: "/workspace",
+      workspaceDir: rootDir,
     });
   });
 
@@ -913,17 +939,167 @@ describe("runMemoryFlushIfNeeded", () => {
     ).toBeUndefined();
   });
 
-  it("skips memory flush for CLI providers", async () => {
+  it.each([
+    { contextWindow: 200_000, threshold: 176_000 },
+    { contextWindow: 1_000_000, threshold: 976_000 },
+  ])(
+    "uses fresh CLI pressure around the $contextWindow-token context threshold",
+    async ({ contextWindow, threshold }) => {
+      const cfg = {
+        agents: {
+          defaults: {
+            cliBackends: { "codex-cli": { command: "codex" } },
+            compaction: { memoryFlush: {} },
+          },
+        },
+      };
+      const sessionFile = path.join(rootDir, `cli-${contextWindow}.jsonl`);
+      await fs.writeFile(sessionFile, "", "utf8");
+      const belowEntry: SessionEntry = {
+        sessionId: `below-${contextWindow}`,
+        sessionFile,
+        updatedAt: Date.now(),
+        totalTokens: threshold - 1_000,
+        totalTokensFresh: true,
+        compactionCount: 1,
+      };
+
+      await runMemoryFlushIfNeeded({
+        cfg,
+        followupRun: createTestFollowupRun({
+          provider: "codex-cli",
+          model: "gpt-5.5",
+          sessionId: belowEntry.sessionId,
+          sessionFile,
+          workspaceDir: rootDir,
+        }),
+        sessionCtx: { Provider: "whatsapp" } as unknown as TemplateContext,
+        defaultModel: "codex-cli/gpt-5.5",
+        agentCfgContextTokens: contextWindow,
+        resolvedVerboseLevel: "off",
+        sessionEntry: belowEntry,
+        sessionStore: { main: belowEntry },
+        sessionKey: "main",
+        isHeartbeat: false,
+        replyOperation: createReplyOperation(),
+      });
+
+      expect(runEmbeddedAgentMock).not.toHaveBeenCalled();
+
+      const storePath = path.join(rootDir, `sessions-${contextWindow}.json`);
+      const aboveEntry: SessionEntry = {
+        ...belowEntry,
+        sessionId: `above-${contextWindow}`,
+        totalTokens: threshold,
+      };
+      await writeTestSessionStore(storePath, "main", aboveEntry);
+
+      await runMemoryFlushIfNeeded({
+        cfg,
+        followupRun: createTestFollowupRun({
+          provider: "codex-cli",
+          model: "gpt-5.5",
+          sessionId: aboveEntry.sessionId,
+          sessionFile,
+          workspaceDir: rootDir,
+        }),
+        sessionCtx: { Provider: "whatsapp" } as unknown as TemplateContext,
+        defaultModel: "codex-cli/gpt-5.5",
+        agentCfgContextTokens: contextWindow,
+        resolvedVerboseLevel: "off",
+        sessionEntry: aboveEntry,
+        sessionStore: { main: aboveEntry },
+        sessionKey: "main",
+        storePath,
+        isHeartbeat: false,
+        replyOperation: createReplyOperation(),
+      });
+
+      expect(runEmbeddedAgentMock).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("uses the transcript byte gate for CLI memory flushes", async () => {
+    registerMemoryFlushPlanResolverForTest(() => ({
+      softThresholdTokens: 4_000,
+      forceFlushTranscriptBytes: 256,
+      reserveTokensFloor: 20_000,
+      prompt: "Pre-compaction memory flush.\nNO_REPLY",
+      systemPrompt: "Write memory to memory/YYYY-MM-DD.md.",
+      relativePath: "memory/2023-11-14.md",
+    }));
+    const cfg = {
+      agents: {
+        defaults: {
+          cliBackends: { "codex-cli": { command: "codex" } },
+          compaction: { memoryFlush: {} },
+        },
+      },
+    };
+    const storePath = path.join(rootDir, "sessions.json");
+    const sessionFile = path.join(rootDir, "byte-pressure.jsonl");
+    await fs.writeFile(
+      sessionFile,
+      `${JSON.stringify({ message: { role: "user", content: "x".repeat(512) } })}\n`,
+      "utf8",
+    );
+    const sessionEntry: SessionEntry = {
+      sessionId: "session",
+      sessionFile,
+      updatedAt: Date.now(),
+      totalTokens: 1,
+      totalTokensFresh: true,
+      compactionCount: 1,
+    };
+    await writeTestSessionStore(storePath, "main", sessionEntry);
+
+    await runMemoryFlushIfNeeded({
+      cfg,
+      followupRun: createTestFollowupRun({
+        provider: "codex-cli",
+        model: "gpt-5.5",
+        sessionId: "session",
+        sessionFile,
+        workspaceDir: rootDir,
+      }),
+      sessionCtx: { Provider: "whatsapp" } as unknown as TemplateContext,
+      defaultModel: "codex-cli/gpt-5.5",
+      agentCfgContextTokens: 200_000,
+      resolvedVerboseLevel: "off",
+      sessionEntry,
+      sessionStore: { main: sessionEntry },
+      sessionKey: "main",
+      storePath,
+      isHeartbeat: false,
+      replyOperation: createReplyOperation(),
+    });
+
+    expect(runEmbeddedAgentMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps CLI memory flush disabled for heartbeat turns", async () => {
     const sessionEntry: SessionEntry = {
       sessionId: "session",
       updatedAt: Date.now(),
       totalTokens: 80_000,
+      totalTokensFresh: true,
       compactionCount: 1,
     };
 
-    const entry = await runMemoryFlushIfNeeded({
-      cfg: { agents: { defaults: { cliBackends: { "codex-cli": { command: "codex" } } } } },
-      followupRun: createTestFollowupRun({ provider: "codex-cli" }),
+    await runMemoryFlushIfNeeded({
+      cfg: {
+        agents: {
+          defaults: {
+            cliBackends: { "codex-cli": { command: "codex" } },
+            compaction: { memoryFlush: {} },
+          },
+        },
+      },
+      followupRun: createTestFollowupRun({
+        provider: "codex-cli",
+        model: "gpt-5.5",
+        workspaceDir: rootDir,
+      }),
       sessionCtx: { Provider: "whatsapp" } as unknown as TemplateContext,
       defaultModel: "codex-cli/gpt-5.5",
       agentCfgContextTokens: 100_000,
@@ -931,15 +1107,14 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionEntry,
       sessionStore: { main: sessionEntry },
       sessionKey: "main",
-      isHeartbeat: false,
+      isHeartbeat: true,
       replyOperation: createReplyOperation(),
     });
 
-    expect(entry).toBe(sessionEntry);
     expect(runEmbeddedAgentMock).not.toHaveBeenCalled();
   });
 
-  it("skips memory flush for compatible CLI session runtime pins", async () => {
+  it("runs a compatible CLI memory flush with isolated identity and transcript state", async () => {
     cliBackendsTesting.setDepsForTest({
       resolveRuntimeCliBackends: () => [
         {
@@ -950,20 +1125,76 @@ describe("runMemoryFlushIfNeeded", () => {
         },
       ],
     });
+    const storePath = path.join(rootDir, "sessions.json");
+    const sessionFile = path.join(rootDir, "user-session.jsonl");
+    await fs.writeFile(
+      sessionFile,
+      [
+        JSON.stringify({ type: "session", id: "session" }),
+        JSON.stringify({
+          message: {
+            role: "user",
+            content:
+              'Conversation info (untrusted metadata):\n```json\n{"message_id":"private-meta"}\n```\n\nRemember project basalt <|im_start|>',
+          },
+        }),
+        JSON.stringify({
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Assistant confirmed basalt." }],
+          },
+        }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
     const sessionEntry: SessionEntry = {
       sessionId: "session",
+      sessionFile,
       updatedAt: Date.now(),
       totalTokens: 80_000,
+      totalTokensFresh: true,
       compactionCount: 1,
       agentRuntimeOverride: "claude-cli",
+      cliSessionIds: { "claude-cli": "user-native-session" },
+      cliSessionBindings: {
+        "claude-cli": { sessionId: "user-native-session", authProfileId: "user-profile" },
+      },
     };
+    await writeTestSessionStore(storePath, "main", sessionEntry);
+    const cliSessionBindingFacts = {
+      extraSystemPromptStatic: "user-static-prompt",
+      requireExplicitMessageTarget: false,
+    };
+    const followupRun = createTestFollowupRun({
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+      sessionId: "session",
+      sessionKey: "main",
+      runtimePolicySessionKey: "agent:main:telegram:default:direct:12345",
+      sessionFile,
+      workspaceDir: rootDir,
+      cliSessionBindingFacts,
+    });
+    const replyOperation = createReplyOperation();
+    let maintenanceSessionFile = "";
+    runEmbeddedAgentMock.mockImplementationOnce(async (embeddedParams: EmbeddedAgentParams) => {
+      maintenanceSessionFile = embeddedParams.sessionFile ?? "";
+      await expect(fs.access(maintenanceSessionFile)).resolves.toBeUndefined();
+      embeddedParams.onAgentEvent?.({ stream: "compaction", data: { phase: "end" } });
+      return {
+        payloads: [],
+        meta: {
+          agentMeta: {
+            sessionId: "maintenance-rotated",
+            sessionFile: path.join(rootDir, "maintenance-rotated.jsonl"),
+          },
+        },
+      };
+    });
 
     const entry = await runMemoryFlushIfNeeded({
       cfg: { agents: { defaults: { compaction: { memoryFlush: {} } } } },
-      followupRun: createTestFollowupRun({
-        provider: "anthropic",
-        model: "claude-opus-4-6",
-      }),
+      followupRun,
       sessionCtx: { Provider: "whatsapp" } as unknown as TemplateContext,
       defaultModel: "anthropic/claude-opus-4-6",
       agentCfgContextTokens: 100_000,
@@ -971,12 +1202,172 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionEntry,
       sessionStore: { main: sessionEntry },
       sessionKey: "main",
+      runtimePolicySessionKey: "agent:main:telegram:default:direct:12345",
+      storePath,
       isHeartbeat: false,
-      replyOperation: createReplyOperation(),
+      replyOperation,
     });
 
-    expect(entry).toBe(sessionEntry);
-    expect(runEmbeddedAgentMock).not.toHaveBeenCalled();
+    expect(entry?.sessionId).toBe("session");
+    expect(entry?.sessionFile).toBe(sessionFile);
+    expect(entry?.compactionCount).toBe(1);
+    expect(runEmbeddedAgentMock).toHaveBeenCalledTimes(1);
+    const fallbackCall = requireModelFallbackCall();
+    const embeddedCall = requireEmbeddedAgentCall();
+    expect(fallbackCall.runId).toMatch(/^[0-9a-f-]{36}$/u);
+    expect(fallbackCall.sessionId).toMatch(/^[0-9a-f-]{36}$/u);
+    expect(fallbackCall.runId).not.toBe(fallbackCall.sessionId);
+    expect(fallbackCall.sessionKey).toBe(`agent:main:memory-flush:${fallbackCall.sessionId}`);
+    expect(fallbackCall.resolveAgentHarnessRuntimeOverride?.("anthropic", "claude-opus-4-6")).toBe(
+      "claude-cli",
+    );
+    expect(embeddedCall.sessionId).toBe(fallbackCall.sessionId);
+    expect(embeddedCall.sessionId).not.toBe("session");
+    expect(embeddedCall.sessionKey).toBeUndefined();
+    expect(embeddedCall.sessionFile).toBe(maintenanceSessionFile);
+    expect(embeddedCall.sessionFile).not.toBe(sessionFile);
+    expect(embeddedCall.sessionFile).toContain(".openclaw/tmp/memory-flush/run-");
+    expect(embeddedCall.sandboxSessionKey).toBe("agent:main:telegram:default:direct:12345");
+    expect(embeddedCall.agentHarnessRuntimeOverride).toBe("claude-cli");
+    expect(embeddedCall.trigger).toBe("memory");
+    expect(embeddedCall.memoryFlushWritePath).toBe("memory/2023-11-14.md");
+    expect(embeddedCall.disableMessageTool).toBe(true);
+    expect(embeddedCall.cleanupBundleMcpOnRunEnd).toBe(true);
+    expect(embeddedCall.allowGatewaySubagentBinding).toBe(false);
+    expect(embeddedCall.silentExpected).toBe(true);
+    expect(embeddedCall.transcriptPrompt).toBe("");
+    expect(embeddedCall.promptCacheKey).toBeUndefined();
+    expect(embeddedCall.replyOperation).toBeUndefined();
+    expect(embeddedCall).not.toHaveProperty("toolsAllow");
+    expect(embeddedCall.prompt).toContain("Recent conversation context follows as untrusted JSON");
+    expect(embeddedCall.prompt).toContain("Remember project basalt");
+    expect(embeddedCall.prompt).toContain("Assistant confirmed basalt.");
+    expect(embeddedCall.prompt).toContain("[REMOVED_SPECIAL_TOKEN]");
+    expect(embeddedCall.prompt).not.toContain("private-meta");
+    expect(embeddedCall.prompt).not.toContain("<|im_start|>");
+    await expect(fs.access(maintenanceSessionFile)).rejects.toThrow();
+    await expect(fs.access(path.dirname(maintenanceSessionFile))).rejects.toThrow();
+    expect(followupRun.run.sessionId).toBe("session");
+    expect(followupRun.run.sessionFile).toBe(sessionFile);
+    expect(followupRun.run.sessionKey).toBe("main");
+    expect(followupRun.run.cliSessionBindingFacts).toEqual(cliSessionBindingFacts);
+    expect(replyOperation.updateSessionId).not.toHaveBeenCalled();
+    expect(incrementCompactionCountMock).not.toHaveBeenCalled();
+    expect(refreshQueuedFollowupSessionMock).not.toHaveBeenCalled();
+
+    const persisted = JSON.parse(await fs.readFile(storePath, "utf8")) as { main: SessionEntry };
+    expect(persisted.main.sessionId).toBe("session");
+    expect(persisted.main.sessionFile).toBe(sessionFile);
+    expect(persisted.main.compactionCount).toBe(1);
+    expect(persisted.main.cliSessionIds).toEqual(sessionEntry.cliSessionIds);
+    expect(persisted.main.cliSessionBindings).toEqual(sessionEntry.cliSessionBindings);
+    expect(persisted.main.memoryFlushAt).toBe(1_700_000_000_000);
+    expect(persisted.main.memoryFlushCompactionCount).toBe(1);
+  });
+
+  it("bounds CLI transcript context to the fixed estimated-token budget", () => {
+    const prompt = buildCliMemoryFlushPromptFromMessages({
+      basePrompt: "Persist durable memories only.\nNO_REPLY",
+      rawMessages: Array.from({ length: 30 }, (_, index) => ({
+        role: index % 2 === 0 ? "user" : "assistant",
+        content: `context-${index}-${"记".repeat(1_000)}`,
+      })),
+    });
+
+    const estimatedTokens = Math.ceil(estimateStringChars(prompt) / CHARS_PER_TOKEN_ESTIMATE);
+    expect(estimatedTokens).toBeLessThanOrEqual(CLI_MEMORY_FLUSH_PROMPT_MAX_ESTIMATED_TOKENS);
+    expect(prompt).toContain("context-29-");
+    expect(prompt).not.toContain("context-0-");
+  });
+
+  it("retries a failed CLI memory flush and cleans each temporary transcript", async () => {
+    const cfg = {
+      agents: {
+        defaults: {
+          cliBackends: { "codex-cli": { command: "codex" } },
+          compaction: { memoryFlush: {} },
+        },
+      },
+    };
+    const storePath = path.join(rootDir, "sessions.json");
+    const sessionFile = path.join(rootDir, "user-session.jsonl");
+    await fs.writeFile(
+      sessionFile,
+      `${JSON.stringify({ message: { role: "user", content: "Remember the retry state." } })}\n`,
+      "utf8",
+    );
+    const sessionEntry: SessionEntry = {
+      sessionId: "session",
+      sessionFile,
+      updatedAt: Date.now(),
+      totalTokens: 80_000,
+      totalTokensFresh: true,
+      compactionCount: 1,
+      cliSessionBindings: { "codex-cli": { sessionId: "user-codex-session" } },
+    };
+    await writeTestSessionStore(storePath, "main", sessionEntry);
+    const followupRun = createTestFollowupRun({
+      provider: "codex-cli",
+      model: "gpt-5.5",
+      sessionId: "session",
+      sessionKey: "main",
+      runtimePolicySessionKey: "agent:main:discord:default:direct:12345",
+      sessionFile,
+      workspaceDir: rootDir,
+      cliSessionBindingFacts: { extraSystemPromptStatic: "user binding facts" },
+    });
+    const maintenanceFiles: string[] = [];
+    runEmbeddedAgentMock
+      .mockImplementationOnce(async (embeddedParams: EmbeddedAgentParams) => {
+        maintenanceFiles.push(embeddedParams.sessionFile ?? "");
+        throw new Error("CLI maintenance failed");
+      })
+      .mockImplementationOnce(async (embeddedParams: EmbeddedAgentParams) => {
+        maintenanceFiles.push(embeddedParams.sessionFile ?? "");
+        return { payloads: [], meta: {} };
+      });
+    const baseParams = {
+      cfg,
+      followupRun,
+      sessionCtx: { Provider: "discord" } as unknown as TemplateContext,
+      defaultModel: "codex-cli/gpt-5.5",
+      agentCfgContextTokens: 100_000,
+      resolvedVerboseLevel: "off" as const,
+      sessionEntry,
+      sessionStore: { main: sessionEntry },
+      sessionKey: "main",
+      runtimePolicySessionKey: "agent:main:discord:default:direct:12345",
+      storePath,
+      isHeartbeat: false,
+    };
+
+    const firstReplyOperation = createReplyOperation();
+    await runMemoryFlushIfNeeded({ ...baseParams, replyOperation: firstReplyOperation });
+    const failed = JSON.parse(await fs.readFile(storePath, "utf8")) as { main: SessionEntry };
+    expect(failed.main.memoryFlushFailureCount).toBe(1);
+    expect(failed.main.memoryFlushLastFailureError).toContain("CLI maintenance failed");
+    expect(firstReplyOperation.updateSessionId).not.toHaveBeenCalled();
+    expect(followupRun.run.sessionId).toBe("session");
+    expect(followupRun.run.sessionFile).toBe(sessionFile);
+    await expect(fs.access(maintenanceFiles[0] ?? "")).rejects.toThrow();
+
+    const secondReplyOperation = createReplyOperation();
+    await runMemoryFlushIfNeeded({ ...baseParams, replyOperation: secondReplyOperation });
+    const recovered = JSON.parse(await fs.readFile(storePath, "utf8")) as { main: SessionEntry };
+    expect(runEmbeddedAgentMock).toHaveBeenCalledTimes(2);
+    expect(maintenanceFiles).toHaveLength(2);
+    expect(maintenanceFiles[0]).not.toBe(maintenanceFiles[1]);
+    await expect(fs.access(maintenanceFiles[1] ?? "")).rejects.toThrow();
+    expect(recovered.main.memoryFlushFailureCount).toBe(0);
+    expect(recovered.main.memoryFlushLastFailedAt).toBeUndefined();
+    expect(recovered.main.memoryFlushLastFailureError).toBeUndefined();
+    expect(recovered.main.memoryFlushCompactionCount).toBe(1);
+    expect(recovered.main.sessionId).toBe("session");
+    expect(recovered.main.sessionFile).toBe(sessionFile);
+    expect(recovered.main.cliSessionBindings).toEqual(sessionEntry.cliSessionBindings);
+    expect(secondReplyOperation.updateSessionId).not.toHaveBeenCalled();
+    expect(incrementCompactionCountMock).not.toHaveBeenCalled();
+    expect(refreshQueuedFollowupSessionMock).not.toHaveBeenCalled();
   });
 
   it("uses runtime policy session key when checking memory-flush sandbox writability", async () => {

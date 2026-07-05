@@ -34,9 +34,9 @@ import { updateSessionEntry } from "../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { readSessionMessagesAsync } from "../../gateway/session-utils.fs.js";
 import { logVerbose } from "../../globals.js";
+import { isAbortError } from "../../infra/abort-signal.js";
 import { emitAgentEvent, registerAgentRunContext } from "../../infra/agent-events.js";
 import { formatErrorMessage } from "../../infra/errors.js";
-import { isAbortError } from "../../infra/abort-signal.js";
 import { resolveMemoryFlushPlan } from "../../plugins/memory-state.js";
 import { CommandLane } from "../../process/lanes.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
@@ -63,6 +63,7 @@ import type { ReplyOperation } from "./reply-run-registry.js";
 import { incrementCompactionCount } from "./session-updates.js";
 
 type EmbeddedAgentRuntime = typeof import("../../agents/embedded-agent.js");
+type CliMemoryFlushRuntime = typeof import("./agent-runner-memory-cli.runtime.js");
 type UpdateSessionEntryParams = {
   storePath: string;
   sessionKey: string;
@@ -80,9 +81,16 @@ const MAX_FLUSH_ERROR_LENGTH = 200;
 const embeddedAgentRuntimeLoader = createLazyImportLoader<EmbeddedAgentRuntime>(
   () => import("../../agents/embedded-agent.js"),
 );
+const cliMemoryFlushRuntimeLoader = createLazyImportLoader<CliMemoryFlushRuntime>(
+  () => import("./agent-runner-memory-cli.runtime.js"),
+);
 
 function loadEmbeddedAgentRuntime(): Promise<EmbeddedAgentRuntime> {
   return embeddedAgentRuntimeLoader.load();
+}
+
+function loadCliMemoryFlushRuntime(): Promise<CliMemoryFlushRuntime> {
+  return cliMemoryFlushRuntimeLoader.load();
 }
 
 async function compactEmbeddedAgentSessionDefault(
@@ -248,6 +256,7 @@ function resolveMemoryFlushModelFallbackOptions(
 function resolveMemoryFlushRuntimeOverrideForProvider(params: {
   provider: string;
   entry?: Pick<SessionEntry, "agentRuntimeOverride">;
+  cfg: OpenClawConfig;
 }): string | undefined {
   const provider = normalizeLowercaseStringOrEmpty(params.provider);
   const runtime = normalizeLowercaseStringOrEmpty(params.entry?.agentRuntimeOverride);
@@ -256,6 +265,15 @@ function resolveMemoryFlushRuntimeOverrideForProvider(params: {
   }
   if (provider === "openai" && runtime === "codex") {
     return "codex";
+  }
+  if (
+    isCliRuntimeAliasForProvider({
+      provider,
+      runtime,
+      cfg: params.cfg,
+    })
+  ) {
+    return runtime;
   }
   return undefined;
 }
@@ -1094,7 +1112,7 @@ export async function runMemoryFlushIfNeeded(params: {
     followupRun: params.followupRun,
     sessionEntry: entry,
   });
-  const canAttemptFlush = memoryFlushWritable && !params.isHeartbeat && !isCli;
+  const canAttemptFlush = memoryFlushWritable && !params.isHeartbeat;
   const contextWindowTokens = resolveMemoryFlushContextWindowTokens({
     cfg: params.cfg,
     provider: resolveFollowupContextConfigProvider({
@@ -1250,7 +1268,6 @@ export async function runMemoryFlushIfNeeded(params: {
   const shouldFlushMemory =
     (memoryFlushWritable &&
       !params.isHeartbeat &&
-      !isCli &&
       shouldRunMemoryFlush({
         entry,
         tokenCount: tokenCountForFlush,
@@ -1278,10 +1295,21 @@ export async function runMemoryFlushIfNeeded(params: {
       (params.sessionKey ? activeSessionStore?.[params.sessionKey]?.systemPromptReport : undefined),
   );
   const flushRunId = memoryDeps.randomUUID();
+  const cliMaintenanceSessionId = isCli ? memoryDeps.randomUUID() : undefined;
+  const cliMaintenanceContextSessionKey = cliMaintenanceSessionId
+    ? `agent:${params.followupRun.run.agentId}:memory-flush:${cliMaintenanceSessionId}`
+    : undefined;
+  const cliMaintenanceSandboxSessionKey =
+    params.runtimePolicySessionKey ??
+    params.followupRun.run.runtimePolicySessionKey ??
+    params.sessionKey ??
+    params.followupRun.run.sessionKey;
   if (params.sessionKey) {
     memoryDeps.registerAgentRunContext(flushRunId, {
-      sessionKey: params.sessionKey,
-      ...(activeSessionEntry?.sessionId ? { sessionId: activeSessionEntry.sessionId } : {}),
+      sessionKey: cliMaintenanceContextSessionKey ?? params.sessionKey,
+      ...((cliMaintenanceSessionId ?? activeSessionEntry?.sessionId)
+        ? { sessionId: cliMaintenanceSessionId ?? activeSessionEntry?.sessionId }
+        : {}),
       verboseLevel: params.resolvedVerboseLevel,
     });
   }
@@ -1305,21 +1333,52 @@ export async function runMemoryFlushIfNeeded(params: {
     .join("\n\n");
   let postCompactionSessionId: string | undefined;
   let postCompactionSessionFile: string | undefined;
+  let cleanupCliMemoryFlushArtifact: (() => Promise<void>) | undefined;
   try {
+    let memoryFlushRun = params.followupRun.run;
+    let memoryFlushPrompt = activeMemoryFlushPlan.prompt;
+    if (isCli && cliMaintenanceSessionId) {
+      const cliMemoryFlushRuntime = await loadCliMemoryFlushRuntime();
+      const artifact = await cliMemoryFlushRuntime.createCliMemoryFlushSessionArtifact({
+        workspaceDir: params.followupRun.run.workspaceDir,
+        sessionId: cliMaintenanceSessionId,
+      });
+      cleanupCliMemoryFlushArtifact = artifact.cleanup;
+      memoryFlushRun = {
+        ...params.followupRun.run,
+        sessionId: cliMaintenanceSessionId,
+        sessionKey: undefined,
+        runtimePolicySessionKey: cliMaintenanceSandboxSessionKey,
+        sessionFile: artifact.sessionFile,
+        cliSessionBindingFacts: undefined,
+      };
+      memoryFlushPrompt = await cliMemoryFlushRuntime.buildCliMemoryFlushPrompt({
+        basePrompt: activeMemoryFlushPlan.prompt,
+        sessionId: activeSessionEntry?.sessionId ?? params.followupRun.run.sessionId,
+        sessionFile: activeSessionEntry?.sessionFile ?? params.followupRun.run.sessionFile,
+        storePath: params.storePath,
+        agentId: params.followupRun.run.agentId,
+      });
+    }
     await memoryDeps.runWithModelFallback({
       ...resolveMemoryFlushModelFallbackOptions(
         params.followupRun.run,
         activeMemoryFlushPlan.model,
         params.cfg,
       ),
+      ...(isCli ? { sessionKey: cliMaintenanceContextSessionKey } : {}),
       runId: flushRunId,
-      sessionId: activeSessionEntry?.sessionId ?? params.followupRun.run.sessionId,
+      sessionId:
+        cliMaintenanceSessionId ??
+        activeSessionEntry?.sessionId ??
+        params.followupRun.run.sessionId,
       lane: CommandLane.Main,
       abortSignal: params.replyOperation.abortSignal,
       resolveAgentHarnessRuntimeOverride: (provider) =>
         resolveMemoryFlushRuntimeOverrideForProvider({
           provider,
           entry: activeSessionEntry,
+          cfg: params.cfg,
         }),
       prepareAgentHarnessRuntime: async ({ provider, model, agentHarnessRuntimeOverride }) => {
         await memoryDeps.ensureSelectedAgentHarnessPlugin({
@@ -1337,8 +1396,8 @@ export async function runMemoryFlushIfNeeded(params: {
       },
       run: async (provider, model, runOptions) => {
         const { embeddedContext, senderContext, runBaseParams } = buildEmbeddedRunExecutionParams({
-          run: params.followupRun.run,
-          replyRoute: params.followupRun,
+          run: memoryFlushRun,
+          replyRoute: isCli ? undefined : params.followupRun,
           sessionCtx: params.sessionCtx,
           hasRepliedRef: params.opts?.hasRepliedRef,
           provider,
@@ -1350,12 +1409,25 @@ export async function runMemoryFlushIfNeeded(params: {
           ...embeddedContext,
           ...senderContext,
           ...runBaseParams,
-          sandboxSessionKey: params.runtimePolicySessionKey,
-          allowGatewaySubagentBinding: true,
+          sandboxSessionKey: isCli
+            ? cliMaintenanceSandboxSessionKey
+            : params.runtimePolicySessionKey,
+          ...(isCli
+            ? {
+                allowGatewaySubagentBinding: false,
+                agentHarnessRuntimeOverride: resolveMemoryFlushRuntimeOverrideForProvider({
+                  provider,
+                  entry: activeSessionEntry,
+                  cfg: params.cfg,
+                }),
+                disableMessageTool: true,
+                cleanupBundleMcpOnRunEnd: true,
+              }
+            : { allowGatewaySubagentBinding: true }),
           silentExpected: true,
           trigger: "memory",
           memoryFlushWritePath,
-          prompt: activeMemoryFlushPlan.prompt,
+          prompt: memoryFlushPrompt,
           transcriptPrompt: "",
           extraSystemPrompt: flushSystemPrompt,
           isFinalFallbackAttempt: runOptions?.isFinalFallbackAttempt,
@@ -1363,9 +1435,9 @@ export async function runMemoryFlushIfNeeded(params: {
           bootstrapPromptWarningSignature:
             bootstrapPromptWarningSignaturesSeen[bootstrapPromptWarningSignaturesSeen.length - 1],
           abortSignal: params.replyOperation.abortSignal,
-          replyOperation: params.replyOperation,
+          ...(isCli ? {} : { replyOperation: params.replyOperation }),
           onAgentEvent: (evt) => {
-            if (evt.stream === "compaction") {
+            if (!isCli && evt.stream === "compaction") {
               const phase = typeof evt.data.phase === "string" ? evt.data.phase : "";
               if (phase === "end") {
                 memoryCompactionCompleted = true;
@@ -1377,10 +1449,10 @@ export async function runMemoryFlushIfNeeded(params: {
         if (visibleErrorPayloads.length > 0) {
           params.onVisibleErrorPayloads?.(visibleErrorPayloads);
         }
-        if (result.meta?.agentMeta?.sessionId) {
+        if (!isCli && result.meta?.agentMeta?.sessionId) {
           postCompactionSessionId = result.meta.agentMeta.sessionId;
         }
-        if (result.meta?.agentMeta?.sessionFile) {
+        if (!isCli && result.meta?.agentMeta?.sessionFile) {
           postCompactionSessionFile = result.meta.agentMeta.sessionFile;
         }
         bootstrapPromptWarningSignaturesSeen = resolveBootstrapWarningSignaturesSeen(
@@ -1393,7 +1465,7 @@ export async function runMemoryFlushIfNeeded(params: {
       activeSessionEntry?.compactionCount ??
       (params.sessionKey ? activeSessionStore?.[params.sessionKey]?.compactionCount : 0) ??
       0;
-    if (memoryCompactionCompleted) {
+    if (!isCli && memoryCompactionCompleted) {
       const previousSessionId = activeSessionEntry?.sessionId ?? params.followupRun.run.sessionId;
       await memoryDeps.incrementCompactionCount({
         cfg: params.cfg,
@@ -1440,10 +1512,12 @@ export async function runMemoryFlushIfNeeded(params: {
         });
         if (updatedEntry) {
           activeSessionEntry = updatedEntry;
-          params.followupRun.run.sessionId = updatedEntry.sessionId;
-          params.replyOperation.updateSessionId(updatedEntry.sessionId);
-          if (updatedEntry.sessionFile) {
-            params.followupRun.run.sessionFile = updatedEntry.sessionFile;
+          if (!isCli) {
+            params.followupRun.run.sessionId = updatedEntry.sessionId;
+            params.replyOperation.updateSessionId(updatedEntry.sessionId);
+            if (updatedEntry.sessionFile) {
+              params.followupRun.run.sessionFile = updatedEntry.sessionFile;
+            }
           }
         }
       } catch (err) {
@@ -1535,6 +1609,14 @@ export async function runMemoryFlushIfNeeded(params: {
     const visibleErrorPayload = buildMemoryFlushErrorPayload(err);
     if (visibleErrorPayload) {
       params.onVisibleErrorPayloads?.([visibleErrorPayload]);
+    }
+  } finally {
+    if (cleanupCliMemoryFlushArtifact) {
+      try {
+        await cleanupCliMemoryFlushArtifact();
+      } catch (err) {
+        logVerbose(`failed to clean up CLI memory flush transcript: ${String(err)}`);
+      }
     }
   }
 
