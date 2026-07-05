@@ -5,6 +5,7 @@ import {
   CLAUDE_CLI_DEFAULT_MODEL_REF,
   CLAUDE_CLI_MODEL_ALIASES,
   CLAUDE_NATIVE_TOOL_DENYLIST_VALUE,
+  buildClaudeCliAllowlistModelDefaults,
   normalizeClaudeBackendConfig,
   normalizeClaudeIsolationArgs,
   normalizeClaudePermissionArgs,
@@ -16,6 +17,9 @@ import {
 describe("normalizeClaudePermissionArgs", () => {
   it("pins the Claude CLI default to Opus 4.8", () => {
     expect(CLAUDE_CLI_DEFAULT_MODEL_REF).toBe("claude-cli/claude-opus-4-8");
+    expect(CLAUDE_CLI_MODEL_ALIASES.fable).toBe("fable");
+    expect(CLAUDE_CLI_MODEL_ALIASES["fable-5"]).toBe("fable");
+    expect(CLAUDE_CLI_MODEL_ALIASES["claude-fable-5"]).toBe("fable");
     expect(CLAUDE_CLI_MODEL_ALIASES["opus-4.8"]).toBe("claude-opus-4-8");
     expect(CLAUDE_CLI_MODEL_ALIASES["opus-4.8[1m]"]).toBe("claude-opus-4-8[1m]");
     expect(CLAUDE_CLI_MODEL_ALIASES["claude-opus-4-8"]).toBe("claude-opus-4-8");
@@ -23,6 +27,9 @@ describe("normalizeClaudePermissionArgs", () => {
     expect(CLAUDE_CLI_MODEL_ALIASES["claude-opus-4-7"]).toBe("claude-opus-4-7");
     expect(CLAUDE_CLI_MODEL_ALIASES["opus-4.6"]).toBe("claude-opus-4-6[1m]");
     expect(CLAUDE_CLI_MODEL_ALIASES["claude-opus-4-6"]).toBe("claude-opus-4-6[1m]");
+    expect(buildClaudeCliAllowlistModelDefaults("claude-cli")).toMatchObject({
+      "claude-cli/claude-fable-5": { alias: "fable" },
+    });
   });
 
   it("injects bypassPermissions when args omit permission flags", () => {

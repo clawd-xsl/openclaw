@@ -10,8 +10,8 @@ import {
 } from "./cli-auth-seam.js";
 import {
   CLAUDE_CLI_BACKEND_ID,
-  CLAUDE_CLI_DEFAULT_ALLOWLIST_REFS,
   CLAUDE_CLI_DEFAULT_MODEL_REF,
+  buildClaudeCliAllowlistModelDefaults,
 } from "./cli-shared.js";
 
 type AgentDefaultsModel = NonNullable<NonNullable<OpenClawConfig["agents"]>["defaults"]>["model"];
@@ -110,8 +110,10 @@ function seedClaudeCliAllowlist(
   models: NonNullable<AgentDefaultsModels>,
 ): NonNullable<AgentDefaultsModels> {
   const next = { ...models };
-  for (const ref of CLAUDE_CLI_DEFAULT_ALLOWLIST_REFS) {
-    next[ref] = next[ref] ?? {};
+  for (const [ref, defaults] of Object.entries(
+    buildClaudeCliAllowlistModelDefaults(CLAUDE_CLI_BACKEND_ID),
+  )) {
+    next[ref] = next[ref] ?? defaults;
   }
   return next;
 }

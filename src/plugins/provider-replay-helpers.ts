@@ -82,9 +82,15 @@ export function shouldPreserveThinkingBlocks(modelId?: string): boolean {
   // - claude-sonnet-4-x (sonnet-4-5, sonnet-4-6, ...)
   //   Note: "sonnet-4" is safe — legacy "claude-3-5-sonnet" does not contain "sonnet-4"
   // - claude-haiku-4-x (haiku-4-5, ...)
+  // - claude-fable-5 and later Fable models
   // Models that require dropping thinking blocks:
   // - claude-3-7-sonnet, claude-3-5-sonnet, and earlier
-  if (id.includes("opus-4") || id.includes("sonnet-4") || id.includes("haiku-4")) {
+  if (
+    id.includes("opus-4") ||
+    id.includes("sonnet-4") ||
+    id.includes("haiku-4") ||
+    id.includes("fable-5")
+  ) {
     return true;
   }
 

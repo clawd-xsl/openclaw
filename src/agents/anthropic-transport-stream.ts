@@ -102,6 +102,7 @@ type MutableAssistantOutput = {
 
 function supportsAdaptiveThinking(modelId: string): boolean {
   return (
+    modelId.includes("fable-5") ||
     modelId.includes("opus-4-8") ||
     modelId.includes("opus-4.8") ||
     modelId.includes("opus-4-7") ||

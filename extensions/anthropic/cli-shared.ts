@@ -9,12 +9,15 @@ export const CLAUDE_CLI_BACKEND_IDS = [
 ] as const;
 type ClaudeCliBackendId = (typeof CLAUDE_CLI_BACKEND_IDS)[number];
 
+export const CLAUDE_CLI_FABLE_MODEL_ID = "claude-fable-5";
+
 export function buildClaudeCliModelRef(backendId: ClaudeCliBackendId, modelId: string): string {
   return `${backendId}/${modelId}`;
 }
 
 export function buildClaudeCliAllowlistRefs(backendId: ClaudeCliBackendId): readonly string[] {
   return [
+    buildClaudeCliModelRef(backendId, CLAUDE_CLI_FABLE_MODEL_ID),
     buildClaudeCliModelRef(backendId, "claude-opus-4-8"),
     buildClaudeCliModelRef(backendId, "claude-opus-4-8[1m]"),
     buildClaudeCliModelRef(backendId, "claude-opus-4-7"),
@@ -24,6 +27,17 @@ export function buildClaudeCliAllowlistRefs(backendId: ClaudeCliBackendId): read
     buildClaudeCliModelRef(backendId, "claude-sonnet-4-5"),
     buildClaudeCliModelRef(backendId, "claude-haiku-4-5"),
   ] as const;
+}
+
+export function buildClaudeCliAllowlistModelDefaults(
+  backendId: ClaudeCliBackendId,
+): Record<string, { alias?: string }> {
+  return Object.fromEntries(
+    buildClaudeCliAllowlistRefs(backendId).map((ref) => [
+      ref,
+      ref.endsWith(`/${CLAUDE_CLI_FABLE_MODEL_ID}`) ? { alias: "fable" } : {},
+    ]),
+  );
 }
 
 export const CLAUDE_CLI_DEFAULT_MODEL_REF = `${CLAUDE_CLI_BACKEND_ID}/claude-opus-4-8`;
@@ -37,6 +51,9 @@ export const CLAUDE_CLI_STREAMING_DEFAULT_ALLOWLIST_REFS = buildClaudeCliAllowli
 );
 
 export const CLAUDE_CLI_MODEL_ALIASES: Record<string, string> = {
+  fable: "fable",
+  "fable-5": "fable",
+  "claude-fable-5": "fable",
   opus: "opus",
   "opus-4.8": "claude-opus-4-8",
   "opus-4.8[1m]": "claude-opus-4-8[1m]",

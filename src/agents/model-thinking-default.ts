@@ -54,6 +54,9 @@ export function resolveThinkingDefault(params: {
   if (configured) {
     return configured;
   }
+  if (normalizedProvider === "anthropic" && normalizedModel.startsWith("claude-fable-5")) {
+    return "adaptive";
+  }
   if (
     normalizedProvider === "anthropic" &&
     (normalizedModel.startsWith("claude-opus-4-8") || normalizedModel.startsWith("claude-opus-4-7"))

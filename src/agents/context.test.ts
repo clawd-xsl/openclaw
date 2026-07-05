@@ -80,6 +80,16 @@ describe("applyDiscoveredContextWindows", () => {
 
     expect(cache.get("claude-cli-streaming/claude-opus-4-8[1m]")).toBe(ANTHROPIC_CONTEXT_1M_TOKENS);
   });
+
+  it("forces 1M context for discovered claude-cli-streaming Fable 5 entries", () => {
+    const cache = new Map<string, number>();
+    applyDiscoveredContextWindows({
+      cache,
+      models: [{ id: "claude-cli-streaming/claude-fable-5", contextWindow: 200_000 }],
+    });
+
+    expect(cache.get("claude-cli-streaming/claude-fable-5")).toBe(ANTHROPIC_CONTEXT_1M_TOKENS);
+  });
 });
 
 describe("applyConfiguredContextWindows", () => {

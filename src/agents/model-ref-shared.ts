@@ -32,6 +32,9 @@ export function normalizeAnthropicModelId(model: string): string {
     return trimmed;
   }
   switch (normalizeLowercaseStringOrEmpty(trimmed)) {
+    case "fable":
+    case "fable-5":
+      return "claude-fable-5";
     case "opus-4.8":
       return "claude-opus-4-8";
     case "opus-4.8[1m]":

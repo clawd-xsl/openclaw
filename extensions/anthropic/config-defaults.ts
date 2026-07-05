@@ -4,6 +4,7 @@ import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/text-runtim
 import {
   CLAUDE_CLI_BACKEND_ID,
   CLAUDE_CLI_BACKEND_IDS,
+  buildClaudeCliAllowlistModelDefaults,
   buildClaudeCliAllowlistRefs,
   isClaudeCliFamilyProvider,
 } from "./cli-shared.js";
@@ -93,6 +94,9 @@ function resolveAnthropicPrimaryModelRef(raw?: string): string | null {
     return null;
   }
   const aliasKey = normalizeLowercaseStringOrEmpty(trimmed);
+  if (aliasKey === "fable") {
+    return "anthropic/claude-fable-5";
+  }
   if (aliasKey === "opus") {
     return "anthropic/claude-opus-4-8";
   }
@@ -173,6 +177,19 @@ function resolveClaudeCliAllowlistRefsForConfig(config: OpenClawConfig): readonl
     }
   }
   return buildClaudeCliAllowlistRefs(CLAUDE_CLI_BACKEND_ID);
+}
+
+function resolveClaudeCliAllowlistDefaultsForConfig(
+  config: OpenClawConfig,
+): Record<string, { alias?: string }> {
+  const refs = resolveClaudeCliAllowlistRefsForConfig(config);
+  const firstRef = refs[0];
+  const slashIndex = firstRef?.indexOf("/") ?? -1;
+  const backendId = slashIndex > 0 ? firstRef?.slice(0, slashIndex) : CLAUDE_CLI_BACKEND_ID;
+  const resolvedBackendId = isClaudeCliFamilyProvider(backendId ?? "")
+    ? (backendId as Parameters<typeof buildClaudeCliAllowlistModelDefaults>[0])
+    : CLAUDE_CLI_BACKEND_ID;
+  return buildClaudeCliAllowlistModelDefaults(resolvedBackendId);
 }
 
 export function normalizeAnthropicProviderConfig<T extends { api?: string; models?: unknown[] }>(
@@ -276,11 +293,13 @@ export function applyAnthropicConfigDefaults(params: {
   if (authMode === "oauth" && usesClaudeCliModelSelection(params.config)) {
     const nextModels = defaults.models ? { ...defaults.models } : {};
     let modelsMutated = false;
-    for (const ref of resolveClaudeCliAllowlistRefsForConfig(params.config)) {
+    for (const [ref, entry] of Object.entries(
+      resolveClaudeCliAllowlistDefaultsForConfig(params.config),
+    )) {
       if (ref in nextModels) {
         continue;
       }
-      nextModels[ref] = {};
+      nextModels[ref] = entry;
       modelsMutated = true;
     }
     if (modelsMutated) {

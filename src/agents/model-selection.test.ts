@@ -66,6 +66,15 @@ const ANTHROPIC_OPUS_48_CATALOG = [
   },
 ];
 
+const ANTHROPIC_FABLE_CATALOG = [
+  {
+    provider: "anthropic",
+    id: "claude-fable-5",
+    name: "Claude Fable 5",
+    reasoning: true,
+  },
+];
+
 function resolveAnthropicOpusThinking(cfg: OpenClawConfig) {
   return resolveThinkingDefault({
     cfg,
@@ -90,6 +99,15 @@ function resolveAnthropicOpus48Thinking(cfg: OpenClawConfig) {
     provider: "anthropic",
     model: "claude-opus-4-8",
     catalog: ANTHROPIC_OPUS_48_CATALOG,
+  });
+}
+
+function resolveAnthropicFableThinking(cfg: OpenClawConfig) {
+  return resolveThinkingDefault({
+    cfg,
+    provider: "anthropic",
+    model: "claude-fable-5",
+    catalog: ANTHROPIC_FABLE_CATALOG,
   });
 }
 
@@ -233,6 +251,12 @@ describe("model-selection", () => {
         variants: ["nvidia/moonshotai/kimi-k2.5"],
         defaultProvider: "anthropic",
         expected: { provider: "nvidia", model: "moonshotai/kimi-k2.5" },
+      },
+      {
+        name: "normalizes anthropic fable aliases",
+        variants: ["anthropic/fable", "fable-5"],
+        defaultProvider: "anthropic",
+        expected: { provider: "anthropic", model: "claude-fable-5" },
       },
       {
         name: "normalizes anthropic shorthand aliases",
@@ -1210,6 +1234,12 @@ describe("model-selection", () => {
       const cfg = {} as OpenClawConfig;
 
       expect(resolveAnthropicOpus48Thinking(cfg)).toBe("off");
+    });
+
+    it("defaults Claude Fable 5 to adaptive when no explicit thinking config is set", () => {
+      const cfg = {} as OpenClawConfig;
+
+      expect(resolveAnthropicFableThinking(cfg)).toBe("adaptive");
     });
 
     it("falls back to low when no provider thinking hook is active", () => {

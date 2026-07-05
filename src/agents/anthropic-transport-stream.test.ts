@@ -337,6 +337,51 @@ describe("anthropic transport stream", () => {
     );
   });
 
+  it("maps adaptive thinking effort for Claude Fable 5 transport runs", async () => {
+    const model = attachModelProviderRequestTransport(
+      {
+        id: "claude-fable-5",
+        name: "Claude Fable 5",
+        api: "anthropic-messages",
+        provider: "anthropic",
+        baseUrl: "https://api.anthropic.com",
+        reasoning: true,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 1_048_576,
+        maxTokens: 128_000,
+      } satisfies Model<"anthropic-messages">,
+      {
+        proxy: {
+          mode: "env-proxy",
+        },
+      },
+    );
+    const streamFn = createAnthropicMessagesTransportStreamFn();
+
+    const stream = await Promise.resolve(
+      streamFn(
+        model,
+        {
+          messages: [{ role: "user", content: "Think deeply." }],
+        } as Parameters<typeof streamFn>[1],
+        {
+          apiKey: "sk-ant-api",
+          reasoning: "high",
+        } as Parameters<typeof streamFn>[2],
+      ),
+    );
+    await stream.result();
+
+    expect(anthropicMessagesStreamMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        thinking: { type: "adaptive" },
+        output_config: { effort: "high" },
+      }),
+      undefined,
+    );
+  });
+
   it("maps xhigh reasoning to xhigh effort for Claude Opus 4.8", async () => {
     const model = attachModelProviderRequestTransport(
       {

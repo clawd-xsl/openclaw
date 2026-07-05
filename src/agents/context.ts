@@ -26,6 +26,7 @@ type AgentModelEntry = { params?: Record<string, unknown> };
 
 const ANTHROPIC_1M_MODEL_PREFIXES = ["claude-opus-4", "claude-sonnet-4"] as const;
 const CLAUDE_OPUS_LONG_CONTEXT_MODEL_PREFIXES = [
+  "claude-fable-5",
   "claude-opus-4-8",
   "claude-opus-4.8",
   "claude-opus-4-8[1m]",
