@@ -1,6 +1,23 @@
 // Qqbot tests cover activation plugin behavior.
-import { describe, expect, it } from "vitest";
-import { resolveGroupActivation, type SessionStoreReader } from "./activation.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { clearSessionStoreCacheForTest } from "openclaw/plugin-sdk/session-store-runtime";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  createNodeSessionStoreReader,
+  resolveGroupActivation,
+  type SessionStoreReader,
+} from "./activation.js";
+
+const tempDirs: string[] = [];
+
+afterEach(() => {
+  clearSessionStoreCacheForTest();
+  for (const tempDir of tempDirs.splice(0)) {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
 
 describe("engine/group/activation", () => {
   describe("resolveGroupActivation — no reader", () => {
@@ -28,14 +45,12 @@ describe("engine/group/activation", () => {
   });
 
   describe("resolveGroupActivation — with reader", () => {
-    const makeReader = (
-      store: Record<string, { groupActivation?: string }> | null,
-    ): SessionStoreReader => ({
-      read: () => store,
+    const makeReader = (entry: { groupActivation?: string } | null): SessionStoreReader => ({
+      read: () => entry,
     });
 
     it("honours explicit session-store override (mention)", () => {
-      const reader = makeReader({ k1: { groupActivation: "mention" } });
+      const reader = makeReader({ groupActivation: "mention" });
       expect(
         resolveGroupActivation({
           cfg: {},
@@ -48,7 +63,7 @@ describe("engine/group/activation", () => {
     });
 
     it("honours explicit session-store override (always)", () => {
-      const reader = makeReader({ k1: { groupActivation: "always" } });
+      const reader = makeReader({ groupActivation: "always" });
       expect(
         resolveGroupActivation({
           cfg: {},
@@ -61,7 +76,7 @@ describe("engine/group/activation", () => {
     });
 
     it("ignores override when the key is absent", () => {
-      const reader = makeReader({});
+      const reader = makeReader(null);
       expect(
         resolveGroupActivation({
           cfg: {},
@@ -87,7 +102,7 @@ describe("engine/group/activation", () => {
     });
 
     it("ignores invalid activation values", () => {
-      const reader = makeReader({ k1: { groupActivation: "weird-mode" } });
+      const reader = makeReader({ groupActivation: "weird-mode" });
       expect(
         resolveGroupActivation({
           cfg: {},
@@ -100,7 +115,7 @@ describe("engine/group/activation", () => {
     });
 
     it("normalizes whitespace / case", () => {
-      const reader = makeReader({ k1: { groupActivation: "  Always  " } });
+      const reader = makeReader({ groupActivation: "  Always  " });
       expect(
         resolveGroupActivation({
           cfg: {},
@@ -110,6 +125,59 @@ describe("engine/group/activation", () => {
           sessionStoreReader: reader,
         }),
       ).toBe("always");
+    });
+  });
+
+  it("reads activation from the default SQLite-backed session store", () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-qqbot-activation-"));
+    tempDirs.push(stateDir);
+    const sessionsDir = path.join(stateDir, "agents", "bot", "sessions");
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(sessionsDir, "sessions.json"),
+      JSON.stringify({ room: { sessionId: "room", groupActivation: "always" } }),
+    );
+    const previousStateDir = process.env.OPENCLAW_STATE_DIR;
+    process.env.OPENCLAW_STATE_DIR = stateDir;
+    try {
+      expect(
+        createNodeSessionStoreReader().read({
+          cfg: {},
+          agentId: "bot",
+          sessionKey: "room",
+        })?.groupActivation,
+      ).toBe("always");
+      expect(fs.existsSync(path.join(sessionsDir, "sessions.sqlite"))).toBe(true);
+    } finally {
+      if (previousStateDir === undefined) {
+        delete process.env.OPENCLAW_STATE_DIR;
+      } else {
+        process.env.OPENCLAW_STATE_DIR = previousStateDir;
+      }
+    }
+  });
+
+  it("uses the keyed session accessor for the requested group", () => {
+    const getSessionEntry = vi.fn(() => ({
+      sessionId: "room",
+      updatedAt: 1,
+      groupActivation: "always" as const,
+    }));
+    const reader = createNodeSessionStoreReader({ getSessionEntry });
+
+    expect(
+      reader.read({
+        cfg: {},
+        agentId: "bot",
+        sessionKey: "agent:bot:qqbot:group:room",
+      })?.groupActivation,
+    ).toBe("always");
+    expect(getSessionEntry).toHaveBeenCalledOnce();
+    expect(getSessionEntry).toHaveBeenCalledWith({
+      agentId: "bot",
+      hydrateSkillPromptRefs: false,
+      sessionKey: "agent:bot:qqbot:group:room",
+      storePath: expect.stringContaining(path.join("agents", "bot", "sessions", "sessions.sqlite")),
     });
   });
 });

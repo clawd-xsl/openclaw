@@ -1,6 +1,5 @@
 // Qqbot plugin module implements activation behavior.
-import fs from "node:fs";
-import path from "node:path";
+import { getSessionEntry, resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
 
 export type GroupActivationMode = "mention" | "always";
 
@@ -8,7 +7,8 @@ export interface SessionStoreReader {
   read(params: {
     cfg: Record<string, unknown>;
     agentId: string;
-  }): Record<string, { groupActivation?: string }> | null;
+    sessionKey: string;
+  }): { groupActivation?: string } | null;
 }
 
 export function resolveGroupActivation(params: {
@@ -20,15 +20,15 @@ export function resolveGroupActivation(params: {
 }): GroupActivationMode {
   const fallback: GroupActivationMode = params.configRequireMention ? "mention" : "always";
 
-  const store = params.sessionStoreReader?.read({
+  const entry = params.sessionStoreReader?.read({
     cfg: params.cfg,
     agentId: params.agentId,
+    sessionKey: params.sessionKey,
   });
-  if (!store) {
+  if (!entry) {
     return fallback;
   }
 
-  const entry = store[params.sessionKey];
   if (!entry?.groupActivation) {
     return fallback;
   }
@@ -40,47 +40,31 @@ export function resolveGroupActivation(params: {
   return fallback;
 }
 
-function resolveSessionStorePath(
-  cfg: Record<string, unknown>,
-  agentId: string | undefined,
-): string {
-  const resolvedAgentId = agentId || "default";
-
+function readConfiguredSessionStore(cfg: Record<string, unknown>): string | undefined {
   const session =
     typeof cfg.session === "object" && cfg.session !== null
       ? (cfg.session as { store?: unknown })
       : undefined;
   const rawStore = typeof session?.store === "string" ? session.store : undefined;
-
-  if (rawStore) {
-    let expanded = rawStore;
-    if (expanded.includes("{agentId}")) {
-      expanded = expanded.replaceAll("{agentId}", resolvedAgentId);
-    }
-    if (expanded.startsWith("~")) {
-      const home = process.env.HOME || process.env.USERPROFILE || "";
-      expanded = expanded.replace(/^~/, home);
-    }
-    return path.resolve(expanded);
-  }
-
-  const stateDir =
-    process.env.OPENCLAW_STATE_DIR?.trim() ||
-    process.env.CLAWDBOT_STATE_DIR?.trim() ||
-    path.join(process.env.HOME || process.env.USERPROFILE || "", ".openclaw");
-  return path.join(stateDir, "agents", resolvedAgentId, "sessions", "sessions.json");
+  return rawStore?.trim() || undefined;
 }
 
-export function createNodeSessionStoreReader(): SessionStoreReader {
+export function createNodeSessionStoreReader(
+  deps: { getSessionEntry?: typeof getSessionEntry } = {},
+): SessionStoreReader {
+  const readEntry = deps.getSessionEntry ?? getSessionEntry;
   return {
-    read: ({ cfg, agentId }) => {
+    read: ({ cfg, agentId, sessionKey }) => {
       try {
-        const storePath = resolveSessionStorePath(cfg, agentId);
-        if (!fs.existsSync(storePath)) {
-          return null;
-        }
-        const raw = fs.readFileSync(storePath, "utf-8");
-        return JSON.parse(raw) as Record<string, { groupActivation?: string }>;
+        const storePath = resolveStorePath(readConfiguredSessionStore(cfg), { agentId });
+        return (
+          readEntry({
+            agentId,
+            sessionKey,
+            storePath,
+            hydrateSkillPromptRefs: false,
+          }) ?? null
+        );
       } catch {
         return null;
       }
