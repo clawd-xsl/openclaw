@@ -10,7 +10,7 @@ import {
   resolveSessionResetPolicy,
   type SessionFreshness,
 } from "../../config/sessions/reset-policy.js";
-import { loadSessionStore } from "../../config/sessions/store-load.js";
+import { loadSessionEntry } from "../../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 
@@ -119,8 +119,11 @@ export function resolveCronSession(params: {
   const storePath = resolveStorePath(sessionCfg?.store, {
     agentId: params.agentId,
   });
-  const store = params.store ?? loadSessionStore(storePath);
-  const entry = store[params.sessionKey];
+  const entry = params.store
+    ? params.store[params.sessionKey]
+    : loadSessionEntry({ storePath, sessionKey: params.sessionKey });
+  const store: Record<string, SessionEntry> =
+    params.store ?? (entry ? { [params.sessionKey]: entry } : {});
 
   let sessionId: string;
   let isNewSession: boolean;

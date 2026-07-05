@@ -2,8 +2,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
 
-vi.mock("../../config/sessions/store-load.js", () => ({
-  loadSessionStore: vi.fn(),
+vi.mock("../../config/sessions/session-accessor.js", () => ({
+  loadSessionEntry: vi.fn(),
 }));
 
 vi.mock("../../config/sessions/paths.js", () => ({
@@ -28,12 +28,13 @@ vi.mock("../../agents/bootstrap-cache.js", () => ({
 
 import { clearBootstrapSnapshot } from "../../agents/bootstrap-cache.js";
 import { evaluateSessionFreshness } from "../../config/sessions/reset-policy.js";
-import { loadSessionStore } from "../../config/sessions/store-load.js";
+import { loadSessionEntry } from "../../config/sessions/session-accessor.js";
+import type { SessionEntry } from "../../config/sessions/types.js";
 import { resolveCronSession } from "./session.js";
 
 const NOW_MS = 1_737_600_000_000;
 
-type SessionStore = ReturnType<typeof loadSessionStore>;
+type SessionStore = Record<string, SessionEntry>;
 type SessionStoreEntry = SessionStore[string];
 type MockSessionStoreEntry = Partial<SessionStoreEntry>;
 
@@ -47,7 +48,7 @@ function resolveWithStoredEntry(params?: {
   const store: SessionStore = params?.entry
     ? ({ [sessionKey]: params.entry as SessionStoreEntry } as SessionStore)
     : {};
-  vi.mocked(loadSessionStore).mockReturnValue(store);
+  vi.mocked(loadSessionEntry).mockReturnValue(store[sessionKey]);
   vi.mocked(evaluateSessionFreshness).mockReturnValue({ fresh: params?.fresh ?? true });
 
   return resolveCronSession({
@@ -62,6 +63,25 @@ function resolveWithStoredEntry(params?: {
 describe("resolveCronSession", () => {
   beforeEach(() => {
     vi.mocked(clearBootstrapSnapshot).mockReset();
+  });
+
+  it("loads only the known session key and exposes a one-entry mutable view", () => {
+    const sessionKey = "agent:main:cron:point-read";
+    const result = resolveWithStoredEntry({
+      sessionKey,
+      entry: {
+        sessionId: "known-session",
+        updatedAt: NOW_MS - 1_000,
+      },
+    });
+
+    expect(loadSessionEntry).toHaveBeenCalledWith({
+      storePath: "/tmp/test-store.json",
+      sessionKey,
+    });
+    expect(result.store).toEqual({
+      [sessionKey]: expect.objectContaining({ sessionId: "known-session" }),
+    });
   });
 
   it("preserves modelOverride and providerOverride from existing session entry", () => {
