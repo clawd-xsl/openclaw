@@ -2,8 +2,13 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { saveSessionStore } from "../config/sessions/store.js";
+import {
+  clearSessionStoreCacheForTest,
+  loadSessionStore,
+  saveSessionStore,
+} from "../config/sessions/store.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { Skill } from "../skills/loading/skill-contract.js";
@@ -99,6 +104,7 @@ describe("doctor session snapshot stale runtime metadata", () => {
   });
 
   afterEach(async () => {
+    clearSessionStoreCacheForTest();
     await fs.rm(root, { recursive: true, force: true });
   });
 
@@ -497,6 +503,7 @@ describe("doctor session snapshot repair (shouldRepair)", () => {
   });
 
   afterEach(async () => {
+    clearSessionStoreCacheForTest();
     await fs.rm(root, { recursive: true, force: true });
   });
 
@@ -576,6 +583,63 @@ describe("doctor session snapshot repair (shouldRepair)", () => {
     expect(note).toHaveBeenCalledTimes(1);
     const [message] = note.mock.calls[0] as [string, string];
     expect(message).toContain("Repaired");
+  });
+
+  it("discovers and repairs blob-backed prompts in the default SQLite store", async () => {
+    const stalePath = path.join(
+      root,
+      "old-runtime",
+      "node_modules",
+      "openclaw",
+      "skills",
+      "doctor",
+      "SKILL.md",
+    );
+    const stateDir = path.join(root, "state");
+    const storePath = path.join(stateDir, "agents", "main", "sessions", "sessions.sqlite");
+    const prompt = `${skillPrompt(stalePath)}\n${"padding\n".repeat(200)}`;
+    await saveSessionStore(
+      storePath,
+      {
+        "agent:main": sessionEntry({
+          skillsSnapshot: { prompt, skills: [{ name: "doctor" }] },
+        }),
+        "agent:unrelated": sessionEntry({ displayName: "keep-me" }),
+      },
+      { skipMaintenance: true },
+    );
+
+    const issues = await detectSessionSnapshotHealthIssues({
+      bundledSkillsDir,
+      env: { OPENCLAW_STATE_DIR: stateDir },
+    });
+    expect(issues).toEqual([
+      expect.objectContaining({ storePath, sessionKey: "agent:main", cachedPath: stalePath }),
+    ]);
+
+    await noteSessionSnapshotHealth({
+      bundledSkillsDir,
+      env: { OPENCLAW_STATE_DIR: stateDir },
+      shouldRepair: true,
+    });
+
+    const repaired = loadSessionStore(storePath, { skipCache: true });
+    expect(repaired["agent:main"]?.skillsSnapshot?.prompt).toContain(
+      path.join(bundledSkillsDir, "doctor", "SKILL.md"),
+    );
+    expect(repaired["agent:main"]?.skillsSnapshot?.prompt).not.toContain(stalePath);
+    expect(repaired["agent:unrelated"]?.displayName).toBe("keep-me");
+    clearSessionStoreCacheForTest();
+    const db = new DatabaseSync(storePath, { readOnly: true });
+    try {
+      const row = db
+        .prepare("SELECT entry_json FROM session_entries WHERE session_key = ?")
+        .get("agent:main") as { entry_json: string };
+      expect(row.entry_json).toContain("promptRef");
+      expect(row.entry_json).not.toContain(stalePath);
+    } finally {
+      db.close();
+    }
   });
 
   it("repairs stale resolvedSkills filePath and baseDir", async () => {

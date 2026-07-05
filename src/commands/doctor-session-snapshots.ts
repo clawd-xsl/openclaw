@@ -9,6 +9,12 @@ import {
   hydrateSessionStoreSkillPromptRefs,
   resolveSessionSkillPromptBlobPath,
 } from "../config/sessions/skill-prompt-blobs.js";
+import {
+  inspectSessionStoreSqliteReadOnly,
+  isSqliteSessionStorePath,
+  resolveSessionStoreJsonImportPath,
+} from "../config/sessions/store-sqlite.js";
+import { updateSessionStoreEntry } from "../config/sessions/store.js";
 import { resolveAllAgentSessionStoreTargetsSync } from "../config/sessions/targets.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -265,8 +271,15 @@ async function listSessionStorePaths(stateDir: string): Promise<string[]> {
   }
   return agentEntries
     .filter((entry) => entry.isDirectory())
-    .map((entry) => path.join(agentsDir, entry.name, "sessions", "sessions.json"))
-    .filter((storePath) => fs.existsSync(storePath))
+    .flatMap((entry) => {
+      const sessionsDir = path.join(agentsDir, entry.name, "sessions");
+      const sqlitePath = path.join(sessionsDir, "sessions.sqlite");
+      if (fs.existsSync(sqlitePath)) {
+        return [sqlitePath];
+      }
+      const jsonPath = path.join(sessionsDir, "sessions.json");
+      return fs.existsSync(jsonPath) ? [jsonPath] : [];
+    })
     .toSorted((a, b) => a.localeCompare(b));
 }
 
@@ -279,11 +292,27 @@ function resolveSessionStorePaths(params: {
   }
   return resolveAllAgentSessionStoreTargetsSync(params.cfg, { env: params.env })
     .map((target) => target.storePath)
-    .filter((storePath) => fs.existsSync(storePath))
+    .filter(
+      (storePath) =>
+        fs.existsSync(storePath) ||
+        (isSqliteSessionStorePath(storePath) &&
+          fs.existsSync(resolveSessionStoreJsonImportPath(storePath))),
+    )
     .toSorted((a, b) => a.localeCompare(b));
 }
 
 function loadSessionStoreForSnapshotScan(storePath: string): Record<string, SessionEntry> {
+  if (isSqliteSessionStorePath(storePath)) {
+    if (fs.existsSync(storePath)) {
+      const snapshot = inspectSessionStoreSqliteReadOnly(storePath);
+      const jsonPath = resolveSessionStoreJsonImportPath(storePath);
+      if (snapshot.entryCount > 0 || snapshot.jsonImportResolved || !fs.existsSync(jsonPath)) {
+        hydrateSessionStoreSkillPromptRefs({ storePath, store: snapshot.store });
+        return snapshot.store;
+      }
+    }
+    return loadSessionStoreForSnapshotScan(resolveSessionStoreJsonImportPath(storePath));
+  }
   const parsed = JSON.parse(fs.readFileSync(storePath, "utf-8")) as unknown;
   if (!isRecord(parsed)) {
     return {};
@@ -389,6 +418,109 @@ function replaceStalePathsInText(text: string, finding: StaleSessionSnapshotPath
   return result;
 }
 
+function replaceStalePathInField(params: {
+  target: Record<string, unknown>;
+  field: string;
+  finding: StaleSessionSnapshotPathFinding;
+}): boolean {
+  const current = params.target[params.field];
+  if (typeof current !== "string") {
+    return false;
+  }
+  const candidates = [
+    {
+      cached: JSON.stringify(params.finding.cachedPath).slice(1, -1),
+      expected: JSON.stringify(params.finding.expectedPath).slice(1, -1),
+    },
+    { cached: params.finding.cachedPath, expected: params.finding.expectedPath },
+  ];
+  if (params.field === "baseDir") {
+    for (const suffix of ["/SKILL.md", "\\SKILL.md"]) {
+      if (!params.finding.cachedPath.endsWith(suffix)) {
+        continue;
+      }
+      const cachedDir = params.finding.cachedPath.slice(0, -suffix.length);
+      const expectedDir = params.finding.expectedPath.slice(0, -suffix.length);
+      candidates.push(
+        {
+          cached: JSON.stringify(cachedDir).slice(1, -1),
+          expected: JSON.stringify(expectedDir).slice(1, -1),
+        },
+        { cached: cachedDir, expected: expectedDir },
+      );
+    }
+  }
+  let next = current;
+  for (const { cached, expected } of candidates) {
+    if (next.includes(cached)) {
+      next = next.replaceAll(cached, expected);
+    }
+  }
+  if (next === current) {
+    return false;
+  }
+  params.target[params.field] = next;
+  return true;
+}
+
+function repairHydratedSessionSnapshotFinding(
+  session: Record<string, unknown>,
+  finding: StaleSessionSnapshotPathFinding,
+): number {
+  if (finding.field === "skillsSnapshot.prompt") {
+    const snapshot = session.skillsSnapshot;
+    if (!isRecord(snapshot) || typeof snapshot.prompt !== "string") {
+      return 0;
+    }
+    const prompt = replaceStalePathsInText(snapshot.prompt, finding);
+    if (prompt === snapshot.prompt) {
+      return 0;
+    }
+    snapshot.prompt = prompt;
+    return 1;
+  }
+
+  if (finding.field === "skillsSnapshot.resolvedSkills") {
+    const snapshot = session.skillsSnapshot;
+    if (!isRecord(snapshot) || !Array.isArray(snapshot.resolvedSkills)) {
+      return 0;
+    }
+    let replacements = 0;
+    for (const entry of snapshot.resolvedSkills) {
+      if (!isRecord(entry)) {
+        continue;
+      }
+      for (const field of ["filePath", "baseDir"]) {
+        replacements += replaceStalePathInField({ target: entry, field, finding }) ? 1 : 0;
+      }
+      if (isRecord(entry.sourceInfo)) {
+        for (const field of ["path", "baseDir"]) {
+          replacements += replaceStalePathInField({
+            target: entry.sourceInfo,
+            field,
+            finding,
+          })
+            ? 1
+            : 0;
+        }
+      }
+    }
+    return replacements;
+  }
+
+  const report = session.systemPromptReport;
+  if (!isRecord(report) || !Array.isArray(report.injectedWorkspaceFiles)) {
+    return 0;
+  }
+  let replacements = 0;
+  for (const entry of report.injectedWorkspaceFiles) {
+    if (isRecord(entry) && replaceStalePathInField({ target: entry, field: "path", finding })) {
+      replacements++;
+    }
+  }
+  return replacements;
+}
+
 /** Reports and optionally repairs stale bundled skill paths in session snapshot metadata. */
 export async function noteSessionSnapshotHealth(params?: {
   storePaths?: string[];
@@ -446,6 +578,46 @@ export async function noteSessionSnapshotHealth(params?: {
 
     for (const [storePath, findings] of findingsByStore) {
       try {
+        if (isSqliteSessionStorePath(storePath)) {
+          const findingsBySession = new Map<string, StaleSessionSnapshotPathFinding[]>();
+          for (const finding of findings) {
+            const sessionFindings = findingsBySession.get(finding.sessionKey) ?? [];
+            sessionFindings.push(finding);
+            findingsBySession.set(finding.sessionKey, sessionFindings);
+          }
+          let storeCount = 0;
+          for (const [sessionKey, sessionFindings] of findingsBySession) {
+            let sessionCount = 0;
+            await updateSessionStoreEntry({
+              storePath,
+              sessionKey,
+              skipMaintenance: true,
+              requireWriteSuccess: true,
+              update: (entry) => {
+                const session = entry as unknown as Record<string, unknown>;
+                sessionCount = sessionFindings.reduce(
+                  (count, finding) =>
+                    count + repairHydratedSessionSnapshotFinding(session, finding),
+                  0,
+                );
+                return sessionCount > 0 ? entry : null;
+              },
+            });
+            storeCount += sessionCount;
+          }
+          if (storeCount > 0) {
+            totalReplacements += storeCount;
+            repairedStores++;
+            const repairedStore = loadSessionStoreForSnapshotScan(storePath);
+            leftoverFindings += scanSessionStoreForStaleRuntimeSnapshotPaths({
+              store: repairedStore,
+              bundledSkillsDir,
+              env: params?.env,
+            }).length;
+          }
+          continue;
+        }
+
         const raw = fs.readFileSync(storePath, "utf-8");
         const sessions = JSON.parse(raw) as Record<string, Record<string, unknown>>;
         let modified = false;
@@ -457,18 +629,13 @@ export async function noteSessionSnapshotHealth(params?: {
             continue;
           }
 
-          const jsonEscaped = JSON.stringify(finding.cachedPath).slice(1, -1);
-          const jsonEscapedExpected = JSON.stringify(finding.expectedPath).slice(1, -1);
-
           if (finding.field === "skillsSnapshot.prompt") {
             const snapshot = session.skillsSnapshot;
             if (!isRecord(snapshot)) {
               continue;
             }
             const promptRef = isRecord(snapshot.promptRef) ? snapshot.promptRef : undefined;
-
             if (promptRef && typeof promptRef.hash === "string") {
-              // Blob-backed prompt: read blob, replace paths, write new blob
               const blobPath = resolveSessionSkillPromptBlobPath(storePath, promptRef.hash);
               if (blobPath && fs.existsSync(blobPath)) {
                 const blobContent = fs.readFileSync(blobPath, "utf-8");
@@ -491,99 +658,12 @@ export async function noteSessionSnapshotHealth(params?: {
                   }
                 }
               }
-            } else if (typeof snapshot.prompt === "string") {
-              // Inline prompt: replace in raw JSON
-              const newPrompt = replaceStalePathsInText(snapshot.prompt, finding);
-              if (newPrompt !== snapshot.prompt) {
-                snapshot.prompt = newPrompt;
-                storeCount++;
-                modified = true;
-              }
-            }
-          } else if (finding.field === "skillsSnapshot.resolvedSkills") {
-            const snapshot = session.skillsSnapshot;
-            if (!isRecord(snapshot) || !Array.isArray(snapshot.resolvedSkills)) {
               continue;
-            }
-            for (const entry of snapshot.resolvedSkills) {
-              if (!isRecord(entry)) {
-                continue;
-              }
-              const replaceResolvedSkillField = (
-                target: Record<string, unknown>,
-                field: string,
-              ) => {
-                if (typeof target[field] !== "string") {
-                  return;
-                }
-                let value = target[field];
-                const original = value;
-                const candidates = [
-                  { cached: jsonEscaped, expected: jsonEscapedExpected },
-                  { cached: finding.cachedPath, expected: finding.expectedPath },
-                ];
-                if (field === "baseDir") {
-                  for (const suffix of ["/SKILL.md", "\\SKILL.md"]) {
-                    if (finding.cachedPath.endsWith(suffix)) {
-                      const cachedDir = finding.cachedPath.slice(0, -suffix.length);
-                      const expectedDir = finding.expectedPath.slice(0, -suffix.length);
-                      candidates.push(
-                        {
-                          cached: JSON.stringify(cachedDir).slice(1, -1),
-                          expected: JSON.stringify(expectedDir).slice(1, -1),
-                        },
-                        { cached: cachedDir, expected: expectedDir },
-                      );
-                    }
-                  }
-                }
-                for (const { cached, expected } of candidates) {
-                  if (value.includes(cached)) {
-                    value = value.replaceAll(cached, expected);
-                  }
-                }
-                if (value !== original) {
-                  target[field] = value;
-                  storeCount++;
-                  modified = true;
-                }
-              };
-
-              for (const field of ["filePath", "baseDir"]) {
-                replaceResolvedSkillField(entry, field);
-              }
-              if (isRecord(entry.sourceInfo)) {
-                for (const field of ["path", "baseDir"]) {
-                  replaceResolvedSkillField(entry.sourceInfo, field);
-                }
-              }
-            }
-          } else if (finding.field === "systemPromptReport.injectedWorkspaceFiles") {
-            const report = session.systemPromptReport;
-            if (!isRecord(report) || !Array.isArray(report.injectedWorkspaceFiles)) {
-              continue;
-            }
-            for (const entry of report.injectedWorkspaceFiles) {
-              if (!isRecord(entry) || typeof entry.path !== "string") {
-                continue;
-              }
-              let entryPath = entry.path;
-              const original = entryPath;
-              for (const { cached, expected } of [
-                { cached: jsonEscaped, expected: jsonEscapedExpected },
-                { cached: finding.cachedPath, expected: finding.expectedPath },
-              ]) {
-                if (entryPath.includes(cached)) {
-                  entryPath = entryPath.replaceAll(cached, expected);
-                }
-              }
-              if (entryPath !== original) {
-                entry.path = entryPath;
-                storeCount++;
-                modified = true;
-              }
             }
           }
+          const replacements = repairHydratedSessionSnapshotFinding(session, finding);
+          storeCount += replacements;
+          modified ||= replacements > 0;
         }
 
         if (modified && storeCount > 0) {

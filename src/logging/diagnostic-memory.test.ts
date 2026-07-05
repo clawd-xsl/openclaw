@@ -422,7 +422,11 @@ describe("diagnostic memory", () => {
       fs.mkdirSync(customSessionsDir, { recursive: true });
       fs.writeFileSync(path.join(sessionsDir, "small.jsonl"), "small\n", "utf8");
       fs.writeFileSync(path.join(sessionsDir, "large.jsonl"), "x".repeat(4096), "utf8");
+      fs.writeFileSync(path.join(sessionsDir, "sessions.sqlite"), "x".repeat(16_384), "utf8");
+      fs.writeFileSync(path.join(sessionsDir, "sessions.sqlite-wal"), "x".repeat(12_288), "utf8");
       fs.writeFileSync(path.join(customSessionsDir, "sessions.json"), "{}\n", "utf8");
+      const customStorePath = path.join(customSessionsDir, "private-customer-store.sqlite");
+      fs.writeFileSync(customStorePath, "x".repeat(10_240), "utf8");
       fs.writeFileSync(
         path.join(customSessionsDir, "custom-secret-session.jsonl"),
         "x".repeat(8192),
@@ -435,7 +439,7 @@ describe("diagnostic memory", () => {
         uptimeMs: 0,
         stateDir,
         writeCriticalBundle: true,
-        sessionStorePaths: [path.join(customSessionsDir, "sessions.json")],
+        sessionStorePaths: [path.join(customSessionsDir, "sessions.json"), customStorePath],
         memoryUsage: memoryUsage({ rss: 4000, heapUsed: 3000 }),
         thresholds: {
           rssWarningBytes: 1000,
@@ -466,11 +470,28 @@ describe("diagnostic memory", () => {
       expect(latest.bundle.evidence?.memoryPressure?.activeResources?.total).toEqual(
         expect.any(Number),
       );
-      expect(latest.bundle.evidence?.memoryPressure?.topSessionFiles?.[0]).toMatchObject({
-        relativePath: "sessions/<session>.jsonl",
-        sizeBytes: 8192,
-      });
+      expect(latest.bundle.evidence?.memoryPressure?.topSessionFiles).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            relativePath: "sessions/<session>.jsonl",
+            sizeBytes: 8192,
+          }),
+          expect.objectContaining({
+            relativePath: "agents/<agent>/sessions/sessions.sqlite",
+            sizeBytes: 16_384,
+          }),
+          expect.objectContaining({
+            relativePath: "agents/<agent>/sessions/sessions.sqlite-wal",
+            sizeBytes: 12_288,
+          }),
+          expect.objectContaining({
+            relativePath: "sessions/session-store.sqlite",
+            sizeBytes: 10_240,
+          }),
+        ]),
+      );
       expect(JSON.stringify(latest.bundle)).not.toContain("custom-secret-session");
+      expect(JSON.stringify(latest.bundle)).not.toContain("private-customer-store");
     } finally {
       fs.rmSync(stateDir, { recursive: true, force: true });
       fs.rmSync(customRoot, { recursive: true, force: true });

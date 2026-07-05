@@ -11,6 +11,7 @@ import type {
 import { registerFatalErrorHook } from "../infra/fatal-error-hooks.js";
 import { parseStrictNonNegativeInteger } from "../infra/parse-finite-number.js";
 import { replaceFileAtomicSync } from "../infra/replace-file.js";
+import { resolveSqliteDatabaseFilePaths } from "../infra/sqlite-files.js";
 import {
   getDiagnosticStabilitySnapshot,
   MAX_DIAGNOSTIC_STABILITY_LIMIT,
@@ -1038,6 +1039,15 @@ function sanitizeSessionEvidenceFileName(fileName: string): string {
   if (fileName === "sessions.json") {
     return "sessions.json";
   }
+  if (/^sessions\.(?:sqlite|db)(?:-(?:wal|shm|journal))?$/u.test(fileName)) {
+    return fileName;
+  }
+  const sqliteMatch = /\.(sqlite|db)(-(?:wal|shm|journal))?$/u.exec(fileName);
+  if (sqliteMatch) {
+    const extension = sqliteMatch[1];
+    const sidecar = sqliteMatch[2] ?? "";
+    return `session-store.${extension}${sidecar}`;
+  }
   if (fileName.endsWith(".jsonl")) {
     return "<session>.jsonl";
   }
@@ -1079,14 +1089,20 @@ function pushSessionFileSummary(
   results: DiagnosticSessionFileSummary[],
   stateDir: string,
   file: string,
+  seenFiles: Set<string>,
   relativePathOverride?: string,
 ): void {
   try {
-    const stat = fs.statSync(file);
+    const resolvedFile = path.resolve(file);
+    if (seenFiles.has(resolvedFile)) {
+      return;
+    }
+    const stat = fs.statSync(resolvedFile);
     if (!stat.isFile()) {
       return;
     }
-    const relativePath = (relativePathOverride ?? path.relative(stateDir, file)).replace(
+    seenFiles.add(resolvedFile);
+    const relativePath = (relativePathOverride ?? path.relative(stateDir, resolvedFile)).replace(
       /\\/gu,
       "/",
     );
@@ -1109,6 +1125,7 @@ function scanSessionDirectory(params: {
   sessionsDir: string;
   relativePrefix: string;
   seenDirs: Set<string>;
+  seenFiles: Set<string>;
   scannedSessionEntries: { count: number };
 }): void {
   const sessionsDir = path.resolve(params.sessionsDir);
@@ -1121,13 +1138,17 @@ function scanSessionDirectory(params: {
     MAX_SESSION_SCAN_FILES - params.scannedSessionEntries.count,
     (sessionEntry) => {
       params.scannedSessionEntries.count += 1;
-      if (!sessionEntry.isFile() || !/\.(?:jsonl|json)$/u.test(sessionEntry.name)) {
+      if (
+        !sessionEntry.isFile() ||
+        !/\.(?:jsonl|json|sqlite|db)(?:-(?:wal|shm|journal))?$/u.test(sessionEntry.name)
+      ) {
         return params.scannedSessionEntries.count < MAX_SESSION_SCAN_FILES;
       }
       pushSessionFileSummary(
         params.results,
         params.stateDir,
         path.join(sessionsDir, sessionEntry.name),
+        params.seenFiles,
         path.posix.join(params.relativePrefix, sessionEntry.name),
       );
       return params.scannedSessionEntries.count < MAX_SESSION_SCAN_FILES;
@@ -1141,9 +1162,10 @@ function collectTopSessionFiles(
 ): DiagnosticSessionFileSummary[] | undefined {
   const results: DiagnosticSessionFileSummary[] = [];
   const seenDirs = new Set<string>();
+  const seenFiles = new Set<string>();
   const scannedSessionEntries = { count: 0 };
   try {
-    pushSessionFileSummary(results, stateDir, path.join(stateDir, "sessions.json"));
+    pushSessionFileSummary(results, stateDir, path.join(stateDir, "sessions.json"), seenFiles);
     const agentsDir = path.join(stateDir, "agents");
     visitDirentsBounded(agentsDir, MAX_SESSION_SCAN_AGENTS, (agentEntry) => {
       if (!agentEntry.isDirectory() || scannedSessionEntries.count >= MAX_SESSION_SCAN_FILES) {
@@ -1155,6 +1177,7 @@ function collectTopSessionFiles(
         sessionsDir: path.join(agentsDir, agentEntry.name, "sessions"),
         relativePrefix: path.posix.join("agents", agentEntry.name, "sessions"),
         seenDirs,
+        seenFiles,
         scannedSessionEntries,
       });
     });
@@ -1162,13 +1185,27 @@ function collectTopSessionFiles(
       if (scannedSessionEntries.count >= MAX_SESSION_SCAN_FILES) {
         break;
       }
-      const sessionsDir = path.dirname(path.resolve(storePath));
+      const resolvedStorePath = path.resolve(storePath);
+      const storeFiles = /\.(?:sqlite|db)$/u.test(resolvedStorePath)
+        ? resolveSqliteDatabaseFilePaths(resolvedStorePath)
+        : [resolvedStorePath];
+      for (const storeFile of storeFiles) {
+        pushSessionFileSummary(
+          results,
+          stateDir,
+          storeFile,
+          seenFiles,
+          path.posix.join("sessions", path.basename(storeFile)),
+        );
+      }
+      const sessionsDir = path.dirname(resolvedStorePath);
       scanSessionDirectory({
         results,
         stateDir,
         sessionsDir,
         relativePrefix: "sessions",
         seenDirs,
+        seenFiles,
         scannedSessionEntries,
       });
     }
