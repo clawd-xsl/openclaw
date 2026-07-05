@@ -1,6 +1,7 @@
 // Qa Lab plugin module implements runtime parity behavior.
 import fs from "node:fs/promises";
 import path from "node:path";
+import { listSessionEntries, resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
 import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
 import {
   asFiniteNumber as readFiniteNumber,
@@ -911,17 +912,17 @@ async function readRuntimeParitySessionEntries(params: {
   stateDir: string;
   agentId: string;
 }): Promise<Array<RuntimeParitySessionEntry>> {
-  const storePath = path.join(
-    params.stateDir,
-    "agents",
-    params.agentId,
-    "sessions",
-    "sessions.json",
-  );
   try {
-    const raw = await fs.readFile(storePath, "utf8");
-    const parsed = JSON.parse(raw) as Record<string, RuntimeParitySessionEntry>;
-    const entries = Object.values(parsed).filter((entry) => readNonEmptyString(entry?.sessionId));
+    const env = { ...process.env, OPENCLAW_STATE_DIR: params.stateDir };
+    const storePath = resolveStorePath(undefined, { agentId: params.agentId, env });
+    const entries = listSessionEntries({
+      agentId: params.agentId,
+      env,
+      storePath,
+      hydrateSkillPromptRefs: false,
+    })
+      .map(({ entry }) => entry as RuntimeParitySessionEntry)
+      .filter((entry) => readNonEmptyString(entry.sessionId));
     const rootEntries = entries.filter(isRuntimeParityRootSession);
     const candidates = rootEntries.length > 0 ? rootEntries : entries;
     return candidates.toSorted((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0));

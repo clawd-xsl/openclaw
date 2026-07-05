@@ -4,6 +4,7 @@ import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { setTimeout as sleep } from "node:timers/promises";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
+import { listSessionEntries, resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
 import {
   isRecord,
   normalizeOptionalString as readNonEmptyString,
@@ -260,17 +261,18 @@ function resolveQaSessionTranscriptFile(params: {
 }
 
 async function readRawQaSessionStore(env: Pick<QaSuiteRuntimeEnv, "gateway">) {
-  const storePath = path.join(
-    env.gateway.tempRoot,
-    "state",
-    "agents",
-    "qa",
-    "sessions",
-    "sessions.json",
-  );
+  const stateDir = path.join(env.gateway.tempRoot, "state");
+  const runtimeEnv = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
+  const storePath = resolveStorePath(undefined, { agentId: "qa", env: runtimeEnv });
   try {
-    const raw = await fs.readFile(storePath, "utf8");
-    return JSON.parse(raw) as Record<string, QaRawSessionStoreEntry>;
+    return Object.fromEntries(
+      listSessionEntries({
+        agentId: "qa",
+        env: runtimeEnv,
+        storePath,
+        hydrateSkillPromptRefs: false,
+      }).map(({ sessionKey, entry }) => [sessionKey, entry as QaRawSessionStoreEntry]),
+    );
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return {};
