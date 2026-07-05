@@ -547,60 +547,66 @@ describe("session summaries plugin registration", () => {
     expect(await harness.service.repository.readAllRecords()).toEqual([]);
   });
 
-  it("does not inject a predecessor tail after summary generation fails", async () => {
-    const cfg = {
-      agents: { list: [{ id: "main", default: true }] },
-      plugins: {
-        entries: {
-          "memory-core": {
-            config: {
-              summaries: {
-                enabled: true,
-                autoInject: true,
-                lookbackDays: 30,
-                maxPromptTokens: 4_000,
-                minMessages: 2,
+  it.each([
+    { label: "terminal", retryable: false },
+    { label: "retryable", retryable: true },
+  ])(
+    "does not inject a predecessor tail during a $label summary failure",
+    async ({ retryable }) => {
+      const cfg = {
+        agents: { list: [{ id: "main", default: true }] },
+        plugins: {
+          entries: {
+            "memory-core": {
+              config: {
+                summaries: {
+                  enabled: true,
+                  autoInject: true,
+                  lookbackDays: 30,
+                  maxPromptTokens: 4_000,
+                  minMessages: 2,
+                },
               },
             },
           },
         },
-      },
-    } satisfies OpenClawConfig;
-    const readBoundedTranscriptEvents = vi.fn(async () => ({
-      available: true,
-      events: [{ type: "message", message: { role: "user", content: "private tail" } }],
-      truncated: false,
-    }));
-    const harness = registerTestSessionSummaries({ cfg, readBoundedTranscriptEvents });
-    const enqueued = await harness.service.repository.enqueue({
-      agentId: "main",
-      sessionId: "failed-predecessor",
-      sessionKey: "agent:main:main",
-      nextSessionId: "current",
-      endedAt: Date.now(),
-      messageCount: 2,
-    });
-    const claimed = await harness.service.repository.claim(enqueued.key);
-    if (!claimed) {
-      throw new Error("expected failed predecessor claim");
-    }
-    await harness.service.repository.markFailed(
-      enqueued.key,
-      "summary generation failed",
-      Date.now(),
-      claimed.revision,
-      { retryable: false },
-    );
+      } satisfies OpenClawConfig;
+      const readBoundedTranscriptEvents = vi.fn(async () => ({
+        available: true,
+        events: [{ type: "message", message: { role: "user", content: "private tail" } }],
+        truncated: false,
+      }));
+      const harness = registerTestSessionSummaries({ cfg, readBoundedTranscriptEvents });
+      const enqueued = await harness.service.repository.enqueue({
+        agentId: "main",
+        sessionId: "failed-predecessor",
+        sessionKey: "agent:main:main",
+        nextSessionId: "current",
+        endedAt: Date.now(),
+        messageCount: 2,
+      });
+      const claimed = await harness.service.repository.claim(enqueued.key);
+      if (!claimed) {
+        throw new Error("expected failed predecessor claim");
+      }
+      await harness.service.repository.markFailed(
+        enqueued.key,
+        "summary generation failed",
+        Date.now(),
+        claimed.revision,
+        { retryable },
+      );
 
-    const beforePromptBuild = harness.hooks.get("before_prompt_build") as BeforePromptBuildHook;
-    expect(
-      await beforePromptBuild(
-        { prompt: "continue", messages: [] },
-        { agentId: "main", sessionId: "current", sessionKey: "agent:main:main" },
-      ),
-    ).toBeUndefined();
-    expect(readBoundedTranscriptEvents).not.toHaveBeenCalled();
-  });
+      const beforePromptBuild = harness.hooks.get("before_prompt_build") as BeforePromptBuildHook;
+      expect(
+        await beforePromptBuild(
+          { prompt: "continue", messages: [] },
+          { agentId: "main", sessionId: "current", sessionKey: "agent:main:main" },
+        ),
+      ).toBeUndefined();
+      expect(readBoundedTranscriptEvents).not.toHaveBeenCalled();
+    },
+  );
 
   it("filters non-terminal session reasons and strips the default agent id from runtime LLM calls", async () => {
     const cfg = {

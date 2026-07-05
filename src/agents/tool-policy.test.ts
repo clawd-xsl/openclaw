@@ -48,6 +48,10 @@ describe("tool-policy", () => {
     expect(group).toContain("tts");
   });
 
+  it("includes summary recall in group:sessions", () => {
+    expect(TOOL_GROUPS["group:sessions"]).toContain("session_summaries");
+  });
+
   it("normalizes tool names and aliases", () => {
     expect(normalizeToolName(" BASH ")).toBe("exec");
     expect(normalizeToolName("apply-patch")).toBe("apply_patch");

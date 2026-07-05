@@ -95,6 +95,10 @@ precedence. Operators can inspect the same durable records through the
 operator RPC shares filtering and pagination code with the tool but does not
 impersonate a requester session.
 
+Automatic continuity injection uses a completed direct-predecessor summary or,
+while generation is pending or processing, a bounded predecessor tail. A failed
+summary never falls back to injecting the raw transcript tail.
+
 Setting `summaries.enabled: false` stops new generation and prompt injection.
 It does not erase existing records: the tool, RPC, and Control UI can still
 read stored summaries subject to their respective authorization checks.
