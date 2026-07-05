@@ -37,7 +37,6 @@ import {
   type CliStreamingDelta,
 } from "../cli-output.js";
 import { classifyFailoverReason } from "../embedded-agent-helpers.js";
-import { resolveFastModeForElapsed } from "../fast-mode.js";
 import {
   isDeliveredMessageToolOnlySourceReplyResult,
   isDeliveredMessagingToolResult,
@@ -62,6 +61,7 @@ import {
   sanitizeToolResult,
 } from "../embedded-agent-subscribe.tools.js";
 import { FailoverError, resolveFailoverStatus } from "../failover-error.js";
+import { resolveFastModeForElapsed } from "../fast-mode.js";
 import { applyPluginTextReplacements } from "../plugin-text-transforms.js";
 import { prepareCliBundleMcpCaptureAttempt } from "./bundle-mcp.js";
 import {
@@ -94,6 +94,7 @@ import {
 import type { CliReusableSession, PreparedCliRunContext } from "./types.js";
 
 const executeDeps = {
+  enqueueCliRun,
   getProcessSupervisor: getProcessSupervisorImpl,
   enqueueSystemEvent: enqueueSystemEventImpl,
   requestHeartbeat: requestHeartbeatImpl,
@@ -512,36 +513,6 @@ export async function executePreparedCliRun(
     context.claudeSkillsPluginArgs ?? fallbackClaudeSkillsPlugin?.args ?? [];
   const baseArgsWithSkills =
     claudeSkillsPluginArgs.length > 0 ? [...resolvedArgs, ...claudeSkillsPluginArgs] : resolvedArgs;
-  const fastMode = resolveFastModeForElapsed({
-    mode: params.fastMode,
-    startedAtMs: params.fastModeStartedAtMs ?? Date.now(),
-    fastAutoOnSeconds: params.fastModeAutoOnSeconds,
-  }).enabled;
-  const executionBaseArgs =
-    context.backendResolved.resolveExecutionArgs?.({
-      config: params.config,
-      workspaceDir: context.workspaceDir,
-      provider: params.provider,
-      modelId: context.modelId,
-      authProfileId: context.effectiveAuthProfileId,
-      thinkingLevel: params.thinkLevel,
-      fastMode,
-      executionMode: params.executionMode ?? "agent",
-      useResume,
-      baseArgs: baseArgsWithSkills,
-    }) ?? baseArgsWithSkills;
-  const args = buildCliArgs({
-    backend,
-    baseArgs: Array.from(executionBaseArgs),
-    modelId: context.normalizedModel,
-    sessionId: resolvedSessionId,
-    systemPrompt: systemPromptArg,
-    systemPromptFilePath: systemPromptFile?.filePath,
-    imagePaths,
-    promptArg: argsPrompt,
-    useResume,
-    sendSystemPromptOnResume: resendSystemPromptForSoftResume,
-  });
 
   const claudeOwnerKey = buildClaudeOwnerKey({
     agentAccountId: params.agentAccountId,
@@ -582,11 +553,43 @@ export async function executePreparedCliRun(
     }
   };
   try {
-    completedOutput = await enqueueCliRun(queueKey, async () => {
+    completedOutput = await executeDeps.enqueueCliRun(queueKey, async () => {
       if (params.lifecycleGeneration) {
         assertAgentRunLifecycleGenerationCurrent(params.lifecycleGeneration);
       }
       await context.preparedBackend.beforeExecution?.();
+      // Resolve elapsed-time policy only after this run owns the serialized
+      // execution slot. A queued turn can cross the automatic fast-mode cutoff.
+      const fastMode = resolveFastModeForElapsed({
+        mode: params.fastMode,
+        startedAtMs: params.fastModeStartedAtMs ?? Date.now(),
+        fastAutoOnSeconds: params.fastModeAutoOnSeconds,
+      }).enabled;
+      const executionBaseArgs =
+        context.backendResolved.resolveExecutionArgs?.({
+          config: params.config,
+          workspaceDir: context.workspaceDir,
+          provider: params.provider,
+          modelId: context.modelId,
+          authProfileId: context.effectiveAuthProfileId,
+          thinkingLevel: params.thinkLevel,
+          fastMode,
+          executionMode: params.executionMode ?? "agent",
+          useResume,
+          baseArgs: baseArgsWithSkills,
+        }) ?? baseArgsWithSkills;
+      const args = buildCliArgs({
+        backend,
+        baseArgs: Array.from(executionBaseArgs),
+        modelId: context.normalizedModel,
+        sessionId: resolvedSessionId,
+        systemPrompt: systemPromptArg,
+        systemPromptFilePath: systemPromptFile?.filePath,
+        imagePaths,
+        promptArg: argsPrompt,
+        useResume,
+        sendSystemPromptOnResume: resendSystemPromptForSoftResume,
+      });
       const cliTurnStartedAt = Date.now();
       const restoreSkillEnv = params.skillsSnapshot
         ? applySkillEnvOverridesFromSnapshot({

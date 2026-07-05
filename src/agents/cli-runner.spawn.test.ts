@@ -50,7 +50,11 @@ import {
   executePreparedCliRun,
   setCliRunnerExecuteTestDeps,
 } from "./cli-runner/execute.js";
-import { buildCliAgentSystemPrompt, writeCliSystemPromptFile } from "./cli-runner/helpers.js";
+import {
+  buildCliAgentSystemPrompt,
+  enqueueCliRun,
+  writeCliSystemPromptFile,
+} from "./cli-runner/helpers.js";
 import { cliBackendLog, formatCliBackendOutputDigest } from "./cli-runner/log.js";
 import { setCliRunnerPrepareTestDeps } from "./cli-runner/prepare.js";
 import type { PreparedCliRunContext } from "./cli-runner/types.js";
@@ -70,7 +74,7 @@ beforeEach(() => {
   resetClaudeLiveSessionsForTest();
   replyRunTesting.resetReplyRunRegistry();
   restoreCliRunnerPrepareTestDeps();
-  setCliRunnerExecuteTestDeps({ writeCliSystemPromptFile });
+  setCliRunnerExecuteTestDeps({ enqueueCliRun, writeCliSystemPromptFile });
   supervisorSpawnMock.mockClear();
 });
 
@@ -657,6 +661,83 @@ describe("runCliAgent spawn path", () => {
     expect(resolveArgsInput.fastMode).toBe(false);
     const input = mockCallArg(supervisorSpawnMock) as { argv?: string[] };
     expect(JSON.parse(requireArgAfter(input.argv, "--settings"))).toEqual({ fastMode: false });
+  });
+
+  it("rechecks elapsed fast mode after a queued run acquires its execution slot", async () => {
+    let nowMs = 10_000;
+    vi.spyOn(Date, "now").mockImplementation(() => nowMs);
+    let releaseFirstSpawn: (() => void) | undefined;
+    let markFirstSpawnEntered: (() => void) | undefined;
+    const firstSpawnEntered = new Promise<void>((resolve) => {
+      markFirstSpawnEntered = resolve;
+    });
+    const firstSpawnReleased = new Promise<void>((resolve) => {
+      releaseFirstSpawn = resolve;
+    });
+    let spawnCount = 0;
+    supervisorSpawnMock.mockImplementation(async () => {
+      spawnCount += 1;
+      if (spawnCount === 1) {
+        markFirstSpawnEntered?.();
+        await firstSpawnReleased;
+      }
+      return createManagedRun({
+        reason: "exit",
+        exitCode: 0,
+        exitSignal: null,
+        durationMs: 50,
+        stdout: CLAUDE_OK_JSONL,
+        stderr: "",
+        timedOut: false,
+        noOutputTimedOut: false,
+      });
+    });
+    const resolveExecutionArgs = vi.fn(({ baseArgs }) => baseArgs);
+    let markSecondEnqueued: (() => void) | undefined;
+    const secondEnqueued = new Promise<void>((resolve) => {
+      markSecondEnqueued = resolve;
+    });
+    let enqueueCount = 0;
+    const trackedEnqueue: typeof enqueueCliRun = (key, task) => {
+      enqueueCount += 1;
+      if (enqueueCount === 2) {
+        markSecondEnqueued?.();
+      }
+      return enqueueCliRun(key, task);
+    };
+    setCliRunnerExecuteTestDeps({ enqueueCliRun: trackedEnqueue });
+    const fastModeParams = {
+      provider: "claude-cli" as const,
+      model: "opus",
+      fastMode: "auto" as const,
+      fastModeStartedAtMs: nowMs,
+      fastModeAutoOnSeconds: 1,
+      resolveExecutionArgs,
+    };
+
+    let first: Promise<unknown> | undefined;
+    let second: Promise<unknown> | undefined;
+    try {
+      first = executePreparedCliRun(
+        buildPreparedCliRunContext({ ...fastModeParams, runId: "run-fast-queued-first" }),
+      );
+      await firstSpawnEntered;
+      second = executePreparedCliRun(
+        buildPreparedCliRunContext({ ...fastModeParams, runId: "run-fast-queued-second" }),
+      );
+      await secondEnqueued;
+
+      expect(resolveExecutionArgs).toHaveBeenCalledOnce();
+      nowMs += 2_000;
+      releaseFirstSpawn?.();
+      await Promise.all([first, second]);
+    } finally {
+      releaseFirstSpawn?.();
+      await Promise.allSettled([first, second].filter((run) => run !== undefined));
+      setCliRunnerExecuteTestDeps({ enqueueCliRun });
+    }
+
+    expect(resolveExecutionArgs.mock.calls.map(([input]) => input.fastMode)).toEqual([true, false]);
   });
 
   it("passes prepared backend env to the spawned CLI process", async () => {
