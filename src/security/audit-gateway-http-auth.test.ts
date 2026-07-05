@@ -47,6 +47,19 @@ describe("security audit gateway HTTP auth findings", () => {
       env: {} as NodeJS.ProcessEnv,
     },
     {
+      name: "keeps explicit unauthenticated custom binds critical",
+      cfg: {
+        gateway: {
+          bind: "custom",
+          customBindHost: "192.168.1.100",
+          auth: { mode: "none" },
+        },
+      } satisfies OpenClawConfig,
+      expectedFinding: { checkId: "gateway.http.no_auth", severity: "critical" as const },
+      detailIncludes: ["/tools/invoke"],
+      env: {} as NodeJS.ProcessEnv,
+    },
+    {
       name: "does not report gateway.http.no_auth when auth mode is token",
       cfg: {
         gateway: {

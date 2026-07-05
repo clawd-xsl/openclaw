@@ -29,6 +29,7 @@ import {
   isLoopbackHost,
   resolveGatewayBindHost,
 } from "../../gateway/net.js";
+import { shouldBlockGatewayBindWithoutAuth } from "../../gateway/nonloopback-bind-policy.js";
 import type { GatewayWsLogStyle } from "../../gateway/ws-logging.js";
 import { setGatewayWsLogStyle } from "../../gateway/ws-logging.js";
 import { setVerbose } from "../../globals.js";
@@ -179,18 +180,6 @@ function formatModeErrorList(modes: readonly string[]): string {
     return `${quoted[0]} or ${quoted[1]}`;
   }
   return `${quoted.slice(0, -1).join(", ")}, or ${quoted[quoted.length - 1]}`;
-}
-
-function shouldBlockGatewayBindWithoutExplicitAuth(params: {
-  bindHost: string;
-  hasSharedSecret: boolean;
-  resolvedAuthMode: GatewayAuthMode;
-}): boolean {
-  return (
-    !isLoopbackHost(params.bindHost) &&
-    !params.hasSharedSecret &&
-    params.resolvedAuthMode !== "trusted-proxy"
-  );
 }
 
 async function maybeLogPendingControlUiBuild(cfg: OpenClawConfig): Promise<void> {
@@ -908,10 +897,11 @@ export async function runGatewayCommand(opts: GatewayRunOpts, hooks: GatewayRunR
   }
   const healthHost = await resolveGatewayBindHost(bind, cfg.gateway?.customBindHost);
   if (
-    shouldBlockGatewayBindWithoutExplicitAuth({
-      bindHost: healthHost,
+    shouldBlockGatewayBindWithoutAuth({
+      bindMode: bind,
+      isLoopback: isLoopbackHost(healthHost),
       hasSharedSecret,
-      resolvedAuthMode,
+      authMode: resolvedAuthMode,
     })
   ) {
     defaultRuntime.error(

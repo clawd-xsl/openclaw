@@ -1315,6 +1315,37 @@ describe("gateway run option collisions", () => {
     expect(startGatewayServer).not.toHaveBeenCalled();
   });
 
+  it("allows an explicit unauthenticated custom bind", async () => {
+    const cfg = {
+      gateway: {
+        mode: "local",
+        bind: "custom",
+        customBindHost: "192.168.1.100",
+        auth: { mode: "none" },
+        controlUi: { allowedOrigins: ["https://control.example.com"] },
+      },
+    };
+    configState.cfg = cfg;
+    configState.snapshot = {
+      config: cfg,
+      exists: true,
+      parsed: cfg,
+      sourceConfig: cfg,
+      valid: true,
+    };
+
+    await withEnvAsync(withoutGatewayAuthEnv, async () => {
+      await runGatewayCli(["gateway", "run", "--allow-unconfigured"]);
+    });
+
+    const options = gatewayStartOptions();
+    expect(options.bind).toBe("custom");
+    expect(options.startupConfigSnapshotRead).toEqual({ snapshot: configState.snapshot });
+    expect(gatewayLogMessages).toContain(
+      "Gateway auth mode=none explicitly configured; all gateway connections are unauthenticated.",
+    );
+  });
+
   it("allows non-loopback startup when token auth is explicit", async () => {
     await runGatewayCli([
       "gateway",
