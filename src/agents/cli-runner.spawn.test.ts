@@ -2024,6 +2024,78 @@ describe("runCliAgent spawn path", () => {
     expect(supervisorSpawnMock).toHaveBeenCalledTimes(16);
   });
 
+  it("evicts the oldest non-main Claude live session before a pinned main session", async () => {
+    const cancels: Array<ReturnType<typeof vi.fn>> = [];
+    supervisorSpawnMock.mockImplementation(async (...args: unknown[]) => {
+      const input = (args[0] ?? {}) as { onStdout?: (chunk: string) => void };
+      const spawnIndex = supervisorSpawnMock.mock.calls.length;
+      const cancel = vi.fn();
+      cancels.push(cancel);
+      return {
+        runId: `live-lru-${spawnIndex}`,
+        pid: 2500 + spawnIndex,
+        startedAtMs: Date.now(),
+        stdin: {
+          write: vi.fn((data: string, cb?: (err?: Error | null) => void) => {
+            input.onStdout?.(
+              [
+                JSON.stringify({
+                  type: "system",
+                  subtype: "init",
+                  session_id: `live-lru-${spawnIndex}`,
+                }),
+                JSON.stringify({
+                  type: "result",
+                  session_id: `live-lru-${spawnIndex}`,
+                  result: `ok-${spawnIndex}`,
+                }),
+              ].join("\n") + "\n",
+            );
+            cb?.();
+          }),
+          end: vi.fn(),
+        },
+        wait: vi.fn(() => new Promise(() => {})),
+        cancel,
+      };
+    });
+
+    for (let index = 0; index < 17; index += 1) {
+      const isMain = index === 0;
+      const context = buildPreparedCliRunContext({
+        provider: "claude-cli",
+        model: "sonnet",
+        runId: `run-live-lru-${index}`,
+        sessionId: `session-lru-${index}`,
+        sessionKey: isMain ? "agent:main:main" : `agent:main:telegram:dm:${index}`,
+        agentId: "main",
+        config: { session: { mainKey: "main" } },
+        backend: { liveSession: "claude-stdio" },
+      });
+      await runClaudeLiveSessionTurn({
+        context,
+        args: context.preparedBackend.backend.args ?? [],
+        env: {},
+        prompt: `prompt ${index}`,
+        useResume: false,
+        noOutputTimeoutMs: 1_000,
+        getProcessSupervisor: () => ({
+          spawn: (params: Parameters<SupervisorSpawnFn>[0]) =>
+            supervisorSpawnMock(params) as ReturnType<SupervisorSpawnFn>,
+          cancel: vi.fn(),
+          cancelScope: vi.fn(),
+          getRecord: vi.fn(),
+        }),
+        onAssistantDelta: () => {},
+        cleanup: async () => {},
+      });
+    }
+
+    expect(supervisorSpawnMock).toHaveBeenCalledTimes(17);
+    expect(cancels[0]).not.toHaveBeenCalled();
+    expect(cancels[1]).toHaveBeenCalledWith("manual-cancel");
+  });
+
   it("preserves Claude resume args when building live session argv", () => {
     const backend: PreparedCliRunContext["preparedBackend"]["backend"] = {
       command: "claude",
@@ -2972,11 +3044,10 @@ ${JSON.stringify({
     expect(requireArgAfter(spawnArg.argv, "--permission-mode")).toBe("bypassPermissions");
   });
 
-  it("uses a fresh Claude live process and capture key for every captured turn", async () => {
-    const logWarnSpy = vi.spyOn(cliBackendLog, "warn").mockImplementation(() => undefined);
+  it("reuses a Claude live process and capture key across captured resume turns", async () => {
     const cancels: Array<ReturnType<typeof vi.fn>> = [];
     const captureKeys: string[] = [];
-    const turnResults = ["first-ok", "resume-ok", "env-ok", "fresh-ok"];
+    const turnResults = ["first-ok", "resume-ok", "routing-ok", "env-ok", "fresh-ok"];
     let turnIndex = 0;
     supervisorSpawnMock.mockImplementation(async (...args: unknown[]) => {
       const spawnIndex = supervisorSpawnMock.mock.calls.length;
@@ -3060,11 +3131,7 @@ ${JSON.stringify({
         }),
         onAssistantDelta: () => {},
         onMcpCaptureReady: (captureKey) => captureKeys.push(captureKey),
-        cleanup: async () => {
-          if (runId === "run-live-resume") {
-            throw new Error("captured cleanup failed");
-          }
-        },
+        cleanup: async () => {},
       });
       return result.output.text;
     };
@@ -3077,17 +3144,30 @@ ${JSON.stringify({
     await expect(
       runTurn("run-live-resume", resumeArgs, { ANTHROPIC_BASE_URL: "https://one.example" }),
     ).resolves.toBe("resume-ok");
-    expect(supervisorSpawnMock).toHaveBeenCalledTimes(2);
-    expect(cancels[0]).toHaveBeenCalledWith("manual-cancel");
-    expect(cancels[1]).toHaveBeenCalledWith("manual-cancel");
-    expect(captureKeys[1]).not.toBe(captureKeys[0]);
+    expect(supervisorSpawnMock).toHaveBeenCalledOnce();
+    expect(cancels[0]).not.toHaveBeenCalled();
+    expect(captureKeys[1]).toBe(captureKeys[0]);
+
+    await expect(
+      runTurn("run-live-routing-change", resumeArgs, {
+        ANTHROPIC_BASE_URL: "https://one.example",
+        OPENCLAW_MCP_CURRENT_MESSAGE_ID: "message-2",
+        OPENCLAW_MCP_CURRENT_THREAD_TS: "thread-2",
+        OPENCLAW_MCP_SOURCE_REPLY_DELIVERY_MODE: "message_tool_only",
+        OPENCLAW_MCP_REQUIRE_EXPLICIT_MESSAGE_TARGET: "true",
+      }),
+    ).resolves.toBe("routing-ok");
+    expect(supervisorSpawnMock).toHaveBeenCalledOnce();
+    expect(cancels[0]).not.toHaveBeenCalled();
+    expect(captureKeys[2]).toBe(captureKeys[0]);
 
     await expect(
       runTurn("run-live-env-change", resumeArgs, { ANTHROPIC_BASE_URL: "https://two.example" }),
     ).resolves.toBe("env-ok");
-    expect(supervisorSpawnMock).toHaveBeenCalledTimes(3);
-    expect(cancels[2]).toHaveBeenCalledWith("manual-cancel");
-    expect(captureKeys[2]).not.toBe(captureKeys[1]);
+    expect(supervisorSpawnMock).toHaveBeenCalledTimes(2);
+    expect(cancels[0]).toHaveBeenCalledWith("manual-cancel");
+    expect(cancels[1]).not.toHaveBeenCalled();
+    expect(captureKeys[3]).not.toBe(captureKeys[2]);
 
     await expect(
       runTurn("run-live-fresh-retry", freshArgs, {
@@ -3095,12 +3175,10 @@ ${JSON.stringify({
       }),
     ).resolves.toBe("fresh-ok");
 
-    expect(supervisorSpawnMock).toHaveBeenCalledTimes(4);
-    expect(cancels[3]).toHaveBeenCalledWith("manual-cancel");
-    expect(captureKeys[3]).not.toBe(captureKeys[2]);
-    expect(logWarnSpy).toHaveBeenCalledWith(
-      expect.stringContaining("Claude live session cleanup failed: captured cleanup failed"),
-    );
+    expect(supervisorSpawnMock).toHaveBeenCalledTimes(3);
+    expect(cancels[1]).toHaveBeenCalledWith("manual-cancel");
+    expect(cancels[2]).not.toHaveBeenCalled();
+    expect(captureKeys[4]).not.toBe(captureKeys[3]);
   });
 
   it("ignores non-JSON stdout lines from Claude live sessions", async () => {
@@ -3682,7 +3760,7 @@ ${JSON.stringify({
     }
   });
 
-  it("closes idle Claude live sessions after ten minutes", async () => {
+  it("closes non-main Claude live sessions after six idle hours", async () => {
     vi.useFakeTimers();
     const writes: string[] = [];
     let stdoutListener: ((chunk: string) => void) | undefined;
@@ -3732,7 +3810,7 @@ ${JSON.stringify({
 
       expect(result.text).toBe("idle-ok");
       expect(cancel).not.toHaveBeenCalled();
-      await vi.advanceTimersByTimeAsync(10 * 60 * 1_000 - 1);
+      await vi.advanceTimersByTimeAsync(6 * 60 * 60 * 1_000 - 1);
       expect(cancel).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(1);
       expect(cancel).toHaveBeenCalledWith("manual-cancel");
@@ -3744,6 +3822,63 @@ ${JSON.stringify({
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("pins the canonical main Claude live session until its next 24-hour turn boundary", async () => {
+    vi.useFakeTimers();
+    const cancels: Array<ReturnType<typeof vi.fn>> = [];
+    let turn = 0;
+    supervisorSpawnMock.mockImplementation(async (...args: unknown[]) => {
+      const input = (args[0] ?? {}) as { onStdout?: (chunk: string) => void };
+      const cancel = vi.fn();
+      cancels.push(cancel);
+      return {
+        runId: `live-main-${cancels.length}`,
+        pid: 2400 + cancels.length,
+        startedAtMs: Date.now(),
+        stdin: {
+          write: vi.fn((data: string, cb?: (err?: Error | null) => void) => {
+            turn += 1;
+            input.onStdout?.(
+              [
+                JSON.stringify({ type: "system", subtype: "init", session_id: "live-main" }),
+                JSON.stringify({
+                  type: "result",
+                  session_id: "live-main",
+                  result: `main-${turn}`,
+                }),
+              ].join("\n") + "\n",
+            );
+            cb?.();
+          }),
+          end: vi.fn(),
+        },
+        wait: vi.fn(() => new Promise(() => {})),
+        cancel,
+      };
+    });
+    const buildMainContext = (runId: string, prompt: string) =>
+      buildPreparedCliRunContext({
+        provider: "claude-cli",
+        model: "sonnet",
+        runId,
+        prompt,
+        sessionKey: "agent:main:main",
+        agentId: "main",
+        config: { session: { mainKey: "main" } },
+        backend: { liveSession: "claude-stdio" },
+      });
+
+    const first = await executePreparedCliRun(buildMainContext("run-main-1", "first"));
+    expect(first.text).toBe("main-1");
+    await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1_000);
+    expect(cancels[0]).not.toHaveBeenCalled();
+
+    const second = await executePreparedCliRun(buildMainContext("run-main-2", "second"));
+    expect(second.text).toBe("main-2");
+    expect(supervisorSpawnMock).toHaveBeenCalledTimes(2);
+    expect(cancels[0]).toHaveBeenCalledWith("manual-cancel");
+    expect(cancels[1]).not.toHaveBeenCalled();
   });
 
   it("does not surface stale stderr after a later Claude live exit", async () => {

@@ -49,7 +49,7 @@ function logMcpLoopbackHttp(step: string, details: Record<string, unknown>): voi
   console.error(`[mcp-loopback] ${step} ${JSON.stringify(details)}`);
 }
 
-type McpRequestContext = {
+export type McpRequestContext = {
   sessionKey: string;
   sessionId: string | undefined;
   messageProvider: string | undefined;

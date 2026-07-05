@@ -20,6 +20,7 @@ import {
   markMcpLoopbackToolCallFinished,
   markMcpLoopbackToolCallStarted,
   recordMcpLoopbackToolCallResult,
+  resolveMcpLoopbackRequestContext,
   resolveMcpLoopbackToolSurface,
   resolveMcpLoopbackYieldContext,
   setActiveMcpLoopbackRuntime,
@@ -203,6 +204,22 @@ export async function startMcpLoopbackServer(port = 0): Promise<{
         const body = await readMcpHttpBody(req, { timeoutMs: resolveMcpHttpBodyTimeoutMs() });
         parsed = parseMcpJsonBody(body);
         const messages = Array.isArray(parsed) ? parsed : [parsed];
+        const hasUnboundCliToolCall =
+          Boolean(cliCaptureKey) &&
+          !cliRequestCaptureHandle &&
+          messages.some((message) => isJsonRpcRequest(message) && message.method === "tools/call");
+        if (hasUnboundCliToolCall) {
+          // A warm CLI process keeps its process capture key between turns. Tool
+          // calls outside an admitted turn must fail closed instead of inheriting
+          // stale routing or escaping duplicate-delivery accounting.
+          markMcpLoopbackRequestClassified(cliRequestCaptureHandle);
+          const errors = messages.map((message) =>
+            jsonRpcError(readJsonRpcRequestId(message), -32000, "CLI turn capture is not active"),
+          );
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(Array.isArray(parsed) ? errors : errors[0]));
+          return;
+        }
         cliCaptureHandles = messages.map((message) => {
           if (
             !cliRequestCaptureHandle ||
@@ -227,7 +244,17 @@ export async function startMcpLoopbackServer(port = 0): Promise<{
         });
         markMcpLoopbackRequestClassified(cliRequestCaptureHandle);
         const cfg = getRuntimeConfig();
-        const requestContext = resolveMcpRequestContext(req, cfg, auth);
+        const headerRequestContext = resolveMcpRequestContext(req, cfg, auth);
+        const capturedRequestContext = resolveMcpLoopbackRequestContext(cliRequestCaptureHandle);
+        const requestContext = capturedRequestContext
+          ? {
+              ...headerRequestContext,
+              ...capturedRequestContext,
+              // Bearer identity remains launch-bound and part of the live
+              // fingerprint; a turn lease cannot elevate it.
+              senderIsOwner: headerRequestContext.senderIsOwner,
+            }
+          : headerRequestContext;
         const yieldContext = resolveMcpLoopbackYieldContext(cliRequestCaptureHandle);
         const scopedTools = toolCache.resolve({
           cfg,

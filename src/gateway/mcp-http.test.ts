@@ -727,6 +727,54 @@ describe("mcp loopback server", () => {
     ]);
   });
 
+  it("uses the active CLI capture generation for per-turn routing context", async () => {
+    const captureKey = "warm-claude-routing";
+    beginMcpLoopbackToolCallCapture({
+      captureKey,
+      requestContext: {
+        messageProvider: "matrix",
+        currentChannelId: "matrix:room:new",
+        currentThreadTs: "thread-new",
+        currentMessageId: "message-new",
+        currentInboundAudio: false,
+        inboundEventKind: "user_request",
+        sourceReplyDeliveryMode: "automatic",
+        requireExplicitMessageTarget: false,
+      },
+      onToolCallResult: vi.fn(),
+    });
+    const { runtime } = await startLoopbackServerForTest();
+
+    const response = await sendLoopbackToolsList({
+      token: runtime.nonOwnerToken,
+      headers: {
+        "x-session-key": "agent:main:matrix:dm:user",
+        "x-openclaw-cli-capture-key": captureKey,
+        "x-openclaw-message-channel": "telegram",
+        "x-openclaw-current-channel-id": "telegram:stale",
+        "x-openclaw-current-thread-ts": "thread-stale",
+        "x-openclaw-current-message-id": "message-stale",
+        "x-openclaw-current-inbound-audio": "true",
+        "x-openclaw-inbound-event-kind": "room_event",
+        "x-openclaw-source-reply-delivery-mode": "message_tool_only",
+        "x-openclaw-require-explicit-message-target": "true",
+      },
+    });
+
+    expect(response.status).toBe(200);
+    const call = getScopedToolsCall(0);
+    expect(call.sessionKey).toBe("agent:main:matrix:dm:user");
+    expect(call.messageProvider).toBe("matrix");
+    expect(call.currentChannelId).toBe("matrix:room:new");
+    expect(call.currentThreadTs).toBe("thread-new");
+    expect(call.currentMessageId).toBe("message-new");
+    expect(call.currentInboundAudio).toBe(false);
+    expect(call.inboundEventKind).toBe("user_request");
+    expect(call.sourceReplyDeliveryMode).toBe("automatic");
+    expect(call.requireExplicitMessageTarget).toBe(false);
+    expect(call.senderIsOwner).toBe(false);
+  });
+
   it("binds an attach grant's session and ignores ALL spoofed context headers (no scope-shop)", async () => {
     resetAttachGrantsForTest();
     const grant = mintAttachGrant({ sessionKey: "agent:main:attach-host" });
@@ -785,6 +833,35 @@ describe("mcp loopback server", () => {
     const call = getScopedToolsCall(0);
     expect(call.toolSurface).toBe("openclaw");
     expect(call.excludeToolNames).toBeUndefined();
+  });
+
+  it("fails closed when a warm CLI process calls a tool outside an active turn", async () => {
+    const execute = vi.fn(async () => ({
+      content: [{ type: "text", text: "should not run" }],
+    }));
+    mockScopedTools([makeMessageTool({ execute })]);
+    const { runtime } = await startLoopbackServerForTest();
+
+    const response = await sendLoopbackToolCall({
+      token: runtime.ownerToken,
+      name: "message",
+      args: { action: "send", target: "chat123", message: "late" },
+      headers: {
+        "x-session-key": "agent:main:main",
+        "x-openclaw-cli-capture-key": "cleared-warm-process-capture",
+      },
+    });
+    const payload = (await response.json()) as {
+      error?: { code?: number; message?: string };
+    };
+
+    expect(response.status).toBe(200);
+    expect(payload.error).toEqual({
+      code: -32000,
+      message: "CLI turn capture is not active",
+    });
+    expect(resolveGatewayScopedToolsMock).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it("routes sessions_yield to the current CLI capture", async () => {

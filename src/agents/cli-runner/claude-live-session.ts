@@ -3,9 +3,10 @@
  */
 import crypto from "node:crypto";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { createAbortError as createNamedAbortError } from "../../infra/abort-signal.js";
 import type { ReplyBackendHandle } from "../../auto-reply/reply/reply-run-registry.js";
+import { resolveAgentMainSessionKey } from "../../config/sessions/main-session.js";
 import type { CliBackendConfig } from "../../config/types.js";
+import { createAbortError as createNamedAbortError } from "../../infra/abort-signal.js";
 import {
   emitTrustedDiagnosticEvent,
   type DiagnosticToolParamsSummary,
@@ -68,6 +69,9 @@ type ClaudeLiveTurn = {
 type ClaudeLiveSession = {
   key: string;
   fingerprint: string;
+  createdAtMs: number;
+  lastUsedAtMs: number;
+  pinnedMain: boolean;
   managedRun: ManagedRun;
   providerId: string;
   modelId: string;
@@ -106,7 +110,8 @@ type ClaudeLiveToolUse = {
   paramsSummary?: DiagnosticToolParamsSummary;
 };
 
-const CLAUDE_LIVE_IDLE_TIMEOUT_MS = 10 * 60 * 1_000;
+const CLAUDE_LIVE_IDLE_TIMEOUT_MS = 6 * 60 * 60 * 1_000;
+const CLAUDE_LIVE_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
 const CLAUDE_LIVE_ACTIVE_TOOL_PROGRESS_MS = 10_000;
 const CLAUDE_LIVE_MAX_SESSIONS = 16;
 const CLAUDE_LIVE_MAX_STDERR_CHARS = 64 * 1024;
@@ -271,11 +276,31 @@ function buildClaudeLiveKey(context: PreparedCliRunContext): string {
   })}`;
 }
 
+function isCanonicalMainSession(context: PreparedCliRunContext): boolean {
+  const sessionKey = context.params.sessionKey?.trim();
+  if (!sessionKey) {
+    return false;
+  }
+  const agentId = context.params.agentId ?? resolveAgentIdFromSessionKey(sessionKey);
+  return sessionKey === resolveAgentMainSessionKey({ cfg: context.params.config, agentId });
+}
+
 function buildClaudeLiveFingerprint(params: {
   context: PreparedCliRunContext;
   argv: string[];
   env: Record<string, string>;
 }): string {
+  const perTurnMcpEnvKeys = new Set([
+    "OPENCLAW_MCP_MESSAGE_CHANNEL",
+    "OPENCLAW_MCP_CURRENT_CHANNEL_ID",
+    "OPENCLAW_MCP_CURRENT_THREAD_TS",
+    "OPENCLAW_MCP_CURRENT_MESSAGE_ID",
+    "OPENCLAW_MCP_CURRENT_INBOUND_AUDIO",
+    "OPENCLAW_MCP_INBOUND_EVENT_KIND",
+    "OPENCLAW_MCP_SOURCE_REPLY_DELIVERY_MODE",
+    "OPENCLAW_MCP_REQUIRE_EXPLICIT_MESSAGE_TARGET",
+    "OPENCLAW_MCP_CLI_CAPTURE_KEY",
+  ]);
   const normalizeMcpConfigPath = Boolean(params.context.preparedBackend.mcpConfigHash);
   const skillSnapshot = params.context.params.skillsSnapshot;
   const skillsFingerprint = skillSnapshot
@@ -349,6 +374,7 @@ function buildClaudeLiveFingerprint(params: {
     skillsFingerprint,
     argv: stableArgv,
     env: Object.keys(params.env)
+      .filter((key) => !perTurnMcpEnvKeys.has(key))
       .toSorted()
       .map((key) => [key, params.env[key] ? sha256(params.env[key]) : ""]),
   });
@@ -385,6 +411,7 @@ function finishTurn(session: ClaudeLiveSession, output: CliOutput): void {
   clearTurnTimers(turn);
   turn.streamingParser.finish();
   session.currentTurn = null;
+  session.lastUsedAtMs = Date.now();
   turn.resolve(output);
   scheduleIdleClose(session);
 }
@@ -402,6 +429,7 @@ function failTurn(session: ClaudeLiveSession, error: unknown): void {
   clearTurnTimers(turn);
   turn.streamingParser.finish();
   session.currentTurn = null;
+  session.lastUsedAtMs = Date.now();
   turn.reject(error);
 }
 
@@ -451,6 +479,10 @@ function closeLiveSession(
 function scheduleIdleClose(session: ClaudeLiveSession): void {
   if (session.idleTimer) {
     clearTimeout(session.idleTimer);
+    session.idleTimer = null;
+  }
+  if (session.pinnedMain) {
+    return;
   }
   session.idleTimer = setTimeout(() => {
     if (!session.currentTurn) {
@@ -1062,6 +1094,9 @@ async function createClaudeLiveSession(params: {
   session = {
     key: params.key,
     fingerprint: params.fingerprint,
+    createdAtMs: Date.now(),
+    lastUsedAtMs: Date.now(),
+    pinnedMain: isCanonicalMainSession(params.context),
     managedRun,
     providerId: params.context.params.provider,
     modelId: params.context.modelId,
@@ -1158,11 +1193,12 @@ function createTurn(params: {
 }
 
 function closeOldestIdleSession(): boolean {
-  for (const session of liveSessions.values()) {
-    if (!session.currentTurn) {
-      closeLiveSession(session, "idle");
-      return true;
-    }
+  const oldest = [...liveSessions.values()]
+    .filter((session) => !session.currentTurn && !session.pinnedMain)
+    .toSorted((left, right) => left.lastUsedAtMs - right.lastUsedAtMs)[0];
+  if (oldest) {
+    closeLiveSession(oldest, "idle");
+    return true;
   }
   return false;
 }
@@ -1229,6 +1265,12 @@ export async function runClaudeLiveSessionTurn(params: {
     await params.cleanup();
   };
   let session = liveSessions.get(key) ?? null;
+  if (session && Date.now() - session.createdAtMs >= CLAUDE_LIVE_MAX_AGE_MS) {
+    // Bound credentials, process state, and launch-time configuration. Main
+    // sessions skip idle/LRU eviction but still rotate at the next turn.
+    closeLiveSession(session, "restart");
+    session = null;
+  }
   if (session && resumeCapable && !params.useResume) {
     // Non-resume turns must start from a fresh process when the backend supports resume; otherwise
     // Claude could inherit conversation state from the previous live turn.
@@ -1308,6 +1350,7 @@ export async function runClaudeLiveSessionTurn(params: {
     throw new Error("Claude CLI live session is already handling a turn");
   }
   const liveSession = session;
+  liveSession.lastUsedAtMs = Date.now();
   if (liveSession.mcpCaptureKey) {
     params.onMcpCaptureReady?.(liveSession.mcpCaptureKey);
   }
@@ -1358,18 +1401,8 @@ export async function runClaudeLiveSessionTurn(params: {
   } finally {
     replyBackendCompleted = true;
     params.context.params.abortSignal?.removeEventListener("abort", abort);
-    try {
-      if (replyBackendHandle) {
-        params.context.params.replyOperation?.detachBackend(replyBackendHandle);
-      }
-    } finally {
-      if (liveSession.mcpCaptureKey) {
-        // The capture key is process environment, so a captured turn must end its
-        // process before the attempt releases that key to avoid cross-turn sends.
-        closeLiveSession(liveSession, "restart");
-        await waitForManagedRunExit(liveSession.managedRun);
-        await cleanupLiveSession(liveSession);
-      }
+    if (replyBackendHandle) {
+      params.context.params.replyOperation?.detachBackend(replyBackendHandle);
     }
   }
 }

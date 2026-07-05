@@ -1,5 +1,6 @@
 // Process-local MCP loopback runtime state for owner/non-owner HTTP access.
 import type { CliBackendBundleMcpToolSurface } from "../plugins/types.js";
+import type { McpRequestContext } from "./mcp-http.request.js";
 
 type McpLoopbackRuntime = {
   port: number;
@@ -18,6 +19,7 @@ export type McpLoopbackToolCallStart = Pick<McpLoopbackToolCallResult, "toolName
 
 type McpLoopbackToolCallCapture = {
   generation: number;
+  requestContext?: Partial<Omit<McpRequestContext, "senderIsOwner">>;
   toolSurface?: CliBackendBundleMcpToolSurface;
   onYield?: (message: string) => Promise<void> | void;
   onRequestStart?: () => void;
@@ -75,6 +77,7 @@ function notifyMcpLoopbackToolCallCaptureActivity(capture: McpLoopbackToolCallCa
 /** Start loopback tool-call result capture for one serialized CLI invocation. */
 export function beginMcpLoopbackToolCallCapture(params: {
   captureKey: string;
+  requestContext?: Partial<Omit<McpRequestContext, "senderIsOwner">>;
   toolSurface?: CliBackendBundleMcpToolSurface;
   onYield?: (message: string) => Promise<void> | void;
   onRequestStart?: () => void;
@@ -95,6 +98,7 @@ export function beginMcpLoopbackToolCallCapture(params: {
   nextToolCallCaptureGeneration += 1;
   toolCallCaptures.set(captureKey, {
     generation: nextToolCallCaptureGeneration,
+    requestContext: params.requestContext,
     toolSurface: params.toolSurface,
     onYield: params.onYield,
     onRequestStart: params.onRequestStart,
@@ -108,6 +112,13 @@ export function beginMcpLoopbackToolCallCapture(params: {
     activityVersion: 0,
     activityWaiters: new Set(),
   });
+}
+
+/** Resolve routing facts captured when this request's CLI turn was admitted. */
+export function resolveMcpLoopbackRequestContext(
+  captureHandle: McpLoopbackRequestCaptureHandle | undefined,
+): Partial<Omit<McpRequestContext, "senderIsOwner">> | undefined {
+  return captureHandle?.capture.requestContext;
 }
 
 /** Resolve the host-admitted bundled MCP tool surface for this CLI attempt. */

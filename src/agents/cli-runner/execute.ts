@@ -864,6 +864,19 @@ export async function executePreparedCliRun(
           beginMcpLoopbackToolCallCapture({
             captureKey: gatewayCaptureKey,
             toolSurface: context.backendResolved.bundleMcpToolSurface,
+            requestContext: {
+              messageProvider: context.params.messageChannel ?? context.params.messageProvider,
+              currentChannelId: context.params.currentChannelId,
+              currentThreadTs: context.params.currentThreadTs,
+              currentMessageId:
+                context.params.currentMessageId != null
+                  ? String(context.params.currentMessageId)
+                  : undefined,
+              currentInboundAudio: context.params.currentInboundAudio,
+              inboundEventKind: context.params.currentInboundEventKind,
+              sourceReplyDeliveryMode: context.params.sourceReplyDeliveryMode,
+              requireExplicitMessageTarget: context.params.requireExplicitMessageTarget,
+            },
             onYield: () => {
               yielded = true;
             },
