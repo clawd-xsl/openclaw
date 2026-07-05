@@ -23,6 +23,7 @@ import {
 } from "./openclaw-runtime-session.js";
 import { retryTransientMemoryRead } from "./read-retry.js";
 import {
+  listPersistedSessionTranscriptEntriesForAgentSync,
   listSessionTranscriptCorpusEntriesForAgent,
   listSessionTranscriptCorpusEntriesForAgentSync,
   type SessionTranscriptCorpusEntry,
@@ -271,9 +272,13 @@ export function loadSessionTranscriptClassificationForSessionsDir(
 ): SessionTranscriptClassification {
   const agentId = extractAgentIdFromSessionsDir(sessionsDir);
   if (agentId && isCanonicalSessionsDirForAgent(sessionsDir, agentId)) {
-    return classifySessionTranscriptCorpusEntries(
-      listSessionTranscriptCorpusEntriesForAgentSync(agentId),
-    );
+    try {
+      return classifySessionTranscriptCorpusEntries(
+        listSessionTranscriptCorpusEntriesForAgentSync(agentId),
+      );
+    } catch {
+      return { dreamingNarrativeTranscriptPaths: new Set(), cronRunTranscriptPaths: new Set() };
+    }
   }
   const storePath = path.join(sessionsDir, "sessions.json");
   const store = readSessionTranscriptClassificationStore(storePath);
@@ -329,15 +334,6 @@ function classifySessionTranscriptCorpusEntries(
     dreamingNarrativeTranscriptPaths: dreamingTranscriptPaths,
     cronRunTranscriptPaths,
   };
-}
-
-function findSessionTranscriptStoreEntryBySessionId(
-  store: Record<string, SessionTranscriptStoreEntry>,
-  sessionId: string,
-): SessionTranscriptStoreEntry | undefined {
-  return Object.values(store).find((entry) => {
-    return typeof entry.sessionId === "string" && entry.sessionId.trim() === sessionId;
-  });
 }
 
 export function loadDreamingNarrativeTranscriptPathSetForAgent(
@@ -440,22 +436,18 @@ export function resolveSessionIdentityForTranscriptFile(
   if (!parsed?.agentId) {
     return null;
   }
-  const sessionsDir = resolveSessionTranscriptsDirForAgent(parsed.agentId);
   const normalizedSessionFile = normalizeComparablePath(sessionFile);
-  const store = readSessionTranscriptClassificationStore(path.join(sessionsDir, "sessions.json"));
-  for (const [sessionKey, entry] of Object.entries(store)) {
-    const transcriptPath = resolveSessionStoreTranscriptPath(sessionsDir, entry);
-    if (transcriptPath !== normalizedSessionFile) {
-      continue;
-    }
-    const sessionId = typeof entry.sessionId === "string" ? entry.sessionId.trim() : "";
-    if (!sessionId) {
+  for (const entry of listPersistedSessionTranscriptEntriesForAgentSync(parsed.agentId)) {
+    if (
+      entry.artifactKind !== "active-session" ||
+      normalizeComparablePath(entry.sessionFile) !== normalizedSessionFile
+    ) {
       continue;
     }
     return {
       agentId: parsed.agentId,
-      sessionId,
-      ...(sessionKey.trim() ? { sessionKey } : {}),
+      sessionId: entry.sessionId,
+      ...(entry.sessionKey ? { sessionKey: entry.sessionKey } : {}),
     };
   }
   return {
@@ -481,25 +473,11 @@ export function resolveSessionFileForSyncTarget(
   const agentId = normalizeAgentId(rawAgentId);
   const sessionsDir = resolveSessionTranscriptsDirForAgent(agentId);
   const sessionKey = target.sessionKey?.trim();
-  let store: Record<string, SessionTranscriptStoreEntry> | null = null;
-  if (sessionKey) {
-    store = readSessionTranscriptClassificationStore(path.join(sessionsDir, "sessions.json"));
-    const persistedPath = resolveSessionStoreTranscriptResolvedPath(sessionsDir, store[sessionKey]);
-    const canonicalPath = resolveCanonicalSessionSyncFilePath(agentId, persistedPath);
-    if (canonicalPath) {
-      return {
-        agentId,
-        sessionId,
-        sessionFile: canonicalPath,
-      };
-    }
-  }
-  store ??= readSessionTranscriptClassificationStore(path.join(sessionsDir, "sessions.json"));
-  const persistedPath = resolveSessionStoreTranscriptResolvedPath(
-    sessionsDir,
-    findSessionTranscriptStoreEntryBySessionId(store, sessionId),
-  );
-  const canonicalPath = resolveCanonicalSessionSyncFilePath(agentId, persistedPath);
+  const activeEntries = listPersistedSessionTranscriptEntriesForAgentSync(agentId);
+  const persisted =
+    (sessionKey ? activeEntries.find((entry) => entry.sessionKey === sessionKey) : undefined) ??
+    activeEntries.find((entry) => entry.sessionId === sessionId);
+  const canonicalPath = resolveCanonicalSessionSyncFilePath(agentId, persisted?.sessionFile);
   if (canonicalPath) {
     return {
       agentId,

@@ -35,6 +35,15 @@ export type SessionTranscriptCorpusEntry = {
   generatedByCronRun?: boolean;
 };
 
+type ActiveSessionTranscriptCorpus = {
+  normalizedAgentId: string;
+  sessionsDir: string;
+  isSharedFixedStore: boolean;
+  activeEntriesByPath: Map<string, SessionTranscriptCorpusEntry>;
+  activeEntryOwnersByPath: Map<string, string>;
+  artifactDirsByPath: Map<string, string>;
+};
+
 type SessionEntrySummary = {
   sessionKey: string;
   entry: SessionEntry;
@@ -337,9 +346,7 @@ function toArtifactCorpusEntry(
   };
 }
 
-export function listSessionTranscriptCorpusEntriesForAgentSync(
-  agentId: string,
-): SessionTranscriptCorpusEntry[] {
+function collectActiveSessionTranscriptCorpus(agentId: string): ActiveSessionTranscriptCorpus {
   const normalizedAgentId = normalizeAgentId(agentId);
   const cfg = getRuntimeConfig();
   const configuredStore = cfg.session?.store;
@@ -360,11 +367,17 @@ export function listSessionTranscriptCorpusEntriesForAgentSync(
   const activeEntryOwnersByPath = new Map<string, string>();
   const artifactDirsByPath = new Map<string, string>();
   rememberArtifactDir(artifactDirsByPath, sessionsDir);
-  const sessionEntries = listSessionEntries({
-    agentId: normalizedAgentId,
-    hydrateSkillPromptRefs: false,
-    storePath,
-  });
+  let sessionEntries: SessionEntrySummary[];
+  try {
+    sessionEntries = listSessionEntries({
+      agentId: normalizedAgentId,
+      hydrateSkillPromptRefs: false,
+      storePath,
+    });
+  } catch {
+    // A corrupt store must not hide intact transcript artifacts from memory indexing.
+    sessionEntries = [];
+  }
   const cronGeneratedSessionKeys = collectCronGeneratedSessionKeys(sessionEntries);
   for (const summary of sessionEntries) {
     const sessionKey = isSharedFixedStore
@@ -395,6 +408,33 @@ export function listSessionTranscriptCorpusEntriesForAgentSync(
       activeEntriesByPath.set(normalizedEntryPath, entry);
     }
   }
+  return {
+    normalizedAgentId,
+    sessionsDir,
+    isSharedFixedStore,
+    activeEntriesByPath,
+    activeEntryOwnersByPath,
+    artifactDirsByPath,
+  };
+}
+
+/** Lists accessor-backed active session identities even when the transcript is not on disk yet. */
+export function listPersistedSessionTranscriptEntriesForAgentSync(
+  agentId: string,
+): SessionTranscriptCorpusEntry[] {
+  return [...collectActiveSessionTranscriptCorpus(agentId).activeEntriesByPath.values()];
+}
+
+export function listSessionTranscriptCorpusEntriesForAgentSync(
+  agentId: string,
+): SessionTranscriptCorpusEntry[] {
+  const {
+    normalizedAgentId,
+    isSharedFixedStore,
+    activeEntriesByPath,
+    activeEntryOwnersByPath,
+    artifactDirsByPath,
+  } = collectActiveSessionTranscriptCorpus(agentId);
   const includeUnownedArtifacts = !isSharedFixedStore;
   const corpusEntries = [...activeEntriesByPath.values()].filter((entry) =>
     isRegularSessionTranscriptFile(entry.sessionFile),
