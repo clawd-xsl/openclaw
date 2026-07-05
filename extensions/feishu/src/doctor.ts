@@ -9,10 +9,10 @@ import type {
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { normalizeAgentId } from "openclaw/plugin-sdk/routing";
 import {
-  loadSessionStore,
+  deleteSessionEntries,
+  inspectSessionStoreEntriesReadOnly,
   resolveSessionFilePath,
   resolveStorePath,
-  updateSessionStore,
 } from "openclaw/plugin-sdk/session-store-runtime";
 import { resolveStateDir } from "openclaw/plugin-sdk/state-paths";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
@@ -250,14 +250,19 @@ function collectFeishuSessionTargets(params: {
     });
   }
 
+  const configuredAgentIds = new Set(collectConfiguredAgentIds(params.cfg));
   const agentsDir = path.join(params.stateDir, "agents");
   for (const agentDir of safeReadDir(agentsDir)) {
     if (!agentDir.isDirectory()) {
       continue;
     }
     const agentId = normalizeAgentId(agentDir.name);
-    const storePath = path.join(agentsDir, agentDir.name, "sessions", "sessions.json");
-    if (existsFile(storePath)) {
+    if (configuredAgentIds.has(agentId)) {
+      continue;
+    }
+    const sessionsDir = path.join(agentsDir, agentDir.name, "sessions");
+    const storePath = path.join(sessionsDir, "sessions.sqlite");
+    if (existsFile(storePath) || existsFile(path.join(sessionsDir, "sessions.json"))) {
       addTarget({ agentId, storePath });
     }
   }
@@ -555,10 +560,8 @@ export function inspectFeishuDoctorState(params: {
   const sessionEntries: FeishuDoctorInspection["sessionEntries"] = [];
 
   for (const target of collectFeishuSessionTargets({ cfg: params.cfg, env, stateDir })) {
-    const store = loadSessionStore(target.storePath, { skipCache: true });
-    for (const [key, entry] of Object.entries(store).toSorted(([left], [right]) =>
-      left.localeCompare(right),
-    )) {
+    const entries = inspectSessionStoreEntriesReadOnly({ storePath: target.storePath });
+    for (const { sessionKey: key, entry } of entries) {
       if (!isFeishuSessionEntry(key, entry)) {
         continue;
       }
@@ -622,17 +625,42 @@ function movePathToBackup(params: {
 }
 
 function copyStoreBackup(params: { storePath: string; backupDir: string; agentId: string }) {
+  const sqliteStore = /\.(?:sqlite|db)$/iu.test(params.storePath);
+  const backupRoot = path.join(params.backupDir, "session-stores", params.agentId);
+  fs.mkdirSync(backupRoot, { recursive: true, mode: 0o700 });
+  if (!sqliteStore) {
+    if (existsFile(params.storePath)) {
+      fs.copyFileSync(
+        params.storePath,
+        resolveUniquePath(path.join(backupRoot, path.basename(params.storePath))),
+      );
+    }
+    return;
+  }
+
+  const extension = path.extname(params.storePath);
+  const legacyJsonPath = `${params.storePath.slice(0, -extension.length)}.json`;
+  if (existsFile(legacyJsonPath)) {
+    fs.copyFileSync(
+      legacyJsonPath,
+      resolveUniquePath(path.join(backupRoot, path.basename(legacyJsonPath))),
+    );
+  }
   if (!existsFile(params.storePath)) {
     return;
   }
-  const targetPath = path.join(
-    params.backupDir,
-    "session-stores",
-    params.agentId,
-    path.basename(params.storePath),
+  const snapshot = Object.fromEntries(
+    inspectSessionStoreEntriesReadOnly({ storePath: params.storePath }).map(
+      ({ sessionKey, entry }) => [sessionKey, entry],
+    ),
   );
-  fs.mkdirSync(path.dirname(targetPath), { recursive: true, mode: 0o700 });
-  fs.copyFileSync(params.storePath, resolveUniquePath(targetPath));
+  const snapshotPath = resolveUniquePath(
+    path.join(backupRoot, `${path.basename(params.storePath)}.snapshot.json`),
+  );
+  fs.writeFileSync(snapshotPath, `${JSON.stringify(snapshot, null, 2)}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
 }
 
 function collectSessionArtifactPaths(params: {
@@ -732,26 +760,13 @@ async function repairFeishuDoctorState(params: {
   )) {
     try {
       copyStoreBackup({ storePath, backupDir, agentId: group.agentId });
-      const keys = new Set(group.entries.map((entry) => entry.key));
-      const removedEntries = await updateSessionStore(
+      const removedEntries = await deleteSessionEntries({
         storePath,
-        (store) => {
-          const removed: typeof group.entries = [];
-          for (const key of keys) {
-            if (Object.hasOwn(store, key)) {
-              delete store[key];
-              const entry = group.entries.find((candidate) => candidate.key === key);
-              if (entry) {
-                removed.push(entry);
-              }
-            }
-          }
-          return removed;
-        },
-        {
-          skipMaintenance: true,
-        },
-      );
+        targets: group.entries.map(({ key, entry }) => ({
+          sessionKey: key,
+          expectedSessionId: typeof entry.sessionId === "string" ? entry.sessionId : null,
+        })),
+      });
       const removed = removedEntries.length;
       removedSessionEntries += removed;
       if (removed > 0) {
@@ -760,7 +775,7 @@ async function repairFeishuDoctorState(params: {
           storePath,
           entries: removedEntries.map((entry) => ({
             agentId: group.agentId,
-            entry: entry.entry,
+            entry: toFeishuSessionEntry(entry.entry),
           })),
           archiveTimestamp,
         });

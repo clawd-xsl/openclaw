@@ -2,7 +2,10 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { loadSessionStore } from "openclaw/plugin-sdk/session-store-runtime";
+import {
+  clearSessionStoreCacheForTest,
+  loadSessionStore,
+} from "openclaw/plugin-sdk/session-store-runtime";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { OpenClawConfig } from "../runtime-api.js";
 import { isFeishuSessionStoreKey, runFeishuDoctorSequence } from "./doctor.js";
@@ -60,10 +63,10 @@ function storePath(agentId = "main"): string {
 }
 
 function writeStore(entries: Record<string, unknown>, agentId = "main"): string {
-  const target = storePath(agentId);
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  fs.writeFileSync(target, JSON.stringify(entries, null, 2));
-  return target;
+  const legacyTarget = storePath(agentId);
+  fs.mkdirSync(path.dirname(legacyTarget), { recursive: true });
+  fs.writeFileSync(legacyTarget, JSON.stringify(entries, null, 2));
+  return path.join(sessionsDir(agentId), "sessions.sqlite");
 }
 
 function writeTranscript(sessionId: string, lines: unknown[], agentId = "main"): string {
@@ -100,6 +103,33 @@ function listBackupDirs(): string[] {
     : [];
 }
 
+function snapshotTree(rootDir: string): {
+  directories: string[];
+  files: Array<{ path: string; contents: string }>;
+} {
+  const directories: string[] = [];
+  const files: Array<{ path: string; contents: string }> = [];
+  const visit = (currentDir: string) => {
+    for (const entry of fs
+      .readdirSync(currentDir, { withFileTypes: true })
+      .toSorted((left, right) => left.name.localeCompare(right.name))) {
+      const entryPath = path.join(currentDir, entry.name);
+      const relativePath = path.relative(rootDir, entryPath);
+      if (entry.isDirectory()) {
+        directories.push(relativePath);
+        visit(entryPath);
+      } else if (entry.isFile()) {
+        files.push({
+          path: relativePath,
+          contents: fs.readFileSync(entryPath).toString("base64"),
+        });
+      }
+    }
+  };
+  visit(rootDir);
+  return { directories, files };
+}
+
 describe("Feishu doctor state repair", () => {
   let envSnapshot: EnvSnapshot;
   let tempHome = "";
@@ -114,6 +144,7 @@ describe("Feishu doctor state repair", () => {
   });
 
   afterEach(() => {
+    clearSessionStoreCacheForTest();
     restoreEnv(envSnapshot);
     fs.rmSync(tempHome, { recursive: true, force: true });
   });
@@ -202,6 +233,34 @@ describe("Feishu doctor state repair", () => {
     });
 
     expect(result).toEqual({ changeNotes: [], warningNotes: [] });
+  });
+
+  it("does not mutate a pending legacy store during no-fix inspection", async () => {
+    writeTranscript("sess-preview", [
+      sessionHeader("sess-preview"),
+      userMessage(""),
+      userMessage(""),
+      userMessage(""),
+    ]);
+    writeStore({
+      "agent:main:feishu:direct:ou_user": {
+        sessionId: "sess-preview",
+        sessionFile: "sess-preview.jsonl",
+        updatedAt: Date.now(),
+      },
+    });
+    const before = snapshotTree(stateDir());
+
+    const result = await runFeishuDoctorSequence({
+      cfg: feishuConfig(),
+      env: process.env,
+      shouldRepair: false,
+    });
+
+    expect(result.changeNotes).toEqual([]);
+    expect(result.warningNotes.join("\n")).toContain("Feishu local channel state may need repair");
+    expect(snapshotTree(stateDir())).toEqual(before);
+    expect(fs.existsSync(path.join(sessionsDir(), "sessions.sqlite"))).toBe(false);
   });
 
   it("warns before repair when Feishu local state is corrupt", async () => {
@@ -322,8 +381,11 @@ describe("Feishu doctor state repair", () => {
     expect(backups).toHaveLength(1);
     const backupDir = path.join(stateDir(), "backups", backups[0] ?? "");
     expect(fs.existsSync(path.join(backupDir, "feishu", "dedup", "default.json"))).toBe(false);
-    expect(fs.existsSync(path.join(backupDir, "session-stores", "main", "sessions.json"))).toBe(
-      true,
+    const backedUpStorePath = path.join(backupDir, "session-stores", "main", "sessions.json");
+    expect(fs.existsSync(backedUpStorePath)).toBe(true);
+    expect(JSON.parse(fs.readFileSync(backedUpStorePath, "utf8"))).toHaveProperty(
+      "agent:main:feishu:direct:ou_user.sessionId",
+      "sess-bad",
     );
 
     const store = loadSessionStore(targetStorePath, { skipCache: true });
