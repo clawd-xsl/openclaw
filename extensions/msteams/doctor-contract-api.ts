@@ -4,7 +4,10 @@ import type { Dirent } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { PluginDoctorStateMigration } from "openclaw/plugin-sdk/runtime-doctor";
-import { resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
+import {
+  inspectSessionStoreEntriesReadOnly,
+  resolveStorePath,
+} from "openclaw/plugin-sdk/session-store-runtime";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { normalizeStoredConversationId } from "./src/conversation-store-helpers.js";
 import {
@@ -79,8 +82,57 @@ function legacySanitizeSessionKey(sessionKey: string): string {
   return sessionKey.replace(/[^a-zA-Z0-9_-]/g, "_");
 }
 
-async function listKnownSessionKeys(storePath: string): Promise<string[]> {
-  const candidates = [storePath, path.join(storePath, "sessions.json")];
+async function resolveLegacyLearningSidecarDir(storePath: string): Promise<{
+  sidecarDir: string;
+  storePathIsDirectory: boolean;
+}> {
+  try {
+    const stat = await fs.stat(storePath);
+    if (stat.isDirectory()) {
+      return { sidecarDir: storePath, storePathIsDirectory: true };
+    }
+    if (stat.isFile()) {
+      return { sidecarDir: path.dirname(storePath), storePathIsDirectory: false };
+    }
+  } catch {
+    // Infer the intended layout below when the configured store does not exist yet.
+  }
+  const extension = path.extname(storePath).toLowerCase();
+  const storePathIsDirectory = extension.length === 0;
+  return {
+    sidecarDir: storePathIsDirectory ? storePath : path.dirname(storePath),
+    storePathIsDirectory,
+  };
+}
+
+async function listKnownSessionKeys(params: {
+  sidecarDir: string;
+  storePath: string;
+  storePathIsDirectory: boolean;
+}): Promise<string[]> {
+  const keys = new Set<string>();
+  const storeExtension = path.extname(params.storePath).toLowerCase();
+  const isSqliteStore = storeExtension === ".sqlite" || storeExtension === ".db";
+  if (!params.storePathIsDirectory && isSqliteStore) {
+    try {
+      for (const { sessionKey } of inspectSessionStoreEntriesReadOnly({
+        storePath: params.storePath,
+      })) {
+        if (sessionKey.trim()) {
+          keys.add(sessionKey);
+        }
+      }
+    } catch {
+      // Fall through to the explicit legacy JSON shapes below.
+    }
+  }
+  const candidates = [
+    ...new Set(
+      params.storePathIsDirectory || isSqliteStore
+        ? [path.join(params.sidecarDir, "sessions.json")]
+        : [params.storePath, path.join(params.sidecarDir, "sessions.json")],
+    ),
+  ];
   for (const candidate of candidates) {
     try {
       const parsed = JSON.parse(await fs.readFile(candidate, "utf8")) as unknown;
@@ -93,12 +145,16 @@ async function listKnownSessionKeys(storePath: string): Promise<string[]> {
         !Array.isArray((parsed as { sessions?: unknown }).sessions)
           ? (parsed as { sessions: Record<string, unknown> }).sessions
           : (parsed as Record<string, unknown>);
-      return Object.keys(sessions).filter((key) => key.trim());
+      for (const key of Object.keys(sessions)) {
+        if (key.trim()) {
+          keys.add(key);
+        }
+      }
     } catch {
       // Try the next known session index shape/location.
     }
   }
-  return [];
+  return [...keys];
 }
 
 function resolveLegacySanitizedSessionKey(
@@ -227,14 +283,19 @@ async function listLegacyLearningFiles(
 ): Promise<
   Array<{ storePath: string; sessionKey: string | null; filePath: string; learnings: string[] }>
 > {
+  const layout = await resolveLegacyLearningSidecarDir(storePath);
   let entries: Dirent[];
   try {
-    entries = await fs.readdir(storePath, { withFileTypes: true });
+    entries = await fs.readdir(layout.sidecarDir, { withFileTypes: true });
   } catch {
     return [];
   }
   const suffix = ".learnings.json";
-  const knownSessionKeys = await listKnownSessionKeys(storePath);
+  const knownSessionKeys = await listKnownSessionKeys({
+    sidecarDir: layout.sidecarDir,
+    storePath,
+    storePathIsDirectory: layout.storePathIsDirectory,
+  });
   const files: Array<{
     storePath: string;
     sessionKey: string | null;
@@ -249,7 +310,7 @@ async function listLegacyLearningFiles(
     const sessionKey =
       resolveLearningSessionKey(fileStem) ??
       resolveLegacySanitizedSessionKey(fileStem, knownSessionKeys);
-    const filePath = path.join(storePath, entry.name);
+    const filePath = path.join(layout.sidecarDir, entry.name);
     try {
       const parsed = JSON.parse(await fs.readFile(filePath, "utf8")) as unknown;
       if (Array.isArray(parsed)) {

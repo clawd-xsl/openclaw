@@ -1,7 +1,12 @@
 // Msteams tests cover monitor handler.feedback authz plugin behavior.
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import {
+  clearSessionStoreCacheForTest,
+  upsertSessionEntry,
+} from "openclaw/plugin-sdk/session-store-runtime";
+import { readSessionTranscriptEvents } from "openclaw/plugin-sdk/session-transcript-runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig, PluginRuntime, RuntimeEnv } from "../runtime-api.js";
 import { runMSTeamsFeedbackInvokeHandler } from "./feedback-invoke.js";
@@ -126,33 +131,43 @@ function createFeedbackInvokeContext(params: {
   } as unknown as MSTeamsTurnContext;
 }
 
-async function expectFileMissing(filePath: string) {
-  let error: unknown;
-  try {
-    await access(filePath);
-  } catch (caught) {
-    error = caught;
-  }
-  expect(error).toBeInstanceOf(Error);
-  expect((error as NodeJS.ErrnoException).code).toBe("ENOENT");
-}
-
 async function withFeedbackHandler(params: {
   cfg: OpenClawConfig;
   context: Parameters<typeof createFeedbackInvokeContext>[0];
-  assertResult: (args: { tmpDir: string }) => Promise<void>;
+  sessionKey: string;
+  assertResult: (args: {
+    events: unknown[];
+    sessionId: string;
+    storePath: string;
+    tmpDir: string;
+  }) => Promise<void>;
 }) {
   const tmpDir = await mkdtemp(path.join(tmpdir(), "openclaw-msteams-feedback-"));
   try {
+    const storePath = path.join(tmpDir, "sessions.sqlite");
+    const sessionId = "feedback-session";
+    await upsertSessionEntry({
+      agentId: "default",
+      entry: { sessionId, updatedAt: 1 },
+      sessionKey: params.sessionKey,
+      storePath,
+    });
     const deps = createDeps({
       cfg: {
         ...params.cfg,
-        session: { store: tmpDir },
+        session: { store: storePath },
       },
     });
     await runMSTeamsFeedbackInvokeHandler(createFeedbackInvokeContext(params.context), deps);
-    await params.assertResult({ tmpDir });
+    const events = await readSessionTranscriptEvents({
+      agentId: "default",
+      sessionId,
+      sessionKey: params.sessionKey,
+      storePath,
+    });
+    await params.assertResult({ events, sessionId, storePath, tmpDir });
   } finally {
+    clearSessionStoreCacheForTest();
     await rm(tmpDir, { recursive: true, force: true });
   }
 }
@@ -181,12 +196,10 @@ describe("msteams feedback invoke authz", () => {
         senderName: "Owner",
         comment: "allowed feedback",
       },
-      assertResult: async ({ tmpDir }) => {
-        const transcript = await readFile(
-          path.join(tmpDir, "msteams_direct_owner-aad.jsonl"),
-          "utf-8",
-        );
-        const event = JSON.parse(transcript.trim()) as Record<string, unknown>;
+      sessionKey: "msteams:direct:owner-aad",
+      assertResult: async ({ events, sessionId, tmpDir }) => {
+        expect(events).toHaveLength(1);
+        const event = events[0] as Record<string, unknown>;
         expect(Object.keys(event).toSorted()).toEqual([
           "agentId",
           "comment",
@@ -210,6 +223,7 @@ describe("msteams feedback invoke authz", () => {
           agentId: "default",
           conversationId: "a:personal-chat",
         });
+        await expect(access(path.join(tmpDir, `${sessionId}.jsonl`))).resolves.toBeUndefined();
       },
     });
   });
@@ -239,12 +253,10 @@ describe("msteams feedback invoke authz", () => {
         senderName: "Owner",
         comment: "allowed dm feedback",
       },
-      assertResult: async ({ tmpDir }) => {
-        const transcript = await readFile(
-          path.join(tmpDir, "msteams_direct_owner-aad.jsonl"),
-          "utf-8",
-        );
-        const event = JSON.parse(transcript.trim()) as Record<string, unknown>;
+      sessionKey: "msteams:direct:owner-aad",
+      assertResult: async ({ events }) => {
+        expect(events).toHaveLength(1);
+        const event = events[0] as Record<string, unknown>;
         expect(Object.keys(event).toSorted()).toEqual([
           "agentId",
           "comment",
@@ -290,8 +302,9 @@ describe("msteams feedback invoke authz", () => {
         senderName: "Attacker",
         comment: "blocked feedback",
       },
-      assertResult: async ({ tmpDir }) => {
-        await expectFileMissing(path.join(tmpDir, "msteams_direct_attacker-aad.jsonl"));
+      sessionKey: "msteams:direct:attacker-aad",
+      assertResult: async ({ events }) => {
+        expect(events).toEqual([]);
         expect(feedbackReflectionMockState.runFeedbackReflection).not.toHaveBeenCalled();
       },
     });
@@ -300,9 +313,18 @@ describe("msteams feedback invoke authz", () => {
   it("does not trigger reflection for a group sender outside groupAllowFrom", async () => {
     const tmpDir = await mkdtemp(path.join(tmpdir(), "openclaw-msteams-feedback-"));
     try {
+      const storePath = path.join(tmpDir, "sessions.sqlite");
+      const sessionKey = "msteams:group:19:group@thread.tacv2";
+      const sessionId = "blocked-group-feedback-session";
+      await upsertSessionEntry({
+        agentId: "default",
+        entry: { sessionId, updatedAt: 1 },
+        sessionKey,
+        storePath,
+      });
       const deps = createDeps({
         cfg: {
-          session: { store: tmpDir },
+          session: { store: storePath },
           channels: {
             msteams: {
               groupPolicy: "allowlist",
@@ -327,9 +349,17 @@ describe("msteams feedback invoke authz", () => {
         deps,
       );
 
-      await expectFileMissing(path.join(tmpDir, "msteams_group_19_group_thread_tacv2.jsonl"));
+      await expect(
+        readSessionTranscriptEvents({
+          agentId: "default",
+          sessionId,
+          sessionKey,
+          storePath,
+        }),
+      ).resolves.toEqual([]);
       expect(feedbackReflectionMockState.runFeedbackReflection).not.toHaveBeenCalled();
     } finally {
+      clearSessionStoreCacheForTest();
       await rm(tmpDir, { recursive: true, force: true });
     }
   });

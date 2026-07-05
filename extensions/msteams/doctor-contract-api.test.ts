@@ -11,6 +11,10 @@ import type {
   OpenKeyedStoreOptions,
   PluginDoctorStateMigrationContext,
 } from "openclaw/plugin-sdk/runtime-doctor";
+import {
+  clearSessionStoreCacheForTest,
+  upsertSessionEntry,
+} from "openclaw/plugin-sdk/session-store-runtime";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { stateMigrations } from "./doctor-contract-api.js";
 import {
@@ -73,6 +77,7 @@ describe("msteams doctor state migration", () => {
   });
 
   afterEach(async () => {
+    clearSessionStoreCacheForTest();
     await fs.rm(stateDir, { recursive: true, force: true });
   });
 
@@ -345,6 +350,65 @@ describe("msteams doctor state migration", () => {
     ).resolves.toMatchObject({
       sessionKey: sanitizedSessionKey,
       learnings: ["Prefer cards for channel feedback"],
+    });
+  });
+
+  it("imports feedback learnings beside the default SQLite session store", async () => {
+    const sessionsDir = path.join(stateDir, "agents", "main", "sessions");
+    const storePath = path.join(sessionsDir, "sessions.sqlite");
+    const sessionKey = "msteams:channel:19:sqlite@thread.tacv2";
+    const sourcePath = path.join(
+      sessionsDir,
+      "msteams_channel_19_sqlite_thread_tacv2.learnings.json",
+    );
+    await upsertSessionEntry({
+      agentId: "main",
+      entry: { sessionId: "sqlite-feedback-session", updatedAt: 1 },
+      env,
+      sessionKey,
+      storePath,
+    });
+    await fs.writeFile(sourcePath, JSON.stringify(["Prefer concise cards"]));
+
+    const migration = migrationById("msteams-feedback-learnings-json-to-plugin-state");
+    const context = createDoctorContext(env);
+    await expect(
+      migration.detectLegacyState({
+        config: {},
+        env,
+        stateDir,
+        oauthDir: path.join(stateDir, "oauth"),
+        context,
+      }),
+    ).resolves.toMatchObject({
+      preview: [expect.stringContaining("1 file")],
+    });
+
+    const result = await migration.migrateLegacyState({
+      config: {},
+      env,
+      stateDir,
+      oauthDir: path.join(stateDir, "oauth"),
+      context,
+    });
+
+    expect(result.warnings).toEqual([]);
+    expect(result.changes).toEqual([
+      expect.stringContaining("Migrated 1 Microsoft Teams feedback-learning entry"),
+      expect.stringContaining("Archived Microsoft Teams feedback-learning legacy source"),
+    ]);
+    await expect(fs.access(sourcePath)).rejects.toThrow();
+    await expect(fs.access(`${sourcePath}.migrated`)).resolves.toBeUndefined();
+    const store = context.openPluginStateKeyedStore<{
+      sessionKey: string;
+      learnings: string[];
+    }>({
+      namespace: "feedback-learnings",
+      maxEntries: 10_000,
+    });
+    await expect(store.lookup(learningStoreKey(storePath, sessionKey))).resolves.toMatchObject({
+      sessionKey,
+      learnings: ["Prefer concise cards"],
     });
   });
 });

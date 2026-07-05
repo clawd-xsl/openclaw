@@ -1,7 +1,7 @@
 // Msteams plugin module implements feedback invoke behavior.
-import path from "node:path";
 import { resolveThreadSessionKeys } from "openclaw/plugin-sdk/routing";
-import { appendRegularFile } from "openclaw/plugin-sdk/security-runtime";
+import { getSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
+import { appendSessionTranscriptEventByIdentity } from "openclaw/plugin-sdk/session-transcript-runtime";
 import { normalizeOptionalLowercaseString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { formatUnknownError } from "./errors.js";
 import { buildFeedbackEvent, runFeedbackReflection } from "./feedback-reflection.js";
@@ -136,15 +136,20 @@ export async function runMSTeamsFeedbackInvokeHandler(
     const storePath = core.channel.session.resolveStorePath(deps.cfg.session?.store, {
       agentId: route.agentId,
     });
-    const safeKey = route.sessionKey.replace(/[^a-zA-Z0-9_-]/g, "_");
-    const transcriptFile = path.join(storePath, `${safeKey}.jsonl`);
-    await appendRegularFile({
-      filePath: transcriptFile,
-      content: `${JSON.stringify(feedbackEvent)}\n`,
-      rejectSymlinkParents: true,
-    }).catch(() => {
-      // Best effort — transcript dir may not exist yet
-    });
+    const sessionId = getSessionEntry({
+      agentId: route.agentId,
+      sessionKey: route.sessionKey,
+      storePath,
+    })?.sessionId;
+    if (sessionId) {
+      await appendSessionTranscriptEventByIdentity({
+        agentId: route.agentId,
+        event: feedbackEvent,
+        sessionId,
+        sessionKey: route.sessionKey,
+        storePath,
+      });
+    }
   } catch {
     // Best effort
   }
