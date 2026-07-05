@@ -1,4 +1,5 @@
 // Session store loading normalizes persisted records, migrations, maintenance, and caches.
+import crypto from "node:crypto";
 import fs from "node:fs";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
@@ -30,6 +31,10 @@ import {
 } from "./store-cache.js";
 import { normalizePersistedSessionEntryShape } from "./store-entry-shape.js";
 import { normalizeStoreSessionKey, resolveSessionStoreEntry } from "./store-entry.js";
+import {
+  archiveImportedSessionStoreJson,
+  type SessionStoreJsonImportArchiveResult,
+} from "./store-json-import.js";
 import { collectSessionMaintenancePreserveKeys } from "./store-maintenance-preserve.js";
 import { resolveMaintenanceConfig } from "./store-maintenance-runtime.js";
 import {
@@ -43,12 +48,14 @@ import {
 import { applySessionStoreMigrations } from "./store-migrations.js";
 import {
   countSessionStoreSqliteEntries,
+  clearSessionStoreSqliteJsonImportArchivePending,
   importSessionStoreIntoEmptySqlite,
   isSqliteSessionStorePath,
   isSessionStoreSqliteJsonImportResolved,
   loadSessionEntryFromSqlite,
   loadSessionStoreFromSqlite,
   markSessionStoreSqliteJsonImportResolved,
+  takeSessionStoreSqliteJsonImportArchivePendingDigest,
   resolveSessionStoreJsonImportPath,
 } from "./store-sqlite.js";
 import { normalizeSessionRuntimeModelFields, type SessionEntry } from "./types.js";
@@ -71,18 +78,56 @@ function isSessionStoreRecord(value: unknown): value is Record<string, SessionEn
   return isRecord(value);
 }
 
-function loadJsonSessionStoreForSqliteImport(
-  storePath: string,
-): Record<string, SessionEntry> | undefined {
-  const jsonPath = resolveSessionStoreJsonImportPath(storePath);
-  let raw: string;
+function readOwnedJsonSessionStoreSource(jsonPath: string): string | undefined {
+  let pathStat: fs.Stats;
   try {
-    raw = fs.readFileSync(jsonPath, "utf8");
+    pathStat = fs.lstatSync(jsonPath);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return undefined;
     }
     throw error;
+  }
+  if (pathStat.isSymbolicLink()) {
+    throw new Error(
+      `Refusing to import aliased legacy JSON session store ${jsonPath}; run openclaw doctor --fix after configuring one canonical session.store path`,
+    );
+  }
+
+  let fd: number;
+  try {
+    fd = fs.openSync(jsonPath, "r");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return undefined;
+    }
+    throw error;
+  }
+  try {
+    const openedStat = fs.fstatSync(fd);
+    if (openedStat.dev !== pathStat.dev || openedStat.ino !== pathStat.ino) {
+      throw new Error(
+        `Refusing to import legacy JSON session store ${jsonPath} because its identity changed while opening it`,
+      );
+    }
+    if (openedStat.nlink > 1) {
+      throw new Error(
+        `Refusing to import hard-linked legacy JSON session store ${jsonPath}; run openclaw doctor --fix after configuring one canonical session.store path`,
+      );
+    }
+    return fs.readFileSync(fd, "utf8");
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function loadJsonSessionStoreForSqliteImport(
+  storePath: string,
+): { store: Record<string, SessionEntry>; sourceDigest: string } | undefined {
+  const jsonPath = resolveSessionStoreJsonImportPath(storePath);
+  const raw = readOwnedJsonSessionStoreSource(jsonPath);
+  if (raw === undefined) {
+    return undefined;
   }
   let parsed: unknown;
   try {
@@ -95,24 +140,52 @@ function loadJsonSessionStoreForSqliteImport(
   }
   applySessionStoreMigrations(parsed);
   normalizeSessionStore(parsed);
-  return parsed;
+  return {
+    store: parsed,
+    sourceDigest: crypto.createHash("sha256").update(raw, "utf8").digest("hex"),
+  };
 }
 
-function archiveImportedJsonSessionStore(jsonPath: string): void {
-  const archivePath = `${jsonPath}.bak.${formatSessionArchiveTimestamp()}`;
+function archiveImportedJsonSessionStore(
+  jsonPath: string,
+  expectedDigest: string,
+): SessionStoreJsonImportArchiveResult {
+  const stamp = formatSessionArchiveTimestamp();
   try {
-    fs.renameSync(jsonPath, archivePath);
+    const result = archiveImportedSessionStoreJson({
+      jsonPath,
+      expectedDigest,
+      archivePath: (nonce) => `${jsonPath}.bak.${stamp}.${nonce}`,
+      quarantinePath: (nonce) => `${jsonPath}.unimported.${stamp}.${nonce}`,
+    });
+    for (const quarantinedPath of result.quarantinedPaths) {
+      log.warn("legacy JSON session store changed after SQLite import; preserved it separately", {
+        source: jsonPath,
+        quarantinedPath,
+      });
+    }
+    return result;
   } catch (error) {
     log.warn("failed to archive imported JSON session store", {
       source: jsonPath,
-      archivePath,
       error: String(error),
     });
+    return { archivedPaths: [], quarantinedPaths: [], complete: false };
   }
 }
 
 export function ensureSqliteSessionStoreJsonImport(storePath: string): void {
   if (isSessionStoreSqliteJsonImportResolved(storePath)) {
+    const pendingDigest = takeSessionStoreSqliteJsonImportArchivePendingDigest(storePath);
+    if (pendingDigest) {
+      const archive = archiveImportedJsonSessionStore(
+        resolveSessionStoreJsonImportPath(storePath),
+        pendingDigest,
+      );
+      if (archive.complete) {
+        clearSessionStoreSqliteJsonImportArchivePending(storePath);
+      }
+    }
     return;
   }
   // A non-empty SQLite store is authoritative, including the old custom schema whose sibling
@@ -122,18 +195,20 @@ export function ensureSqliteSessionStoreJsonImport(storePath: string): void {
     return;
   }
   const imported = loadJsonSessionStoreForSqliteImport(storePath);
-  if (!imported || Object.keys(imported).length === 0) {
+  if (!imported || Object.keys(imported.store).length === 0) {
     markSessionStoreSqliteJsonImportResolved(storePath);
     return;
   }
   const source = resolveSessionStoreJsonImportPath(storePath);
-  if (importSessionStoreIntoEmptySqlite(storePath, imported)) {
+  if (importSessionStoreIntoEmptySqlite(storePath, imported.store, imported.sourceDigest)) {
     log.info("imported legacy JSON session store into SQLite", {
       source,
       target: storePath,
-      entries: Object.keys(imported).length,
+      entries: Object.keys(imported.store).length,
     });
-    archiveImportedJsonSessionStore(source);
+    if (archiveImportedJsonSessionStore(source, imported.sourceDigest).complete) {
+      clearSessionStoreSqliteJsonImportArchivePending(storePath);
+    }
     return;
   }
   // Another process won the import race. Its rows are canonical from this point forward.

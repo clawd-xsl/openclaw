@@ -1,14 +1,19 @@
 // SQLite session-store tests cover migration, hot row access, and JSON compatibility.
+import { createHash } from "node:crypto";
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { requireNodeSqlite } from "../../infra/node-sqlite.js";
 import { createSuiteTempRootTracker } from "../../test-helpers/temp-dir.js";
 import { resolveStorePath } from "./paths.js";
 import type { ResolvedSessionMaintenanceConfig } from "./store-maintenance.js";
 import {
   getSessionStoreSqliteStatsForTest,
+  inspectSessionStoreSqliteImportStateReadOnly,
+  inspectSessionStoreSqliteReadOnly,
   resetSessionStoreSqliteStatsForTest,
+  transformSessionStoreInSqliteForMigration,
 } from "./store-sqlite.js";
 import {
   clearSessionStoreCacheForTest,
@@ -25,6 +30,26 @@ const suiteRootTracker = createSuiteTempRootTracker({ prefix: "openclaw-session-
 
 function entry(sessionId: string, updatedAt = 1): SessionEntry {
   return { sessionId, updatedAt };
+}
+
+function overwriteRawEntryJson(storePath: string, sessionKey: string, entryJson: string): void {
+  const sqlite = requireNodeSqlite();
+  const db = new sqlite.DatabaseSync(storePath);
+  db.prepare("UPDATE session_entries SET entry_json = ? WHERE session_key = ?").run(
+    entryJson,
+    sessionKey,
+  );
+  db.close();
+}
+
+function readRawEntryJson(storePath: string, sessionKey: string): string | undefined {
+  const sqlite = requireNodeSqlite();
+  const db = new sqlite.DatabaseSync(storePath, { readOnly: true });
+  const row = db
+    .prepare("SELECT entry_json FROM session_entries WHERE session_key = ?")
+    .get(sessionKey) as { entry_json: string } | undefined;
+  db.close();
+  return row?.entry_json;
 }
 
 beforeAll(async () => {
@@ -93,6 +118,96 @@ describe("SQLite session store", () => {
     });
   });
 
+  it("refuses hard-linked JSON imports without creating either SQLite authority", async () => {
+    const dir = await suiteRootTracker.make("hardlink-json-import");
+    const mainDir = path.join(dir, "main");
+    const voiceDir = path.join(dir, "voice");
+    await fs.mkdir(mainDir, { recursive: true });
+    await fs.mkdir(voiceDir, { recursive: true });
+    const mainJsonPath = path.join(mainDir, "sessions.json");
+    const voiceJsonPath = path.join(voiceDir, "sessions.json");
+    const mainStorePath = path.join(mainDir, "sessions.sqlite");
+    const voiceStorePath = path.join(voiceDir, "sessions.sqlite");
+    const raw = JSON.stringify({ shared: entry("shared") });
+    await fs.writeFile(mainJsonPath, raw, "utf8");
+    await fs.link(mainJsonPath, voiceJsonPath);
+
+    expect(() => loadSessionStore(mainStorePath)).toThrow(
+      "Refusing to import hard-linked legacy JSON session store",
+    );
+    expect(() => loadSessionStore(voiceStorePath)).toThrow(
+      "Refusing to import hard-linked legacy JSON session store",
+    );
+    expect(inspectSessionStoreSqliteImportStateReadOnly(mainStorePath)).toEqual({
+      entryCount: 0,
+      jsonImportResolved: false,
+    });
+    expect(inspectSessionStoreSqliteImportStateReadOnly(voiceStorePath)).toEqual({
+      entryCount: 0,
+      jsonImportResolved: false,
+    });
+    await expect(fs.readFile(mainJsonPath, "utf8")).resolves.toBe(raw);
+    await expect(fs.readFile(voiceJsonPath, "utf8")).resolves.toBe(raw);
+  });
+
+  it("refuses a final JSON symlink without creating an SQLite authority", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+    const dir = await suiteRootTracker.make("symlink-json-import");
+    const sourcePath = path.join(dir, "shared-sessions.json");
+    const jsonPath = path.join(dir, "sessions.json");
+    const storePath = path.join(dir, "sessions.sqlite");
+    const raw = JSON.stringify({ shared: entry("shared") });
+    await fs.writeFile(sourcePath, raw, "utf8");
+    await fs.symlink(sourcePath, jsonPath);
+
+    expect(() => loadSessionStore(storePath)).toThrow(
+      "Refusing to import aliased legacy JSON session store",
+    );
+    expect(inspectSessionStoreSqliteImportStateReadOnly(storePath)).toEqual({
+      entryCount: 0,
+      jsonImportResolved: false,
+    });
+    expect((await fs.lstat(jsonPath)).isSymbolicLink()).toBe(true);
+    await expect(fs.readFile(sourcePath, "utf8")).resolves.toBe(raw);
+  });
+
+  it("retries a transient JSON archive rename failure in the same process", async () => {
+    const dir = await suiteRootTracker.make("json-archive-retry");
+    const jsonPath = path.join(dir, "sessions.json");
+    const storePath = path.join(dir, "sessions.sqlite");
+    const raw = JSON.stringify({ current: entry("current", 10) });
+    await fs.writeFile(jsonPath, raw, "utf8");
+    const originalRenameSync = fsSync.renameSync.bind(fsSync);
+    const renameSpy = vi.spyOn(fsSync, "renameSync").mockImplementation((from, to) => {
+      if (String(from) === jsonPath) {
+        const error = new Error("temporary rename failure") as NodeJS.ErrnoException;
+        error.code = "EBUSY";
+        throw error;
+      }
+      originalRenameSync(from, to);
+    });
+
+    try {
+      expect(loadSessionStore(storePath).current?.sessionId).toBe("current");
+      await expect(fs.readFile(jsonPath, "utf8")).resolves.toBe(raw);
+      expect(
+        inspectSessionStoreSqliteImportStateReadOnly(storePath).jsonImportArchivePendingDigest,
+      ).toBeDefined();
+    } finally {
+      renameSpy.mockRestore();
+    }
+
+    expect(loadSessionStore(storePath).current?.sessionId).toBe("current");
+    const names = await fs.readdir(dir);
+    expect(names).not.toContain("sessions.json");
+    expect(names.some((name) => name.startsWith("sessions.json.bak."))).toBe(true);
+    expect(
+      inspectSessionStoreSqliteImportStateReadOnly(storePath).jsonImportArchivePendingDigest,
+    ).toBeUndefined();
+  });
+
   it("reads updatedAt from the keyed SQLite column", async () => {
     const dir = await suiteRootTracker.make("updated-at");
     const storePath = path.join(dir, "sessions.sqlite");
@@ -144,6 +259,150 @@ describe("SQLite session store", () => {
     await fs.writeFile(jsonPath, JSON.stringify({ [sessionKey]: entry("recovered") }), "utf8");
 
     expect(readSessionEntry(storePath, sessionKey)?.sessionId).toBe("recovered");
+  });
+
+  it("does not import JSON that appears after an empty store was resolved", async () => {
+    const dir = await suiteRootTracker.make("late-json");
+    const jsonPath = path.join(dir, "sessions.json");
+    const storePath = path.join(dir, "sessions.sqlite");
+    const sessionKey = "agent:main:main";
+
+    expect(loadSessionStore(storePath)).toEqual({});
+    await fs.writeFile(jsonPath, JSON.stringify({ [sessionKey]: entry("late") }), "utf8");
+    clearSessionStoreCacheForTest();
+
+    expect(loadSessionStore(storePath)).toEqual({});
+    await expect(fs.readFile(jsonPath, "utf8")).resolves.toContain("late");
+  });
+
+  it("keeps current SQLite rows when a migration fallback loses the import race", async () => {
+    const dir = await suiteRootTracker.make("migration-race");
+    const storePath = path.join(dir, "sessions.sqlite");
+    await saveSessionStore(storePath, { current: entry("current", 10) }, { skipMaintenance: true });
+
+    const transformed = transformSessionStoreInSqliteForMigration({
+      storePath,
+      fallbackStore: { stale: entry("stale", 1) },
+      fallbackSourceDigest: "stale-digest",
+      transform: (store) => ({
+        store: { ...store, migrated: entry("migrated", 11) },
+        result: Object.keys(store),
+      }),
+    });
+
+    expect(transformed.adoptedFallbackStore).toBe(false);
+    expect(transformed.jsonImportArchivePendingDigest).toBeUndefined();
+    expect(transformed.result).toEqual(["current"]);
+    expect(loadSessionStore(storePath, { skipCache: true })).toMatchObject({
+      current: { sessionId: "current" },
+      migrated: { sessionId: "migrated" },
+    });
+    expect(readSessionEntry(storePath, "stale")).toBeUndefined();
+  });
+
+  it("resumes JSON archival staged by a crashed importer", async () => {
+    const dir = await suiteRootTracker.make("import-archive-restart");
+    const jsonPath = path.join(dir, "sessions.json");
+    const storePath = path.join(dir, "sessions.sqlite");
+    const raw = JSON.stringify({ current: entry("current", 10) });
+    await fs.writeFile(jsonPath, raw, "utf8");
+    transformSessionStoreInSqliteForMigration({
+      storePath,
+      fallbackStore: { current: entry("current", 10) },
+      fallbackSourceDigest: createHash("sha256").update(raw).digest("hex"),
+      transform: (store) => ({ store, result: undefined }),
+    });
+    const stagedPath = `${jsonPath}.archive-pending.crashed-process`;
+    await fs.rename(jsonPath, stagedPath);
+    clearSessionStoreCacheForTest();
+
+    expect(loadSessionStore(storePath).current?.sessionId).toBe("current");
+    const names = await fs.readdir(dir);
+    expect(names).not.toContain(path.basename(stagedPath));
+    expect(names.some((name) => name.startsWith("sessions.json.bak."))).toBe(true);
+    expect(
+      inspectSessionStoreSqliteImportStateReadOnly(storePath).jsonImportArchivePendingDigest,
+    ).toBeUndefined();
+  });
+
+  it("rejects corrupt migration rows instead of silently dropping them", async () => {
+    const dir = await suiteRootTracker.make("strict-migration-read");
+    const storePath = path.join(dir, "sessions.sqlite");
+    await saveSessionStore(storePath, { corrupt: entry("corrupt") }, { skipMaintenance: true });
+    clearSessionStoreCacheForTest();
+
+    const sqlite = requireNodeSqlite();
+    const db = new sqlite.DatabaseSync(storePath);
+    db.prepare("UPDATE session_entries SET entry_json = ? WHERE session_key = ?").run(
+      "{",
+      "corrupt",
+    );
+    db.close();
+
+    expect(() => inspectSessionStoreSqliteReadOnly(storePath)).toThrow(
+      "invalid JSON for session key corrupt",
+    );
+    expect(() =>
+      transformSessionStoreInSqliteForMigration({
+        storePath,
+        transform: (store) => ({ store, result: undefined }),
+      }),
+    ).toThrow("invalid JSON for session key corrupt");
+  });
+
+  it("fails closed when a full store read encounters malformed entry JSON", async () => {
+    const dir = await suiteRootTracker.make("strict-full-read");
+    const storePath = path.join(dir, "sessions.sqlite");
+    await saveSessionStore(
+      storePath,
+      { healthy: entry("healthy"), corrupt: entry("corrupt") },
+      { skipMaintenance: true },
+    );
+    clearSessionStoreCacheForTest();
+    overwriteRawEntryJson(storePath, "corrupt", "{");
+
+    expect(() => loadSessionStore(storePath, { skipCache: true })).toThrow(
+      "invalid JSON for session key corrupt",
+    );
+  });
+
+  it("fails closed when a point read encounters malformed entry JSON", async () => {
+    const dir = await suiteRootTracker.make("strict-point-read");
+    const storePath = path.join(dir, "sessions.sqlite");
+    await saveSessionStore(storePath, { corrupt: entry("corrupt") }, { skipMaintenance: true });
+    clearSessionStoreCacheForTest();
+    overwriteRawEntryJson(storePath, "corrupt", "{");
+
+    expect(() => readSessionEntry(storePath, "corrupt")).toThrow(
+      "invalid JSON for session key corrupt",
+    );
+  });
+
+  it("preserves malformed rows when an update requires a full store read", async () => {
+    const dir = await suiteRootTracker.make("strict-update-read");
+    const storePath = path.join(dir, "sessions.sqlite");
+    await saveSessionStore(
+      storePath,
+      { healthy: entry("healthy"), corrupt: entry("corrupt") },
+      { skipMaintenance: true },
+    );
+    clearSessionStoreCacheForTest();
+    overwriteRawEntryJson(storePath, "corrupt", "{");
+
+    await expect(
+      updateSessionStoreEntry({
+        storePath,
+        sessionKey: "healthy",
+        update: () => ({ updatedAt: 2 }),
+      }),
+    ).rejects.toThrow("invalid JSON for session key corrupt");
+
+    clearSessionStoreCacheForTest();
+    expect(readRawEntryJson(storePath, "corrupt")).toBe("{");
+    expect(JSON.parse(readRawEntryJson(storePath, "healthy") ?? "null")).toMatchObject({
+      sessionId: "healthy",
+      updatedAt: 1,
+    });
   });
 
   it("migrates the legacy normalized_key schema without folding future keys", async () => {

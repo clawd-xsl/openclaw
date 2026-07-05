@@ -40,6 +40,7 @@ type SessionStoreDatabase = {
 type SessionStoreHandle = {
   db: DatabaseSync;
   importResolved: boolean;
+  jsonImportArchiveChecked: boolean;
   path: string;
   walMaintenance: SqliteWalMaintenance;
 };
@@ -50,10 +51,20 @@ type PersistedSessionEntry = {
   serialized: string;
 };
 
+export type SessionStoreSqliteReadOnlySnapshot = {
+  store: Record<string, SessionEntry>;
+  entryCount: number;
+  jsonImportResolved: boolean;
+  jsonImportArchivePendingDigest?: string;
+};
+
+export type SessionStoreSqliteImportState = Omit<SessionStoreSqliteReadOnlySnapshot, "store">;
+
 const SESSION_STORE_SCHEMA_VERSION = 1;
 const SESSION_STORE_DIR_MODE = 0o700;
 const SESSION_STORE_FILE_MODE = 0o600;
 const JSON_IMPORT_META_KEY = "json-import-v1";
+const JSON_IMPORT_ARCHIVE_PENDING_META_KEY = "json-import-archive-pending-v1";
 const handles = new Map<string, SessionStoreHandle>();
 const testStats = {
   selectAll: 0,
@@ -141,10 +152,7 @@ function migrateLegacyCustomSchema(db: DatabaseSync): void {
 }
 
 function ensureSchema(db: DatabaseSync, databasePath: string): void {
-  const userVersion = Number(
-    (db.prepare("PRAGMA user_version").get() as { user_version?: number } | undefined)
-      ?.user_version ?? 0,
-  );
+  const userVersion = Number(db.prepare("PRAGMA user_version").get()?.user_version ?? 0);
   if (userVersion > SESSION_STORE_SCHEMA_VERSION) {
     throw new Error(
       `Session store ${databasePath} uses newer schema version ${userVersion}; this build supports ${SESSION_STORE_SCHEMA_VERSION}.`,
@@ -163,17 +171,30 @@ function ensureSchema(db: DatabaseSync, databasePath: string): void {
   db.exec(`PRAGMA user_version = ${SESSION_STORE_SCHEMA_VERSION}`);
 }
 
-function hasResolvedJsonImport(db: DatabaseSync): boolean {
+function hasSessionStoreMetaValue(db: DatabaseSync, metaKey: string, value: string): boolean {
   const kysely = getNodeSqliteKysely<SessionStoreDatabase>(db);
   return (
     executeSqliteQueryTakeFirstSync(
       db,
-      kysely
-        .selectFrom("session_store_meta")
-        .select("value_text")
-        .where("meta_key", "=", JSON_IMPORT_META_KEY),
-    )?.value_text === "resolved"
+      kysely.selectFrom("session_store_meta").select("value_text").where("meta_key", "=", metaKey),
+    )?.value_text === value
   );
+}
+
+function hasResolvedJsonImport(db: DatabaseSync): boolean {
+  return hasSessionStoreMetaValue(db, JSON_IMPORT_META_KEY, "resolved");
+}
+
+function readPendingJsonImportArchiveDigest(db: DatabaseSync): string | undefined {
+  const kysely = getNodeSqliteKysely<SessionStoreDatabase>(db);
+  const value = executeSqliteQueryTakeFirstSync(
+    db,
+    kysely
+      .selectFrom("session_store_meta")
+      .select("value_text")
+      .where("meta_key", "=", JSON_IMPORT_ARCHIVE_PENDING_META_KEY),
+  )?.value_text;
+  return value?.trim() || undefined;
 }
 
 function writeResolvedJsonImport(db: DatabaseSync): void {
@@ -186,6 +207,26 @@ function writeResolvedJsonImport(db: DatabaseSync): void {
       .onConflict((conflict) =>
         conflict.column("meta_key").doUpdateSet({
           value_text: "resolved",
+          updated_at: Date.now(),
+        }),
+      ),
+  );
+}
+
+function writePendingJsonImportArchive(db: DatabaseSync, sourceDigest: string): void {
+  const kysely = getNodeSqliteKysely<SessionStoreDatabase>(db);
+  executeSqliteQuerySync(
+    db,
+    kysely
+      .insertInto("session_store_meta")
+      .values({
+        meta_key: JSON_IMPORT_ARCHIVE_PENDING_META_KEY,
+        value_text: sourceDigest,
+        updated_at: Date.now(),
+      })
+      .onConflict((conflict) =>
+        conflict.column("meta_key").doUpdateSet({
+          value_text: sourceDigest,
           updated_at: Date.now(),
         }),
       ),
@@ -231,6 +272,7 @@ function openSessionStore(storePath: string): SessionStoreHandle {
   const handle = {
     db,
     importResolved: hasResolvedJsonImport(db),
+    jsonImportArchiveChecked: false,
     path: databasePath,
     walMaintenance,
   };
@@ -249,6 +291,37 @@ function parseEntry(serialized: string): SessionEntry | undefined {
   }
 }
 
+function parseEntryStrict(params: {
+  databasePath: string;
+  sessionKey: string;
+  serialized: string;
+}): SessionEntry {
+  const entry = parseEntry(params.serialized);
+  if (!entry) {
+    throw new Error(
+      `Session store ${params.databasePath} has invalid JSON for session key ${params.sessionKey}.`,
+    );
+  }
+  return entry;
+}
+
+function sqliteTableExists(db: DatabaseSync, tableName: string): boolean {
+  return (
+    db
+      .prepare("SELECT 1 AS ok FROM sqlite_master WHERE type = 'table' AND name = ?")
+      .get(tableName) !== undefined
+  );
+}
+
+function assertSupportedReadOnlySchema(db: DatabaseSync, databasePath: string): void {
+  const userVersion = Number(db.prepare("PRAGMA user_version").get()?.user_version ?? 0);
+  if (userVersion > SESSION_STORE_SCHEMA_VERSION) {
+    throw new Error(
+      `Session store ${databasePath} uses newer schema version ${userVersion}; this build supports ${SESSION_STORE_SCHEMA_VERSION}.`,
+    );
+  }
+}
+
 export function countSessionStoreSqliteEntries(storePath: string): number {
   const { db } = openSessionStore(storePath);
   const kysely = getNodeSqliteKysely<SessionStoreDatabase>(db);
@@ -256,11 +329,27 @@ export function countSessionStoreSqliteEntries(storePath: string): number {
     db,
     kysely.selectFrom("session_entries").select((eb) => eb.fn.countAll<number>().as("count")),
   );
-  return Number(row?.count ?? 0);
+  return row?.count ?? 0;
 }
 
 export function isSessionStoreSqliteJsonImportResolved(storePath: string): boolean {
   return openSessionStore(storePath).importResolved;
+}
+
+export function takeSessionStoreSqliteJsonImportArchivePendingDigest(
+  storePath: string,
+): string | undefined {
+  const handle = openSessionStore(storePath);
+  if (handle.jsonImportArchiveChecked) {
+    return undefined;
+  }
+  const digest = readPendingJsonImportArchiveDigest(handle.db);
+  // Keep retrying a pending archive in this process until cleanup succeeds.
+  // A transient rename failure must not require a restart to release the JSON source.
+  if (!digest) {
+    handle.jsonImportArchiveChecked = true;
+  }
+  return digest;
 }
 
 export function markSessionStoreSqliteJsonImportResolved(storePath: string): void {
@@ -273,7 +362,7 @@ export function markSessionStoreSqliteJsonImportResolved(storePath: string): voi
 }
 
 export function loadSessionStoreFromSqlite(storePath: string): Record<string, SessionEntry> {
-  const { db } = openSessionStore(storePath);
+  const { db, path: databasePath } = openSessionStore(storePath);
   const kysely = getNodeSqliteKysely<SessionStoreDatabase>(db);
   testStats.selectAll += 1;
   const rows = executeSqliteQuerySync(
@@ -284,28 +373,213 @@ export function loadSessionStoreFromSqlite(storePath: string): Record<string, Se
       .orderBy("updated_at", "desc")
       .orderBy("session_key", "asc"),
   ).rows;
-  const store: Record<string, SessionEntry> = {};
+  const store = Object.create(null) as Record<string, SessionEntry>;
   for (const row of rows) {
-    const entry = parseEntry(row.entry_json);
-    if (entry) {
-      store[row.session_key] = entry;
-    }
+    store[row.session_key] = parseEntryStrict({
+      databasePath,
+      sessionKey: row.session_key,
+      serialized: row.entry_json,
+    });
   }
   return store;
+}
+
+/** Inspects an existing session DB without schema writes, import markers, or JSON archival. */
+export function inspectSessionStoreSqliteReadOnly(
+  storePath: string,
+): SessionStoreSqliteReadOnlySnapshot {
+  const databasePath = path.resolve(storePath);
+  const sqlite = requireNodeSqlite();
+  const db = new sqlite.DatabaseSync(databasePath, { readOnly: true });
+  try {
+    assertSupportedReadOnlySchema(db, databasePath);
+    if (!sqliteTableExists(db, "session_entries")) {
+      return {
+        store: {},
+        entryCount: 0,
+        jsonImportResolved: false,
+        jsonImportArchivePendingDigest: undefined,
+      };
+    }
+    const kysely = getNodeSqliteKysely<SessionStoreDatabase>(db);
+    const rows = executeSqliteQuerySync(
+      db,
+      kysely
+        .selectFrom("session_entries")
+        .select(["session_key", "entry_json"])
+        .orderBy("session_key", "asc"),
+    ).rows;
+    const store = Object.create(null) as Record<string, SessionEntry>;
+    for (const row of rows) {
+      store[row.session_key] = parseEntryStrict({
+        databasePath,
+        sessionKey: row.session_key,
+        serialized: row.entry_json,
+      });
+    }
+    const jsonImportResolved = sqliteTableExists(db, "session_store_meta")
+      ? hasResolvedJsonImport(db)
+      : false;
+    const jsonImportArchivePendingDigest = sqliteTableExists(db, "session_store_meta")
+      ? readPendingJsonImportArchiveDigest(db)
+      : undefined;
+    return {
+      store,
+      entryCount: rows.length,
+      jsonImportResolved,
+      ...(jsonImportArchivePendingDigest ? { jsonImportArchivePendingDigest } : {}),
+    };
+  } finally {
+    clearNodeSqliteKyselyCacheForDatabase(db);
+    db.close();
+  }
+}
+
+/** Reads only SQLite import metadata and row count; it never deserializes session entries. */
+export function inspectSessionStoreSqliteImportStateReadOnly(
+  storePath: string,
+): SessionStoreSqliteImportState {
+  const databasePath = path.resolve(storePath);
+  const sqlite = requireNodeSqlite();
+  const db = new sqlite.DatabaseSync(databasePath, { readOnly: true });
+  try {
+    assertSupportedReadOnlySchema(db, databasePath);
+    if (!sqliteTableExists(db, "session_entries")) {
+      return { entryCount: 0, jsonImportResolved: false };
+    }
+    const kysely = getNodeSqliteKysely<SessionStoreDatabase>(db);
+    const entryCount =
+      executeSqliteQueryTakeFirstSync(
+        db,
+        kysely.selectFrom("session_entries").select((eb) => eb.fn.countAll<number>().as("count")),
+      )?.count ?? 0;
+    const hasMeta = sqliteTableExists(db, "session_store_meta");
+    const jsonImportArchivePendingDigest = hasMeta
+      ? readPendingJsonImportArchiveDigest(db)
+      : undefined;
+    return {
+      entryCount,
+      jsonImportResolved: hasMeta ? hasResolvedJsonImport(db) : false,
+      ...(jsonImportArchivePendingDigest ? { jsonImportArchivePendingDigest } : {}),
+    };
+  } finally {
+    clearNodeSqliteKyselyCacheForDatabase(db);
+    db.close();
+  }
+}
+
+/**
+ * Applies a doctor migration under one SQLite writer transaction.
+ *
+ * The fallback is adopted only when the database is still empty and its JSON import decision has
+ * not been resolved. This keeps rows written by another process between detection and repair.
+ */
+export function transformSessionStoreInSqliteForMigration<T>(params: {
+  storePath: string;
+  fallbackStore?: Record<string, SessionEntry>;
+  fallbackSourceDigest?: string;
+  transform: (store: Record<string, SessionEntry>) => {
+    store: Record<string, SessionEntry>;
+    result: T;
+  };
+}): {
+  adoptedFallbackStore: boolean;
+  jsonImportArchivePendingDigest?: string;
+  result: T;
+} {
+  const handle = openSessionStore(params.storePath);
+  const databasePath = path.resolve(params.storePath);
+  let adoptedFallbackStore = false;
+  let jsonImportArchivePendingDigest: string | undefined;
+  const result = runSqliteImmediateTransactionSync(handle.db, () => {
+    const kysely = getNodeSqliteKysely<SessionStoreDatabase>(handle.db);
+    const rows = executeSqliteQuerySync(
+      handle.db,
+      kysely
+        .selectFrom("session_entries")
+        .select(["session_key", "entry_json"])
+        .orderBy("session_key", "asc"),
+    ).rows;
+    const currentStore = Object.create(null) as Record<string, SessionEntry>;
+    for (const row of rows) {
+      currentStore[row.session_key] = parseEntryStrict({
+        databasePath,
+        sessionKey: row.session_key,
+        serialized: row.entry_json,
+      });
+    }
+    const importResolved = hasResolvedJsonImport(handle.db);
+    const archivePendingDigest = readPendingJsonImportArchiveDigest(handle.db);
+    const fallbackStore = params.fallbackStore;
+    const fallbackSourceDigest = params.fallbackSourceDigest;
+    const shouldAdoptFallback =
+      rows.length === 0 &&
+      !importResolved &&
+      fallbackStore !== undefined &&
+      fallbackSourceDigest !== undefined;
+    adoptedFallbackStore = shouldAdoptFallback;
+    const transformed = params.transform(shouldAdoptFallback ? fallbackStore : currentStore);
+    const entries = Object.entries(transformed.store).map(([sessionKey, entry]) =>
+      toPersistedEntry(sessionKey, entry),
+    );
+    const nextKeys = new Set(entries.map((entry) => entry.sessionKey));
+    deleteSessionKeys(
+      handle.db,
+      rows.map((row) => row.session_key).filter((key) => !nextKeys.has(key)),
+    );
+    const serializedByKey = new Map(rows.map((row) => [row.session_key, row.entry_json]));
+    upsertPersistedEntries(
+      handle.db,
+      entries.filter((entry) => serializedByKey.get(entry.sessionKey) !== entry.serialized),
+    );
+    if (!importResolved) {
+      writeResolvedJsonImport(handle.db);
+    }
+    if (shouldAdoptFallback && fallbackSourceDigest !== undefined) {
+      writePendingJsonImportArchive(handle.db, fallbackSourceDigest);
+    }
+    jsonImportArchivePendingDigest = shouldAdoptFallback
+      ? fallbackSourceDigest
+      : archivePendingDigest;
+    return transformed.result;
+  });
+  handle.importResolved = true;
+  hardenDatabaseFiles(databasePath);
+  return {
+    adoptedFallbackStore,
+    ...(jsonImportArchivePendingDigest ? { jsonImportArchivePendingDigest } : {}),
+    result,
+  };
+}
+
+export function clearSessionStoreSqliteJsonImportArchivePending(storePath: string): void {
+  const handle = openSessionStore(storePath);
+  runSqliteImmediateTransactionSync(handle.db, () => {
+    const kysely = getNodeSqliteKysely<SessionStoreDatabase>(handle.db);
+    executeSqliteQuerySync(
+      handle.db,
+      kysely
+        .deleteFrom("session_store_meta")
+        .where("meta_key", "=", JSON_IMPORT_ARCHIVE_PENDING_META_KEY),
+    );
+  });
+  handle.jsonImportArchiveChecked = true;
 }
 
 export function loadSessionEntryFromSqlite(
   storePath: string,
   sessionKey: string,
 ): SessionEntry | undefined {
-  const { db } = openSessionStore(storePath);
+  const { db, path: databasePath } = openSessionStore(storePath);
   const kysely = getNodeSqliteKysely<SessionStoreDatabase>(db);
   testStats.selectByKey += 1;
   const row = executeSqliteQueryTakeFirstSync(
     db,
     kysely.selectFrom("session_entries").select("entry_json").where("session_key", "=", sessionKey),
   );
-  return row ? parseEntry(row.entry_json) : undefined;
+  return row
+    ? parseEntryStrict({ databasePath, sessionKey, serialized: row.entry_json })
+    : undefined;
 }
 
 export function readSessionUpdatedAtFromSqlite(
@@ -432,6 +706,7 @@ export function saveSessionStoreToSqlite(
 export function importSessionStoreIntoEmptySqlite(
   storePath: string,
   store: Record<string, SessionEntry>,
+  sourceDigest: string,
 ): boolean {
   const { db } = openSessionStore(storePath);
   const entries = Object.entries(store).map(([sessionKey, entry]) =>
@@ -443,15 +718,18 @@ export function importSessionStoreIntoEmptySqlite(
       db,
       kysely.selectFrom("session_entries").select((eb) => eb.fn.countAll<number>().as("count")),
     );
-    if (Number(existing?.count ?? 0) > 0) {
+    if ((existing?.count ?? 0) > 0 || hasResolvedJsonImport(db)) {
       return false;
     }
     upsertPersistedEntries(db, entries);
     writeResolvedJsonImport(db);
+    writePendingJsonImportArchive(db, sourceDigest);
     return true;
   });
   if (imported) {
-    openSessionStore(storePath).importResolved = true;
+    const handle = openSessionStore(storePath);
+    handle.importResolved = true;
+    handle.jsonImportArchiveChecked = false;
   }
   return imported;
 }
