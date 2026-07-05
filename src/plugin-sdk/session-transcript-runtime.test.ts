@@ -12,6 +12,7 @@ import {
   formatSessionTranscriptMemoryHitKey,
   parseSessionTranscriptMemoryHitKey,
   publishSessionTranscriptUpdateByIdentity,
+  readBoundedSessionTranscriptEvents,
   readLatestAssistantTextByIdentity,
   readSessionTranscriptEvents,
   resolveSessionTranscriptIdentity,
@@ -166,6 +167,54 @@ describe("session transcript runtime SDK", () => {
     );
 
     await expect(readSessionTranscriptEvents(scope)).resolves.toEqual([firstEvent, secondEvent]);
+  });
+
+  it("reads bounded transcript head and tail windows without retaining the middle", async () => {
+    const scope = {
+      agentId: "main",
+      sessionFile: path.join(tempDir, "bounded-session.jsonl"),
+      sessionId: "bounded-session",
+      sessionKey: "agent:main:main",
+      storePath,
+    };
+    const events = Array.from({ length: 12 }, (_, index) => ({
+      id: `event-${index}`,
+      padding: "x".repeat(96),
+      type: "message",
+    }));
+    fs.writeFileSync(
+      scope.sessionFile,
+      `${events.map((event) => JSON.stringify(event)).join("\n")}\n`,
+    );
+
+    await expect(
+      readBoundedSessionTranscriptEvents({ ...scope, maxBytes: 900, maxEvents: 5 }),
+    ).resolves.toEqual({
+      events: [events[0], ...events.slice(-4)],
+      truncated: true,
+    });
+  });
+
+  it("bounds event count even when the transcript fits the byte budget", async () => {
+    const scope = {
+      agentId: "main",
+      sessionFile: path.join(tempDir, "bounded-event-count.jsonl"),
+      sessionId: "bounded-event-count",
+      sessionKey: "agent:main:main",
+      storePath,
+    };
+    const events = Array.from({ length: 8 }, (_, index) => ({ id: `event-${index}` }));
+    fs.writeFileSync(
+      scope.sessionFile,
+      `${events.map((event) => JSON.stringify(event)).join("\n")}\n`,
+    );
+
+    await expect(
+      readBoundedSessionTranscriptEvents({ ...scope, maxBytes: 8_192, maxEvents: 5 }),
+    ).resolves.toEqual({
+      events: [events[0], ...events.slice(-4)],
+      truncated: true,
+    });
   });
 
   it("binds scoped reads to an explicit active transcript file without exposing it", async () => {

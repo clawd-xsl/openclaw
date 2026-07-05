@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import {
   appendTranscriptMessage,
   publishTranscriptUpdate,
@@ -8,7 +9,10 @@ import {
   type TranscriptUpdatePayload,
 } from "../config/sessions/session-accessor.js";
 import { runSessionTranscriptAppendTransaction } from "../config/sessions/transcript-append.js";
-import { streamSessionTranscriptLines } from "../config/sessions/transcript-stream.js";
+import {
+  streamSessionTranscriptLines,
+  streamSessionTranscriptLinesReverse,
+} from "../config/sessions/transcript-stream.js";
 import {
   appendAssistantMessageToSessionTranscript,
   readLatestAssistantTextFromSessionTranscript,
@@ -47,6 +51,11 @@ export type {
 
 export type SessionTranscriptEvent = unknown;
 
+export type BoundedSessionTranscriptReadResult = {
+  events: SessionTranscriptEvent[];
+  truncated: boolean;
+};
+
 export type SessionTranscriptTargetParams = SessionTranscriptReadParams & {
   /**
    * @deprecated Prefer `{ agentId, sessionKey, sessionId }`. Pass this only
@@ -54,6 +63,13 @@ export type SessionTranscriptTargetParams = SessionTranscriptReadParams & {
    * needs each helper to operate on that same artifact.
    */
   sessionFile?: string;
+};
+
+export type BoundedSessionTranscriptReadParams = SessionTranscriptTargetParams & {
+  /** Maximum JSONL source bytes retained across the head and tail windows. */
+  maxBytes: number;
+  /** Maximum parsed events returned across the head and tail windows. */
+  maxEvents: number;
 };
 
 export type SessionTranscriptTarget = SessionTranscriptIdentity & {
@@ -159,6 +175,114 @@ export async function readSessionTranscriptEvents(
     }
   }
   return events;
+}
+
+function parseTranscriptEvent(line: string): SessionTranscriptEvent | undefined {
+  try {
+    return JSON.parse(line) as SessionTranscriptEvent;
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeReadBound(value: number, label: string): number {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error(`${label} must be a positive safe integer`);
+  }
+  return value;
+}
+
+function selectTranscriptHeadAndTail(
+  events: SessionTranscriptEvent[],
+  maxEvents: number,
+): SessionTranscriptEvent[] {
+  if (events.length <= maxEvents) {
+    return events;
+  }
+  const headCount = maxEvents >= 5 ? Math.max(1, Math.floor(maxEvents / 5)) : 0;
+  return [...events.slice(0, headCount), ...events.slice(-(maxEvents - headCount))];
+}
+
+async function collectTranscriptWindow(params: {
+  filePath: string;
+  maxBytes: number;
+  maxEvents: number;
+  reverse: boolean;
+}): Promise<SessionTranscriptEvent[]> {
+  if (params.maxBytes < 1 || params.maxEvents < 1) {
+    return [];
+  }
+  const events: SessionTranscriptEvent[] = [];
+  let bytes = 0;
+  const lines = params.reverse
+    ? streamSessionTranscriptLinesReverse(params.filePath)
+    : streamSessionTranscriptLines(params.filePath);
+  for await (const line of lines) {
+    const lineBytes = Buffer.byteLength(line, "utf8") + 1;
+    if (bytes + lineBytes > params.maxBytes) {
+      break;
+    }
+    bytes += lineBytes;
+    const event = parseTranscriptEvent(line);
+    if (event === undefined) {
+      continue;
+    }
+    events.push(event);
+    if (events.length >= params.maxEvents) {
+      break;
+    }
+  }
+  return params.reverse ? events.reverse() : events;
+}
+
+/**
+ * Reads a memory-bounded head/tail view of a transcript by scoped identity.
+ * Small transcripts are parsed once; oversized files read only fixed windows
+ * from both ends so long-running sessions cannot force whole-file retention.
+ */
+export async function readBoundedSessionTranscriptEvents(
+  params: BoundedSessionTranscriptReadParams,
+): Promise<BoundedSessionTranscriptReadResult> {
+  const maxBytes = normalizeReadBound(params.maxBytes, "maxBytes");
+  const maxEvents = normalizeReadBound(params.maxEvents, "maxEvents");
+  const target = await resolveSessionTranscriptRuntimeReadTarget(params);
+  let stat: fs.Stats;
+  try {
+    stat = await fs.promises.stat(target.sessionFile);
+  } catch {
+    return { events: [], truncated: false };
+  }
+  if (!stat.isFile() || stat.size <= 0) {
+    return { events: [], truncated: false };
+  }
+
+  if (stat.size <= maxBytes) {
+    const events = await readSessionTranscriptEvents(params);
+    return {
+      events: selectTranscriptHeadAndTail(events, maxEvents),
+      truncated: events.length > maxEvents,
+    };
+  }
+
+  const headBytes = Math.max(1, Math.floor(maxBytes / 5));
+  const tailBytes = Math.max(1, maxBytes - headBytes);
+  const headEvents = maxEvents >= 5 ? Math.max(1, Math.floor(maxEvents / 5)) : 0;
+  const tailEvents = Math.max(1, maxEvents - headEvents);
+  const [head, tail] = await Promise.all([
+    collectTranscriptWindow({
+      filePath: target.sessionFile,
+      maxBytes: headBytes,
+      maxEvents: headEvents,
+      reverse: false,
+    }),
+    collectTranscriptWindow({
+      filePath: target.sessionFile,
+      maxBytes: tailBytes,
+      maxEvents: tailEvents,
+      reverse: true,
+    }),
+  ]);
+  return { events: [...head, ...tail], truncated: true };
 }
 
 /**
