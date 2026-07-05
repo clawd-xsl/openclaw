@@ -1,9 +1,9 @@
 /** Isolated runtime helpers for CLI-backed memory-flush maintenance turns. */
 import path from "node:path";
-import { tempWorkspace, type TempWorkspace } from "@openclaw/fs-safe/temp";
 import { projectRecentChatDisplayMessages } from "../../gateway/chat-display-projection.js";
 import { readSessionMessagesAsync } from "../../gateway/session-utils.fs.js";
 import { ensureAbsoluteDirectory } from "../../infra/fs-safe.js";
+import { tempWorkspace, type TempWorkspace } from "../../infra/private-temp-workspace.js";
 import { sanitizeModelSpecialTokens } from "../../security/external-content.js";
 import { CHARS_PER_TOKEN_ESTIMATE, estimateStringChars } from "../../utils/cjk-chars.js";
 
