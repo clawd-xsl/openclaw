@@ -15,6 +15,7 @@ import {
 import { resolveRuntimeTextTransforms } from "../plugins/text-transforms.runtime.js";
 import type {
   CliBackendAuthEpochMode,
+  CliBackendBundleMcpToolSurface,
   CliBackendNormalizeConfigContext,
   CliBundleMcpMode,
   CliBackendPlugin,
@@ -45,6 +46,7 @@ export type ResolvedCliBackend = {
   config: CliBackendConfig;
   bundleMcp: boolean;
   bundleMcpMode?: CliBundleMcpMode;
+  bundleMcpToolSurface?: CliBackendBundleMcpToolSurface;
   pluginId?: string;
   transformSystemPrompt?: CliBackendPlugin["transformSystemPrompt"];
   textTransforms?: PluginTextTransforms;
@@ -77,6 +79,7 @@ type FallbackCliBackendPolicy = {
   modelProvider?: string;
   bundleMcp: boolean;
   bundleMcpMode?: CliBundleMcpMode;
+  bundleMcpToolSurface?: CliBackendBundleMcpToolSurface;
   baseConfig?: CliBackendConfig;
   normalizeConfig?: (
     config: CliBackendConfig,
@@ -122,6 +125,7 @@ function resolveSetupCliBackendPolicy(provider: string): FallbackCliBackendPolic
       entry.backend.bundleMcpMode,
       entry.backend.bundleMcp === true,
     ),
+    bundleMcpToolSurface: entry.backend.bundleMcpToolSurface,
     baseConfig: entry.backend.config,
     normalizeConfig: entry.backend.normalizeConfig,
     transformSystemPrompt: entry.backend.transformSystemPrompt,
@@ -424,6 +428,7 @@ export function resolveCliBackendConfig(
         registered.bundleMcpMode,
         registered.bundleMcp === true,
       ),
+      bundleMcpToolSurface: registered.bundleMcpToolSurface,
       pluginId: registered.pluginId,
       transformSystemPrompt: registered.transformSystemPrompt,
       textTransforms: mergePluginTextTransforms(runtimeTextTransforms, registered.textTransforms),
@@ -456,6 +461,7 @@ export function resolveCliBackendConfig(
       config: { ...baseConfig, command },
       bundleMcp: fallbackPolicy.bundleMcp,
       bundleMcpMode: fallbackPolicy.bundleMcpMode,
+      bundleMcpToolSurface: fallbackPolicy.bundleMcpToolSurface,
       transformSystemPrompt: fallbackPolicy.transformSystemPrompt,
       textTransforms: mergePluginTextTransforms(
         runtimeTextTransforms,
@@ -487,6 +493,7 @@ export function resolveCliBackendConfig(
     config: { ...config, command },
     bundleMcp: fallbackPolicy?.bundleMcp === true,
     bundleMcpMode: fallbackPolicy?.bundleMcpMode,
+    bundleMcpToolSurface: fallbackPolicy?.bundleMcpToolSurface,
     transformSystemPrompt: fallbackPolicy?.transformSystemPrompt,
     textTransforms: mergePluginTextTransforms(
       runtimeTextTransforms,

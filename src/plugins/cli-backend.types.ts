@@ -73,6 +73,15 @@ export type CliBackendAuthEpochMode = "combined" | "profile-only";
 
 export type CliBackendNativeToolMode = "none" | "always-on";
 
+/**
+ * Tool surface exposed through the bundled OpenClaw MCP server.
+ *
+ * `native-complement` omits coding tools normally supplied by a CLI's native
+ * runtime. `openclaw` keeps those tools so a backend that disables native
+ * tools can still execute through OpenClaw policy and approvals.
+ */
+export type CliBackendBundleMcpToolSurface = "native-complement" | "openclaw";
+
 export type CliBackendSideQuestionToolMode = "disabled";
 
 export type CliBackendNormalizeConfigContext = {
@@ -130,6 +139,8 @@ export type CliBackendPlugin = {
    * - Gemini: system-level `settings.json`
    */
   bundleMcpMode?: CliBundleMcpMode;
+  /** Defaults to `native-complement` when bundled MCP is enabled. */
+  bundleMcpToolSurface?: CliBackendBundleMcpToolSurface;
   /**
    * Optional config normalizer applied after user overrides merge.
    *

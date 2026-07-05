@@ -4,6 +4,7 @@ import type { OpenClawConfig } from "../config/config.js";
 import type { CliBackendConfig } from "../config/types.js";
 import type {
   CliBackendAuthEpochMode,
+  CliBackendBundleMcpToolSurface,
   CliBackendNormalizeConfigContext,
   CliBackendResolveExecutionArgs,
   CliBundleMcpMode,
@@ -30,6 +31,7 @@ function createBackendEntry(params: {
   config: CliBackendConfig;
   bundleMcp?: boolean;
   bundleMcpMode?: CliBundleMcpMode;
+  bundleMcpToolSurface?: CliBackendBundleMcpToolSurface;
   defaultAuthProfileId?: string;
   authEpochMode?: CliBackendAuthEpochMode;
   ownsNativeCompaction?: boolean;
@@ -50,6 +52,7 @@ function createBackendEntry(params: {
       config: params.config,
       ...(params.bundleMcp ? { bundleMcp: params.bundleMcp } : {}),
       ...(params.bundleMcpMode ? { bundleMcpMode: params.bundleMcpMode } : {}),
+      ...(params.bundleMcpToolSurface ? { bundleMcpToolSurface: params.bundleMcpToolSurface } : {}),
       ...(params.defaultAuthProfileId ? { defaultAuthProfileId: params.defaultAuthProfileId } : {}),
       ...(params.authEpochMode ? { authEpochMode: params.authEpochMode } : {}),
       ...(params.ownsNativeCompaction ? { ownsNativeCompaction: params.ownsNativeCompaction } : {}),
@@ -270,6 +273,7 @@ beforeEach(() => {
       id: "claude-cli",
       bundleMcp: true,
       bundleMcpMode: "claude-config-file",
+      bundleMcpToolSurface: "openclaw",
       ownsNativeCompaction: true,
       config: {
         command: "claude",
@@ -576,6 +580,7 @@ describe("resolveCliBackendConfig claude-cli defaults", () => {
 
     expect(resolved?.bundleMcp).toBe(true);
     expect(resolved?.bundleMcpMode).toBe("claude-config-file");
+    expect(resolved?.bundleMcpToolSurface).toBe("openclaw");
     expect(resolved?.config.output).toBe("jsonl");
     expect(resolved?.config.args).toContain("stream-json");
     expect(resolved?.config.args).toContain("--include-partial-messages");

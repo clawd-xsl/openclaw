@@ -662,6 +662,7 @@ export async function prepareCliRunContext(
             sourceReplyDeliveryMode: bindingSourceReplyDeliveryMode,
             requireExplicitMessageTarget: bindingRequireExplicitMessageTarget,
             senderIsOwner: undefined,
+            toolSurface: backendResolved.bundleMcpToolSurface,
           }).tools
         : [];
     const promptToolNamesHash =

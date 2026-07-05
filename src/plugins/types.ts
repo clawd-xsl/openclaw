@@ -191,6 +191,7 @@ export type {
 } from "./conversation-binding.types.js";
 export type {
   CliBackendAuthEpochMode,
+  CliBackendBundleMcpToolSurface,
   CliBackendExecutionMode,
   CliBackendNormalizeConfigContext,
   CliBackendNativeToolMode,

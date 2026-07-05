@@ -853,6 +853,7 @@ export async function executePreparedCliRun(
           };
           beginMcpLoopbackToolCallCapture({
             captureKey: gatewayCaptureKey,
+            toolSurface: context.backendResolved.bundleMcpToolSurface,
             onYield: () => {
               yielded = true;
             },

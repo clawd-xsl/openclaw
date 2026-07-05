@@ -1,4 +1,6 @@
 // Process-local MCP loopback runtime state for owner/non-owner HTTP access.
+import type { CliBackendBundleMcpToolSurface } from "../plugins/types.js";
+
 type McpLoopbackRuntime = {
   port: number;
   ownerToken: string;
@@ -16,6 +18,7 @@ export type McpLoopbackToolCallStart = Pick<McpLoopbackToolCallResult, "toolName
 
 type McpLoopbackToolCallCapture = {
   generation: number;
+  toolSurface?: CliBackendBundleMcpToolSurface;
   onYield?: (message: string) => Promise<void> | void;
   onRequestStart?: () => void;
   onRequestClassified?: () => void;
@@ -72,6 +75,7 @@ function notifyMcpLoopbackToolCallCaptureActivity(capture: McpLoopbackToolCallCa
 /** Start loopback tool-call result capture for one serialized CLI invocation. */
 export function beginMcpLoopbackToolCallCapture(params: {
   captureKey: string;
+  toolSurface?: CliBackendBundleMcpToolSurface;
   onYield?: (message: string) => Promise<void> | void;
   onRequestStart?: () => void;
   onRequestClassified?: () => void;
@@ -91,6 +95,7 @@ export function beginMcpLoopbackToolCallCapture(params: {
   nextToolCallCaptureGeneration += 1;
   toolCallCaptures.set(captureKey, {
     generation: nextToolCallCaptureGeneration,
+    toolSurface: params.toolSurface,
     onYield: params.onYield,
     onRequestStart: params.onRequestStart,
     onRequestClassified: params.onRequestClassified,
@@ -103,6 +108,13 @@ export function beginMcpLoopbackToolCallCapture(params: {
     activityVersion: 0,
     activityWaiters: new Set(),
   });
+}
+
+/** Resolve the host-admitted bundled MCP tool surface for this CLI attempt. */
+export function resolveMcpLoopbackToolSurface(
+  captureHandle: McpLoopbackRequestCaptureHandle | undefined,
+): CliBackendBundleMcpToolSurface | undefined {
+  return captureHandle?.capture.toolSurface;
 }
 
 /** Resolve yield state bound to the request's admitted CLI capture generation. */

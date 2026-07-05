@@ -3,6 +3,7 @@
 import type { SourceReplyDeliveryMode } from "../auto-reply/get-reply-options.types.js";
 import type { InboundEventKind } from "../channels/inbound-event/kind.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { CliBackendBundleMcpToolSurface } from "../plugins/types.js";
 import {
   buildMcpToolSchema,
   type McpLoopbackTool,
@@ -41,6 +42,7 @@ type McpLoopbackScopeParams = {
   sourceReplyDeliveryMode: SourceReplyDeliveryMode | undefined;
   requireExplicitMessageTarget?: boolean;
   senderIsOwner: boolean | undefined;
+  toolSurface?: CliBackendBundleMcpToolSurface;
 };
 
 /** Resolves loopback-visible tools after applying gateway scope and native-tool exclusions. */
@@ -51,7 +53,7 @@ export function resolveMcpLoopbackScopedTools(params: McpLoopbackScopeParams): {
   const scoped = resolveGatewayScopedTools({
     ...params,
     surface: "loopback",
-    excludeToolNames: NATIVE_TOOL_EXCLUDE,
+    excludeToolNames: params.toolSurface === "openclaw" ? undefined : NATIVE_TOOL_EXCLUDE,
   });
   return {
     agentId: scoped.agentId,
@@ -82,6 +84,7 @@ export class McpLoopbackToolCache {
         : params.senderIsOwner === false
           ? "non-owner"
           : "unknown-owner",
+      params.toolSurface ?? "native-complement",
     ].join("\u0000");
     const now = Date.now();
     for (const [key, entry] of this.#entries) {

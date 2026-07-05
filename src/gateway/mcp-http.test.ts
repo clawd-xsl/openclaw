@@ -38,6 +38,7 @@ type ScopedToolsCall = {
   senderIsOwner?: boolean;
   surface?: string;
   excludeToolNames?: Iterable<string>;
+  toolSurface?: string;
 };
 
 type BeforeToolCallHookInput = {
@@ -761,6 +762,29 @@ describe("mcp loopback server", () => {
     expect(call.currentThreadTs).toBeUndefined();
     expect(call.sourceReplyDeliveryMode).toBeUndefined();
     expect(call.inboundEventKind).toBeUndefined();
+  });
+
+  it("keeps coding tools only for a host-admitted OpenClaw CLI tool surface", async () => {
+    const { runtime } = await startLoopbackServerForTest();
+    const captureKey = "capture-openclaw-tool-surface";
+    beginMcpLoopbackToolCallCapture({
+      captureKey,
+      toolSurface: "openclaw",
+      onToolCallResult: vi.fn(),
+    });
+
+    const response = await sendLoopbackToolsList({
+      token: runtime.ownerToken,
+      headers: {
+        "x-session-key": "agent:main:main",
+        "x-openclaw-cli-capture-key": captureKey,
+      },
+    });
+
+    expect(response.status).toBe(200);
+    const call = getScopedToolsCall(0);
+    expect(call.toolSurface).toBe("openclaw");
+    expect(call.excludeToolNames).toBeUndefined();
   });
 
   it("routes sessions_yield to the current CLI capture", async () => {
