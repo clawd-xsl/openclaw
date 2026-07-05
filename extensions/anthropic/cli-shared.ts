@@ -1,6 +1,7 @@
 /**
  * Shared Claude CLI backend normalization. It sanitizes command args, maps
- * thinking levels, and keeps OpenClaw-managed CLI runs isolated from shell env.
+ * thinking levels, and keeps OpenClaw-managed CLI runs isolated from native
+ * tools, settings hooks, project instructions, and shell env overrides.
  */
 import type {
   CliBackendConfig,
@@ -66,6 +67,7 @@ export const CLAUDE_CLI_CLEAR_ENV = [
 const CLAUDE_LEGACY_SKIP_PERMISSIONS_ARG = "--dangerously-skip-permissions";
 const CLAUDE_PERMISSION_MODE_ARG = "--permission-mode";
 const CLAUDE_SETTING_SOURCES_ARG = "--setting-sources";
+const CLAUDE_SETTINGS_ARG = "--settings";
 const CLAUDE_EFFORT_ARG = "--effort";
 const CLAUDE_BARE_ARG = "--bare";
 const CLAUDE_SAFE_MODE_ARG = "--safe-mode";
@@ -82,10 +84,15 @@ const CLAUDE_RESUME_SHORT_ARG = "-r";
 const CLAUDE_CONTINUE_ARG = "--continue";
 const CLAUDE_CONTINUE_SHORT_ARG = "-c";
 const CLAUDE_FORK_SESSION_ARG = "--fork-session";
-const CLAUDE_SAFE_SETTING_SOURCES = "user";
+const CLAUDE_ISOLATED_SETTING_SOURCES = "";
+const CLAUDE_DISABLE_ALL_HOOKS_SETTINGS = JSON.stringify({ disableAllHooks: true });
+const CLAUDE_DISABLE_CLAUDE_MDS_ENV = "CLAUDE_CODE_DISABLE_CLAUDE_MDS";
+const CLAUDE_DISABLE_SLASH_COMMANDS_ARG = "--disable-slash-commands";
+const CLAUDE_SYSTEM_PROMPT_FILE_ARG = "--system-prompt-file";
 const CLAUDE_BYPASS_PERMISSION_MODE = "bypassPermissions";
 const CLAUDE_DEFAULT_PERMISSION_MODE = "default";
 const CLAUDE_NO_TOOLS_VALUE = "";
+const CLAUDE_OPENCLAW_TOOLS_VALUE = "ToolSearch";
 const CLAUDE_DENY_MCP_TOOLS_VALUE = "mcp__*";
 
 type ClaudeCliEffort = "low" | "medium" | "high" | "xhigh" | "max";
@@ -170,7 +177,49 @@ export function normalizeClaudePermissionArgs(
   return normalized;
 }
 
-/** Ensure Claude CLI setting sources stay restricted to user settings. */
+/** Keep only MCP tool discovery from Claude's built-in tool surface. */
+export function normalizeClaudeIsolationArgs(args?: string[]): string[] | undefined {
+  if (!args) {
+    return args;
+  }
+  const normalized: string[] = [];
+  let hasTools = false;
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === CLAUDE_TOOLS_ARG) {
+      hasTools = true;
+      const maybeValue = args[i + 1];
+      normalized.push(CLAUDE_TOOLS_ARG, CLAUDE_OPENCLAW_TOOLS_VALUE);
+      if (typeof maybeValue === "string" && !maybeValue.startsWith("-")) {
+        i += 1;
+      }
+      continue;
+    }
+    if (arg.startsWith(`${CLAUDE_TOOLS_ARG}=`)) {
+      hasTools = true;
+      normalized.push(CLAUDE_TOOLS_ARG, CLAUDE_OPENCLAW_TOOLS_VALUE);
+      continue;
+    }
+    normalized.push(arg);
+  }
+  if (!hasTools) {
+    normalized.push(CLAUDE_TOOLS_ARG, CLAUDE_OPENCLAW_TOOLS_VALUE);
+  }
+  return normalized;
+}
+
+/** Prevent prompt text from invoking Claude-local skills or commands. */
+export function normalizeClaudeSlashCommandArgs(args?: string[]): string[] | undefined {
+  if (!args) {
+    return args;
+  }
+  if (args.includes(CLAUDE_DISABLE_SLASH_COMMANDS_ARG)) {
+    return args;
+  }
+  return [...args, CLAUDE_DISABLE_SLASH_COMMANDS_ARG];
+}
+
+/** Ensure Claude CLI does not load user, project, or local setting sources. */
 export function normalizeClaudeSettingSourcesArgs(args?: string[]): string[] | undefined {
   if (!args) {
     return args;
@@ -181,28 +230,89 @@ export function normalizeClaudeSettingSourcesArgs(args?: string[]): string[] | u
     const arg = args[i];
     if (arg === CLAUDE_SETTING_SOURCES_ARG) {
       const maybeValue = args[i + 1];
-      if (
-        typeof maybeValue === "string" &&
-        maybeValue.trim().length > 0 &&
-        !maybeValue.startsWith("-")
-      ) {
+      if (typeof maybeValue === "string" && !maybeValue.startsWith("-")) {
         hasSettingSources = true;
-        normalized.push(arg, CLAUDE_SAFE_SETTING_SOURCES);
+        normalized.push(arg, CLAUDE_ISOLATED_SETTING_SOURCES);
         i += 1;
+      } else {
+        hasSettingSources = true;
+        normalized.push(arg, CLAUDE_ISOLATED_SETTING_SOURCES);
       }
       continue;
     }
     if (arg.startsWith(`${CLAUDE_SETTING_SOURCES_ARG}=`)) {
       hasSettingSources = true;
-      normalized.push(`${CLAUDE_SETTING_SOURCES_ARG}=${CLAUDE_SAFE_SETTING_SOURCES}`);
+      normalized.push(`${CLAUDE_SETTING_SOURCES_ARG}=${CLAUDE_ISOLATED_SETTING_SOURCES}`);
       continue;
     }
     normalized.push(arg);
   }
   if (!hasSettingSources) {
-    normalized.push(CLAUDE_SETTING_SOURCES_ARG, CLAUDE_SAFE_SETTING_SOURCES);
+    normalized.push(CLAUDE_SETTING_SOURCES_ARG, CLAUDE_ISOLATED_SETTING_SOURCES);
   }
   return normalized;
+}
+
+function normalizeClaudeSettingsValue(value: string | undefined): string {
+  if (!value?.trim()) {
+    return CLAUDE_DISABLE_ALL_HOOKS_SETTINGS;
+  }
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return CLAUDE_DISABLE_ALL_HOOKS_SETTINGS;
+    }
+    return JSON.stringify({ ...parsed, disableAllHooks: true });
+  } catch {
+    return CLAUDE_DISABLE_ALL_HOOKS_SETTINGS;
+  }
+}
+
+/** Disable settings-defined hooks while retaining unrelated inline settings. */
+export function normalizeClaudeSettingsArgs(args?: string[]): string[] | undefined {
+  if (!args) {
+    return args;
+  }
+  const normalized: string[] = [];
+  let hasSettings = false;
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === CLAUDE_SETTINGS_ARG) {
+      hasSettings = true;
+      const maybeValue = args[i + 1];
+      normalized.push(
+        CLAUDE_SETTINGS_ARG,
+        normalizeClaudeSettingsValue(
+          typeof maybeValue === "string" && !maybeValue.startsWith("-") ? maybeValue : undefined,
+        ),
+      );
+      if (typeof maybeValue === "string" && !maybeValue.startsWith("-")) {
+        i += 1;
+      }
+      continue;
+    }
+    if (arg.startsWith(`${CLAUDE_SETTINGS_ARG}=`)) {
+      hasSettings = true;
+      normalized.push(
+        `${CLAUDE_SETTINGS_ARG}=${normalizeClaudeSettingsValue(
+          arg.slice(`${CLAUDE_SETTINGS_ARG}=`.length),
+        )}`,
+      );
+      continue;
+    }
+    normalized.push(arg);
+  }
+  if (!hasSettings) {
+    normalized.push(CLAUDE_SETTINGS_ARG, CLAUDE_DISABLE_ALL_HOOKS_SETTINGS);
+  }
+  return normalized;
+}
+
+function normalizeClaudeIsolationEnv(env?: Record<string, string>): Record<string, string> {
+  return {
+    ...env,
+    [CLAUDE_DISABLE_CLAUDE_MDS_ENV]: "1",
+  };
 }
 
 /** Map OpenClaw thinking levels to Claude CLI effort flags for a model id. */
@@ -350,14 +460,29 @@ export function normalizeClaudeBackendConfig(
   const permission = resolveClaudePermissionMode(context);
   return {
     ...config,
-    args: normalizeClaudePermissionArgs(normalizeClaudeSettingSourcesArgs(config.args), permission),
-    resumeArgs: normalizeClaudePermissionArgs(
-      normalizeClaudeSettingSourcesArgs(config.resumeArgs),
+    args: normalizeClaudePermissionArgs(
+      normalizeClaudeSettingsArgs(
+        normalizeClaudeSettingSourcesArgs(
+          normalizeClaudeSlashCommandArgs(normalizeClaudeIsolationArgs(config.args)),
+        ),
+      ),
       permission,
     ),
+    resumeArgs: normalizeClaudePermissionArgs(
+      normalizeClaudeSettingsArgs(
+        normalizeClaudeSettingSourcesArgs(
+          normalizeClaudeSlashCommandArgs(normalizeClaudeIsolationArgs(config.resumeArgs)),
+        ),
+      ),
+      permission,
+    ),
+    env: normalizeClaudeIsolationEnv(config.env),
     output,
     liveSession:
       config.liveSession ?? (output === "jsonl" && input === "stdin" ? "claude-stdio" : undefined),
     input,
+    systemPromptFileArg: CLAUDE_SYSTEM_PROMPT_FILE_ARG,
+    systemPromptMode: "replace",
+    systemPromptWhen: config.systemPromptWhen === "never" ? "never" : "always",
   };
 }

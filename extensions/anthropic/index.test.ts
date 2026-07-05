@@ -84,6 +84,8 @@ describe("anthropic provider replay hooks", () => {
       throw new Error("Expected claude-cli backend");
     }
     expect(backend.bundleMcp).toBe(true);
+    expect(backend.bundleMcpToolSurface).toBe("openclaw");
+    expect(backend.nativeToolMode).toBe("none");
     expectFields(backend.config, {
       command: "claude",
       modelArg: "--model",

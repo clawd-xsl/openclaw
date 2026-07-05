@@ -4,19 +4,19 @@ import { buildAnthropicCliBackend } from "./cli-backend.js";
 import {
   CLAUDE_CLI_CLEAR_ENV,
   normalizeClaudeBackendConfig,
+  normalizeClaudeIsolationArgs,
   normalizeClaudePermissionArgs,
   normalizeClaudeSettingSourcesArgs,
+  normalizeClaudeSettingsArgs,
+  normalizeClaudeSlashCommandArgs,
   resolveClaudePermissionMode,
   resolveClaudeCliExecutionArgs,
 } from "./cli-shared.js";
 
-const CLAUDE_CLI_DISALLOWED_TOOLS =
-  "ScheduleWakeup,CronCreate,Bash(run_in_background:true),Monitor";
-
-function expectDefaultDisallowedTools(args: readonly string[] | undefined) {
-  const disallowedIndex = args?.indexOf("--disallowedTools") ?? -1;
-  expect(disallowedIndex).toBeGreaterThanOrEqual(0);
-  expect(args?.[disallowedIndex + 1]).toBe(CLAUDE_CLI_DISALLOWED_TOOLS);
+function expectIsolatedToolArgs(args: readonly string[] | undefined) {
+  const toolsIndex = args?.indexOf("--tools") ?? -1;
+  expect(toolsIndex).toBeGreaterThanOrEqual(0);
+  expect(args?.[toolsIndex + 1]).toBe("ToolSearch");
 }
 
 describe("normalizeClaudePermissionArgs", () => {
@@ -56,25 +56,25 @@ describe("normalizeClaudePermissionArgs", () => {
 });
 
 describe("normalizeClaudeSettingSourcesArgs", () => {
-  it("injects user-only setting sources when args omit the flag", () => {
+  it("injects empty setting sources when args omit the flag", () => {
     expect(
       normalizeClaudeSettingSourcesArgs(["-p", "--output-format", "stream-json", "--verbose"]),
-    ).toEqual(["-p", "--output-format", "stream-json", "--verbose", "--setting-sources", "user"]);
+    ).toEqual(["-p", "--output-format", "stream-json", "--verbose", "--setting-sources", ""]);
   });
 
-  it("forces explicit project or local setting sources back to user-only", () => {
+  it("forces explicit user, project, or local setting sources to empty", () => {
     expect(normalizeClaudeSettingSourcesArgs(["-p", "--setting-sources", "project"])).toEqual([
       "-p",
       "--setting-sources",
-      "user",
+      "",
     ]);
     expect(normalizeClaudeSettingSourcesArgs(["-p", "--setting-sources=local,user"])).toEqual([
       "-p",
-      "--setting-sources=user",
+      "--setting-sources=",
     ]);
   });
 
-  it("treats a bare setting-sources flag as malformed and falls back to user-only", () => {
+  it("treats a bare setting-sources flag as an isolated empty source list", () => {
     expect(
       normalizeClaudeSettingSourcesArgs([
         "-p",
@@ -82,7 +82,58 @@ describe("normalizeClaudeSettingSourcesArgs", () => {
         "--output-format",
         "stream-json",
       ]),
-    ).toEqual(["-p", "--output-format", "stream-json", "--setting-sources", "user"]);
+    ).toEqual(["-p", "--setting-sources", "", "--output-format", "stream-json"]);
+  });
+});
+
+describe("normalizeClaudeIsolationArgs", () => {
+  it("keeps only the built-in MCP discovery tool", () => {
+    expect(normalizeClaudeIsolationArgs(["-p", "--verbose"])).toEqual([
+      "-p",
+      "--verbose",
+      "--tools",
+      "ToolSearch",
+    ]);
+  });
+
+  it("overrides split and equals native tool selections", () => {
+    expect(normalizeClaudeIsolationArgs(["-p", "--tools", "Read,Bash"])).toEqual([
+      "-p",
+      "--tools",
+      "ToolSearch",
+    ]);
+    expect(normalizeClaudeIsolationArgs(["-p", "--tools=Read,Bash"])).toEqual([
+      "-p",
+      "--tools",
+      "ToolSearch",
+    ]);
+  });
+});
+
+describe("normalizeClaudeSlashCommandArgs", () => {
+  it("forces slash commands off without duplicating the flag", () => {
+    expect(normalizeClaudeSlashCommandArgs(["-p"])).toEqual(["-p", "--disable-slash-commands"]);
+    expect(normalizeClaudeSlashCommandArgs(["-p", "--disable-slash-commands"])).toEqual([
+      "-p",
+      "--disable-slash-commands",
+    ]);
+  });
+});
+
+describe("normalizeClaudeSettingsArgs", () => {
+  it("disables all hooks while retaining unrelated inline settings", () => {
+    expect(normalizeClaudeSettingsArgs(["-p", "--settings", '{"theme":"dark"}'])).toEqual([
+      "-p",
+      "--settings",
+      '{"theme":"dark","disableAllHooks":true}',
+    ]);
+  });
+
+  it("replaces malformed settings with the isolated hook policy", () => {
+    expect(normalizeClaudeSettingsArgs(["-p", "--settings=not-json"])).toEqual([
+      "-p",
+      '--settings={"disableAllHooks":true}',
+    ]);
   });
 });
 
@@ -229,8 +280,13 @@ describe("normalizeClaudeBackendConfig", () => {
       "--output-format",
       "stream-json",
       "--verbose",
+      "--tools",
+      "ToolSearch",
+      "--disable-slash-commands",
       "--setting-sources",
-      "user",
+      "",
+      "--settings",
+      '{"disableAllHooks":true}',
       "--permission-mode",
       "bypassPermissions",
     ]);
@@ -241,14 +297,22 @@ describe("normalizeClaudeBackendConfig", () => {
       "--verbose",
       "--resume",
       "{sessionId}",
+      "--tools",
+      "ToolSearch",
+      "--disable-slash-commands",
       "--setting-sources",
-      "user",
+      "",
+      "--settings",
+      '{"disableAllHooks":true}',
       "--permission-mode",
       "bypassPermissions",
     ]);
     expect(normalized.output).toBe("jsonl");
     expect(normalized.liveSession).toBe("claude-stdio");
     expect(normalized.input).toBe("stdin");
+    expect(normalized.env).toEqual({ CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1" });
+    expect(normalized.systemPromptFileArg).toBe("--system-prompt-file");
+    expect(normalized.systemPromptMode).toBe("replace");
   });
 
   it("derives Claude bypass from OpenClaw YOLO policy and disables it for safer policy", () => {
@@ -329,11 +393,15 @@ describe("normalizeClaudeBackendConfig", () => {
     });
 
     expect(normalized?.args).toContain("--setting-sources");
-    expect(normalized?.args).toContain("user");
+    expect(normalized?.args).toContain("");
+    expect(normalized?.args).toContain("--settings");
+    expectIsolatedToolArgs(normalized?.args);
     expect(normalized?.args).toContain("--permission-mode");
     expect(normalized?.args).toContain("bypassPermissions");
     expect(normalized?.resumeArgs).toContain("--setting-sources");
-    expect(normalized?.resumeArgs).toContain("user");
+    expect(normalized?.resumeArgs).toContain("");
+    expect(normalized?.resumeArgs).toContain("--settings");
+    expectIsolatedToolArgs(normalized?.resumeArgs);
     expect(normalized?.resumeArgs).toContain("--permission-mode");
     expect(normalized?.resumeArgs).toContain("bypassPermissions");
     expect(normalized?.liveSession).toBe("claude-stdio");
@@ -356,19 +424,23 @@ describe("normalizeClaudeBackendConfig", () => {
     expect(backend.config.systemPromptWhen).toBe("always");
   });
 
-  it("leaves claude cli subscription-managed, restricts setting sources, and clears inherited env overrides", () => {
+  it("isolates Claude runtime context while preserving subscription auth", () => {
     const backend = buildAnthropicCliBackend();
 
-    expect(backend.config.env).toBeUndefined();
+    expect(backend.nativeToolMode).toBe("none");
+    expect(backend.bundleMcpToolSurface).toBe("openclaw");
+    expect(backend.config.env).toEqual({ CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1" });
     expect(backend.config.liveSession).toBe("claude-stdio");
     expect(backend.config.output).toBe("jsonl");
     expect(backend.config.input).toBe("stdin");
     expect(backend.config.args).toContain("--setting-sources");
-    expect(backend.config.args).toContain("user");
-    expectDefaultDisallowedTools(backend.config.args);
+    expect(backend.config.args).toContain("");
+    expect(backend.config.args).toContain("--settings");
+    expectIsolatedToolArgs(backend.config.args);
     expect(backend.config.resumeArgs).toContain("--setting-sources");
-    expect(backend.config.resumeArgs).toContain("user");
-    expectDefaultDisallowedTools(backend.config.resumeArgs);
+    expect(backend.config.resumeArgs).toContain("");
+    expect(backend.config.resumeArgs).toContain("--settings");
+    expectIsolatedToolArgs(backend.config.resumeArgs);
     expect(backend.config.clearEnv).toEqual([...CLAUDE_CLI_CLEAR_ENV]);
     expect(backend.config.clearEnv).toContain("ANTHROPIC_API_TOKEN");
     expect(backend.config.clearEnv).toContain("ANTHROPIC_BASE_URL");
@@ -386,10 +458,12 @@ describe("normalizeClaudeBackendConfig", () => {
     expect(backend.config.clearEnv).toContain("OTEL_SDK_DISABLED");
   });
 
-  it("disables native background Bash and Monitor tools in args and resumeArgs", () => {
+  it("disables the entire native tool surface in args and resumeArgs", () => {
     const backend = buildAnthropicCliBackend();
 
-    expectDefaultDisallowedTools(backend.config.args);
-    expectDefaultDisallowedTools(backend.config.resumeArgs);
+    expectIsolatedToolArgs(backend.config.args);
+    expectIsolatedToolArgs(backend.config.resumeArgs);
+    expect(backend.config.args).not.toContain("--disallowedTools");
+    expect(backend.config.resumeArgs).not.toContain("--disallowedTools");
   });
 });
