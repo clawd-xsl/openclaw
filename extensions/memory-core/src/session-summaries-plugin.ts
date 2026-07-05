@@ -395,6 +395,9 @@ export function registerSessionSummaries(
       }
       return undefined;
     }
+    if (predecessor.status !== "pending" && predecessor.status !== "processing") {
+      return undefined;
+    }
     let transcript: Awaited<ReturnType<ReadBoundedTranscriptEvents>>;
     try {
       transcript = await readBoundedTranscriptEvents({
