@@ -325,6 +325,104 @@ describe("runMemoryFlushIfNeeded", () => {
     expect(flushCall.silentExpected).toBe(true);
   });
 
+  it("runs memory flush for Claude CLI providers from native transcript usage", async () => {
+    registerMemoryFlushPlanResolver(() => ({
+      softThresholdTokens: 10,
+      forceFlushTranscriptBytes: 1_000_000_000,
+      reserveTokensFloor: 100,
+      prompt: "Pre-compaction memory flush.\nNO_REPLY",
+      systemPrompt: "Write memory to memory/YYYY-MM-DD.md.",
+      relativePath: "memory/2023-11-14.md",
+    }));
+    const sessionDir = await fs.mkdtemp(path.join(rootDir, "openclaw-cli-memory-flush-"));
+    const sessionFile = path.join(sessionDir, "session.jsonl");
+    await fs.writeFile(
+      sessionFile,
+      `${JSON.stringify({
+        id: "m1",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "short OpenClaw transcript" }],
+        },
+      })}\n`,
+      "utf8",
+    );
+    await writeClaudeCliTranscript({
+      homeDir,
+      cliSessionId: "cli-memory-flush",
+      usage: {
+        input_tokens: 120,
+        cache_read_input_tokens: 240,
+        output_tokens: 20,
+      },
+    });
+
+    const storePath = path.join(rootDir, "sessions.json");
+    const sessionKey = "main";
+    const sessionEntry: SessionEntry = {
+      sessionId: "session",
+      updatedAt: Date.now(),
+      sessionFile,
+      totalTokensFresh: false,
+      cliSessionIds: { "claude-cli": "cli-memory-flush" },
+      cliSessionBindings: {
+        "claude-cli": {
+          sessionId: "cli-memory-flush",
+        },
+      },
+    };
+    const sessionStore = { [sessionKey]: sessionEntry };
+    await writeSessionStore(storePath, sessionKey, sessionEntry);
+
+    await runMemoryFlushIfNeeded({
+      cfg: {
+        agents: {
+          defaults: {
+            cliBackends: {
+              "claude-cli": { command: "claude" },
+            },
+            compaction: {
+              memoryFlush: {},
+            },
+          },
+        },
+      },
+      followupRun: createFollowupRun({
+        provider: "claude-cli",
+        model: "sonnet",
+        sessionFile,
+      }),
+      promptForEstimate: "hello",
+      sessionCtx: { Provider: "whatsapp" } as unknown as TemplateContext,
+      defaultModel: "claude-cli/sonnet",
+      agentCfgContextTokens: 400,
+      resolvedVerboseLevel: "off",
+      sessionEntry,
+      sessionStore,
+      sessionKey,
+      storePath,
+      isHeartbeat: false,
+      replyOperation: createReplyOperation(),
+    });
+
+    expect(runEmbeddedPiAgentMock).toHaveBeenCalledTimes(1);
+    const flushCall = runEmbeddedPiAgentMock.mock.calls[0]?.[0] as {
+      provider?: string;
+      model?: string;
+      prompt?: string;
+    };
+    expect(flushCall.provider).toBe("claude-cli");
+    expect(flushCall.model).toBe("sonnet");
+    expect(flushCall.prompt).toContain("Pre-compaction memory flush.");
+
+    const persisted = JSON.parse(await fs.readFile(storePath, "utf8")) as {
+      main: SessionEntry;
+    };
+    expect(persisted.main.totalTokens).toBeUndefined();
+    expect(persisted.main.totalTokensFresh).toBe(false);
+    expect(persisted.main.memoryFlushPromptTokens).toBeGreaterThanOrEqual(360);
+  });
+
   it("compacts CLI sessions from Claude transcript usage into provider overlays and clears only the CLI binding", async () => {
     registerMemoryFlushPlanResolver(() => ({
       softThresholdTokens: 10,

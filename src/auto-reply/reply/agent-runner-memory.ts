@@ -158,6 +158,7 @@ const CLI_COMPACTION_HISTORY_MAX_CHARS = 500_000;
 
 type CliNativePromptUsageSnapshot = {
   promptTokens?: number;
+  outputTokens?: number;
   cliSessionId?: string;
   source: string;
 };
@@ -431,13 +432,22 @@ async function readCliNativePromptUsageSnapshot(params: {
 
   try {
     const usage = await readLastNonzeroUsageFromSessionLog(transcriptPath);
-    const promptTokens = derivePromptTokens(usage);
+    const transcriptUsage = deriveTranscriptUsageSnapshot(usage);
+    const promptTokens = transcriptUsage?.promptTokens;
     if (typeof promptTokens !== "number" || !Number.isFinite(promptTokens) || promptTokens <= 0) {
       return { cliSessionId, source: "claude_cli_transcript_usage_missing" };
     }
+    const outputTokensValue = transcriptUsage?.outputTokens;
+    const outputTokens =
+      typeof outputTokensValue === "number" &&
+      Number.isFinite(outputTokensValue) &&
+      outputTokensValue > 0
+        ? Math.floor(outputTokensValue)
+        : undefined;
     return {
       cliSessionId,
       promptTokens: Math.floor(promptTokens),
+      ...(outputTokens !== undefined ? { outputTokens } : {}),
       source: "claude_cli_transcript",
     };
   } catch {
@@ -1416,10 +1426,23 @@ export async function runMemoryFlushIfNeeded(params: {
   const transcriptUsageSnapshot = sessionLogSnapshot?.usage;
   const transcriptPromptTokens = transcriptUsageSnapshot?.promptTokens;
   const transcriptOutputTokens = transcriptUsageSnapshot?.outputTokens;
+  const cliNativeUsageSnapshot =
+    canAttemptFlush && isCli && entry
+      ? await readCliNativePromptUsageSnapshot({
+          entry,
+          provider: params.followupRun.run.provider,
+        })
+      : undefined;
+  const cliNativePromptTokens = cliNativeUsageSnapshot?.promptTokens;
+  const cliNativeOutputTokens = cliNativeUsageSnapshot?.outputTokens;
   const hasReliableTranscriptPromptTokens =
     typeof transcriptPromptTokens === "number" &&
     Number.isFinite(transcriptPromptTokens) &&
     transcriptPromptTokens > 0;
+  const hasReliableCliNativePromptTokens =
+    typeof cliNativePromptTokens === "number" &&
+    Number.isFinite(cliNativePromptTokens) &&
+    cliNativePromptTokens > 0;
   const shouldPersistTranscriptPromptTokens =
     hasReliableTranscriptPromptTokens &&
     (!hasFreshPersistedPromptTokens ||
@@ -1454,18 +1477,55 @@ export async function runMemoryFlushIfNeeded(params: {
     }
   }
 
-  const promptTokensSnapshot = Math.max(
-    hasFreshPersistedPromptTokens ? (persistedPromptTokens ?? 0) : 0,
-    hasReliableTranscriptPromptTokens ? (transcriptPromptTokens ?? 0) : 0,
+  type PromptTokenSnapshot = {
+    promptTokens: number;
+    outputTokens?: number;
+    source: string;
+  };
+  const promptTokenSnapshots: PromptTokenSnapshot[] = [];
+  const addPromptTokenSnapshot = (
+    source: string,
+    promptTokens: number | undefined,
+    outputTokens?: number,
+  ) => {
+    if (typeof promptTokens !== "number" || !Number.isFinite(promptTokens) || promptTokens <= 0) {
+      return;
+    }
+    const snapshot: PromptTokenSnapshot = {
+      promptTokens: Math.floor(promptTokens),
+      source,
+    };
+    if (typeof outputTokens === "number" && Number.isFinite(outputTokens) && outputTokens > 0) {
+      snapshot.outputTokens = Math.floor(outputTokens);
+    }
+    promptTokenSnapshots.push(snapshot);
+  };
+  addPromptTokenSnapshot(
+    "persisted",
+    hasFreshPersistedPromptTokens ? persistedPromptTokens : undefined,
+    transcriptOutputTokens,
   );
-  const hasFreshPromptTokensSnapshot =
-    promptTokensSnapshot > 0 &&
-    (hasFreshPersistedPromptTokens || hasReliableTranscriptPromptTokens);
+  addPromptTokenSnapshot(
+    "openclaw_transcript",
+    hasReliableTranscriptPromptTokens ? transcriptPromptTokens : undefined,
+    transcriptOutputTokens,
+  );
+  addPromptTokenSnapshot(
+    "claude_cli_transcript",
+    hasReliableCliNativePromptTokens ? cliNativePromptTokens : undefined,
+    cliNativeOutputTokens,
+  );
+  const promptTokenSnapshot = promptTokenSnapshots.reduce<PromptTokenSnapshot | undefined>(
+    (best, candidate) => (!best || candidate.promptTokens > best.promptTokens ? candidate : best),
+    undefined,
+  );
+  const promptTokensSnapshot = promptTokenSnapshot?.promptTokens ?? 0;
+  const hasFreshPromptTokensSnapshot = promptTokenSnapshot !== undefined;
 
   const projectedTokenCount = hasFreshPromptTokensSnapshot
     ? resolveEffectivePromptTokens(
         promptTokensSnapshot,
-        transcriptOutputTokens,
+        promptTokenSnapshot.outputTokens,
         promptTokenEstimate,
       )
     : undefined;
@@ -1486,7 +1546,8 @@ export async function runMemoryFlushIfNeeded(params: {
       `memoryFlushPromptTokens=${entry?.memoryFlushPromptTokens ?? "undefined"} retriggerTokens=${retriggerTokens ?? "undefined"} ` +
       `persistedPromptTokens=${persistedPromptTokens ?? "undefined"} persistedFresh=${entry?.totalTokensFresh === true} ` +
       `promptTokensEst=${promptTokenEstimate ?? "undefined"} transcriptPromptTokens=${transcriptPromptTokens ?? "undefined"} transcriptOutputTokens=${transcriptOutputTokens ?? "undefined"} ` +
-      `projectedTokenCount=${projectedTokenCount ?? "undefined"} transcriptBytes=${transcriptByteSize ?? "undefined"} ` +
+      `cliNativeSource=${cliNativeUsageSnapshot?.source ?? "skipped"} cliNativePromptTokens=${cliNativePromptTokens ?? "undefined"} cliNativeOutputTokens=${cliNativeOutputTokens ?? "undefined"} ` +
+      `promptSnapshotSource=${promptTokenSnapshot?.source ?? "undefined"} projectedTokenCount=${projectedTokenCount ?? "undefined"} transcriptBytes=${transcriptByteSize ?? "undefined"} ` +
       `forceFlushTranscriptBytes=${forceFlushTranscriptBytes} forceFlushByTranscriptSize=${shouldForceFlushByTranscriptSize}`,
   );
 
