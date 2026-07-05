@@ -363,15 +363,32 @@ describe("session summaries plugin registration", () => {
     expect(
       (
         tool.parameters as {
-          properties?: { query?: { maxLength?: number } };
+          properties?: {
+            cursor?: { maxLength?: number };
+            query?: { maxLength?: number };
+          };
         }
       ).properties?.query?.maxLength,
     ).toBe(512);
+    expect(
+      (
+        tool.parameters as {
+          properties?: { cursor?: { maxLength?: number } };
+        }
+      ).properties?.cursor?.maxLength,
+    ).toBe(2_048);
     const toolResult = await tool.execute("call-1", { query: "Migration", limit: 20 });
     const toolDetails = toolResult?.details as
       | { summaries?: Array<{ sessionId: string }> }
       | undefined;
     expect(toolDetails?.summaries?.map((item) => item.sessionId)).toEqual(["previous"]);
+
+    (cfg.plugins.entries["memory-core"].config.summaries as { enabled: boolean }).enabled = false;
+    const storedResult = await tool.execute("call-2", { query: "Migration", limit: 20 });
+    const storedDetails = storedResult?.details as
+      | { summaries?: Array<{ sessionId: string }> }
+      | undefined;
+    expect(storedDetails?.summaries?.map((item) => item.sessionId)).toEqual(["previous"]);
 
     const respond = vi.fn();
     await gatewayHandler?.({ params: { agentId: "main", limit: 2 }, respond });
@@ -616,9 +633,8 @@ describe("session summaries plugin registration", () => {
       { agentId: "other", sessionId: "other-denied", sessionKey: "agent:other:main" },
     );
     await deniedAgent.service.waitForIdle();
-    expect((await deniedAgent.service.repository.readAllRecords())[0]?.lastError).toContain(
-      "allowAgentIdOverride=true",
-    );
+    expect(await deniedAgent.service.repository.readAllRecords()).toEqual([]);
+    expect(deniedAgent.readBoundedTranscriptEvents).not.toHaveBeenCalled();
     expect(deniedAgent.complete).not.toHaveBeenCalled();
     await deniedAgent.service.stop();
 
@@ -647,9 +663,8 @@ describe("session summaries plugin registration", () => {
       { agentId: "main", sessionId: "model-denied", sessionKey: "agent:main:main" },
     );
     await deniedModel.service.waitForIdle();
-    expect((await deniedModel.service.repository.readAllRecords())[0]?.lastError).toContain(
-      "allowModelOverride=true",
-    );
+    expect(await deniedModel.service.repository.readAllRecords()).toEqual([]);
+    expect(deniedModel.readBoundedTranscriptEvents).not.toHaveBeenCalled();
     expect(deniedModel.complete).not.toHaveBeenCalled();
     await deniedModel.service.stop();
   });

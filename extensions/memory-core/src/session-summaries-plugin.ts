@@ -15,7 +15,10 @@ import {
   resolveSessionSummariesConfig,
   type SessionSummariesConfig,
 } from "./session-summaries-config.js";
-import { SessionSummaryService } from "./session-summaries-service.js";
+import {
+  SessionSummaryPolicyError,
+  SessionSummaryService,
+} from "./session-summaries-service.js";
 import {
   SESSION_SUMMARY_LIST_HARD_LIMIT,
   SESSION_SUMMARY_QUERY_MAX_CHARS,
@@ -81,23 +84,38 @@ function createSessionSummaryComplete(
   return async (params) => {
     const cfg = readCurrentConfig(api);
     const defaultAgentId = resolveDefaultAgentId(cfg);
-    const llmPolicy = cfg.plugins?.entries?.["memory-core"]?.llm;
-    if (params.model && llmPolicy?.allowModelOverride !== true) {
-      throw new Error(
-        "memory-core session summary model overrides require plugins.entries.memory-core.llm.allowModelOverride=true",
-      );
-    }
+    assertSessionSummaryGenerationPolicy({
+      agentId: params.agentId ?? defaultAgentId,
+      cfg,
+      model: params.model,
+    });
     if (params.agentId && params.agentId !== defaultAgentId) {
-      if (llmPolicy?.allowAgentIdOverride !== true) {
-        throw new Error(
-          `memory-core session summaries for non-default agent ${params.agentId} require plugins.entries.memory-core.llm.allowAgentIdOverride=true`,
-        );
-      }
       return await api.runtime.llm.complete(params);
     }
     const { agentId: _defaultAgentId, ...defaultScopedParams } = params;
     return await api.runtime.llm.complete(defaultScopedParams);
   };
+}
+
+function assertSessionSummaryGenerationPolicy(params: {
+  agentId: string;
+  cfg: OpenClawConfig;
+  model?: string;
+}): void {
+  const llmPolicy = params.cfg.plugins?.entries?.["memory-core"]?.llm;
+  if (params.model && llmPolicy?.allowModelOverride !== true) {
+    throw new SessionSummaryPolicyError(
+      "memory-core session summary model overrides require plugins.entries.memory-core.llm.allowModelOverride=true",
+    );
+  }
+  if (
+    params.agentId !== resolveDefaultAgentId(params.cfg) &&
+    llmPolicy?.allowAgentIdOverride !== true
+  ) {
+    throw new SessionSummaryPolicyError(
+      `memory-core session summaries for non-default agent ${params.agentId} require plugins.entries.memory-core.llm.allowAgentIdOverride=true`,
+    );
+  }
 }
 
 function readOptionalString(params: Record<string, unknown>, key: string): string | undefined {
@@ -267,6 +285,10 @@ export function registerSessionSummaries(
     logger: api.logger,
     now,
     readBoundedTranscriptEvents,
+    validateGenerationPolicy: ({ agentId, config }) => {
+      const cfg = readCurrentConfig(api);
+      assertSessionSummaryGenerationPolicy({ agentId, cfg, model: config.model });
+    },
   });
 
   api.on("session_end", async (event, ctx) => {
@@ -303,7 +325,19 @@ export function registerSessionSummaries(
     if (reason !== "new" && reason !== "reset" && reason !== "idle" && reason !== "daily") {
       return;
     }
-    if (!resolveCurrentSummaryConfig(api, cfg).enabled) {
+    const summaryConfig = resolveCurrentSummaryConfig(api, cfg);
+    if (!summaryConfig.enabled) {
+      return;
+    }
+    try {
+      assertSessionSummaryGenerationPolicy({ agentId, cfg, model: summaryConfig.model });
+    } catch (error) {
+      if (!(error instanceof SessionSummaryPolicyError)) {
+        throw error;
+      }
+      api.logger.warn(
+        `memory-core: skipped session summary for ${agentId}/${event.sessionId}: ${error.message}`,
+      );
       return;
     }
     await service.enqueue({
@@ -405,9 +439,6 @@ export function registerSessionSummaries(
           ctx.config ??
           readCurrentConfig(api)) as OpenClawConfig;
       const getSummaryConfig = () => resolveCurrentSummaryConfig(api, getConfig());
-      if (!getSummaryConfig().enabled) {
-        return null;
-      }
       return createSessionSummariesTool({
         repository,
         getConfig,

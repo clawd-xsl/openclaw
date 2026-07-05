@@ -4,7 +4,10 @@ import type {
 } from "openclaw/plugin-sdk/plugin-state-runtime";
 import { describe, expect, it, vi } from "vitest";
 import type { SessionSummariesConfig } from "./session-summaries-config.js";
-import { SessionSummaryService } from "./session-summaries-service.js";
+import {
+  SessionSummaryPolicyError,
+  SessionSummaryService,
+} from "./session-summaries-service.js";
 import {
   SESSION_SUMMARY_PROCESSING_LEASE_MS,
   SESSION_SUMMARY_RETRY_BASE_MS,
@@ -238,6 +241,44 @@ describe("SessionSummaryService", () => {
       attemptCount: 2,
       summary: "Recovered summary",
       lastError: null,
+    });
+  });
+
+  it("fails closed on permanent generation policy errors without reading or retrying", async () => {
+    const repository = createRepository();
+    const complete = createCompletion();
+    const readBoundedTranscriptEvents = vi.fn(async () => createBoundedTranscriptResult());
+    const validateGenerationPolicy = vi.fn(() => {
+      throw new SessionSummaryPolicyError("model override is not allowed");
+    });
+    const service = new SessionSummaryService({
+      repository,
+      complete,
+      getConfig: () => enabledConfig,
+      logger: createLogger(),
+      readBoundedTranscriptEvents,
+      validateGenerationPolicy,
+    });
+
+    await service.enqueue({
+      agentId: "main",
+      sessionId: "policy-denied",
+      sessionKey: "agent:main:main",
+      endedAt: Date.now(),
+      messageCount: 2,
+    });
+    await service.waitForIdle();
+    await service.recover();
+    await service.waitForIdle();
+
+    expect(validateGenerationPolicy).toHaveBeenCalledTimes(1);
+    expect(readBoundedTranscriptEvents).not.toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
+    expect((await repository.readAllRecords())[0]).toMatchObject({
+      status: "failed",
+      attemptCount: 1,
+      lastError: "model override is not allowed",
+      nextAttemptAt: null,
     });
   });
 
@@ -861,5 +902,20 @@ describe("SessionSummaryRepository queries", () => {
         query: "q".repeat(513),
       }),
     ).rejects.toThrow("at most 512 characters");
+  });
+
+  it("rejects invalid cursors before scanning stored summaries", async () => {
+    const store = createMemoryStore<SessionSummaryRecord>();
+    const entries = vi.spyOn(store, "entries");
+    const repository = createRepository({ store });
+
+    await expect(
+      repository.list({
+        agentId: "main",
+        lookbackDays: 30,
+        cursor: "x".repeat(2_049),
+      }),
+    ).rejects.toThrow("invalid session summaries cursor");
+    expect(entries).not.toHaveBeenCalled();
   });
 });

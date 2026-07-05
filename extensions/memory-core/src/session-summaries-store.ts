@@ -10,7 +10,9 @@ export const SESSION_SUMMARY_VERSION = 1;
 export const SESSION_SUMMARY_LIST_HARD_LIMIT = 100;
 export const SESSION_SUMMARY_TOOL_HARD_LIMIT = 20;
 export const SESSION_SUMMARY_QUERY_MAX_CHARS = 512;
-export const SESSION_SUMMARY_STORE_MAX_ENTRIES = 20_000;
+// Keep request-time scans bounded. Generated summaries are capped at 8 KiB,
+// so this limits the maximum persisted summary payload scanned to 32 MiB.
+export const SESSION_SUMMARY_STORE_MAX_ENTRIES = 4_096;
 export const SESSION_SUMMARY_MAX_ATTEMPTS = 5;
 export const SESSION_SUMMARY_RETRY_BASE_MS = 30_000;
 export const SESSION_SUMMARY_RETRY_MAX_MS = 6 * 60 * 60 * 1_000;
@@ -279,6 +281,19 @@ function decodeCursor(cursor: string): CursorPayload {
     };
   } catch {
     throw new Error("invalid session summaries cursor");
+  }
+}
+
+export function validateSessionSummaryCursor(params: {
+  agentId: string;
+  cursor: string;
+}): void {
+  const cursor = decodeCursor(params.cursor);
+  const agentIdHash = createHash("sha256")
+    .update(normalizeAgentId(params.agentId))
+    .digest("base64url");
+  if (cursor.agentIdHash !== agentIdHash) {
+    throw new Error("session summaries cursor belongs to another agent");
   }
 }
 
@@ -717,6 +732,7 @@ export class SessionSummaryRepository {
     error: string,
     now: number,
     expectedRevision: number,
+    options: { retryable?: boolean } = {},
   ): Promise<SessionSummaryRecord | undefined> {
     let committed = false;
     const record = await this.updateRecord(key, (current) => {
@@ -724,7 +740,8 @@ export class SessionSummaryRepository {
         return undefined;
       }
       committed = true;
-      const exhausted = current.attemptCount >= SESSION_SUMMARY_MAX_ATTEMPTS;
+      const exhausted =
+        options.retryable === false || current.attemptCount >= SESSION_SUMMARY_MAX_ATTEMPTS;
       return {
         ...current,
         status: "failed",
@@ -780,6 +797,9 @@ export class SessionSummaryRepository {
   }
 
   async list(params: SessionSummaryListParams): Promise<SessionSummaryListResult> {
+    if (params.cursor) {
+      validateSessionSummaryCursor({ agentId: params.agentId, cursor: params.cursor });
+    }
     const records = await this.queryRecords(params);
     return paginateSessionSummaryRecords({
       agentId: params.agentId,

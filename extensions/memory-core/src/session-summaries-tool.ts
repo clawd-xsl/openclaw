@@ -20,6 +20,7 @@ import {
   paginateSessionSummaryRecords,
   SESSION_SUMMARY_QUERY_MAX_CHARS,
   SESSION_SUMMARY_TOOL_HARD_LIMIT,
+  validateSessionSummaryCursor,
   type SessionSummaryListResult,
   type SessionSummaryPublicRecord,
   type SessionSummaryRecord,
@@ -57,6 +58,7 @@ const SessionSummariesToolSchema = {
     },
     cursor: {
       type: "string",
+      maxLength: 2_048,
       description: "Opaque cursor returned by a previous session_summaries call.",
     },
   },
@@ -217,13 +219,6 @@ export function createSessionSummariesTool(options: SessionSummariesToolOptions)
     parameters: SessionSummariesToolSchema,
     execute: async (_toolCallId, rawParams) => {
       const summaryConfig = options.getSummaryConfig();
-      if (!summaryConfig.enabled) {
-        return jsonResult({
-          disabled: true,
-          unavailable: true,
-          error: "session summaries are disabled",
-        });
-      }
       const cfg = options.getConfig();
       const requesterSessionKey = options.requesterSessionKey?.trim();
       if (!requesterSessionKey) {
@@ -251,6 +246,9 @@ export function createSessionSummariesTool(options: SessionSummariesToolOptions)
       const query = readStringParam(params, "query");
       const cursor = readStringParam(params, "cursor");
       const limit = readPositiveIntegerParam(params, "limit");
+      if (cursor) {
+        validateSessionSummaryCursor({ agentId, cursor });
+      }
       const records = await options.repository.queryRecords({
         agentId,
         lookbackDays: summaryConfig.lookbackDays,

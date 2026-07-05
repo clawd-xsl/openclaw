@@ -27,6 +27,10 @@ export type SessionSummaryServiceDependencies = {
   now?: () => number;
   readBoundedTranscriptEvents?: ReadBoundedTranscriptEvents;
   repository: SessionSummaryRepository;
+  validateGenerationPolicy?: (params: {
+    agentId: string;
+    config: SessionSummariesConfig;
+  }) => void;
 };
 
 const MAX_PERSISTED_ERROR_CHARS = 2_000;
@@ -34,6 +38,17 @@ const SESSION_SUMMARY_TRANSCRIPT_MAX_BYTES = 8 * 1024 * 1024;
 const SESSION_SUMMARY_TRANSCRIPT_MAX_EVENTS = 2_400;
 export const SESSION_SUMMARY_CLAIM_TIMEOUT_MS = 2 * 60 * 1_000;
 const SESSION_SUMMARY_STORE_RETRY_MS = 30_000;
+
+export const SESSION_SUMMARY_POLICY_ERROR_CODE = "SESSION_SUMMARY_POLICY_DENIED" as const;
+
+export class SessionSummaryPolicyError extends Error {
+  readonly code = SESSION_SUMMARY_POLICY_ERROR_CODE;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "SessionSummaryPolicyError";
+  }
+}
 
 type ActiveClaim = {
   controller: AbortController;
@@ -89,6 +104,9 @@ export class SessionSummaryService {
   private readonly logger: Logger;
   private readonly now: () => number;
   private readonly readBoundedTranscriptEvents: ReadBoundedTranscriptEvents;
+  private readonly validateGenerationPolicy:
+    | ((params: { agentId: string; config: SessionSummariesConfig }) => void)
+    | undefined;
   private readonly queuedKeys = new Set<string>();
   private readonly activeKeys = new Set<string>();
   private readonly activeClaims = new Map<string, ActiveClaim>();
@@ -107,6 +125,7 @@ export class SessionSummaryService {
     this.now = deps.now ?? Date.now;
     this.readBoundedTranscriptEvents =
       deps.readBoundedTranscriptEvents ?? readBoundedSessionTranscriptEvents;
+    this.validateGenerationPolicy = deps.validateGenerationPolicy;
   }
 
   async enqueue(input: SessionSummaryEnqueueInput): Promise<void> {
@@ -318,6 +337,7 @@ export class SessionSummaryService {
         await this.repository.releaseClaim(key, claimed.revision);
         return;
       }
+      this.validateGenerationPolicy?.({ agentId: claimed.agentId, config });
       const transcript = await raceWithAbort(
         this.readBoundedTranscriptEvents({
           agentId: claimed.agentId,
@@ -398,7 +418,9 @@ export class SessionSummaryService {
       }
       const message = safeErrorMessage(error);
       try {
-        const failed = await this.repository.markFailed(key, message, this.now(), claimed.revision);
+        const failed = await this.repository.markFailed(key, message, this.now(), claimed.revision, {
+          retryable: !(error instanceof SessionSummaryPolicyError),
+        });
         if (failed) {
           this.logger.warn(
             `memory-core: session summary generation failed for ${claimed.agentId}/${claimed.sessionId}: ${message}`,
