@@ -156,6 +156,7 @@ import {
   updateSkillEdit,
   updateSkillEnabled,
 } from "./controllers/skills.ts";
+import { loadSessionSummaries, resetSessionSummaryHistory } from "./controllers/summaries.ts";
 import { captureSessionToWorkboard, getWorkboardState } from "./controllers/workboard.ts";
 import { getCronJobPayload } from "./cron-payload.ts";
 import { buildExternalLinkRel, EXTERNAL_LINK_TARGET } from "./external-link.ts";
@@ -224,6 +225,7 @@ import { renderGatewayUrlConfirmation } from "./views/gateway-url-confirmation.t
 import { renderLoginGate } from "./views/login-gate.ts";
 import { renderMcp } from "./views/mcp.ts";
 import { renderOverview } from "./views/overview.ts";
+import { renderSessionSummaries } from "./views/summaries.ts";
 
 let pendingUpdate: (() => void) | undefined;
 
@@ -1546,7 +1548,7 @@ export function renderApp(state: AppViewState) {
   const configuredDreaming = resolveConfiguredDreaming(configValue);
   const dreamingOn = state.dreamingStatus?.enabled ?? configuredDreaming.enabled;
   const dreamingNextCycle = resolveDreamingNextCycle(state.dreamingStatus);
-  const dreamingAgentOptions = resolveChatAgentFilterOptions(state);
+  const agentFilterOptions = resolveChatAgentFilterOptions(state);
   const dreamingSelectedAgentId = resolveChatAgentFilterId(state, state.sessionKey);
   const syncDreamingSelectedAgent = () => {
     state.selectedAgentId = dreamingSelectedAgentId;
@@ -4083,11 +4085,46 @@ export function renderApp(state: AppViewState) {
               ),
             )
           : nothing}
+        ${state.tab === "summaries"
+          ? renderSessionSummaries({
+              items: state.summaryHistoryItems,
+              loading: state.summaryHistoryLoading,
+              loadingMore: state.summaryHistoryLoadingMore,
+              error: state.summaryHistoryError,
+              unavailable: state.summaryHistoryUnavailable,
+              nextCursor: state.summaryHistoryNextCursor,
+              selectedAgentId: state.summaryHistoryAgentId,
+              agentOptions: agentFilterOptions,
+              searchInput: state.summaryHistorySearchInput,
+              query: state.summaryHistoryQuery,
+              onSelectAgent: (agentId) => {
+                state.summaryHistoryAgentId = agentId;
+                resetSessionSummaryHistory(state);
+                void loadSessionSummaries(state);
+              },
+              onSearchInput: (query) => {
+                state.summaryHistorySearchInput = query;
+              },
+              onSearch: () => {
+                state.summaryHistoryQuery = state.summaryHistorySearchInput.trim();
+                resetSessionSummaryHistory(state);
+                void loadSessionSummaries(state);
+              },
+              onClearSearch: () => {
+                state.summaryHistorySearchInput = "";
+                state.summaryHistoryQuery = "";
+                resetSessionSummaryHistory(state);
+                void loadSessionSummaries(state);
+              },
+              onRefresh: () => void loadSessionSummaries(state),
+              onLoadMore: () => void loadSessionSummaries(state, { append: true }),
+            })
+          : nothing}
         ${state.tab === "dreams"
           ? renderDreaming({
               active: dreamingOn,
               selectedAgentId: dreamingSelectedAgentId,
-              agentOptions: dreamingAgentOptions,
+              agentOptions: agentFilterOptions,
               shortTermCount: state.dreamingStatus?.shortTermCount ?? 0,
               groundedSignalCount: state.dreamingStatus?.groundedSignalCount ?? 0,
               totalSignalCount: state.dreamingStatus?.totalSignalCount ?? 0,

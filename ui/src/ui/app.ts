@@ -124,6 +124,7 @@ import type {
   ClawHubSkillDetail,
   SkillMessage,
 } from "./controllers/skills.ts";
+import type { SessionSummaryHistoryItem } from "./controllers/summaries.ts";
 import { importCustomThemeFromUrl } from "./custom-theme.ts";
 import {
   clearActiveFloatingTooltips,
@@ -402,6 +403,16 @@ export class OpenClawApp extends LitElement {
   @state() configForm: Record<string, unknown> | null = null;
   @state() configFormOriginal: Record<string, unknown> | null = null;
   @state() selectedAgentId: string | null = null;
+  @state() summaryHistoryAgentId: string | null = null;
+  @state() summaryHistoryItems: SessionSummaryHistoryItem[] = [];
+  @state() summaryHistoryNextCursor: string | null = null;
+  @state() summaryHistoryLoading = false;
+  @state() summaryHistoryLoadingMore = false;
+  @state() summaryHistoryError: string | null = null;
+  @state() summaryHistoryUnavailable = false;
+  @state() summaryHistorySearchInput = "";
+  @state() summaryHistoryQuery = "";
+  summaryHistoryRequestGeneration = 0;
   @state() dreamingStatusLoading = false;
   @state() dreamingStatusError: string | null = null;
   @state() dreamingStatus: DreamingStatus | null = null;

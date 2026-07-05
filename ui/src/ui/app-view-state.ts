@@ -217,6 +217,16 @@ export type AppViewState = {
   configForm: Record<string, unknown> | null;
   configFormOriginal: Record<string, unknown> | null;
   selectedAgentId: string | null;
+  summaryHistoryAgentId: string | null;
+  summaryHistoryItems: import("./controllers/summaries.js").SessionSummaryHistoryItem[];
+  summaryHistoryNextCursor: string | null;
+  summaryHistoryLoading: boolean;
+  summaryHistoryLoadingMore: boolean;
+  summaryHistoryError: string | null;
+  summaryHistoryUnavailable: boolean;
+  summaryHistorySearchInput: string;
+  summaryHistoryQuery: string;
+  summaryHistoryRequestGeneration?: number;
   dreamingStatusLoading: boolean;
   dreamingStatusError: string | null;
   dreamingStatus: import("./controllers/dreaming.js").DreamingStatus | null;

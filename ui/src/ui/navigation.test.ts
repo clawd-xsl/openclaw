@@ -41,6 +41,7 @@ describe("iconForTab", () => {
       skills: "zap",
       skillWorkshop: "wrench",
       nodes: "monitor",
+      summaries: "fileText",
       dreams: "moon",
       config: "settings",
       communications: "send",
@@ -77,6 +78,7 @@ describe("titleForTab", () => {
       skills: "Skills",
       skillWorkshop: "Skill Workshop",
       nodes: "Nodes",
+      summaries: "Summaries",
       dreams: "Dreaming",
       config: "Settings",
       communications: "Communications",
@@ -107,6 +109,7 @@ describe("subtitleForTab", () => {
       skills: "Skills and API keys.",
       skillWorkshop: "Review, refine, and apply proposals before they become live skills.",
       nodes: "Paired devices and commands.",
+      summaries: "Session rollover summaries and lineage.",
       dreams: "Memory dreaming, consolidation, and reflection.",
       config: "Edit openclaw.json.",
       communications: "Channels, messages, and audio settings.",
@@ -177,6 +180,7 @@ describe("tabFromPath", () => {
     expect(tabFromPath("/overview")).toBe("overview");
     expect(tabFromPath("/activity")).toBe("activity");
     expect(tabFromPath("/sessions")).toBe("sessions");
+    expect(tabFromPath("/summaries")).toBe("summaries");
     expect(tabFromPath("/dreaming")).toBe("dreams");
     expect(tabFromPath("/dreams")).toBe("dreams");
   });
@@ -208,6 +212,7 @@ describe("inferBasePathFromPathname", () => {
   it("returns empty string for direct tab path", () => {
     expect(inferBasePathFromPathname("/chat")).toBe("");
     expect(inferBasePathFromPathname("/overview")).toBe("");
+    expect(inferBasePathFromPathname("/summaries")).toBe("");
     expect(inferBasePathFromPathname("/dreaming")).toBe("");
     expect(inferBasePathFromPathname("/dreams")).toBe("");
   });

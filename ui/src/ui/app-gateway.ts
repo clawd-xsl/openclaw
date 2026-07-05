@@ -77,6 +77,10 @@ import {
   type SessionsState,
 } from "./controllers/sessions.ts";
 import {
+  resetSessionSummaryHistory,
+  type SessionSummaryHistoryState,
+} from "./controllers/summaries.ts";
+import {
   resolveGatewayErrorDetailCode,
   type GatewayEventFrame,
   type GatewayHelloOk,
@@ -787,6 +791,7 @@ export function connectGateway(host: GatewayHost, options?: ConnectGatewayOption
   host.chatError = null;
   host.hello = null;
   host.connected = false;
+  resetSessionSummaryHistory(host as unknown as SessionSummaryHistoryState);
   if (reconnectReason === "seq-gap") {
     host.execApprovalQueue = pruneExecApprovalQueue(host.execApprovalQueue);
     clearPendingQueueItemsForRun(
@@ -921,6 +926,7 @@ export function connectGateway(host: GatewayHost, options?: ConnectGatewayOption
         return;
       }
       host.connected = false;
+      resetSessionSummaryHistory(host as unknown as SessionSummaryHistoryState);
       const currentSessionId =
         typeof host.currentSessionId === "string" ? host.currentSessionId.trim() : "";
       if (currentSessionId) {

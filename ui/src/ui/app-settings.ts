@@ -62,6 +62,7 @@ import {
   type SkillWorkshopState,
 } from "./controllers/skill-workshop.ts";
 import { loadSkills, reconcileSkillsAgentId, type SkillsState } from "./controllers/skills.ts";
+import { loadSessionSummaries, type SessionSummaryHistoryState } from "./controllers/summaries.ts";
 import { loadUsage, type UsageState } from "./controllers/usage.ts";
 import {
   loadWorkboard,
@@ -159,6 +160,7 @@ type SettingsAppHost = SettingsHost &
   DebugState &
   DevicesState &
   DreamingState &
+  SessionSummaryHistoryState &
   ExecApprovalsState &
   LogsState &
   NodesState &
@@ -491,6 +493,9 @@ export async function refreshActiveTab(host: SettingsHost, opts?: { chatStartup?
       case "nodes":
         await loadNodes(app);
         await Promise.allSettled([loadDevices(app), loadConfig(app), loadExecApprovals(app)]);
+        break;
+      case "summaries":
+        await Promise.all([loadAgents(app), loadSessionSummaries(app)]);
         break;
       case "dreams":
         host.selectedAgentId = resolveDreamingAgentIdForSession(host);

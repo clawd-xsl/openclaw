@@ -32,6 +32,7 @@ const mocks = vi.hoisted(() => ({
   loadDevicesMock: vi.fn(async () => {}),
   loadDreamDiaryMock: vi.fn(async () => {}),
   loadDreamingStatusMock: vi.fn(async () => {}),
+  loadSessionSummariesMock: vi.fn(async () => {}),
   loadWikiImportInsightsMock: vi.fn(async () => {}),
   loadWikiMemoryPalaceMock: vi.fn(async () => {}),
   loadExecApprovalsMock: vi.fn(async () => {}),
@@ -113,6 +114,9 @@ vi.mock("./controllers/dreaming.ts", () => ({
   loadDreamingStatus: mocks.loadDreamingStatusMock,
   loadWikiImportInsights: mocks.loadWikiImportInsightsMock,
   loadWikiMemoryPalace: mocks.loadWikiMemoryPalaceMock,
+}));
+vi.mock("./controllers/summaries.ts", () => ({
+  loadSessionSummaries: mocks.loadSessionSummariesMock,
 }));
 vi.mock("./controllers/exec-approvals.ts", () => ({
   loadExecApprovals: mocks.loadExecApprovalsMock,
@@ -257,6 +261,16 @@ describe("refreshActiveTab", () => {
     expect(mocks.loadDreamDiaryMock).toHaveBeenCalledWith(host);
     expect(mocks.loadWikiImportInsightsMock).toHaveBeenCalledWith(host);
     expect(mocks.loadWikiMemoryPalaceMock).toHaveBeenCalledWith(host);
+  });
+
+  it("loads agents and the first summary history page", async () => {
+    const host = createHost();
+    host.tab = "summaries";
+
+    await refreshActiveTab(host as unknown as Parameters<typeof refreshActiveTab>[0]);
+
+    expect(mocks.loadAgentsMock).toHaveBeenCalledWith(host);
+    expect(mocks.loadSessionSummariesMock).toHaveBeenCalledWith(host);
   });
 
   for (const panel of ["files", "skills", "channels", "tools"] as const) {

@@ -9,7 +9,10 @@ export const TAB_GROUPS = [
     label: "control",
     tabs: ["overview", "activity", "workboard", "instances", "sessions", "usage", "cron"],
   },
-  { label: "agent", tabs: ["agents", "skills", "skillWorkshop", "nodes", "dreams"] },
+  {
+    label: "agent",
+    tabs: ["agents", "skills", "skillWorkshop", "nodes", "summaries", "dreams"],
+  },
   {
     label: "settings",
     tabs: ["config"],
@@ -39,6 +42,7 @@ export type Tab =
   | "aiAgents"
   | "debug"
   | "logs"
+  | "summaries"
   | "dreams";
 
 export const SETTINGS_TABS = [
@@ -77,6 +81,7 @@ const TAB_PATHS: Record<Tab, string> = {
   aiAgents: "/ai-agents",
   debug: "/debug",
   logs: "/logs",
+  summaries: "/summaries",
   dreams: "/dreaming",
 };
 
@@ -225,6 +230,8 @@ export function iconForTab(tab: Tab): IconName {
       return "bug";
     case "logs":
       return "scrollText";
+    case "summaries":
+      return "fileText";
     case "dreams":
       return "moon";
     default:
