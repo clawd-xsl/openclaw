@@ -10,7 +10,9 @@ import {
 import * as bootstrapCache from "../../agents/bootstrap-cache.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { SessionEntry } from "../../config/sessions.js";
+import { resolveStorePath } from "../../config/sessions/paths.js";
 import { runExclusiveSessionStoreWrite } from "../../config/sessions/store-writer.js";
+import { clearSessionStoreCacheForTest, saveSessionStore } from "../../config/sessions/store.js";
 import { readSessionStoreForTest } from "../../config/sessions/test-helpers.js";
 import { formatZonedTimestamp } from "../../infra/format-time/format-datetime.ts";
 import {
@@ -220,6 +222,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  clearSessionStoreCacheForTest();
   await fs.rm(suiteRoot, { recursive: true, force: true });
   suiteRoot = "";
   suiteCase = 0;
@@ -1726,18 +1729,21 @@ describe("initSessionState RawBody", () => {
     const agentId = "worker1";
     const sessionKey = `agent:${agentId}:telegram:12345`;
     const sessionId = "sess-worker-1";
-    const sessionFile = path.join(stateDir, "agents", agentId, "sessions", `${sessionId}.jsonl`);
-    const storePath = path.join(stateDir, "agents", agentId, "sessions", "sessions.json");
 
     await withEnvAsync({ OPENCLAW_STATE_DIR: stateDir }, async () => {
-      await fs.mkdir(path.dirname(storePath), { recursive: true });
-      await writeSessionStoreFast(storePath, {
-        [sessionKey]: {
-          sessionId,
-          sessionFile,
-          updatedAt: Date.now(),
+      const storePath = resolveStorePath(undefined, { agentId });
+      const sessionFile = path.join(path.dirname(storePath), `${sessionId}.jsonl`);
+      await saveSessionStore(
+        storePath,
+        {
+          [sessionKey]: {
+            sessionId,
+            sessionFile,
+            updatedAt: Date.now(),
+          },
         },
-      });
+        { skipMaintenance: true },
+      );
 
       const cfg = {} as OpenClawConfig;
       const result = await initSessionState({
