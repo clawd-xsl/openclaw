@@ -213,6 +213,29 @@ describe("session transcript runtime SDK", () => {
     });
   });
 
+  it("keeps the first event when the oversized head window contains many events", async () => {
+    const scope = {
+      agentId: "main",
+      sessionFile: path.join(tempDir, "bounded-small-events.jsonl"),
+      sessionId: "bounded-small-events",
+      sessionKey: "agent:main:main",
+      storePath,
+    };
+    const events = Array.from({ length: 100 }, (_, index) => ({ id: index }));
+    fs.writeFileSync(
+      scope.sessionFile,
+      `${events.map((event) => JSON.stringify(event)).join("\n")}\n`,
+    );
+
+    await expect(
+      readBoundedSessionTranscriptEvents({ ...scope, maxBytes: 250, maxEvents: 5 }),
+    ).resolves.toEqual({
+      available: true,
+      events: [events[0], ...events.slice(-4)],
+      truncated: true,
+    });
+  });
+
   it("bounds event count even when the transcript fits the byte budget", async () => {
     const scope = {
       agentId: "main",
@@ -234,6 +257,59 @@ describe("session transcript runtime SDK", () => {
       events: [events[0], ...events.slice(-4)],
       truncated: true,
     });
+  });
+
+  it("retains only head and tail events from a small-byte transcript with many events", async () => {
+    const scope = {
+      agentId: "main",
+      sessionFile: path.join(tempDir, "bounded-many-events.jsonl"),
+      sessionId: "bounded-many-events",
+      sessionKey: "agent:main:main",
+      storePath,
+    };
+    const events = Array.from({ length: 5_000 }, (_, index) => ({ id: index }));
+    const serialized = `${events.map((event) => JSON.stringify(event)).join("\n")}\n`;
+    fs.writeFileSync(scope.sessionFile, serialized);
+
+    await expect(
+      readBoundedSessionTranscriptEvents({
+        ...scope,
+        maxBytes: Buffer.byteLength(serialized),
+        maxEvents: 5,
+      }),
+    ).resolves.toEqual({
+      available: true,
+      events: [events[0], ...events.slice(-4)],
+      truncated: true,
+    });
+  });
+
+  it("pins the file-size snapshot when the transcript grows during a bounded read", async () => {
+    const scope = {
+      agentId: "main",
+      sessionFile: path.join(tempDir, "bounded-growing.jsonl"),
+      sessionId: "bounded-growing",
+      sessionKey: "agent:main:main",
+      storePath,
+    };
+    const first = { id: "before-snapshot" };
+    const appended = { id: "after-snapshot" };
+    const initial = Buffer.from(`${JSON.stringify(first)}\n`, "utf8");
+    const grown = Buffer.from(`${JSON.stringify(first)}\n${JSON.stringify(appended)}\n`, "utf8");
+    const read = vi.fn(async (buffer: Buffer, offset: number, length: number, position: number) => {
+      const bytesRead = grown.copy(buffer, offset, position, position + length);
+      return { buffer, bytesRead };
+    });
+    vi.spyOn(fs.promises, "open").mockResolvedValue({
+      close: vi.fn(async () => undefined),
+      read,
+      stat: vi.fn(async () => ({ isFile: () => true, size: initial.length })),
+    } as never);
+
+    await expect(
+      readBoundedSessionTranscriptEvents({ ...scope, maxBytes: 4_096, maxEvents: 5 }),
+    ).resolves.toEqual({ available: true, events: [first], truncated: false });
+    expect(read).toHaveBeenCalledWith(expect.any(Buffer), 0, initial.length, 0);
   });
 
   it("distinguishes an unavailable transcript from an available empty transcript", async () => {

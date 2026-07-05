@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { stripInboundMetadata } from "../auto-reply/reply/strip-inbound-meta.js";
+import { readFileRangeAsync } from "../config/sessions/file-range.js";
 import {
   appendTranscriptMessage,
   publishTranscriptUpdate,
@@ -10,10 +11,7 @@ import {
   type TranscriptUpdatePayload,
 } from "../config/sessions/session-accessor.js";
 import { runSessionTranscriptAppendTransaction } from "../config/sessions/transcript-append.js";
-import {
-  streamSessionTranscriptLines,
-  streamSessionTranscriptLinesReverse,
-} from "../config/sessions/transcript-stream.js";
+import { streamSessionTranscriptLines } from "../config/sessions/transcript-stream.js";
 import {
   appendAssistantMessageToSessionTranscript,
   readLatestAssistantTextFromSessionTranscript,
@@ -209,53 +207,83 @@ function normalizeReadBound(value: number, label: string): number {
   return value;
 }
 
-function selectTranscriptHeadAndTail(
-  events: SessionTranscriptEvent[],
-  maxEvents: number,
-): SessionTranscriptEvent[] {
-  if (events.length <= maxEvents) {
-    return events;
-  }
-  const headCount = maxEvents >= 5 ? Math.max(1, Math.floor(maxEvents / 5)) : 0;
-  return [...events.slice(0, headCount), ...events.slice(-(maxEvents - headCount))];
-}
-
-async function collectTranscriptWindow(params: {
-  filePath: string;
-  maxBytes: number;
+function parseBoundedTranscriptBuffer(params: {
+  buffer: Buffer;
+  discardLeadingPartialLine: boolean;
+  discardTrailingPartialLine: boolean;
   maxEvents: number;
-  reverse: boolean;
-}): Promise<SessionTranscriptEvent[]> {
-  if (params.maxBytes < 1 || params.maxEvents < 1) {
-    return [];
-  }
-  const events: SessionTranscriptEvent[] = [];
-  let bytes = 0;
-  const lines = params.reverse
-    ? streamSessionTranscriptLinesReverse(params.filePath)
-    : streamSessionTranscriptLines(params.filePath);
-  for await (const line of lines) {
-    const lineBytes = Buffer.byteLength(line, "utf8") + 1;
-    if (bytes + lineBytes > params.maxBytes) {
-      break;
+  retention?: "head" | "tail" | "head-tail";
+}): { events: SessionTranscriptEvent[]; truncated: boolean } {
+  let start = 0;
+  let end = params.buffer.length;
+  if (params.discardLeadingPartialLine) {
+    const firstNewline = params.buffer.indexOf(0x0a);
+    if (firstNewline < 0) {
+      return { events: [], truncated: params.buffer.length > 0 };
     }
-    bytes += lineBytes;
+    start = firstNewline + 1;
+  }
+  if (params.discardTrailingPartialLine && end > start && params.buffer[end - 1] !== 0x0a) {
+    const lastNewline = params.buffer.lastIndexOf(0x0a, end - 1);
+    if (lastNewline < start) {
+      return { events: [], truncated: true };
+    }
+    end = lastNewline + 1;
+  }
+
+  const retention = params.retention ?? "head-tail";
+  const headCount =
+    retention === "head"
+      ? params.maxEvents
+      : retention === "tail"
+        ? 0
+        : params.maxEvents >= 5
+          ? Math.max(1, Math.floor(params.maxEvents / 5))
+          : 0;
+  const tailCount = retention === "head" ? 0 : params.maxEvents - headCount;
+  const all: SessionTranscriptEvent[] = [];
+  const head: SessionTranscriptEvent[] = [];
+  const tail: SessionTranscriptEvent[] = [];
+  let validCount = 0;
+  let lineStart = start;
+  for (let index = start; index <= end; index += 1) {
+    if (index < end && params.buffer[index] !== 0x0a) {
+      continue;
+    }
+    const lineEnd = index === end ? end : index;
+    const line = params.buffer.subarray(lineStart, lineEnd).toString("utf8").trim();
+    lineStart = index + 1;
+    if (!line) {
+      continue;
+    }
     const event = parseTranscriptEvent(line);
     if (event === undefined) {
       continue;
     }
-    events.push(event);
-    if (events.length >= params.maxEvents) {
-      break;
+    validCount += 1;
+    if (validCount <= params.maxEvents) {
+      all.push(event);
+    }
+    if (head.length < headCount) {
+      head.push(event);
+    }
+    if (tailCount > 0) {
+      tail.push(event);
+      if (tail.length > tailCount) {
+        tail.shift();
+      }
     }
   }
-  return params.reverse ? events.reverse() : events;
+  return validCount <= params.maxEvents
+    ? { events: all, truncated: false }
+    : { events: [...head, ...tail], truncated: true };
 }
 
 /**
  * Reads a memory-bounded head/tail view of a transcript by scoped identity.
- * Small transcripts are parsed once; oversized files read only fixed windows
- * from both ends so long-running sessions cannot force whole-file retention.
+ * The reader pins one file-size snapshot and reads at most maxBytes from that
+ * snapshot, so concurrent appends and many tiny events cannot expand retained
+ * memory beyond the caller's explicit byte/event bounds.
  */
 export async function readBoundedSessionTranscriptEvents(
   params: BoundedSessionTranscriptReadParams,
@@ -263,47 +291,70 @@ export async function readBoundedSessionTranscriptEvents(
   const maxBytes = normalizeReadBound(params.maxBytes, "maxBytes");
   const maxEvents = normalizeReadBound(params.maxEvents, "maxEvents");
   const target = await resolveSessionTranscriptRuntimeReadTarget(params);
-  let stat: fs.Stats;
+  let fileHandle: Awaited<ReturnType<typeof fs.promises.open>>;
   try {
-    stat = await fs.promises.stat(target.sessionFile);
+    fileHandle = await fs.promises.open(target.sessionFile, "r");
   } catch {
     return { available: false, events: [], truncated: false };
   }
-  if (!stat.isFile()) {
-    return { available: false, events: [], truncated: false };
-  }
-  if (stat.size <= 0) {
-    return { available: true, events: [], truncated: false };
-  }
+  try {
+    const stat = await fileHandle.stat();
+    if (!stat.isFile()) {
+      return { available: false, events: [], truncated: false };
+    }
+    if (stat.size <= 0) {
+      return { available: true, events: [], truncated: false };
+    }
+    if (stat.size <= maxBytes) {
+      const buffer = await readFileRangeAsync(fileHandle, 0, stat.size);
+      const parsed = parseBoundedTranscriptBuffer({
+        buffer,
+        discardLeadingPartialLine: false,
+        discardTrailingPartialLine: false,
+        maxEvents,
+      });
+      return { available: true, ...parsed };
+    }
 
-  if (stat.size <= maxBytes) {
-    const events = await readSessionTranscriptEvents(params);
-    return {
-      available: true,
-      events: selectTranscriptHeadAndTail(events, maxEvents),
-      truncated: events.length > maxEvents,
-    };
-  }
-
-  const headBytes = Math.max(1, Math.floor(maxBytes / 5));
-  const tailBytes = Math.max(1, maxBytes - headBytes);
-  const headEvents = maxEvents >= 5 ? Math.max(1, Math.floor(maxEvents / 5)) : 0;
-  const tailEvents = Math.max(1, maxEvents - headEvents);
-  const [head, tail] = await Promise.all([
-    collectTranscriptWindow({
-      filePath: target.sessionFile,
-      maxBytes: headBytes,
-      maxEvents: headEvents,
-      reverse: false,
-    }),
-    collectTranscriptWindow({
-      filePath: target.sessionFile,
-      maxBytes: tailBytes,
+    const requestedHeadEvents = maxEvents >= 5 ? Math.max(1, Math.floor(maxEvents / 5)) : 0;
+    let headBytes = requestedHeadEvents > 0 && maxBytes > 1 ? Math.max(1, Math.floor(maxBytes / 5)) : 0;
+    const tailBytes = maxBytes - headBytes;
+    // Spend one byte from the head budget to inspect the byte immediately
+    // before the tail range. That preserves a complete first tail line when the
+    // range happens to start exactly on a line boundary without exceeding the
+    // caller's aggregate byte bound.
+    const tailBoundaryProbeBytes = headBytes > 1 && stat.size > tailBytes ? 1 : 0;
+    headBytes -= tailBoundaryProbeBytes;
+    const tailReadStart = stat.size - tailBytes - tailBoundaryProbeBytes;
+    const [headBuffer, tailBuffer] = await Promise.all([
+      readFileRangeAsync(fileHandle, 0, headBytes),
+      readFileRangeAsync(
+        fileHandle,
+        tailReadStart,
+        tailBytes + tailBoundaryProbeBytes,
+      ),
+    ]);
+    const headEvents = requestedHeadEvents;
+    const tailEvents = Math.max(1, maxEvents - headEvents);
+    const head = parseBoundedTranscriptBuffer({
+      buffer: headBuffer,
+      discardLeadingPartialLine: false,
+      discardTrailingPartialLine: true,
+      maxEvents: Math.max(1, headEvents),
+      retention: "head",
+    }).events.slice(0, headEvents);
+    const tail = parseBoundedTranscriptBuffer({
+      buffer: tailBuffer,
+      discardLeadingPartialLine:
+        tailBoundaryProbeBytes === 0 || tailBuffer[0] !== 0x0a,
+      discardTrailingPartialLine: false,
       maxEvents: tailEvents,
-      reverse: true,
-    }),
-  ]);
-  return { available: true, events: [...head, ...tail], truncated: true };
+      retention: "tail",
+    }).events.slice(-tailEvents);
+    return { available: true, events: [...head, ...tail], truncated: true };
+  } finally {
+    await fileHandle.close().catch(() => undefined);
+  }
 }
 
 /**
