@@ -4,6 +4,7 @@ import {
   listSignalAccountIds,
   resolveDefaultSignalAccountId,
   resolveSignalAccount,
+  resolveSignalBackend,
 } from "./accounts.js";
 
 describe("resolveSignalAccount", () => {
@@ -47,5 +48,30 @@ describe("resolveSignalAccount", () => {
     expect(resolved.baseUrl).toBe("http://127.0.0.1:9999");
     expect(resolved.config.account).toBe("+15555550123");
     expect(resolved.configured).toBe(true);
+  });
+
+  it("prefers signal-ts when durable state is configured", () => {
+    const account = resolveSignalAccount({
+      cfg: {
+        channels: {
+          signal: {
+            signalTsStatePath: "/secure/signal/default.json",
+          },
+        },
+      } as never,
+    });
+
+    expect(account.configured).toBe(true);
+    expect(resolveSignalBackend(account)).toBe("signal-ts");
+  });
+
+  it("keeps existing signal-cli accounts on the legacy transport", () => {
+    const account = resolveSignalAccount({
+      cfg: {
+        channels: { signal: { account: "+15555550123" } },
+      } as never,
+    });
+
+    expect(resolveSignalBackend(account)).toBe("signal-cli");
   });
 });

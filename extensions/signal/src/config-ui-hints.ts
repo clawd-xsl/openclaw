@@ -18,6 +18,14 @@ export const signalChannelConfigUiHints = {
     label: "Signal Account",
     help: "Signal account identifier (phone/number handle) used to bind this channel config to a specific Signal identity. Keep this aligned with your linked device/session state.",
   },
+  backend: {
+    label: "Signal Transport",
+    help: "Use the embedded signal-ts client or the legacy signal-cli daemon. signal-ts is selected automatically when a state path is configured.",
+  },
+  signalTsStatePath: {
+    label: "Signal State Path",
+    help: "Path to durable linked-device state for the embedded signal-ts client.",
+  },
   configPath: {
     label: "Signal CLI Config Path",
     help: "Optional directory passed to signal-cli via --config when the service needs a non-default signal-cli data path.",

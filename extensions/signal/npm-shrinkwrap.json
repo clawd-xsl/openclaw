@@ -8,8 +8,32 @@
       "name": "@openclaw/signal",
       "version": "2026.7.1-beta.2",
       "dependencies": {
+        "@openclaw/signal-ts": "file:../../../signal-ts",
         "ws": "8.21.0"
       }
+    },
+    "../../../signal-ts": {
+      "name": "@openclaw/signal-ts",
+      "version": "0.0.0",
+      "license": "AGPL-3.0-only",
+      "dependencies": {
+        "@signalapp/libsignal-client": "^0.94.3",
+        "protobufjs": "^8.5.0",
+        "undici": "8.0.2"
+      },
+      "devDependencies": {
+        "@types/node": "^24.12.0",
+        "protobufjs-cli": "^2.5.0",
+        "typescript": "^5.9.3",
+        "vitest": "^4.0.13"
+      },
+      "engines": {
+        "node": ">=22"
+      }
+    },
+    "node_modules/@openclaw/signal-ts": {
+      "resolved": "../../../signal-ts",
+      "link": true
     },
     "node_modules/ws": {
       "version": "8.21.0",

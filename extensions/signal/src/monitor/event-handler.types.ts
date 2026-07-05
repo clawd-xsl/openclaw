@@ -68,6 +68,25 @@ export type SignalAttachment = {
   contentType?: string | null;
   filename?: string | null;
   size?: number | null;
+  /** JSON-safe signal-ts pointer used to fetch and decrypt the attachment. */
+  signalTsPointer?: {
+    cdnId?: number;
+    cdnKey?: string;
+    clientUuid?: string;
+    key?: string;
+    digest?: string;
+    incrementalMac?: string;
+    contentType?: string;
+    size?: number;
+    fileName?: string;
+    flags?: number;
+    width?: number;
+    height?: number;
+    caption?: string;
+    blurHash?: string;
+    uploadTimestamp?: number;
+    cdnNumber?: number;
+  } | null;
 };
 
 export type SignalReactionTarget = {

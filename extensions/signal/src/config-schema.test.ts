@@ -87,6 +87,17 @@ describe("signal groups schema", () => {
     });
   });
 
+  it("accepts embedded signal-ts transport state per account", () => {
+    expectValidSignalConfig({
+      accounts: {
+        primary: {
+          backend: "signal-ts",
+          signalTsStatePath: "/secure/signal/primary.json",
+        },
+      },
+    });
+  });
+
   it("accepts top-level and per-account aliases", () => {
     expectValidSignalConfig({
       aliases: {

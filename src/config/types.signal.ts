@@ -20,6 +20,10 @@ export type SignalAccountConfig = CommonChannelMessagingConfig & {
   account?: string;
   /** Optional account UUID for signal-cli (used for loop protection). */
   accountUuid?: string;
+  /** Signal transport. signal-ts is selected automatically when durable state is configured. */
+  backend?: "signal-cli" | "signal-ts";
+  /** Durable linked-device state used by the embedded signal-ts transport. */
+  signalTsStatePath?: string;
   /** Optional signal-cli config directory path (passed as --config). */
   configPath?: string;
   /** Optional full base URL for signal-cli HTTP daemon. */

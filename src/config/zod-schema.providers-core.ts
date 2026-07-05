@@ -1180,6 +1180,8 @@ export const SignalAccountSchemaBase = z
     configWrites: z.boolean().optional(),
     account: z.string().optional(),
     accountUuid: z.string().optional(),
+    backend: z.enum(["signal-cli", "signal-ts"]).optional(),
+    signalTsStatePath: z.string().optional(),
     configPath: z.string().optional(),
     httpUrl: z.string().optional(),
     httpHost: z.string().optional(),

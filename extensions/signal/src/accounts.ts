@@ -17,6 +17,8 @@ export type ResolvedSignalAccount = {
   config: SignalAccountConfig;
 };
 
+export type SignalBackend = "signal-cli" | "signal-ts";
+
 const { listAccountIds, resolveDefaultAccountId } = createAccountListHelpers("signal", {
   implicitDefaultAccount: {
     channelKeys: ["account"],
@@ -52,6 +54,8 @@ export function resolveSignalAccount(params: {
   const baseUrl = normalizeOptionalString(merged.httpUrl) ?? `http://${host}:${port}`;
   const configured = Boolean(
     normalizeOptionalString(merged.account) ||
+    normalizeOptionalString(merged.backend) ||
+    normalizeOptionalString(merged.signalTsStatePath) ||
     normalizeOptionalString(merged.configPath) ||
     normalizeOptionalString(merged.httpUrl) ||
     normalizeOptionalString(merged.cliPath) ||
@@ -67,6 +71,20 @@ export function resolveSignalAccount(params: {
     configured,
     config: merged,
   };
+}
+
+/**
+ * Preserve signal-cli for existing installations, but prefer the embedded
+ * transport as soon as a durable signal-ts state file is configured.
+ */
+export function resolveSignalBackend(account: ResolvedSignalAccount): SignalBackend {
+  if (account.config?.backend) {
+    return account.config.backend;
+  }
+  return normalizeOptionalString(account.config?.signalTsStatePath) ||
+    normalizeOptionalString(process.env["OPENCLAW_SIGNAL_TS_STATE"])
+    ? "signal-ts"
+    : "signal-cli";
 }
 
 export function listEnabledSignalAccounts(cfg: OpenClawConfig): ResolvedSignalAccount[] {
