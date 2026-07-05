@@ -1127,6 +1127,65 @@ describe("runMemoryFlushIfNeeded", () => {
     },
   );
 
+  it.each([
+    { contextWindow: 200_000, threshold: 176_000 },
+    { contextWindow: 1_000_000, threshold: 976_000 },
+  ])(
+    "projects fresh CLI output across the $contextWindow-token context threshold",
+    async ({ contextWindow, threshold }) => {
+      const cfg = {
+        agents: {
+          defaults: {
+            cliBackends: { "claude-cli": { command: "claude" } },
+            compaction: { memoryFlush: {} },
+          },
+        },
+      };
+      const outputTokens = 40_000;
+      const promptTokens = threshold - outputTokens;
+      const sessionFile = path.join(rootDir, `cli-output-${contextWindow}.jsonl`);
+      const storePath = path.join(rootDir, `sessions-output-${contextWindow}.json`);
+      await fs.writeFile(sessionFile, "", "utf8");
+      const sessionEntry: SessionEntry = {
+        sessionId: `output-${contextWindow}`,
+        sessionFile,
+        updatedAt: Date.now(),
+        inputTokens: 20,
+        cacheRead: promptTokens - 33_067,
+        cacheWrite: 33_047,
+        outputTokens,
+        totalTokens: promptTokens,
+        totalTokensFresh: true,
+        compactionCount: 1,
+      };
+      await writeTestSessionStore(storePath, "main", sessionEntry);
+
+      await runMemoryFlushIfNeeded({
+        cfg,
+        followupRun: createTestFollowupRun({
+          provider: "claude-cli",
+          model: "claude-opus-4-6",
+          sessionId: sessionEntry.sessionId,
+          sessionFile,
+          workspaceDir: rootDir,
+        }),
+        promptForEstimate: "",
+        sessionCtx: { Provider: "whatsapp" } as unknown as TemplateContext,
+        defaultModel: "claude-cli/claude-opus-4-6",
+        agentCfgContextTokens: contextWindow,
+        resolvedVerboseLevel: "off",
+        sessionEntry,
+        sessionStore: { main: sessionEntry },
+        sessionKey: "main",
+        storePath,
+        isHeartbeat: false,
+        replyOperation: createReplyOperation(),
+      });
+
+      expect(runEmbeddedAgentMock).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it("repeats CLI pressure flushes only after configured token growth", async () => {
     registerMemoryFlushPlanResolverForTest(() => ({
       softThresholdTokens: 4_000,
@@ -2350,6 +2409,7 @@ describe("runMemoryFlushIfNeeded", () => {
 
   it("reuses the transcript tail scan stat when memory flush needs usage and byte size", async () => {
     const sessionFile = path.join(rootDir, "memory-flush-usage-and-size.jsonl");
+    const storePath = path.join(rootDir, "sessions.json");
     await fs.writeFile(
       sessionFile,
       `${JSON.stringify({
@@ -2371,6 +2431,7 @@ describe("runMemoryFlushIfNeeded", () => {
       updatedAt: Date.now(),
       totalTokensFresh: false,
     };
+    await writeTestSessionStore(storePath, "main", sessionEntry);
 
     let directTranscriptStats: unknown[];
     try {
@@ -2388,7 +2449,7 @@ describe("runMemoryFlushIfNeeded", () => {
         sessionEntry,
         sessionStore: { main: sessionEntry },
         sessionKey: "main",
-        storePath: path.join(rootDir, "sessions.json"),
+        storePath,
         isHeartbeat: false,
         replyOperation: createReplyOperation(),
       });
@@ -2401,6 +2462,12 @@ describe("runMemoryFlushIfNeeded", () => {
 
     expect(directTranscriptStats).toEqual([]);
     expect(runEmbeddedAgentMock).toHaveBeenCalledTimes(1);
+    const persistedStore = JSON.parse(await fs.readFile(storePath, "utf8")) as Record<
+      string,
+      SessionEntry
+    >;
+    expect(persistedStore.main?.totalTokens).toBe(80_000);
+    expect(persistedStore.main?.outputTokens).toBe(4_000);
   });
 
   it("fails when required preflight compaction returns an unknown successful no-op", async () => {

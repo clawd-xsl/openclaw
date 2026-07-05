@@ -1196,6 +1196,15 @@ export async function runMemoryFlushIfNeeded(params: {
       : undefined;
   const hasFreshPersistedPromptTokens =
     typeof persistedPromptTokens === "number" && entry?.totalTokensFresh === true;
+  const persistedOutputTokensRaw = entry?.outputTokens;
+  const persistedOutputTokens =
+    isCli &&
+    hasFreshPersistedPromptTokens &&
+    typeof persistedOutputTokensRaw === "number" &&
+    Number.isFinite(persistedOutputTokensRaw) &&
+    persistedOutputTokensRaw >= 0
+      ? persistedOutputTokensRaw
+      : undefined;
 
   const flushThreshold =
     contextWindowTokens - memoryFlushPlan.reserveTokensFloor - memoryFlushPlan.softThresholdTokens;
@@ -1209,6 +1218,7 @@ export async function runMemoryFlushIfNeeded(params: {
     canAttemptFlush &&
     entry &&
     hasFreshPersistedPromptTokens &&
+    persistedOutputTokens === undefined &&
     typeof promptTokenEstimate === "number" &&
     Number.isFinite(promptTokenEstimate) &&
     flushThreshold > 0 &&
@@ -1259,11 +1269,20 @@ export async function runMemoryFlushIfNeeded(params: {
     (!hasFreshPersistedPromptTokens ||
       (transcriptPromptTokens ?? 0) > (persistedPromptTokens ?? 0));
 
+  const normalizedTranscriptOutputTokens =
+    typeof transcriptOutputTokens === "number" &&
+    Number.isFinite(transcriptOutputTokens) &&
+    transcriptOutputTokens >= 0
+      ? transcriptOutputTokens
+      : undefined;
+  const transcriptOutputTokensPatch = { outputTokens: normalizedTranscriptOutputTokens };
+
   if (entry && shouldPersistTranscriptPromptTokens) {
     const nextEntry = {
       ...entry,
       totalTokens: transcriptPromptTokens,
       totalTokensFresh: true,
+      ...transcriptOutputTokensPatch,
     };
     entry = nextEntry;
     if (params.sessionKey && params.sessionStore) {
@@ -1276,7 +1295,11 @@ export async function runMemoryFlushIfNeeded(params: {
             storePath: params.storePath,
             sessionKey: params.sessionKey,
           },
-          () => ({ totalTokens: transcriptPromptTokens, totalTokensFresh: true }),
+          () => ({
+            totalTokens: transcriptPromptTokens,
+            totalTokensFresh: true,
+            ...transcriptOutputTokensPatch,
+          }),
           {
             skipMaintenance: true,
             takeCacheOwnership: true,
@@ -1294,18 +1317,42 @@ export async function runMemoryFlushIfNeeded(params: {
     }
   }
 
-  const promptTokensSnapshot = Math.max(
-    hasFreshPersistedPromptTokens ? (persistedPromptTokens ?? 0) : 0,
-    hasReliableTranscriptPromptTokens ? (transcriptPromptTokens ?? 0) : 0,
-  );
-  const hasFreshPromptTokensSnapshot =
-    promptTokensSnapshot > 0 &&
-    (hasFreshPersistedPromptTokens || hasReliableTranscriptPromptTokens);
+  const persistedUsageSnapshot = hasFreshPersistedPromptTokens
+    ? {
+        promptTokens: persistedPromptTokens,
+        outputTokens: persistedOutputTokens,
+      }
+    : undefined;
+  const transcriptUsageCandidate = hasReliableTranscriptPromptTokens
+    ? {
+        promptTokens: transcriptPromptTokens,
+        outputTokens: normalizedTranscriptOutputTokens,
+      }
+    : undefined;
+  const usageSnapshot = (() => {
+    if (!persistedUsageSnapshot) {
+      return transcriptUsageCandidate;
+    }
+    if (!transcriptUsageCandidate) {
+      return persistedUsageSnapshot;
+    }
+    if (transcriptUsageCandidate.promptTokens > persistedUsageSnapshot.promptTokens) {
+      return transcriptUsageCandidate;
+    }
+    if (transcriptUsageCandidate.promptTokens < persistedUsageSnapshot.promptTokens) {
+      return persistedUsageSnapshot;
+    }
+    return (transcriptUsageCandidate.outputTokens ?? 0) > (persistedUsageSnapshot.outputTokens ?? 0)
+      ? transcriptUsageCandidate
+      : persistedUsageSnapshot;
+  })();
+  const promptTokensSnapshot = usageSnapshot?.promptTokens ?? 0;
+  const hasFreshPromptTokensSnapshot = promptTokensSnapshot > 0;
 
   const projectedTokenCount = hasFreshPromptTokensSnapshot
     ? resolveEffectivePromptTokens(
         promptTokensSnapshot,
-        transcriptOutputTokens,
+        usageSnapshot?.outputTokens,
         promptTokenEstimate,
       )
     : undefined;
@@ -1407,6 +1454,7 @@ export async function runMemoryFlushIfNeeded(params: {
       `isHeartbeat=${params.isHeartbeat} isCli=${isCli} memoryFlushWritable=${memoryFlushWritable} ` +
       `compactionCount=${entry?.compactionCount ?? 0} memoryFlushCompactionCount=${entry?.memoryFlushCompactionCount ?? "undefined"} ` +
       `persistedPromptTokens=${persistedPromptTokens ?? "undefined"} persistedFresh=${entry?.totalTokensFresh === true} ` +
+      `persistedOutputTokens=${persistedOutputTokens ?? "undefined"} ` +
       `promptTokensEst=${promptTokenEstimate ?? "undefined"} transcriptPromptTokens=${transcriptPromptTokens ?? "undefined"} transcriptOutputTokens=${transcriptOutputTokens ?? "undefined"} ` +
       `projectedTokenCount=${projectedTokenCount ?? "undefined"} transcriptBytes=${transcriptByteSize ?? "undefined"} ` +
       `forceFlushTranscriptBytes=${forceFlushTranscriptBytes} forceFlushByTranscriptSize=${shouldForceFlushByTranscriptSize} ` +
