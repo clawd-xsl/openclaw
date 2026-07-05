@@ -78,6 +78,9 @@ type ClaudeLiveSession = {
   createdAtMs: number;
   lastUsedAtMs: number;
   pinnedMain: boolean;
+  pinnedMainOwnerKey?: string;
+  retireAfterTurn: boolean;
+  turnPending: boolean;
   managedRun: ManagedRun;
   providerId: string;
   modelId: string;
@@ -90,6 +93,11 @@ type ClaudeLiveSession = {
   cleanupPromise: Promise<void> | null;
   closing: boolean;
   mcpCaptureKey?: string;
+};
+type ClaudeLiveSessionCreate = {
+  promise: Promise<ClaudeLiveSession>;
+  pinnedMainOwnerKey?: string;
+  retireAfterTurn: boolean;
 };
 type ClaudeLiveRunResult = {
   output: CliOutput;
@@ -133,7 +141,7 @@ const CLAUDE_LIVE_MAX_SESSIONS = 16;
 const CLAUDE_LIVE_MAX_STDERR_CHARS = 64 * 1024;
 const CLAUDE_LIVE_CLOSE_WAIT_TIMEOUT_MS = 5_000;
 const liveSessions = new Map<string, ClaudeLiveSession>();
-const liveSessionCreates = new Map<string, Promise<ClaudeLiveSession>>();
+const liveSessionCreates = new Map<string, ClaudeLiveSessionCreate>();
 
 function sha256(value: string): string {
   return crypto.createHash("sha256").update(value).digest("hex");
@@ -299,6 +307,20 @@ function isCanonicalMainSession(context: PreparedCliRunContext): boolean {
   }
   const agentId = context.params.agentId ?? resolveAgentIdFromSessionKey(sessionKey);
   return sessionKey === resolveAgentMainSessionKey({ cfg: context.params.config, agentId });
+}
+
+function resolvePinnedMainOwnerKey(context: PreparedCliRunContext): string | undefined {
+  const sessionKey = context.params.sessionKey?.trim();
+  if (!sessionKey || !isCanonicalMainSession(context)) {
+    return undefined;
+  }
+  const agentId = context.params.agentId ?? resolveAgentIdFromSessionKey(sessionKey);
+  return `${context.backendResolved.id}:${buildClaudeOwnerKey({
+    agentAccountId: context.params.agentAccountId,
+    agentId,
+    authProfileId: context.effectiveAuthProfileId,
+    sessionKey,
+  })}`;
 }
 
 function buildClaudeLiveFingerprint(params: {
@@ -538,6 +560,10 @@ function scheduleIdleClose(session: ClaudeLiveSession): void {
   if (session.idleTimer) {
     clearTimeout(session.idleTimer);
     session.idleTimer = null;
+  }
+  if (session.retireAfterTurn) {
+    closeLiveSession(session, "restart");
+    return;
   }
   if (session.pinnedMain) {
     return;
@@ -1162,12 +1188,16 @@ async function createClaudeLiveSession(params: {
     await mcpCaptureAttempt.cleanup?.();
     throw error;
   }
+  const pinnedMainOwnerKey = resolvePinnedMainOwnerKey(params.context);
   session = {
     key: params.key,
     fingerprint: params.fingerprint,
     createdAtMs: managedRun.startedAtMs,
     lastUsedAtMs: Date.now(),
-    pinnedMain: isCanonicalMainSession(params.context),
+    pinnedMain: pinnedMainOwnerKey !== undefined,
+    pinnedMainOwnerKey,
+    retireAfterTurn: false,
+    turnPending: true,
     managedRun,
     providerId: params.context.params.provider,
     modelId: params.context.modelId,
@@ -1278,13 +1308,40 @@ function createTurn(params: {
 
 function closeOldestIdleSession(): boolean {
   const oldest = [...liveSessions.values()]
-    .filter((session) => !session.currentTurn && !session.pinnedMain)
+    .filter((session) => !session.currentTurn && !session.turnPending && !session.pinnedMain)
     .toSorted((left, right) => left.lastUsedAtMs - right.lastUsedAtMs)[0];
   if (oldest) {
     closeLiveSession(oldest, "idle");
     return true;
   }
   return false;
+}
+
+function retirePreviousPinnedMainGenerations(params: {
+  key: string;
+  pinnedMainOwnerKey: string;
+  retireActive: boolean;
+}): void {
+  for (const session of liveSessions.values()) {
+    if (session.key === params.key || session.pinnedMainOwnerKey !== params.pinnedMainOwnerKey) {
+      continue;
+    }
+    if (session.currentTurn || session.turnPending) {
+      if (params.retireActive) {
+        session.retireAfterTurn = true;
+      }
+      continue;
+    }
+    closeLiveSession(session, "restart");
+  }
+  if (!params.retireActive) {
+    return;
+  }
+  for (const [pendingKey, pending] of liveSessionCreates) {
+    if (pendingKey !== params.key && pending.pinnedMainOwnerKey === params.pinnedMainOwnerKey) {
+      pending.retireAfterTurn = true;
+    }
+  }
 }
 
 function ensureLiveSessionCapacity(key: string, context: PreparedCliRunContext): void {
@@ -1342,6 +1399,17 @@ export async function runClaudeLiveSessionTurn(params: {
   cleanup: () => Promise<void>;
 }): Promise<ClaudeLiveRunResult> {
   const key = buildClaudeLiveKey(params.context);
+  const pinnedMainOwnerKey = resolvePinnedMainOwnerKey(params.context);
+  if (pinnedMainOwnerKey) {
+    // A reset gives the same logical main session a new sessionId/key. Retire
+    // idle generations before enforcing the process cap, while allowing an
+    // in-flight predecessor to finish its current turn.
+    retirePreviousPinnedMainGenerations({
+      key,
+      pinnedMainOwnerKey,
+      retireActive: false,
+    });
+  }
   const resumeCapable = Boolean(params.context.preparedBackend.backend.resumeArgs?.length);
   const execPermission = resolveClaudeLiveExecPermission(params.context);
   const argv = [
@@ -1403,11 +1471,18 @@ export async function runClaudeLiveSessionTurn(params: {
     await cleanup();
     throw error;
   }
+  if (pinnedMainOwnerKey) {
+    retirePreviousPinnedMainGenerations({
+      key,
+      pinnedMainOwnerKey,
+      retireActive: true,
+    });
+  }
   if (!session) {
-    const pendingSession = liveSessionCreates.get(key);
-    if (pendingSession) {
+    const pendingCreate = liveSessionCreates.get(key);
+    if (pendingCreate) {
       try {
-        session = selectReusableSession(await pendingSession);
+        session = selectReusableSession(await pendingCreate.promise);
       } catch (error) {
         await cleanup();
         throw error;
@@ -1417,6 +1492,7 @@ export async function runClaudeLiveSessionTurn(params: {
       }
     }
     if (!session) {
+      let createEntry: ClaudeLiveSessionCreate | undefined;
       const createSession = createClaudeLiveSession({
         context: params.context,
         argv,
@@ -1427,12 +1503,24 @@ export async function runClaudeLiveSessionTurn(params: {
         noOutputTimeoutMs: params.noOutputTimeoutMs,
         supervisor: params.getProcessSupervisor(),
         cleanup,
-      }).finally(() => {
-        if (liveSessionCreates.get(key) === createSession) {
-          liveSessionCreates.delete(key);
-        }
-      });
-      liveSessionCreates.set(key, createSession);
+      })
+        .then((createdSession) => {
+          if (createEntry?.retireAfterTurn) {
+            createdSession.retireAfterTurn = true;
+          }
+          return createdSession;
+        })
+        .finally(() => {
+          if (liveSessionCreates.get(key) === createEntry) {
+            liveSessionCreates.delete(key);
+          }
+        });
+      createEntry = {
+        promise: createSession,
+        pinnedMainOwnerKey,
+        retireAfterTurn: false,
+      };
+      liveSessionCreates.set(key, createEntry);
       try {
         session = await createSession;
       } catch (error) {
@@ -1468,21 +1556,25 @@ export async function runClaudeLiveSessionTurn(params: {
   const sessionReuse: ClaudeLiveSessionReuse = cleanupTurnArtifacts ? "warm_hit" : "cold_miss";
 
   const outputPromise = new Promise<CliOutput>((resolve, reject) => {
-    liveSession.currentTurn = createTurn({
-      context: params.context,
-      noOutputTimeoutMs: params.noOutputTimeoutMs,
-      sessionReuse,
-      restartReason,
-      onAssistantDelta: params.onAssistantDelta,
-      onAssistantBoundary: params.onAssistantBoundary,
-      onToolUseStart: params.onToolUseStart,
-      onToolResult: params.onToolResult,
-      onCommentaryText: params.onCommentaryText,
-      session: liveSession,
-      execPermission,
-      resolve,
-      reject,
-    });
+    try {
+      liveSession.currentTurn = createTurn({
+        context: params.context,
+        noOutputTimeoutMs: params.noOutputTimeoutMs,
+        sessionReuse,
+        restartReason,
+        onAssistantDelta: params.onAssistantDelta,
+        onAssistantBoundary: params.onAssistantBoundary,
+        onToolUseStart: params.onToolUseStart,
+        onToolResult: params.onToolResult,
+        onCommentaryText: params.onCommentaryText,
+        session: liveSession,
+        execPermission,
+        resolve,
+        reject,
+      });
+    } finally {
+      liveSession.turnPending = false;
+    }
   });
   // Timeout/abort can reject the turn while stdin is backpressured. Keep the
   // rejection handled until the final await below rethrows the canonical result.

@@ -2137,6 +2137,162 @@ describe("runCliAgent spawn path", () => {
     expect(cancels[1]).toHaveBeenCalledWith("manual-cancel");
   });
 
+  it("retires pinned main generations across repeated session resets", async () => {
+    const cancels: Array<ReturnType<typeof vi.fn>> = [];
+    supervisorSpawnMock.mockImplementation(async (...args: unknown[]) => {
+      const input = (args[0] ?? {}) as { onStdout?: (chunk: string) => void };
+      const spawnIndex = supervisorSpawnMock.mock.calls.length;
+      const cancel = vi.fn();
+      cancels.push(cancel);
+      return {
+        runId: `live-main-rollover-${spawnIndex}`,
+        pid: 2600 + spawnIndex,
+        startedAtMs: Date.now(),
+        stdin: {
+          write: vi.fn((_data: string, cb?: (err?: Error | null) => void) => {
+            input.onStdout?.(
+              [
+                JSON.stringify({
+                  type: "system",
+                  subtype: "init",
+                  session_id: `live-main-rollover-${spawnIndex}`,
+                }),
+                JSON.stringify({
+                  type: "result",
+                  session_id: `live-main-rollover-${spawnIndex}`,
+                  result: `ok-${spawnIndex}`,
+                }),
+              ].join("\n") + "\n",
+            );
+            cb?.();
+          }),
+          end: vi.fn(),
+        },
+        wait: vi.fn(() => new Promise(() => {})),
+        cancel,
+      };
+    });
+
+    for (let index = 0; index < 17; index += 1) {
+      const context = buildPreparedCliRunContext({
+        provider: "claude-cli",
+        model: "sonnet",
+        runId: `run-main-rollover-${index}`,
+        sessionId: `main-generation-${index}`,
+        sessionKey: "agent:main:main",
+        agentId: "main",
+        config: { session: { mainKey: "main" } },
+        backend: { liveSession: "claude-stdio" },
+      });
+      await runClaudeLiveSessionTurn({
+        context,
+        args: context.preparedBackend.backend.args ?? [],
+        env: {},
+        prompt: `prompt ${index}`,
+        useResume: false,
+        noOutputTimeoutMs: 1_000,
+        getProcessSupervisor: () => ({
+          spawn: (params: Parameters<SupervisorSpawnFn>[0]) =>
+            supervisorSpawnMock(params) as ReturnType<SupervisorSpawnFn>,
+          cancel: vi.fn(),
+          cancelScope: vi.fn(),
+          getRecord: vi.fn(),
+        }),
+        onAssistantDelta: () => {},
+        cleanup: async () => {},
+      });
+    }
+
+    expect(supervisorSpawnMock).toHaveBeenCalledTimes(17);
+    for (const cancel of cancels.slice(0, -1)) {
+      expect(cancel).toHaveBeenCalledWith("manual-cancel");
+    }
+    expect(cancels.at(-1)).not.toHaveBeenCalled();
+  });
+
+  it("lets an active pinned main generation finish before retiring it", async () => {
+    const stdoutListeners: Array<((chunk: string) => void) | undefined> = [];
+    const cancels: Array<ReturnType<typeof vi.fn>> = [];
+    const writes: Array<ReturnType<typeof vi.fn>> = [];
+    supervisorSpawnMock.mockImplementation(async (...args: unknown[]) => {
+      const input = (args[0] ?? {}) as { onStdout?: (chunk: string) => void };
+      const spawnIndex = supervisorSpawnMock.mock.calls.length;
+      stdoutListeners.push(input.onStdout);
+      const cancel = vi.fn();
+      cancels.push(cancel);
+      const write = vi.fn((_data: string, cb?: (err?: Error | null) => void) => {
+        if (spawnIndex === 2) {
+          input.onStdout?.(
+            `${JSON.stringify({
+              type: "result",
+              session_id: "live-main-new",
+              result: "new-generation",
+            })}\n`,
+          );
+        }
+        cb?.();
+      });
+      writes.push(write);
+      return {
+        runId: `live-main-active-${spawnIndex}`,
+        pid: 2700 + spawnIndex,
+        startedAtMs: Date.now(),
+        stdin: { write, end: vi.fn() },
+        wait: vi.fn(() => new Promise(() => {})),
+        cancel,
+      };
+    });
+    const runGeneration = (sessionId: string, prompt: string) => {
+      const context = buildPreparedCliRunContext({
+        provider: "claude-cli",
+        model: "sonnet",
+        runId: `run-${sessionId}`,
+        sessionId,
+        sessionKey: "agent:main:main",
+        agentId: "main",
+        config: { session: { mainKey: "main" } },
+        backend: { liveSession: "claude-stdio" },
+      });
+      return runClaudeLiveSessionTurn({
+        context,
+        args: context.preparedBackend.backend.args ?? [],
+        env: {},
+        prompt,
+        useResume: false,
+        noOutputTimeoutMs: 1_000,
+        getProcessSupervisor: () => ({
+          spawn: (params: Parameters<SupervisorSpawnFn>[0]) =>
+            supervisorSpawnMock(params) as ReturnType<SupervisorSpawnFn>,
+          cancel: vi.fn(),
+          cancelScope: vi.fn(),
+          getRecord: vi.fn(),
+        }),
+        onAssistantDelta: () => {},
+        cleanup: async () => {},
+      });
+    };
+
+    const first = runGeneration("main-active-old", "old prompt");
+    await vi.waitFor(() => expect(writes[0]).toHaveBeenCalledOnce());
+    const second = await runGeneration("main-active-new", "new prompt");
+
+    expect(second.output.text).toBe("new-generation");
+    expect(cancels[0]).not.toHaveBeenCalled();
+
+    stdoutListeners[0]?.(
+      `${JSON.stringify({
+        type: "result",
+        session_id: "live-main-old",
+        result: "old-generation",
+      })}\n`,
+    );
+    await expect(first).resolves.toMatchObject({
+      output: expect.objectContaining({ text: "old-generation" }),
+    });
+    expect(cancels[0]).toHaveBeenCalledWith("manual-cancel");
+    expect(cancels[1]).not.toHaveBeenCalled();
+  });
+
   it("preserves Claude resume args when building live session argv", () => {
     const backend: PreparedCliRunContext["preparedBackend"]["backend"] = {
       command: "claude",
