@@ -89,8 +89,9 @@ function resolveValidatedDiscoveredStorePathSync(params: {
   sessionsDir: string;
   agentsRoot: string;
   realAgentsRoot?: string;
+  storePath?: string;
 }): string | undefined {
-  const storePath = path.join(params.sessionsDir, "sessions.json");
+  const storePath = params.storePath ?? path.join(params.sessionsDir, "sessions.sqlite");
   try {
     const stat = fsSync.lstatSync(storePath);
     // Discovered stores must be real files under the agents root; symlinked stores could escape
@@ -102,6 +103,31 @@ function resolveValidatedDiscoveredStorePathSync(params: {
     const realAgentsRoot = params.realAgentsRoot ?? fsSync.realpathSync.native(params.agentsRoot);
     return isWithinRoot(realStorePath, realAgentsRoot) ? realStorePath : undefined;
   } catch (err) {
+    if (
+      (err as NodeJS.ErrnoException | undefined)?.code === "ENOENT" &&
+      path.basename(storePath) === "sessions.sqlite"
+    ) {
+      const legacyJsonPath = path.join(params.sessionsDir, "sessions.json");
+      try {
+        const legacyStat = fsSync.lstatSync(legacyJsonPath);
+        if (legacyStat.isSymbolicLink() || !legacyStat.isFile()) {
+          return undefined;
+        }
+        const realLegacyPath = fsSync.realpathSync.native(legacyJsonPath);
+        const realAgentsRoot =
+          params.realAgentsRoot ?? fsSync.realpathSync.native(params.agentsRoot);
+        if (!isWithinRoot(realLegacyPath, realAgentsRoot)) {
+          return undefined;
+        }
+        // Return the canonical SQLite target; its first read imports this validated JSON source.
+        return path.join(path.dirname(realLegacyPath), "sessions.sqlite");
+      } catch (legacyError) {
+        if (shouldSkipDiscoveryError(legacyError)) {
+          return undefined;
+        }
+        throw legacyError;
+      }
+    }
     if (shouldSkipDiscoveryError(err)) {
       return undefined;
     }
@@ -115,21 +141,26 @@ function resolveSessionStoreDiscoveryState(
 ): {
   configuredTargets: SessionStoreTarget[];
   agentsRoots: string[];
+  storeNameByAgentsRoot: ReadonlyMap<string, string>;
 } {
   const configuredTargets = resolveSessionStoreTargets(cfg, { allAgents: true }, { env });
-  const agentsRoots = new Set<string>();
+  const storeNameByAgentsRoot = new Map<string, string>();
   for (const target of configuredTargets) {
     const agentsDir = resolveAgentsDirFromSessionStorePath(target.storePath);
-    if (agentsDir) {
-      agentsRoots.add(agentsDir);
+    if (agentsDir && !storeNameByAgentsRoot.has(agentsDir)) {
+      storeNameByAgentsRoot.set(agentsDir, path.basename(target.storePath));
     }
   }
-  agentsRoots.add(path.join(resolveStateDir(env), "agents"));
+  const defaultAgentsRoot = path.join(resolveStateDir(env), "agents");
+  if (!storeNameByAgentsRoot.has(defaultAgentsRoot)) {
+    storeNameByAgentsRoot.set(defaultAgentsRoot, "sessions.sqlite");
+  }
   // Search both configured template roots and the default state root so retired/manual agents are
   // visible even when no longer listed in config.
   return {
     configuredTargets,
-    agentsRoots: [...agentsRoots],
+    agentsRoots: [...storeNameByAgentsRoot.keys()],
+    storeNameByAgentsRoot,
   };
 }
 
@@ -156,7 +187,8 @@ export function resolveAllAgentSessionStoreTargetsSync(
   params: { env?: NodeJS.ProcessEnv } = {},
 ): SessionStoreTarget[] {
   const env = params.env ?? process.env;
-  const { configuredTargets, agentsRoots } = resolveSessionStoreDiscoveryState(cfg, env);
+  const { configuredTargets, agentsRoots, storeNameByAgentsRoot } =
+    resolveSessionStoreDiscoveryState(cfg, env);
   const realAgentsRoots = new Map<string, string>();
   const getRealAgentsRoot = (agentsRoot: string): string | undefined => {
     const cached = realAgentsRoots.get(agentsRoot);
@@ -189,6 +221,7 @@ export function resolveAllAgentSessionStoreTargetsSync(
       sessionsDir: path.dirname(target.storePath),
       agentsRoot,
       realAgentsRoot,
+      storePath: target.storePath,
     });
     return validatedStorePath ? [{ ...target, storePath: validatedStorePath }] : [];
   });
@@ -203,6 +236,10 @@ export function resolveAllAgentSessionStoreTargetsSync(
           sessionsDir,
           agentsRoot: agentsDir,
           realAgentsRoot,
+          storePath: path.join(
+            sessionsDir,
+            storeNameByAgentsRoot.get(agentsDir) ?? "sessions.sqlite",
+          ),
         });
         const target = validatedStorePath
           ? toDiscoveredSessionStoreTarget(sessionsDir, validatedStorePath)
@@ -264,13 +301,14 @@ export function resolveAgentSessionStoreTargetsSync(
       sessionsDir: path.dirname(storePath),
       agentsRoot,
       realAgentsRoot,
+      storePath,
     });
     if (validatedStorePath) {
       targets.push({ agentId: requested, storePath: validatedStorePath });
     }
   }
 
-  const { agentsRoots } = resolveSessionStoreDiscoveryState(cfg, env);
+  const { agentsRoots, storeNameByAgentsRoot } = resolveSessionStoreDiscoveryState(cfg, env);
   for (const agentsDir of agentsRoots) {
     try {
       const realAgentsRoot = getRealAgentsRoot(agentsDir);
@@ -280,7 +318,7 @@ export function resolveAgentSessionStoreTargetsSync(
       for (const sessionsDir of resolveAgentSessionDirsFromAgentsDirSync(agentsDir)) {
         const target = toDiscoveredSessionStoreTarget(
           sessionsDir,
-          path.join(sessionsDir, "sessions.json"),
+          path.join(sessionsDir, storeNameByAgentsRoot.get(agentsDir) ?? "sessions.sqlite"),
         );
         if (!target || normalizeAgentId(target.agentId) !== requested) {
           continue;
@@ -289,6 +327,7 @@ export function resolveAgentSessionStoreTargetsSync(
           sessionsDir,
           agentsRoot: agentsDir,
           realAgentsRoot,
+          storePath: target.storePath,
         });
         if (validatedStorePath) {
           targets.push({ ...target, storePath: validatedStorePath });

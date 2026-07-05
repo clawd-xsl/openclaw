@@ -17,6 +17,10 @@ async function resolveRealStorePath(sessionsDir: string): Promise<string> {
   return fsSync.realpathSync.native(path.join(sessionsDir, "sessions.json"));
 }
 
+async function resolveDefaultSqliteStorePath(sessionsDir: string): Promise<string> {
+  return path.join(fsSync.realpathSync.native(sessionsDir), "sessions.sqlite");
+}
+
 async function createAgentSessionStores(
   root: string,
   agentIds: string[],
@@ -216,7 +220,15 @@ describe("resolveAllAgentSessionStoreTargetsSync", () => {
   it("includes discovered on-disk agent stores alongside configured targets", async () => {
     await withTempHome(async (home) => {
       const stateDir = path.join(home, ".openclaw");
-      const storePaths = await createAgentSessionStores(stateDir, ["ops", "retired"]);
+      const legacyStorePaths = await createAgentSessionStores(stateDir, ["ops", "retired"]);
+      const storePaths = Object.fromEntries(
+        await Promise.all(
+          Object.entries(legacyStorePaths).map(async ([agentId, jsonPath]) => [
+            agentId,
+            await resolveDefaultSqliteStorePath(path.dirname(jsonPath)),
+          ]),
+        ),
+      );
 
       const cfg: OpenClawConfig = {
         agents: {
@@ -271,8 +283,8 @@ describe("resolveAllAgentSessionStoreTargetsSync", () => {
         OPENCLAW_STATE_DIR: envStateDir,
       };
       const cfg: OpenClawConfig = {};
-      const mainStorePath = await resolveRealStorePath(mainSessionsDir);
-      const retiredStorePath = await resolveRealStorePath(retiredSessionsDir);
+      const mainStorePath = await resolveDefaultSqliteStorePath(mainSessionsDir);
+      const retiredStorePath = await resolveDefaultSqliteStorePath(retiredSessionsDir);
 
       const targets = resolveAllAgentSessionStoreTargetsSync(cfg, { env });
 
@@ -302,9 +314,12 @@ describe("resolveAllAgentSessionStoreTargetsSync", () => {
       };
 
       const targets = resolveAllAgentSessionStoreTargetsSync(cfg, { env });
+      const retiredSqlitePath = await resolveDefaultSqliteStorePath(
+        path.dirname(storePaths.retired),
+      );
       expect(
         targets.some(
-          (target) => target.agentId === "retired" && target.storePath === storePaths.retired,
+          (target) => target.agentId === "retired" && target.storePath === retiredSqlitePath,
         ),
       ).toBe(true);
     });
@@ -345,7 +360,7 @@ describe("resolveAllAgentSessionStoreTargetsSync", () => {
       await fs.writeFile(path.join(junkSessionsDir, "sessions.json"), "{}", "utf8");
 
       const cfg: OpenClawConfig = {};
-      const mainStorePath = await resolveRealStorePath(mainSessionsDir);
+      const mainStorePath = await resolveDefaultSqliteStorePath(mainSessionsDir);
       const targets = resolveAllAgentSessionStoreTargetsSync(cfg, { env: process.env });
 
       expect(targets).toEqual([

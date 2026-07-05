@@ -208,7 +208,7 @@ export async function markRestartAbortedMainSessions(params: {
   }
 
   for (const sessionsDir of await resolveAgentSessionDirs(stateDir)) {
-    storePaths.add(path.join(sessionsDir, "sessions.json"));
+    storePaths.add(path.join(sessionsDir, "sessions.sqlite"));
   }
 
   for (const storePath of storePaths) {
@@ -661,7 +661,7 @@ export async function markRestartAbortedMainSessionsFromLocks(params: {
     return result;
   }
 
-  const storePath = path.join(sessionsDir, "sessions.json");
+  const storePath = path.join(sessionsDir, "sessions.sqlite");
   const storeResult = await applyRestartRecoveryLifecycle({
     storePath,
     update: (entries) => {
@@ -863,7 +863,7 @@ async function resolveRestartRecoveryStorePaths(params: {
   const storePaths = new Set<string>();
   const stateDir = params.stateDir ?? resolveStateDir(process.env);
   for (const sessionsDir of await resolveAgentSessionDirs(stateDir)) {
-    storePaths.add(path.join(sessionsDir, "sessions.json"));
+    storePaths.add(path.join(sessionsDir, "sessions.sqlite"));
   }
   if (params.cfg) {
     const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };

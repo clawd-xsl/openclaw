@@ -29,6 +29,7 @@ import { resolveExplicitSessionFilePath, resolveSessionFilePath } from "./paths.
 import { resolveSessionStorePathForScope } from "./session-store-path.js";
 import {
   ensureSessionStorePromptBlobsForPersistence,
+  hydrateSessionStoreSkillPromptRefs,
   isSessionSkillPromptBlobReadable,
   projectSessionStoreForPersistence,
   type SessionSkillPromptBlobProjection,
@@ -47,8 +48,9 @@ import {
   takeMutableSessionStoreCache,
   writeSessionStoreCache,
 } from "./store-cache.js";
-import { resolveSessionStoreEntry } from "./store-entry.js";
+import { normalizeStoreSessionKey, resolveSessionStoreEntry } from "./store-entry.js";
 import {
+  ensureSqliteSessionStoreJsonImport,
   loadSessionStore,
   normalizeSessionStore,
   readSessionEntries,
@@ -69,6 +71,14 @@ import {
   type ResolvedSessionMaintenanceConfigInput,
   type SessionMaintenanceWarning,
 } from "./store-maintenance.js";
+import { applySessionStoreMigrations } from "./store-migrations.js";
+import {
+  isSqliteSessionStorePath,
+  loadSessionEntryFromSqlite,
+  readSessionUpdatedAtFromSqlite,
+  saveSessionStoreToSqlite,
+  upsertSessionEntryInSqlite,
+} from "./store-sqlite.js";
 import { runExclusiveSessionStoreWrite } from "./store-writer.js";
 import {
   mergeSessionEntry,
@@ -116,6 +126,11 @@ export type SessionEntryPatchProjectionResult<TFailure extends SessionEntryPatch
   { ok: true; entry: SessionEntry } | TFailure;
 
 const log = createSubsystemLogger("sessions/store");
+const sqliteDiskBudgetWarnings = new Set<string>();
+
+export function getSqliteSessionDiskBudgetWarningCountForTest(): number {
+  return sqliteDiskBudgetWarnings.size;
+}
 const writerStoreFileStats = new WeakMap<
   Record<string, SessionEntry>,
   ReturnType<typeof getFileStatSnapshot> | null
@@ -143,6 +158,17 @@ export function readSessionUpdatedAt(params: {
   sessionKey: string;
 }): number | undefined {
   try {
+    if (isSqliteSessionStorePath(params.storePath)) {
+      ensureSqliteSessionStoreJsonImport(params.storePath);
+      const normalizedKey = normalizeStoreSessionKey(params.sessionKey);
+      const direct = readSessionUpdatedAtFromSqlite(params.storePath, normalizedKey);
+      return (
+        direct ??
+        readSessionEntry(params.storePath, params.sessionKey, {
+          hydrateSkillPromptRefs: false,
+        })?.updatedAt
+      );
+    }
     const store = loadSessionStore(params.storePath, { clone: false });
     return resolveSessionStoreEntry({ store, sessionKey: params.sessionKey }).existing?.updatedAt;
   } catch {
@@ -619,6 +645,9 @@ function storeHasUnsafeUntouchedHydratedSkillPrompts(
 }
 
 function loadMutableSessionStoreForWriter(storePath: string): Record<string, SessionEntry> {
+  if (isSqliteSessionStorePath(storePath)) {
+    return loadSessionStore(storePath, { skipCache: true, clone: false });
+  }
   const currentFileStat = getFileStatSnapshot(storePath);
   if (isSessionStoreCacheEnabled()) {
     const cached = takeMutableSessionStoreCache({
@@ -820,6 +849,26 @@ async function saveSessionStoreUnlocked(
 ): Promise<void> {
   normalizeSessionStore(store);
 
+  const sqliteStore = isSqliteSessionStorePath(storePath);
+  const resolvedSqliteMaintenanceConfig = sqliteStore
+    ? { ...(opts?.maintenanceConfig ?? resolveMaintenanceConfig()), ...opts?.maintenanceOverride }
+    : undefined;
+  const maintenanceConfig = resolvedSqliteMaintenanceConfig
+    ? { ...resolvedSqliteMaintenanceConfig, maxDiskBytes: null, highWaterBytes: null }
+    : opts?.maintenanceConfig;
+  const maintenanceOverride = sqliteStore ? undefined : opts?.maintenanceOverride;
+  const configuredDiskBudget = resolvedSqliteMaintenanceConfig?.maxDiskBytes;
+  if (
+    sqliteStore &&
+    configuredDiskBudget != null &&
+    !sqliteDiskBudgetWarnings.has(path.resolve(storePath))
+  ) {
+    sqliteDiskBudgetWarnings.add(path.resolve(storePath));
+    log.warn("session maxDiskBytes is disabled for SQLite stores until row-aware sizing lands", {
+      storePath,
+    });
+  }
+
   let maintenanceChangedStore = false;
   if (!opts?.skipMaintenance) {
     const maintenance = await applyFileBackedSessionStoreMaintenance({
@@ -828,8 +877,8 @@ async function saveSessionStoreUnlocked(
       activeSessionKey: opts?.activeSessionKey,
       onWarn: opts?.onWarn,
       onMaintenanceApplied: opts?.onMaintenanceApplied,
-      maintenanceOverride: opts?.maintenanceOverride,
-      maintenanceConfig: opts?.maintenanceConfig,
+      maintenanceOverride,
+      maintenanceConfig,
       log,
       artifacts: {
         archiveRemovedSessionTranscripts,
@@ -844,6 +893,38 @@ async function saveSessionStoreUnlocked(
       },
     });
     maintenanceChangedStore = maintenance.changedStore;
+  }
+
+  if (sqliteStore) {
+    const singleEntry = opts?.singleEntryPersistence;
+    if (singleEntry && !maintenanceChangedStore) {
+      const entry = store[singleEntry.sessionKey];
+      if (entry) {
+        const persisted = projectSessionStoreForPersistence({
+          storePath,
+          store: { [singleEntry.sessionKey]: entry },
+        });
+        await ensureSessionStorePromptBlobsForPersistence({
+          storePath,
+          promptBlobs: persisted.promptBlobs.values(),
+        });
+        upsertSessionEntryInSqlite({
+          storePath,
+          sessionKey: singleEntry.sessionKey,
+          entry: persisted.store[singleEntry.sessionKey] ?? entry,
+        });
+        invalidateSessionStoreCache(storePath);
+        return;
+      }
+    }
+    const persisted = projectSessionStoreForPersistence({ storePath, store });
+    await ensureSessionStorePromptBlobsForPersistence({
+      storePath,
+      promptBlobs: persisted.promptBlobs.values(),
+    });
+    saveSessionStoreToSqlite(storePath, persisted.store);
+    invalidateSessionStoreCache(storePath);
+    return;
   }
 
   if (
@@ -1714,6 +1795,54 @@ async function persistResolvedSessionEntry(params: {
   return entryUnchanged || params.returnDetached ? cloneSessionEntry(next) : next;
 }
 
+async function updateSqliteSessionStoreEntryFastPath(params: {
+  storePath: string;
+  sessionKey: string;
+  update: (
+    entry: SessionEntry,
+  ) => Promise<Partial<SessionEntry> | null> | Partial<SessionEntry> | null;
+}): Promise<{ handled: boolean; entry: SessionEntry | null }> {
+  const normalizedKey = normalizeStoreSessionKey(params.sessionKey);
+  ensureSqliteSessionStoreJsonImport(params.storePath);
+  const rawEntry = loadSessionEntryFromSqlite(params.storePath, normalizedKey);
+  if (!rawEntry) {
+    return { handled: false, entry: null };
+  }
+  const normalizedStore = { [normalizedKey]: rawEntry };
+  hydrateSessionStoreSkillPromptRefs({ storePath: params.storePath, store: normalizedStore });
+  applySessionStoreMigrations(normalizedStore);
+  normalizeSessionStore(normalizedStore);
+  const existing = normalizedStore[normalizedKey];
+  if (!existing) {
+    return { handled: false, entry: null };
+  }
+  const patch = await params.update(cloneSessionEntry(existing));
+  if (!patch) {
+    return { handled: true, entry: cloneSessionEntry(existing) };
+  }
+  const normalizedNextStore = { [normalizedKey]: mergeSessionEntry(existing, patch) };
+  normalizeSessionStore(normalizedNextStore);
+  const next = normalizedNextStore[normalizedKey];
+  if (!next) {
+    return { handled: false, entry: null };
+  }
+  const persisted = projectSessionStoreForPersistence({
+    storePath: params.storePath,
+    store: normalizedNextStore,
+  });
+  await ensureSessionStorePromptBlobsForPersistence({
+    storePath: params.storePath,
+    promptBlobs: persisted.promptBlobs.values(),
+  });
+  upsertSessionEntryInSqlite({
+    storePath: params.storePath,
+    sessionKey: normalizedKey,
+    entry: persisted.store[normalizedKey] ?? next,
+  });
+  invalidateSessionStoreCache(params.storePath);
+  return { handled: true, entry: cloneSessionEntry(next) };
+}
+
 export async function updateSessionStoreEntry(params: {
   storePath: string;
   sessionKey: string;
@@ -1726,6 +1855,12 @@ export async function updateSessionStoreEntry(params: {
 }): Promise<SessionEntry | null> {
   const { storePath, sessionKey, update } = params;
   return await runExclusiveSessionStoreWrite(storePath, async () => {
+    if (isSqliteSessionStorePath(storePath) && params.skipMaintenance === true) {
+      const fast = await updateSqliteSessionStoreEntryFastPath({ storePath, sessionKey, update });
+      if (fast.handled) {
+        return fast.entry;
+      }
+    }
     const store = loadMutableSessionStoreForWriter(storePath);
     const resolved = resolveSessionStoreEntry({ store, sessionKey });
     const existing = resolved.existing;

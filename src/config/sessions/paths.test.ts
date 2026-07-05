@@ -10,7 +10,7 @@ describe("resolveStorePath", () => {
       ...process.env,
       OPENCLAW_STATE_DIR: stateDir,
     };
-    const expected = path.join(stateDir, "agents", "work", "sessions", "sessions.json");
+    const expected = path.join(stateDir, "agents", "work", "sessions", "sessions.sqlite");
 
     expect(resolveStorePath(undefined, { agentId: "work", env })).toBe(expected);
     expect(resolveStorePath("", { agentId: "work", env })).toBe(expected);

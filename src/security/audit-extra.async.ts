@@ -21,6 +21,7 @@ import { MANIFEST_KEY } from "../compat/legacy-names.js";
 import type { OpenClawConfig, ConfigFileSnapshot } from "../config/config.js";
 import { collectIncludePathsRecursive } from "../config/includes-scan.js";
 import { resolveOAuthDir } from "../config/paths.js";
+import { resolveSqliteDatabaseFilePaths } from "../infra/sqlite-files.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import { createLazyRuntimeModule, createLazyRuntimeNamedExport } from "../shared/lazy-runtime.js";
 import type { SkillScanFinding } from "../skills/security/scanner.js";
@@ -725,18 +726,22 @@ export async function collectStateDeepFilesystemFindings(params: {
       }
     }
 
-    const storePath = path.join(params.stateDir, "agents", agentId, "sessions", "sessions.json");
-    const storePerms = await inspectPathPermissions(storePath, {
-      env: params.env,
-      platform: params.platform,
-      exec: params.execIcacls,
-    });
-    if (storePerms.ok) {
-      if (storePerms.worldReadable || storePerms.groupReadable) {
+    const sessionsDir = path.join(params.stateDir, "agents", agentId, "sessions");
+    const storePaths = [
+      path.join(sessionsDir, "sessions.json"),
+      ...resolveSqliteDatabaseFilePaths(path.join(sessionsDir, "sessions.sqlite")),
+    ];
+    for (const storePath of storePaths) {
+      const storePerms = await inspectPathPermissions(storePath, {
+        env: params.env,
+        platform: params.platform,
+        exec: params.execIcacls,
+      });
+      if (storePerms.ok && (storePerms.worldReadable || storePerms.groupReadable)) {
         findings.push({
           checkId: "fs.sessions_store.perms_readable",
           severity: "warn",
-          title: "sessions.json is readable by others",
+          title: `${path.basename(storePath)} is readable by others`,
           detail: `${formatPermissionDetail(storePath, storePerms)}; routing and transcript metadata can be sensitive.`,
           remediation: formatPermissionRemediation({
             targetPath: storePath,

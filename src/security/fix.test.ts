@@ -280,6 +280,7 @@ describe("security fix", () => {
     const sessionsDir = path.join(stateDir, "agents", "main", "sessions");
     await fs.mkdir(sessionsDir, { recursive: true });
     const sessionsStorePath = path.join(sessionsDir, "sessions.json");
+    const sessionsDatabasePath = path.join(sessionsDir, "sessions.sqlite");
     await fs.writeFile(sessionsStorePath, "{}\n", "utf-8");
     await fs.chmod(sessionsStorePath, 0o644);
     const transcriptPath = path.join(sessionsDir, "sess-main.jsonl");
@@ -311,6 +312,10 @@ describe("security fix", () => {
       { path: authProfilesPath, mode: 0o600, require: "file" },
       { path: sessionsDir, mode: 0o700, require: "dir" },
       { path: sessionsStorePath, mode: 0o600, require: "file" },
+      { path: sessionsDatabasePath, mode: 0o600, require: "file" },
+      { path: `${sessionsDatabasePath}-wal`, mode: 0o600, require: "file" },
+      { path: `${sessionsDatabasePath}-shm`, mode: 0o600, require: "file" },
+      { path: `${sessionsDatabasePath}-journal`, mode: 0o600, require: "file" },
       { path: transcriptPath, mode: 0o600, require: "file" },
     ]);
   });

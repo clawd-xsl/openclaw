@@ -11,6 +11,7 @@ import {
   normalizeSessionDeliveryFields,
 } from "../../utils/delivery-context.shared.js";
 import { getFileStatSnapshot } from "../cache-utils.js";
+import { formatSessionArchiveTimestamp } from "./artifacts.js";
 import { hydrateSessionStoreSkillPromptRefs } from "./skill-prompt-blobs.js";
 import {
   cloneSessionStoreRecord,
@@ -28,7 +29,7 @@ import {
   type SessionStoreSnapshotEntry,
 } from "./store-cache.js";
 import { normalizePersistedSessionEntryShape } from "./store-entry-shape.js";
-import { resolveSessionStoreEntry } from "./store-entry.js";
+import { normalizeStoreSessionKey, resolveSessionStoreEntry } from "./store-entry.js";
 import { collectSessionMaintenancePreserveKeys } from "./store-maintenance-preserve.js";
 import { resolveMaintenanceConfig } from "./store-maintenance-runtime.js";
 import {
@@ -40,6 +41,16 @@ import {
   type ResolvedSessionMaintenanceConfig,
 } from "./store-maintenance.js";
 import { applySessionStoreMigrations } from "./store-migrations.js";
+import {
+  countSessionStoreSqliteEntries,
+  importSessionStoreIntoEmptySqlite,
+  isSqliteSessionStorePath,
+  isSessionStoreSqliteJsonImportResolved,
+  loadSessionEntryFromSqlite,
+  loadSessionStoreFromSqlite,
+  markSessionStoreSqliteJsonImportResolved,
+  resolveSessionStoreJsonImportPath,
+} from "./store-sqlite.js";
 import { normalizeSessionRuntimeModelFields, type SessionEntry } from "./types.js";
 
 export type LoadSessionStoreOptions = {
@@ -58,6 +69,80 @@ const log = createSubsystemLogger("sessions/store");
 
 function isSessionStoreRecord(value: unknown): value is Record<string, SessionEntry> {
   return isRecord(value);
+}
+
+function loadJsonSessionStoreForSqliteImport(
+  storePath: string,
+): Record<string, SessionEntry> | undefined {
+  const jsonPath = resolveSessionStoreJsonImportPath(storePath);
+  let raw: string;
+  try {
+    raw = fs.readFileSync(jsonPath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return undefined;
+    }
+    throw error;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch (error) {
+    throw new Error(`Failed to parse legacy JSON session store ${jsonPath}`, { cause: error });
+  }
+  if (!isSessionStoreRecord(parsed)) {
+    throw new Error(`Legacy JSON session store ${jsonPath} is not a session-entry record`);
+  }
+  applySessionStoreMigrations(parsed);
+  normalizeSessionStore(parsed);
+  return parsed;
+}
+
+function archiveImportedJsonSessionStore(jsonPath: string): void {
+  const archivePath = `${jsonPath}.bak.${formatSessionArchiveTimestamp()}`;
+  try {
+    fs.renameSync(jsonPath, archivePath);
+  } catch (error) {
+    log.warn("failed to archive imported JSON session store", {
+      source: jsonPath,
+      archivePath,
+      error: String(error),
+    });
+  }
+}
+
+export function ensureSqliteSessionStoreJsonImport(storePath: string): void {
+  if (isSessionStoreSqliteJsonImportResolved(storePath)) {
+    return;
+  }
+  // A non-empty SQLite store is authoritative, including the old custom schema whose sibling
+  // sessions.json can be a stale pre-cutover snapshot.
+  if (countSessionStoreSqliteEntries(storePath) > 0) {
+    markSessionStoreSqliteJsonImportResolved(storePath);
+    return;
+  }
+  const imported = loadJsonSessionStoreForSqliteImport(storePath);
+  if (!imported || Object.keys(imported).length === 0) {
+    markSessionStoreSqliteJsonImportResolved(storePath);
+    return;
+  }
+  const source = resolveSessionStoreJsonImportPath(storePath);
+  if (importSessionStoreIntoEmptySqlite(storePath, imported)) {
+    log.info("imported legacy JSON session store into SQLite", {
+      source,
+      target: storePath,
+      entries: Object.keys(imported).length,
+    });
+    archiveImportedJsonSessionStore(source);
+    return;
+  }
+  // Another process won the import race. Its rows are canonical from this point forward.
+  markSessionStoreSqliteJsonImportResolved(storePath);
+}
+
+function loadSqliteSessionStoreWithImport(storePath: string): Record<string, SessionEntry> {
+  ensureSqliteSessionStoreJsonImport(storePath);
+  return loadSessionStoreFromSqlite(storePath);
 }
 
 function normalizeOptionalFiniteNumber(value: unknown): number | undefined {
@@ -379,9 +464,10 @@ export function loadSessionStore(
   storePath: string,
   opts: LoadSessionStoreOptions = {},
 ): Record<string, SessionEntry> {
+  const sqliteStore = isSqliteSessionStorePath(storePath);
   const shouldHydrateSkillPromptRefs = opts.hydrateSkillPromptRefs !== false;
   const canWriteSessionStoreCache = shouldHydrateSkillPromptRefs;
-  if (!opts.skipCache && isSessionStoreCacheEnabled()) {
+  if (!sqliteStore && !opts.skipCache && isSessionStoreCacheEnabled()) {
     const currentFileStat = getFileStatSnapshot(storePath);
     const cached = readSessionStoreCache({
       storePath,
@@ -396,11 +482,13 @@ export function loadSessionStore(
 
   // Retry a few times on Windows because readers can briefly observe empty or
   // transiently invalid content while another process is swapping the file.
-  let store: Record<string, SessionEntry> = {};
-  const fileStat = getFileStatSnapshot(storePath);
+  let store: Record<string, SessionEntry> = sqliteStore
+    ? loadSqliteSessionStoreWithImport(storePath)
+    : {};
+  const fileStat = sqliteStore ? undefined : getFileStatSnapshot(storePath);
   const mtimeMs = fileStat?.mtimeMs;
   let serializedFromDisk: string | undefined;
-  const maxReadAttempts = process.platform === "win32" ? 3 : 1;
+  const maxReadAttempts = sqliteStore ? 0 : process.platform === "win32" ? 3 : 1;
   const retryBuf = maxReadAttempts > 1 ? new Int32Array(new SharedArrayBuffer(4)) : undefined;
   for (let attempt = 0; attempt < maxReadAttempts; attempt += 1) {
     try {
@@ -487,9 +575,16 @@ export function loadSessionStore(
     }
   }
 
-  setSerializedSessionStore(storePath, serializedFromDisk);
+  if (!sqliteStore) {
+    setSerializedSessionStore(storePath, serializedFromDisk);
+  }
 
-  if (!opts.skipCache && canWriteSessionStoreCache && isSessionStoreCacheEnabled()) {
+  if (
+    !sqliteStore &&
+    !opts.skipCache &&
+    canWriteSessionStoreCache &&
+    isSessionStoreCacheEnabled()
+  ) {
     writeSessionStoreCache({
       storePath,
       store,
@@ -505,6 +600,9 @@ export function loadSessionStore(
 }
 
 export function readSessionStoreSnapshot(storePath: string): SessionStoreSnapshot {
+  if (isSqliteSessionStorePath(storePath)) {
+    return cloneSessionStoreSnapshot(loadSessionStore(storePath, { clone: false }));
+  }
   const currentFileStat = getFileStatSnapshot(storePath);
   const cacheEnabled = isSessionStoreCacheEnabled();
   if (cacheEnabled) {
@@ -535,6 +633,23 @@ export function readSessionEntry(
   sessionKey: string,
   opts: ReadSessionEntryOptions = {},
 ): SessionStoreSnapshotEntry | undefined {
+  if (isSqliteSessionStorePath(storePath)) {
+    // Ensure a current JSON store is imported before taking the point-read fast path.
+    ensureSqliteSessionStoreJsonImport(storePath);
+    const normalizedKey = normalizeStoreSessionKey(sessionKey);
+    const direct = loadSessionEntryFromSqlite(storePath, normalizedKey);
+    if (direct) {
+      const store = { [normalizedKey]: direct };
+      if (opts.hydrateSkillPromptRefs !== false) {
+        hydrateSessionStoreSkillPromptRefs({ storePath, store });
+      }
+      applySessionStoreMigrations(store);
+      normalizeSessionStore(store);
+      const entry = store[normalizedKey];
+      return entry ? cloneSessionStoreSnapshotEntry(entry) : undefined;
+    }
+    // Legacy aliases are rare and need the whole candidate set for delivery-proof checks.
+  }
   const store = loadSessionStore(storePath, {
     clone: false,
     ...(opts.hydrateSkillPromptRefs === false ? { hydrateSkillPromptRefs: false } : {}),

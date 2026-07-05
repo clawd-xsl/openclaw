@@ -8,6 +8,7 @@ import { createConfigIO, replaceConfigFile } from "../config/config.js";
 import { collectIncludePathsRecursive } from "../config/includes-scan.js";
 import { resolveConfigPath, resolveOAuthDir, resolveStateDir } from "../config/paths.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { resolveSqliteDatabaseFilePaths } from "../infra/sqlite-files.js";
 import { runExec } from "../process/exec.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import { createIcaclsResetCommand, formatIcaclsResetCommand, type ExecFn } from "./windows-acl.js";
@@ -372,8 +373,12 @@ export async function collectSecurityPermissionTargets(params: {
 
     targets.push({ path: sessionsDir, mode: 0o700, require: "dir" });
 
-    const storePath = path.join(sessionsDir, "sessions.json");
-    targets.push({ path: storePath, mode: 0o600, require: "file" });
+    for (const storePath of [
+      path.join(sessionsDir, "sessions.json"),
+      ...resolveSqliteDatabaseFilePaths(path.join(sessionsDir, "sessions.sqlite")),
+    ]) {
+      targets.push({ path: storePath, mode: 0o600, require: "file" });
+    }
 
     // Fix permissions on session transcript files (*.jsonl)
     const sessionEntries = await fs.readdir(sessionsDir, { withFileTypes: true }).catch(() => []);
