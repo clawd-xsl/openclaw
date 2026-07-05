@@ -113,6 +113,7 @@ type EmbeddedAgentParams = {
   trigger?: string;
   disableMessageTool?: boolean;
   cleanupBundleMcpOnRunEnd?: boolean;
+  cleanupCliLiveSessionOnRunEnd?: boolean;
   allowGatewaySubagentBinding?: boolean;
   agentHarnessRuntimeOverride?: string;
   promptCacheKey?: string;
@@ -1029,6 +1030,7 @@ describe("runMemoryFlushIfNeeded", () => {
     expect(embeddedCall.sessionId).not.toBe(sessionEntry.sessionId);
     expect(embeddedCall.disableMessageTool).toBe(true);
     expect(embeddedCall.cleanupBundleMcpOnRunEnd).toBe(true);
+    expect(embeddedCall.cleanupCliLiveSessionOnRunEnd).toBe(true);
     expect(embeddedCall.replyOperation).toBeUndefined();
 
     await runPreflightCompactionIfNeeded({
@@ -1678,6 +1680,7 @@ describe("runMemoryFlushIfNeeded", () => {
     expect(embeddedCall.memoryFlushWritePath).toBe("memory/2023-11-14.md");
     expect(embeddedCall.disableMessageTool).toBe(true);
     expect(embeddedCall.cleanupBundleMcpOnRunEnd).toBe(true);
+    expect(embeddedCall.cleanupCliLiveSessionOnRunEnd).toBe(true);
     expect(embeddedCall.allowGatewaySubagentBinding).toBe(false);
     expect(embeddedCall.silentExpected).toBe(true);
     expect(embeddedCall.transcriptPrompt).toBe("");

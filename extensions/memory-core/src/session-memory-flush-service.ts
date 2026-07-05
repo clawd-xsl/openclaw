@@ -577,6 +577,7 @@ export class SessionMemoryFlushService {
               disableMessageTool: true,
               allowGatewaySubagentBinding: false,
               cleanupBundleMcpOnRunEnd: true,
+              cleanupCliLiveSessionOnRunEnd: true,
               oneShotCliRun: true,
               suppressLiveStreamOutput: true,
               suppressToolErrorWarnings: true,

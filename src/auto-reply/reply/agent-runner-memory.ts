@@ -1625,6 +1625,7 @@ export async function runMemoryFlushIfNeeded(params: {
                 }),
                 disableMessageTool: true,
                 cleanupBundleMcpOnRunEnd: true,
+                cleanupCliLiveSessionOnRunEnd: true,
               }
             : { allowGatewaySubagentBinding: true }),
           silentExpected: true,
