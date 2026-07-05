@@ -15,17 +15,21 @@ import {
   inspectSessionStoreSqliteReadOnly,
   resetSessionStoreSqliteStatsForTest,
   transformSessionStoreInSqliteForMigration,
+  upsertSessionEntryInSqlite,
 } from "./store-sqlite.js";
 import {
+  applySessionStoreEntryPatch,
   clearSessionStoreCacheForTest,
   getSqliteSessionDiskBudgetWarningCountForTest,
   loadSessionStore,
+  patchSessionEntry,
   recordSessionMetaFromInbound,
   readSessionUpdatedAt,
   readSessionEntry,
   saveSessionStore,
   updateLastRoute,
   updateSessionStoreEntry,
+  upsertSessionEntry,
 } from "./store.js";
 import type { SessionEntry } from "./types.js";
 
@@ -544,6 +548,106 @@ describe("SQLite session store", () => {
     expect(persisted?.compactionCount).toBe(2);
     expect(persisted?.pendingFinalDeliveryAttemptCount).toBeUndefined();
     expect(getSessionStoreSqliteStatsForTest()).toMatchObject({ selectAll: 0, upsert: 2 });
+  });
+
+  it("keeps exact patch, apply, and replacement helpers row-scoped", async () => {
+    const dir = await suiteRootTracker.make("exact-mutations");
+    const storePath = path.join(dir, "sessions.sqlite");
+    const sessionKey = "agent:main:main";
+    const unrelatedKey = "agent:main:unrelated";
+    await saveSessionStore(
+      storePath,
+      {
+        [sessionKey]: { ...entry("target", 10), model: "old-model" },
+        [unrelatedKey]: entry("unrelated", 20),
+      },
+      { skipMaintenance: true },
+    );
+    resetSessionStoreSqliteStatsForTest();
+
+    const applied = await applySessionStoreEntryPatch({
+      storePath,
+      sessionKey,
+      patch: { label: "applied" },
+      skipMaintenance: true,
+    });
+    const patched = await patchSessionEntry({
+      storePath,
+      sessionKey,
+      preserveActivity: true,
+      skipMaintenance: true,
+      update: (_entry, context) => ({
+        displayName: context.existingEntry?.label,
+      }),
+    });
+    await upsertSessionEntry({
+      storePath,
+      sessionKey,
+      entry: { sessionId: "replacement", updatedAt: 30 },
+      skipMaintenance: true,
+    });
+
+    expect(applied).toMatchObject({ label: "applied", sessionId: "target" });
+    expect(patched).toMatchObject({
+      displayName: "applied",
+      label: "applied",
+      sessionId: "target",
+      updatedAt: applied?.updatedAt,
+    });
+    expect(getSessionStoreSqliteStatsForTest()).toMatchObject({
+      selectAll: 0,
+      selectByKey: 3,
+      upsert: 3,
+    });
+    expect(readSessionEntry(storePath, sessionKey)).toEqual({
+      sessionId: "replacement",
+      updatedAt: 30,
+    });
+    expect(readSessionEntry(storePath, unrelatedKey)?.sessionId).toBe("unrelated");
+  });
+
+  it("uses the compatibility resolver for cold inserts and legacy aliases", async () => {
+    const dir = await suiteRootTracker.make("exact-mutation-misses");
+    const storePath = path.join(dir, "sessions.sqlite");
+    const canonicalKey = "agent:main:main";
+    const legacyKey = "AGENT:MAIN:MAIN";
+    await saveSessionStore(storePath, { unrelated: entry("unrelated") }, { skipMaintenance: true });
+    upsertSessionEntryInSqlite({
+      storePath,
+      sessionKey: legacyKey,
+      entry: { sessionId: "legacy", updatedAt: 10 },
+    });
+    resetSessionStoreSqliteStatsForTest();
+
+    await patchSessionEntry({
+      storePath,
+      sessionKey: canonicalKey,
+      skipMaintenance: true,
+      update: () => ({ label: "canonicalized" }),
+    });
+
+    expect(getSessionStoreSqliteStatsForTest()).toMatchObject({
+      selectAll: 1,
+      selectByKey: 1,
+    });
+    expect(readSessionEntry(storePath, canonicalKey)).toMatchObject({
+      label: "canonicalized",
+      sessionId: "legacy",
+    });
+    expect(readRawEntryJson(storePath, legacyKey)).toBeUndefined();
+
+    resetSessionStoreSqliteStatsForTest();
+    await upsertSessionEntry({
+      storePath,
+      sessionKey: "agent:main:new",
+      entry: { sessionId: "new", updatedAt: 20 },
+      skipMaintenance: true,
+    });
+    expect(getSessionStoreSqliteStatsForTest()).toMatchObject({
+      selectAll: 1,
+      selectByKey: 1,
+    });
+    expect(readSessionEntry(storePath, "agent:main:new")?.sessionId).toBe("new");
   });
 
   it("disables JSON-sized disk eviction for SQLite and warns once", async () => {

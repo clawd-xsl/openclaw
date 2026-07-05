@@ -30,7 +30,11 @@ import {
   type SessionStoreSnapshotEntry,
 } from "./store-cache.js";
 import { normalizePersistedSessionEntryShape } from "./store-entry-shape.js";
-import { normalizeStoreSessionKey, resolveSessionStoreEntry } from "./store-entry.js";
+import {
+  hasMismatchedCaseSensitiveDeliveryProof,
+  normalizeStoreSessionKey,
+  resolveSessionStoreEntry,
+} from "./store-entry.js";
 import {
   archiveImportedSessionStoreJson,
   type SessionStoreJsonImportArchiveResult,
@@ -723,7 +727,9 @@ export function readSessionEntry(
       applySessionStoreMigrations(store);
       normalizeSessionStore(store);
       const entry = store[normalizedKey];
-      return entry ? cloneSessionStoreSnapshotEntry(entry) : undefined;
+      if (entry && (opts.exact || !hasMismatchedCaseSensitiveDeliveryProof(entry, normalizedKey))) {
+        return cloneSessionStoreSnapshotEntry(entry);
+      }
     }
     if (opts.exact) {
       return undefined;

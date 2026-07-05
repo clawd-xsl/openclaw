@@ -1920,6 +1920,7 @@ async function persistResolvedSessionEntry(params: {
 async function updateSqliteSessionStoreEntryFastPath(params: {
   storePath: string;
   sessionKey: string;
+  preserveActivity?: boolean;
   replaceEntry?: boolean;
   update: (
     entry: SessionEntry,
@@ -1929,6 +1930,10 @@ async function updateSqliteSessionStoreEntryFastPath(params: {
   ensureSqliteSessionStoreJsonImport(params.storePath);
   const rawEntry = loadSessionEntryFromSqlite(params.storePath, normalizedKey);
   if (!rawEntry) {
+    // A miss cannot be treated as a proven-new key. Compatibility aliases can
+    // use a differently cased structural key or require persisted delivery
+    // metadata to prove a historical folded opaque id. Let the full resolver
+    // handle that cold path before a fallback entry is created or replaced.
     return { handled: false, entry: null };
   }
   const normalizedStore = { [normalizedKey]: rawEntry };
@@ -1946,7 +1951,9 @@ async function updateSqliteSessionStoreEntryFastPath(params: {
   const normalizedNextStore = {
     [normalizedKey]: params.replaceEntry
       ? cloneSessionEntry(patch as SessionEntry)
-      : mergeSessionEntry(existing, patch),
+      : params.preserveActivity
+        ? mergeSessionEntryPreserveActivity(existing, patch)
+        : mergeSessionEntry(existing, patch),
   };
   normalizeSessionStore(normalizedNextStore);
   const next = normalizedNextStore[normalizedKey];
@@ -2029,6 +2036,16 @@ export async function applySessionStoreEntryPatch(params: {
 }): Promise<SessionEntry | null> {
   const { storePath, sessionKey, patch } = params;
   return await runExclusiveSessionStoreWrite(storePath, async () => {
+    if (isSqliteSessionStorePath(storePath) && params.skipMaintenance === true) {
+      const fast = await updateSqliteSessionStoreEntryFastPath({
+        storePath,
+        sessionKey,
+        update: () => patch,
+      });
+      if (fast.handled) {
+        return fast.entry;
+      }
+    }
     const store = loadMutableSessionStoreForWriter(storePath);
     const resolved = resolveSessionStoreEntry({ store, sessionKey });
     const existing = resolved.existing;
@@ -2073,6 +2090,22 @@ export async function patchSessionEntryWithKey(
 ): Promise<{ sessionKey: string; entry: SessionEntry } | null> {
   const storePath = resolveSessionStorePathForScope(params);
   return await runExclusiveSessionStoreWrite(storePath, async () => {
+    if (isSqliteSessionStorePath(storePath) && params.skipMaintenance === true) {
+      const normalizedKey = normalizeStoreSessionKey(params.sessionKey);
+      const fast = await updateSqliteSessionStoreEntryFastPath({
+        storePath,
+        sessionKey: params.sessionKey,
+        preserveActivity: params.preserveActivity,
+        replaceEntry: params.replaceEntry,
+        update: (entry) =>
+          params.update(cloneSessionEntry(entry), {
+            existingEntry: cloneSessionEntry(entry),
+          }),
+      });
+      if (fast.handled) {
+        return fast.entry ? { sessionKey: normalizedKey, entry: fast.entry } : null;
+      }
+    }
     const store = loadMutableSessionStoreForWriter(storePath);
     const resolved = resolveSessionStoreEntry({ store, sessionKey: params.sessionKey });
     const existing = resolved.existing ?? params.fallbackEntry;
@@ -2111,10 +2144,22 @@ export async function upsertSessionEntry(
   params: SessionEntryWorkflowOptions & {
     sessionKey: string;
     entry: SessionEntry;
+    skipMaintenance?: boolean;
   },
 ): Promise<void> {
   const storePath = resolveSessionStorePathForScope(params);
   await runExclusiveSessionStoreWrite(storePath, async () => {
+    if (isSqliteSessionStorePath(storePath) && params.skipMaintenance === true) {
+      const fast = await updateSqliteSessionStoreEntryFastPath({
+        storePath,
+        sessionKey: params.sessionKey,
+        replaceEntry: true,
+        update: () => params.entry,
+      });
+      if (fast.handled) {
+        return;
+      }
+    }
     const store = loadMutableSessionStoreForWriter(storePath);
     const resolved = resolveSessionStoreEntry({ store, sessionKey: params.sessionKey });
     const next = cloneSessionEntry(params.entry);
@@ -2123,6 +2168,7 @@ export async function upsertSessionEntry(
       store,
       resolved,
       next,
+      skipMaintenance: params.skipMaintenance,
       takeCacheOwnership: true,
     });
   });
