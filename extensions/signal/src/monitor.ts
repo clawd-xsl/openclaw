@@ -37,7 +37,7 @@ import {
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { normalizeE164 } from "openclaw/plugin-sdk/text-utility-runtime";
 import { waitForTransportReady } from "openclaw/plugin-sdk/transport-ready-runtime";
-import { resolveSignalAccount } from "./accounts.js";
+import { resolveSignalAccount, resolveSignalBackend } from "./accounts.js";
 import { isSignalNativeApprovalHandlerConfigured } from "./approval-native.js";
 import {
   addSignalApprovalReactionHintToStructuredPayload,
@@ -54,6 +54,13 @@ import type {
 } from "./monitor/event-handler.types.js";
 import { sendMessageSignal } from "./send.js";
 import { runSignalSseLoop } from "./sse-reconnect.js";
+
+let signalTsRuntimePromise: Promise<typeof import("./signal-ts-runtime.js")> | undefined;
+
+async function loadSignalTsRuntime() {
+  signalTsRuntimePromise ??= import("./signal-ts-runtime.js");
+  return await signalTsRuntimePromise;
+}
 
 export type MonitorSignalOpts = {
   runtime?: RuntimeEnv;
@@ -517,18 +524,21 @@ export async function monitorSignalProvider(opts: MonitorSignalOpts = {}): Promi
   const sendReadReceipts = Boolean(opts.sendReadReceipts ?? accountInfo.config.sendReadReceipts);
   const waitForTransportReadyFn = opts.waitForTransportReady ?? waitForTransportReady;
 
-  const autoStart = opts.autoStart ?? accountInfo.config.autoStart ?? !accountInfo.config.httpUrl;
+  const signalTsBackend = resolveSignalBackend(accountInfo) === "signal-ts";
+  const autoStart = signalTsBackend
+    ? false
+    : (opts.autoStart ?? accountInfo.config.autoStart ?? !accountInfo.config.httpUrl);
   const configuredApiMode = cfg.channels?.signal?.apiMode ?? "auto";
   const startupTimeoutMs = Math.min(
     120_000,
     Math.max(1_000, opts.startupTimeoutMs ?? accountInfo.config.startupTimeoutMs ?? 30_000),
   );
-  const readReceiptsViaDaemon = autoStart && sendReadReceipts;
+  const readReceiptsViaDaemon = !signalTsBackend && autoStart && sendReadReceipts;
   const daemonLifecycle = createSignalDaemonLifecycle({ abortSignal: opts.abortSignal });
   const monitorTaskRunner = createSignalMonitorTaskRunner(runtime);
   let daemonHandle: SignalDaemonHandle | null = null;
 
-  if (autoStart && configuredApiMode === "container") {
+  if (!signalTsBackend && autoStart && configuredApiMode === "container") {
     throw new Error(
       "channels.signal.autoStart=true is incompatible with channels.signal.apiMode=container",
     );
@@ -618,13 +628,39 @@ export async function monitorSignalProvider(opts: MonitorSignalOpts = {}): Promi
       ignoreAttachments,
       sendReadReceipts,
       readReceiptsViaDaemon,
-      fetchAttachment: (params) => fetchAttachment({ ...params, apiMode: configuredApiMode }),
+      fetchAttachment: signalTsBackend
+        ? async (params) =>
+            await (
+              await loadSignalTsRuntime()
+            ).fetchSignalTsAttachment({
+              accountInfo,
+              attachment: params.attachment,
+              maxBytes: params.maxBytes,
+              runtime,
+              abortSignal: opts.abortSignal,
+            })
+        : (params) => fetchAttachment({ ...params, apiMode: configuredApiMode }),
       deliverReplies: (params) => deliverReplies({ ...params, cfg, chunkMode }),
       resolveSignalReactionTargets,
       isSignalReactionMessage,
       shouldEmitSignalReactionNotification,
       buildSignalReactionSystemEventText,
     });
+
+    if (signalTsBackend) {
+      await (
+        await loadSignalTsRuntime()
+      ).monitorSignalTsProvider({
+        accountInfo,
+        runtime,
+        abortSignal: opts.abortSignal,
+        reconnectPolicy: opts.reconnectPolicy,
+        onEvent: async (event) => {
+          await handleEvent(event);
+        },
+      });
+      return;
+    }
 
     await runSignalSseLoop({
       baseUrl,

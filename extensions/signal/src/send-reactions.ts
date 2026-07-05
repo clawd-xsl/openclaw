@@ -4,8 +4,9 @@
 
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { requireRuntimeConfig } from "openclaw/plugin-sdk/plugin-config-runtime";
+import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coerce-runtime";
-import { resolveSignalAccount } from "./accounts.js";
+import { resolveSignalAccount, resolveSignalBackend } from "./accounts.js";
 import { signalRpcRequest } from "./client-adapter.js";
 import { resolveSignalRpcContext } from "./rpc-context.js";
 
@@ -18,6 +19,8 @@ export type SignalReactionOpts = {
   targetAuthor?: string;
   targetAuthorUuid?: string;
   groupId?: string;
+  runtime?: RuntimeEnv;
+  abortSignal?: AbortSignal;
 };
 
 export type SignalReactionResult = {
@@ -31,6 +34,13 @@ type SignalReactionErrorMessages = {
   missingEmoji: string;
   missingTargetAuthor: string;
 };
+
+let signalTsRuntimePromise: Promise<typeof import("./signal-ts-runtime.js")> | undefined;
+
+async function loadSignalTsRuntime() {
+  signalTsRuntimePromise ??= import("./signal-ts-runtime.js");
+  return await signalTsRuntimePromise;
+}
 
 function normalizeSignalId(raw: string): string {
   const trimmed = raw.trim();
@@ -106,6 +116,25 @@ async function sendReactionSignalCore(params: {
   });
   if (groupId && !targetAuthorParams.targetAuthor) {
     throw new Error(params.errors.missingTargetAuthor);
+  }
+
+  if (resolveSignalBackend(accountInfo) === "signal-ts") {
+    const result = await (
+      await loadSignalTsRuntime()
+    ).sendReactionSignalTs({
+      accountInfo,
+      to: groupId ? `signal:group:${groupId}` : normalizedRecipient,
+      targetTimestamp: params.targetTimestamp,
+      emoji: normalizedEmoji,
+      remove: params.remove,
+      targetAuthor: params.opts.targetAuthor,
+      targetAuthorUuid: params.opts.targetAuthorUuid,
+      groupId,
+      ...(params.opts.runtime ? { runtime: params.opts.runtime } : {}),
+      abortSignal: params.opts.abortSignal,
+      timeoutMs: params.opts.timeoutMs,
+    });
+    return { ok: true, timestamp: result.timestamp };
   }
 
   const requestParams: Record<string, unknown> = {

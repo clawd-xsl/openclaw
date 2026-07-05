@@ -2,12 +2,25 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const signalRpcRequestMock = vi.hoisted(() => vi.fn());
+const signalTsMocks = vi.hoisted(() => ({
+  message: vi.fn(),
+  sticker: vi.fn(),
+  typing: vi.fn(),
+  receipt: vi.fn(),
+}));
 const resolveOutboundAttachmentFromUrlMock = vi.hoisted(() =>
   vi.fn(async (_params: unknown) => ({ path: "/tmp/image.png", contentType: "image/png" })),
 );
 
 vi.mock("./client-adapter.js", () => ({
   signalRpcRequest: (...args: unknown[]) => signalRpcRequestMock(...args),
+}));
+
+vi.mock("./signal-ts-runtime.js", () => ({
+  sendMessageSignalTs: (...args: unknown[]) => signalTsMocks.message(...args),
+  sendStickerSignalTs: (...args: unknown[]) => signalTsMocks.sticker(...args),
+  sendTypingSignalTs: (...args: unknown[]) => signalTsMocks.typing(...args),
+  sendReadReceiptSignalTs: (...args: unknown[]) => signalTsMocks.receipt(...args),
 }));
 
 vi.mock("openclaw/plugin-sdk/media-runtime", async () => {
@@ -21,7 +34,8 @@ vi.mock("openclaw/plugin-sdk/media-runtime", async () => {
   };
 });
 
-const { sendMessageSignal, sendStickerSignal } = await import("./send.js");
+const { sendMessageSignal, sendReadReceiptSignal, sendStickerSignal, sendTypingSignal } =
+  await import("./send.js");
 
 const SIGNAL_TEST_CFG = {
   channels: {
@@ -40,6 +54,64 @@ describe("sendMessageSignal receipts", () => {
   beforeEach(() => {
     signalRpcRequestMock.mockReset();
     resolveOutboundAttachmentFromUrlMock.mockClear();
+    signalTsMocks.message
+      .mockReset()
+      .mockResolvedValue({ messageId: "1700000000000", timestamp: 1700000000000 });
+    signalTsMocks.sticker
+      .mockReset()
+      .mockResolvedValue({ messageId: "1700000000001", timestamp: 1700000000001 });
+    signalTsMocks.typing.mockReset().mockResolvedValue(true);
+    signalTsMocks.receipt.mockReset().mockResolvedValue(true);
+  });
+
+  it("routes messages through signal-ts and preserves receipt metadata", async () => {
+    const cfg = {
+      channels: {
+        signal: {
+          backend: "signal-ts",
+          signalTsStatePath: "/secure/signal/default.json",
+        },
+      },
+    } as never;
+
+    const result = await sendMessageSignal("uuid:123e4567-e89b-12d3-a456-426614174000", "hello", {
+      cfg,
+      replyToId: "1699999999999",
+      quoteAuthor: "uuid:123e4567-e89b-12d3-a456-426614174000",
+    });
+
+    expect(signalRpcRequestMock).not.toHaveBeenCalled();
+    expect(signalTsMocks.message).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "uuid:123e4567-e89b-12d3-a456-426614174000",
+        message: "hello",
+        replyToId: "1699999999999",
+        quoteAuthor: "uuid:123e4567-e89b-12d3-a456-426614174000",
+      }),
+    );
+    expect(result.receipt.primaryPlatformMessageId).toBe("1700000000000");
+    expect(result.receipt.replyToId).toBe("1699999999999");
+  });
+
+  it("routes typing, receipts, and stickers through signal-ts", async () => {
+    const cfg = {
+      channels: {
+        signal: {
+          backend: "signal-ts",
+          signalTsStatePath: "/secure/signal/default.json",
+        },
+      },
+    } as never;
+
+    await expect(sendTypingSignal("+15551234567", { cfg })).resolves.toBe(true);
+    await expect(sendReadReceiptSignal("+15551234567", 1699999999999, { cfg })).resolves.toBe(true);
+    const sticker = await sendStickerSignal("+15551234567", "aabb:1", { cfg });
+
+    expect(signalTsMocks.typing).toHaveBeenCalledOnce();
+    expect(signalTsMocks.receipt).toHaveBeenCalledOnce();
+    expect(signalTsMocks.sticker).toHaveBeenCalledOnce();
+    expect(sticker.receipt.parts[0]?.kind).toBe("media");
+    expect(signalRpcRequestMock).not.toHaveBeenCalled();
   });
 
   it("attaches a text receipt for timestamp results", async () => {

@@ -24,7 +24,11 @@ import {
 } from "openclaw/plugin-sdk/status-helpers";
 import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { sanitizeAssistantVisibleText } from "openclaw/plugin-sdk/text-chunking";
-import { resolveSignalAccount, type ResolvedSignalAccount } from "./accounts.js";
+import {
+  resolveSignalAccount,
+  resolveSignalBackend,
+  type ResolvedSignalAccount,
+} from "./accounts.js";
 import { listSignalAliasDirectoryEntries, resolveSignalTarget } from "./aliases.js";
 import {
   shouldSuppressLocalSignalExecApprovalPrompt,
@@ -51,6 +55,8 @@ const loadSignalMonitorModule = createLazyRuntimeModule(() => import("./monitor.
 const loadSignalProbeModule = createLazyRuntimeModule(() => import("./probe.js"));
 
 const loadSignalSendRuntime = createLazyRuntimeModule(() => import("./send.runtime.js"));
+
+const loadSignalTsRuntime = createLazyRuntimeModule(() => import("./signal-ts-runtime.js"));
 
 const loadSignalApprovalReactionsModule = createLazyRuntimeModule(
   () => import("./approval-reactions.js"),
@@ -452,13 +458,27 @@ export const signalPlugin: ChannelPlugin<ResolvedSignalAccount, SignalProbe> =
       status: createComputedAccountStatusAdapter<ResolvedSignalAccount, SignalProbe>({
         defaultRuntime: createDefaultChannelRuntimeState(DEFAULT_ACCOUNT_ID),
         collectStatusIssues: (accounts) => collectStatusIssuesFromLastError("signal", accounts),
-        buildChannelSummary: ({ snapshot }) =>
-          buildBaseChannelStatusSummary(snapshot, {
-            baseUrl: snapshot.baseUrl ?? null,
+        buildChannelSummary: ({ snapshot }) => {
+          const signalSnapshot = snapshot as typeof snapshot & {
+            backend?: "signal-cli" | "signal-ts";
+          };
+          const backend = signalSnapshot.backend ?? "signal-cli";
+          return buildBaseChannelStatusSummary(snapshot, {
+            backend,
+            baseUrl: backend === "signal-ts" ? null : (snapshot.baseUrl ?? null),
             probe: snapshot.probe,
             lastProbeAt: snapshot.lastProbeAt ?? null,
-          }),
+          });
+        },
         probeAccount: async ({ account, timeoutMs }) => {
+          if (resolveSignalBackend(account) === "signal-ts") {
+            return await (
+              await loadSignalTsRuntime()
+            ).probeSignalTsAccount({
+              accountInfo: account,
+              timeoutMs,
+            });
+          }
           const baseUrl = account.baseUrl;
           const { probeSignal } = await loadSignalProbeModule();
           return await probeSignal(baseUrl, timeoutMs, {
@@ -466,14 +486,24 @@ export const signalPlugin: ChannelPlugin<ResolvedSignalAccount, SignalProbe> =
           });
         },
         formatCapabilitiesProbe: ({ probe }) =>
-          probe?.version ? [{ text: `Signal daemon: ${probe.version}` }] : [],
+          probe?.version
+            ? [
+                {
+                  text:
+                    probe.version === "signal-ts"
+                      ? "Signal transport: signal-ts"
+                      : `Signal daemon: ${probe.version}`,
+                },
+              ]
+            : [],
         resolveAccountSnapshot: ({ account }) => ({
           accountId: account.accountId,
           name: account.name,
           enabled: account.enabled,
           configured: account.configured,
           extra: {
-            baseUrl: account.baseUrl,
+            backend: resolveSignalBackend(account),
+            ...(resolveSignalBackend(account) === "signal-ts" ? {} : { baseUrl: account.baseUrl }),
           },
         }),
       }),
@@ -482,9 +512,13 @@ export const signalPlugin: ChannelPlugin<ResolvedSignalAccount, SignalProbe> =
           const account = ctx.account;
           ctx.setStatus({
             accountId: account.accountId,
-            baseUrl: account.baseUrl,
+            ...(resolveSignalBackend(account) === "signal-ts"
+              ? { backend: "signal-ts" }
+              : { backend: "signal-cli", baseUrl: account.baseUrl }),
           });
-          ctx.log?.info(`[${account.accountId}] starting provider (${account.baseUrl})`);
+          ctx.log?.info(
+            `[${account.accountId}] starting ${resolveSignalBackend(account)} provider${resolveSignalBackend(account) === "signal-cli" ? ` (${account.baseUrl})` : ""}`,
+          );
           const { monitorSignalProvider } = await loadSignalMonitorModule();
           return await monitorSignalProvider({
             accountId: account.accountId,
