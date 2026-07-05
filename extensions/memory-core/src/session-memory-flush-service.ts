@@ -337,7 +337,7 @@ export class SessionMemoryFlushService {
     const active = this.activeClaims.get(key);
     active?.controller.abort(new Error("completed session was deleted"));
     const cancelled = await this.repository.cancel(key);
-    let purgeError: unknown;
+    let purgeError: Error | undefined;
     if (cancelled?.requiresProjectionLock) {
       try {
         await this.withProjectionLock(
@@ -352,10 +352,15 @@ export class SessionMemoryFlushService {
           },
         );
       } catch (error) {
-        // Keep the non-recoverable cancellation tombstone. A cross-process
+        // Keep the startup-recoverable cancellation tombstone. A cross-process
         // projector may still own the target lock, so deleting without it would
         // discard the only durable fence that makes shouldProject fail closed.
-        purgeError = error;
+        purgeError =
+          error instanceof Error
+            ? error
+            : new Error(safeErrorMessage(error), {
+                cause: error,
+              });
         this.logger.debug?.(
           `memory-core: session memory flush purge lock unavailable for ${key}: ${safeErrorMessage(error)}`,
         );

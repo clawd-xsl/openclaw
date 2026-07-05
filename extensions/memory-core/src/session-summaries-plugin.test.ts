@@ -75,7 +75,7 @@ type BeforePromptBuildHook = (
 type GatewayHandler = (ctx: {
   params: Record<string, unknown>;
   respond: (ok: boolean, result?: unknown, error?: { code: string; message: string }) => void;
-}) => Promise<unknown> | unknown;
+}) => unknown;
 
 type SessionEndHook = (
   event: {
@@ -478,7 +478,10 @@ describe("session summaries plugin registration", () => {
         await new Promise<ReturnType<typeof createCompletionResult>>((_resolve, reject) => {
           params.signal?.addEventListener(
             "abort",
-            () => reject(params.signal?.reason ?? new Error("aborted")),
+            () => {
+              const reason = params.signal?.reason;
+              reject(reason instanceof Error ? reason : new Error("aborted"));
+            },
             { once: true },
           );
         }),

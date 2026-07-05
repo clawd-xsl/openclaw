@@ -355,7 +355,7 @@ export function registerSessionSummaries(
     const cfg = readCurrentConfig(api);
     const summaryConfig = resolveCurrentSummaryConfig(api, cfg);
     if (!summaryConfig.enabled || !summaryConfig.autoInject) {
-      return;
+      return undefined;
     }
     const currentSessionId = ctx.sessionId?.trim();
     const currentSessionKey = ctx.sessionKey?.trim();
@@ -365,7 +365,7 @@ export function registerSessionSummaries(
         ? resolveSessionAgentId({ sessionKey: currentSessionKey, config: cfg })
         : undefined);
     if (!agentId || !currentSessionId || !currentSessionKey) {
-      return;
+      return undefined;
     }
     const predecessor = await repository.findDirectPredecessor({
       agentId,
@@ -381,7 +381,7 @@ export function registerSessionSummaries(
         predecessorSessionKey: predecessor.sessionKey,
       }))
     ) {
-      return;
+      return undefined;
     }
     if (predecessor.status === "complete") {
       if (predecessor.summary?.trim()) {
@@ -393,7 +393,7 @@ export function registerSessionSummaries(
           }),
         };
       }
-      return;
+      return undefined;
     }
     let transcript: Awaited<ReturnType<ReadBoundedTranscriptEvents>>;
     try {
@@ -409,10 +409,10 @@ export function registerSessionSummaries(
       api.logger.warn(
         `memory-core: failed to read predecessor session tail for ${predecessor.agentId}/${predecessor.sessionId}: ${formatErrorMessage(error)}`,
       );
-      return;
+      return undefined;
     }
     if (!transcript.available) {
-      return;
+      return undefined;
     }
     const prependContext = buildAutoInjectTailContext({
       endedAt: predecessor.endedAt,
@@ -421,7 +421,7 @@ export function registerSessionSummaries(
       truncated: transcript.truncated,
     });
     if (!prependContext) {
-      return;
+      return undefined;
     }
     return {
       prependContext,
@@ -431,10 +431,7 @@ export function registerSessionSummaries(
   api.registerTool(
     (ctx) => {
       const getConfig = () =>
-        (ctx.getRuntimeConfig?.() ??
-          ctx.runtimeConfig ??
-          ctx.config ??
-          readCurrentConfig(api)) as OpenClawConfig;
+        ctx.getRuntimeConfig?.() ?? ctx.runtimeConfig ?? ctx.config ?? readCurrentConfig(api);
       const getSummaryConfig = () => resolveCurrentSummaryConfig(api, getConfig());
       return createSessionSummariesTool({
         repository,

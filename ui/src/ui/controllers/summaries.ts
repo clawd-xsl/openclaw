@@ -311,7 +311,7 @@ export async function loadSessionSummaries(
   state.summaryHistoryUnavailable = false;
 
   try {
-    const payload = await client.request<unknown>(SESSION_SUMMARIES_LIST_METHOD, {
+    const payload = await client.request(SESSION_SUMMARIES_LIST_METHOD, {
       ...(agentId ? { agentId } : {}),
       ...(cursor ? { cursor } : {}),
       limit: SESSION_SUMMARIES_PAGE_SIZE,

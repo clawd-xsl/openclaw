@@ -116,7 +116,7 @@ export function createCliAssistantBlockStreamer(params: {
     onFlush: (payload) => {
       const text = payload.text;
       if (!text) {
-        return;
+        return delivery;
       }
       delivery = delivery
         .then(async () => {

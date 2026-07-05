@@ -192,7 +192,7 @@ export async function readSessionTranscriptEvents(
   return events;
 }
 
-function parseTranscriptEvent(line: string): SessionTranscriptEvent | undefined {
+function parseTranscriptEvent(line: string): SessionTranscriptEvent {
   try {
     return JSON.parse(line) as SessionTranscriptEvent;
   } catch {

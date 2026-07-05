@@ -72,7 +72,8 @@ function buildGenerationConfigFingerprint(config: SessionSummariesConfig): strin
 async function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   signal.throwIfAborted();
   return await new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(signal.reason ?? new Error("session summary aborted"));
+    const onAbort = () =>
+      reject(signal.reason instanceof Error ? signal.reason : new Error("session summary aborted"));
     signal.addEventListener("abort", onAbort, { once: true });
     promise.then(resolve, reject).finally(() => {
       signal.removeEventListener("abort", onAbort);
@@ -162,7 +163,7 @@ export class SessionSummaryService {
         this.repository
           .releaseClaim(key, claim.revision)
           .then(() => undefined)
-          .catch((error) => {
+          .catch((error: unknown) => {
             this.logger.warn(
               `memory-core: failed to release session summary claim ${key}: ${safeErrorMessage(error)}`,
             );
@@ -276,7 +277,7 @@ export class SessionSummaryService {
         return;
       }
       this.drainPromise = this.drain()
-        .catch((error) => {
+        .catch((error: unknown) => {
           this.logger.warn(`memory-core: session summary drain failed: ${safeErrorMessage(error)}`);
         })
         .finally(() => {
@@ -288,7 +289,7 @@ export class SessionSummaryService {
 
   private async drain(): Promise<void> {
     while (!this.stopped && this.queuedKeys.size > 0) {
-      const key = this.queuedKeys.values().next().value as string | undefined;
+      const key = this.queuedKeys.values().next().value;
       if (!key) {
         return;
       }
@@ -403,7 +404,7 @@ export class SessionSummaryService {
       }
     } catch (error) {
       if (this.stopped) {
-        await this.repository.releaseClaim(key, claimed.revision).catch((releaseError) => {
+        await this.repository.releaseClaim(key, claimed.revision).catch((releaseError: unknown) => {
           this.logger.warn(
             `memory-core: failed to release stopped session summary ${claimed.agentId}/${claimed.sessionId}: ${safeErrorMessage(releaseError)}`,
           );

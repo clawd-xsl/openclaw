@@ -113,7 +113,10 @@ function createAbortableCompletion() {
         started.resolve();
         params.signal?.addEventListener(
           "abort",
-          () => reject(params.signal?.reason ?? new Error("aborted")),
+          () =>
+            reject(
+              params.signal?.reason instanceof Error ? params.signal.reason : new Error("aborted"),
+            ),
           { once: true },
         );
         void resolve;

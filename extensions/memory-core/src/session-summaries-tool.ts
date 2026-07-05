@@ -126,7 +126,9 @@ export function boundSessionSummaryToolResponse(
     return last ? encodeSessionSummaryCursor(last) : page.nextCursor;
   };
   const buildBaseResponse = (): SessionSummaryToolResponse => ({
-    summaries: items.map((item) => ({ ...item, summary: "", summaryTruncated: true })),
+    summaries: items.map((item) =>
+      Object.assign({}, item, { summary: "", summaryTruncated: true }),
+    ),
     ...(buildCursor() ? { nextCursor: buildCursor() } : {}),
   });
   while (
@@ -142,11 +144,9 @@ export function boundSessionSummaryToolResponse(
     summaries: items.map((item, index) => {
       const original = originalSummaries[index] ?? "";
       const summary = truncateSessionSummaryText(original, budgets[index] ?? 0);
-      return {
-        ...item,
-        summary,
-        ...(summary !== original ? { summaryTruncated: true } : {}),
-      };
+      return summary !== original
+        ? Object.assign({}, item, { summary, summaryTruncated: true })
+        : Object.assign({}, item, { summary });
     }),
     ...(buildCursor() ? { nextCursor: buildCursor() } : {}),
   });
