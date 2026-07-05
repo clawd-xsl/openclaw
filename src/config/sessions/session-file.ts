@@ -1,7 +1,7 @@
 // Session file persistence resolves transcript paths and syncs store metadata.
 import { resolveSessionFilePath } from "./paths.js";
 import type { ResolvedSessionMaintenanceConfig } from "./store-maintenance.js";
-import { updateSessionStore } from "./store.js";
+import { patchSessionEntry, updateSessionStore } from "./store.js";
 import type { SessionEntry } from "./types.js";
 
 /** Resolves a transcript file path and persists it into the session store when needed. */
@@ -16,6 +16,8 @@ export async function resolveAndPersistSessionFile(params: {
   fallbackSessionFile?: string;
   activeSessionKey?: string;
   maintenanceConfig?: ResolvedSessionMaintenanceConfig;
+  /** Metadata-only transcript resolution can opt out of whole-store maintenance. */
+  skipMaintenance?: boolean;
 }): Promise<{ sessionFile: string; sessionEntry: SessionEntry }> {
   const { sessionId, sessionKey, sessionStore, storePath } = params;
   const now = Date.now();
@@ -45,21 +47,31 @@ export async function resolveAndPersistSessionFile(params: {
   };
   if (baseEntry.sessionId !== sessionId || baseEntry.sessionFile !== sessionFile) {
     sessionStore[sessionKey] = persistedEntry;
-    await updateSessionStore(
-      storePath,
-      (store) => {
-        store[sessionKey] = {
-          ...store[sessionKey],
-          ...persistedEntry,
-        };
-      },
-      params.activeSessionKey || params.maintenanceConfig
-        ? {
-            ...(params.activeSessionKey ? { activeSessionKey: params.activeSessionKey } : {}),
-            ...(params.maintenanceConfig ? { maintenanceConfig: params.maintenanceConfig } : {}),
-          }
-        : undefined,
-    );
+    if (params.skipMaintenance) {
+      await patchSessionEntry({
+        storePath,
+        sessionKey,
+        fallbackEntry: persistedEntry,
+        skipMaintenance: true,
+        update: () => persistedEntry,
+      });
+    } else {
+      await updateSessionStore(
+        storePath,
+        (store) => {
+          store[sessionKey] = {
+            ...store[sessionKey],
+            ...persistedEntry,
+          };
+        },
+        params.activeSessionKey || params.maintenanceConfig
+          ? {
+              ...(params.activeSessionKey ? { activeSessionKey: params.activeSessionKey } : {}),
+              ...(params.maintenanceConfig ? { maintenanceConfig: params.maintenanceConfig } : {}),
+            }
+          : undefined,
+      );
+    }
     return { sessionFile, sessionEntry: persistedEntry };
   }
   sessionStore[sessionKey] = persistedEntry;

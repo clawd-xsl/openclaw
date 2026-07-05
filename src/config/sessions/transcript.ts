@@ -16,9 +16,9 @@ import {
   resolveSessionFilePath,
   resolveStorePath,
 } from "./paths.js";
-import { persistSessionTranscriptTurn } from "./session-accessor.js";
+import { loadSessionEntry, persistSessionTranscriptTurn } from "./session-accessor.js";
 import { resolveAndPersistSessionFile } from "./session-file.js";
-import { loadSessionStore, resolveSessionStoreEntry } from "./store.js";
+import { normalizeStoreSessionKey } from "./store-entry.js";
 import { resolveMirroredTranscriptText } from "./transcript-mirror.js";
 import { streamSessionTranscriptLinesReverse } from "./transcript-stream.js";
 
@@ -219,9 +219,11 @@ function resolveSessionConversationTranscriptPath(params: {
     return undefined;
   }
   const storePath = params.storePath ?? resolveDefaultSessionStorePath(params.agentId);
-  const store = loadSessionStore(storePath, { skipCache: true });
-  const resolved = resolveSessionStoreEntry({ store, sessionKey });
-  const entry = resolved.existing;
+  const entry = loadSessionEntry({
+    sessionKey,
+    storePath,
+    readConsistency: "latest",
+  });
   if (!entry?.sessionId) {
     return undefined;
   }
@@ -407,9 +409,12 @@ export async function appendExactAssistantMessageToSessionTranscript(params: {
   const storeAgentId = transcriptAgentId ?? resolveAgentIdFromSessionKey(sessionKey);
   const storePath =
     params.storePath ?? resolveStorePath(params.config?.session?.store, { agentId: storeAgentId });
-  const store = loadSessionStore(storePath, { skipCache: true });
-  const resolved = resolveSessionStoreEntry({ store, sessionKey });
-  const entry = resolved.existing;
+  const normalizedSessionKey = normalizeStoreSessionKey(sessionKey);
+  const entry = loadSessionEntry({
+    sessionKey,
+    storePath,
+    readConsistency: "latest",
+  });
   if (params.expectedSessionId && entry?.sessionId !== params.expectedSessionId) {
     return {
       ok: false,
@@ -438,7 +443,7 @@ export async function appendExactAssistantMessageToSessionTranscript(params: {
             message,
             beforeMessageWrite: params.beforeMessageWrite,
             agentId: transcriptAgentId,
-            sessionKey: resolved.normalizedKey,
+            sessionKey: normalizedSessionKey,
           })
         : message;
     if (!preparedUnkeyedMessage) {
@@ -456,7 +461,7 @@ export async function appendExactAssistantMessageToSessionTranscript(params: {
     const turn = await persistSessionTranscriptTurn(
       {
         sessionId: currentEntry.sessionId,
-        sessionKey: resolved.normalizedKey,
+        sessionKey: normalizedSessionKey,
         storePath,
         ...(sessionFile ? { sessionFile } : {}),
         ...(transcriptAgentId ? { agentId: transcriptAgentId } : {}),
@@ -479,7 +484,7 @@ export async function appendExactAssistantMessageToSessionTranscript(params: {
                       beforeMessageWrite: params.beforeMessageWrite,
                       explicitIdempotencyKey,
                       agentId: transcriptAgentId,
-                      sessionKey: resolved.normalizedKey,
+                      sessionKey: normalizedSessionKey,
                     }),
                 }
               : {}),
@@ -528,12 +533,13 @@ export async function appendExactAssistantMessageToSessionTranscript(params: {
     try {
       const resolvedSessionFile = await resolveAndPersistSessionFile({
         sessionId: entry.sessionId,
-        sessionKey: resolved.normalizedKey,
-        sessionStore: store,
+        sessionKey: normalizedSessionKey,
+        sessionStore: { [normalizedSessionKey]: entry },
         storePath,
         sessionEntry: entry,
         agentId: transcriptAgentId,
         sessionsDir: path.dirname(storePath),
+        skipMaintenance: true,
       });
       sessionFile = resolvedSessionFile.sessionFile;
     } catch (err) {

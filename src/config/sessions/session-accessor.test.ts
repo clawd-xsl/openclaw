@@ -3157,6 +3157,36 @@ describe("session accessor file-backed seam", () => {
     expect(loadSessionEntry(scope)?.sessionFile).toBe(target.sessionFile);
   });
 
+  it("resolves SQLite runtime transcript targets without scanning unrelated rows", async () => {
+    const sqlitePath = path.join(tempDir, "runtime-transcript.sqlite");
+    const scope = {
+      agentId: "main",
+      sessionId: "session-1",
+      sessionKey: "agent:main:main",
+      storePath: sqlitePath,
+    };
+    await saveSessionStore(
+      sqlitePath,
+      {
+        [scope.sessionKey]: { sessionId: scope.sessionId, updatedAt: 10 },
+        "agent:main:unrelated": { sessionId: "unrelated", updatedAt: 20 },
+      },
+      { skipMaintenance: true },
+    );
+    resetSessionStoreSqliteStatsForTest();
+
+    const readTarget = await resolveSessionTranscriptRuntimeReadTarget(scope);
+    const writeTarget = await resolveSessionTranscriptRuntimeTarget(scope);
+
+    expect(writeTarget.sessionFile).toBe(readTarget.sessionFile);
+    expect(getSessionStoreSqliteStatsForTest()).toMatchObject({
+      selectAll: 0,
+      selectByKey: 3,
+      upsert: 1,
+    });
+    expect(loadSessionEntry(scope)?.sessionFile).toBe(writeTarget.sessionFile);
+  });
+
   it("preserves an explicitly resolved runtime transcript file target", async () => {
     const explicitSessionFile = path.join(tempDir, "explicit-session.jsonl");
     const scope = {

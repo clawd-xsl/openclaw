@@ -20,6 +20,7 @@ export async function resolveSessionTranscriptFile(params: {
   storePath?: string;
   agentId: string;
   threadId?: string | number;
+  skipMaintenance?: boolean;
 }): Promise<{ sessionFile: string; sessionEntry: SessionEntry | undefined }> {
   const sessionPathOpts = resolveSessionFilePathOptions({
     agentId: params.agentId,
@@ -47,6 +48,7 @@ export async function resolveSessionTranscriptFile(params: {
       agentId: sessionPathOpts?.agentId,
       sessionsDir: sessionPathOpts?.sessionsDir,
       fallbackSessionFile,
+      skipMaintenance: params.skipMaintenance,
     });
     sessionFile = resolvedSessionFile.sessionFile;
     sessionEntry = resolvedSessionFile.sessionEntry;
