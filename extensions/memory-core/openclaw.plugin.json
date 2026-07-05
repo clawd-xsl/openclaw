@@ -16,7 +16,6 @@
       "replaySafe": true
     },
     "session_summaries": {
-      "optional": true,
       "replaySafe": true
     }
   },

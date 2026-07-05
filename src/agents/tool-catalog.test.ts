@@ -22,7 +22,7 @@ function requirePolicyAllow(profile: Parameters<typeof resolveCoreToolProfilePol
 }
 
 describe("tool-catalog", () => {
-  it("includes code_execution, web_search, x_search, web_fetch, and update_plan in the coding profile policy", () => {
+  it("includes hosted, memory, session, and planning tools in the coding profile policy", () => {
     const policy = requireCoreToolProfilePolicy("coding");
     expect(policy.allow).toEqual([
       "read",
@@ -44,6 +44,7 @@ describe("tool-catalog", () => {
       "sessions_yield",
       "subagents",
       "session_status",
+      "session_summaries",
       "cron",
       "get_goal",
       "create_goal",
@@ -65,6 +66,7 @@ describe("tool-catalog", () => {
       "sessions_history",
       "sessions_send",
       "session_status",
+      "session_summaries",
       "message",
       "bundle-mcp",
     ]);

@@ -87,8 +87,10 @@ agent other than the configured default agent also requires
 
 The `session_summaries` tool applies the normal session-history visibility and
 agent-to-agent policy before returning results. Search is literal, responses
-are token-bounded, and pagination uses opaque cursors. Operators can inspect
-the same durable records through the `operator.read`-protected
+are token-bounded, and pagination uses opaque cursors. It is included in the
+built-in coding and messaging tool profiles; an explicit deny still takes
+precedence. Operators can inspect the same durable records through the
+`operator.read`-protected
 `memory.summaries.list` RPC and the **Summaries** page in the Control UI. The
 operator RPC shares filtering and pagination code with the tool but does not
 impersonate a requester session.
