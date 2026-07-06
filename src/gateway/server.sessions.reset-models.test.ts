@@ -9,6 +9,7 @@ import {
   setupGatewaySessionsTestHarness,
   sessionStoreEntry,
   directSessionReq,
+  loadTestSessionStore,
 } from "./test/server-sessions.test-helpers.js";
 
 const { createSessionStoreDir } = setupGatewaySessionsTestHarness();
@@ -176,10 +177,7 @@ async function expectMainResetModelFields(params: {
   expect(reset.ok).toBe(true);
   expectModelResetFields(reset.payload?.entry, params.expected);
 
-  const store = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
-    string,
-    ModelResetEntry
-  >;
+  const store = loadTestSessionStore(storePath);
   expectModelResetFields(store["agent:main:main"], params.expected);
 }
 
@@ -278,10 +276,7 @@ test("sessions.reset clears stale estimated context budget status", async () => 
   expect(reset.payload?.entry.contextBudgetStatus).toBeUndefined();
   expect(reset.payload?.entry.contextTokens).toBeUndefined();
 
-  const store = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
-    string,
-    { contextBudgetStatus?: unknown; contextTokens?: number }
-  >;
+  const store = loadTestSessionStore(storePath);
   expect(store["agent:main:main"]?.contextBudgetStatus).toBeUndefined();
   expect(store["agent:main:main"]?.contextTokens).toBeUndefined();
 });
@@ -319,10 +314,7 @@ test("sessions.reset drops cached skills snapshot so /new rebuilds visible skill
   expect(reset.payload?.entry.sessionId).not.toBe("sess-stale-skills");
   expect(reset.payload?.entry.skillsSnapshot).toBeUndefined();
 
-  const store = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
-    string,
-    { skillsSnapshot?: unknown }
-  >;
+  const store = loadTestSessionStore(storePath);
   expect(store["agent:main:main"]?.skillsSnapshot).toBeUndefined();
 });
 
@@ -360,13 +352,7 @@ test("sessions.reset rotates generated topic transcript files with the new sessi
   expect(nextSessionId).not.toBe(previousSessionId);
   expect(path.basename(nextSessionFile)).toBe(`${nextSessionId}-topic-456.jsonl`);
 
-  const store = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
-    string,
-    {
-      sessionId?: string;
-      sessionFile?: string;
-    }
-  >;
+  const store = loadTestSessionStore(storePath);
   const persistedEntry = store["agent:main:telegram:group:123:topic:456"];
   expect(persistedEntry?.sessionId).toBe(nextSessionId);
   expect(path.basename(persistedEntry?.sessionFile ?? "")).toBe(`${nextSessionId}-topic-456.jsonl`);
@@ -410,13 +396,7 @@ test("sessions.reset rotates an already-stale generated transcript file to the n
   expect(path.basename(nextSessionFile)).toBe(`${nextSessionId}.jsonl`);
   expect(path.basename(nextSessionFile)).not.toBe(`${staleFileSessionId}.jsonl`);
 
-  const store = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
-    string,
-    {
-      sessionId?: string;
-      sessionFile?: string;
-    }
-  >;
+  const store = loadTestSessionStore(storePath);
   const persistedEntry = store["agent:main:main"];
   expect(persistedEntry?.sessionId).toBe(nextSessionId);
   expect(path.basename(persistedEntry?.sessionFile ?? "")).toBe(`${nextSessionId}.jsonl`);
@@ -508,9 +488,6 @@ test("sessions.reset preserves spawned session ownership metadata", async () => 
   expect(reset.ok).toBe(true);
   expectOwnedChildMetadata(reset.payload?.entry, customSessionFile);
 
-  const store = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
-    string,
-    ResetSessionEntry
-  >;
+  const store = loadTestSessionStore(storePath);
   expectOwnedChildMetadata(store["agent:main:subagent:child"], customSessionFile);
 });

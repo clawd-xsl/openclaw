@@ -1,6 +1,5 @@
 // Session permissions and hooks tests protect gateway access control around
 // patch/delete/compact/restore APIs plus emitted internal hook payloads.
-import fs from "node:fs/promises";
 import path from "node:path";
 import { afterAll, expect, test, vi } from "vitest";
 import { cleanupTempDirs, makeTempDir } from "../../test/helpers/temp-dir.js";
@@ -23,6 +22,7 @@ import {
   sessionStoreEntry,
   createCheckpointFixture,
   isInternalHookEvent,
+  loadTestSessionStore,
 } from "./test/server-sessions.test-helpers.js";
 
 const { createSessionStoreDir, openClient, getHarness } = setupGatewaySessionsTestHarness();
@@ -327,10 +327,7 @@ test("control-ui client can delete sessions even in webchat mode", async () => {
   expect(deleted.ok).toBe(true);
   expect(deleted.payload?.deleted).toBe(true);
 
-  const store = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
-    string,
-    { sessionId?: string }
-  >;
+  const store = loadTestSessionStore(storePath);
   expect(store["agent:main:discord:group:dev"]).toBeUndefined();
 
   ws.close();

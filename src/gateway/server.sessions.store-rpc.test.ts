@@ -11,6 +11,8 @@ import {
   getGatewayConfigModule,
   getSessionsHandlers,
   createLinearSessionTranscript,
+  loadTestSessionStore,
+  resolveTestSessionStorePath,
 } from "./test/server-sessions.test-helpers.js";
 
 const { createSessionStoreDir, openClient } = setupGatewaySessionsTestHarness();
@@ -172,7 +174,7 @@ test("lists and patches session store via sessions.* RPC", async () => {
   }>("sessions.list", { includeGlobal: false, includeUnknown: false });
 
   expect(list1.ok).toBe(true);
-  expect(list1.payload?.path).toBe(storePath);
+  expect(list1.payload?.path).toBe(resolveTestSessionStorePath(storePath));
   expect(list1.payload?.sessions.map((session) => session.key)).not.toContain("global");
   expect(list1.payload?.defaults?.modelProvider).toBe("anthropic");
   const main = list1.payload?.sessions.find((s) => s.key === "agent:main:main");
@@ -441,10 +443,7 @@ test("lists and patches session store via sessions.* RPC", async () => {
   expect(reset.payload?.entry.model).toBe("gpt-test-a");
   expect(reset.payload?.entry.lastAccountId).toBe("work");
   expect(reset.payload?.entry.lastThreadId).toBe("1737500000.123456");
-  const storeAfterReset = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
-    string,
-    { lastAccountId?: string; lastThreadId?: string | number }
-  >;
+  const storeAfterReset = loadTestSessionStore(storePath);
   expect(storeAfterReset["agent:main:main"]?.lastAccountId).toBe("work");
   expect(storeAfterReset["agent:main:main"]?.lastThreadId).toBe("1737500000.123456");
   const filesAfterReset = await fs.readdir(dir);

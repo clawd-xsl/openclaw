@@ -7,7 +7,12 @@ import os from "node:os";
 import path from "node:path";
 import type { AssistantMessage, UserMessage } from "openclaw/plugin-sdk/llm";
 import { afterAll, beforeAll, beforeEach, expect, vi } from "vitest";
-import type { SessionEntry } from "../../config/sessions.js";
+import {
+  loadSessionStore,
+  resolveStorePath,
+  type SessionEntry,
+  updateSessionStore,
+} from "../../config/sessions.js";
 import type { InternalHookEvent } from "../../hooks/internal-hooks.js";
 import { resetSystemEventsForTest } from "../../infra/system-events.js";
 import { createLazyRuntimeModule } from "../../shared/lazy-runtime.js";
@@ -505,6 +510,27 @@ export function sessionStoreEntry(sessionId: string, overrides: Partial<SessionE
     updatedAt: Date.now(),
     ...overrides,
   };
+}
+
+/** Resolve the SQLite backend that corresponds to a configured session-store path. */
+export function resolveTestSessionStorePath(configuredStorePath: string, agentId = "main") {
+  return resolveStorePath(configuredStorePath, { agentId });
+}
+
+/** Read current session state after an RPC may have imported a legacy JSON fixture. */
+export function loadTestSessionStore(configuredStorePath: string, agentId = "main") {
+  return loadSessionStore(resolveTestSessionStorePath(configuredStorePath, agentId), {
+    skipCache: true,
+  });
+}
+
+/** Mutate current backend state after a legacy JSON fixture has already been imported. */
+export async function updateTestSessionStore(
+  configuredStorePath: string,
+  mutator: (store: Record<string, SessionEntry>) => void | Promise<void>,
+  agentId = "main",
+) {
+  await updateSessionStore(resolveTestSessionStorePath(configuredStorePath, agentId), mutator);
 }
 
 export async function createCheckpointFixture(

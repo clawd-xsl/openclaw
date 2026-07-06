@@ -8,7 +8,6 @@ import {
   registerTestPlugin,
 } from "openclaw/plugin-sdk/plugin-test-contracts";
 import { afterEach, expect, test, vi } from "vitest";
-import { loadSessionStore } from "../config/sessions.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import {
   pinActivePluginSessionExtensionRegistry,
@@ -25,6 +24,8 @@ import {
   createDeferred,
   createLinearSessionTranscript,
   sessionStoreEntry,
+  loadTestSessionStore,
+  resolveTestSessionStorePath,
 } from "./test/server-sessions.test-helpers.js";
 
 const {
@@ -265,12 +266,13 @@ test("sessions.pluginPatch over WebSocket keeps pinned startup extensions after 
     value: { state: "after-active-registry-churn" },
   });
 
-  const store = loadSessionStore(storePath);
+  const backendStorePath = resolveTestSessionStorePath(storePath);
+  const store = loadTestSessionStore(storePath);
   const entry = store.main ?? store["agent:main:main"];
   expect(entry).toBeDefined();
   const row = buildGatewaySessionRow({
     cfg: { session: { store: storePath } },
-    storePath,
+    storePath: backendStorePath,
     store,
     key: "agent:main:main",
     entry,
@@ -743,12 +745,8 @@ test("sessions.patch scopes selected global mutations and events to the requeste
     reason: "patch",
     label: "Work global",
   });
-  const mainStore = JSON.parse(await fs.readFile(globalStores.mainStorePath, "utf-8")) as {
-    global?: { label?: string };
-  };
-  const workStore = JSON.parse(await fs.readFile(globalStores.workStorePath, "utf-8")) as {
-    global?: { label?: string };
-  };
+  const mainStore = loadTestSessionStore(globalStores.mainStorePath);
+  const workStore = loadTestSessionStore(globalStores.workStorePath, "work");
   expect(mainStore.global?.label).toBeUndefined();
   expect(workStore.global?.label).toBe("Work global");
   await resetConfiguredGlobalAgentSessionStore(globalStores);

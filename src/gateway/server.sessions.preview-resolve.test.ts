@@ -4,6 +4,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { expect, test } from "vitest";
+import type { SessionEntry } from "../config/sessions.js";
 import { createToolSummaryPreviewTranscriptLines } from "./session-preview.test-helpers.js";
 import { rpcReq, testState, writeSessionStore } from "./test-helpers.js";
 import {
@@ -12,6 +13,8 @@ import {
   getMainPreviewEntry,
   directSessionReq,
   createLinearSessionTranscript,
+  loadTestSessionStore,
+  updateTestSessionStore,
 } from "./test/server-sessions.test-helpers.js";
 
 const { createSessionStoreDir, openClient } = setupGatewaySessionsTestHarness();
@@ -132,13 +135,25 @@ test("sessions.resolve and mutators clean legacy main-alias ghost keys", async (
     "utf-8",
   );
 
-  const writeRawStore = async (store: Record<string, unknown>) => {
+  const writeLegacyStore = async (store: Record<string, SessionEntry>) => {
     await fs.writeFile(storePath, `${JSON.stringify(store, null, 2)}\n`, "utf-8");
   };
-  const readStore = async () =>
-    JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<string, Record<string, unknown>>;
+  const readStore = () => loadTestSessionStore(storePath, "ops");
+  const addLegacyAlias = async (store: Record<string, SessionEntry>) => {
+    const canonicalEntry = store["agent:ops:work"];
+    if (!canonicalEntry) {
+      throw new Error("expected canonical main session entry");
+    }
+    await updateTestSessionStore(
+      storePath,
+      (currentStore) => {
+        currentStore["agent:ops:main"] = { ...canonicalEntry };
+      },
+      "ops",
+    );
+  };
 
-  await writeRawStore({
+  await writeLegacyStore({
     "agent:ops:main": { sessionId, updatedAt: Date.now() - 1_000 },
   });
 
@@ -149,44 +164,35 @@ test("sessions.resolve and mutators clean legacy main-alias ghost keys", async (
   });
   expect(resolved.ok).toBe(true);
   expect(resolved.payload?.key).toBe("agent:ops:work");
-  let store = await readStore();
+  let store = readStore();
   expect(Object.keys(store).toSorted()).toEqual(["agent:ops:work"]);
 
-  await writeRawStore({
-    ...store,
-    "agent:ops:main": { ...store["agent:ops:work"] },
-  });
+  await addLegacyAlias(store);
   const patched = await rpcReq<{ ok: true; key: string }>(ws, "sessions.patch", {
     key: "main",
     thinkingLevel: "medium",
   });
   expect(patched.ok).toBe(true);
   expect(patched.payload?.key).toBe("agent:ops:work");
-  store = await readStore();
+  store = readStore();
   expect(Object.keys(store).toSorted()).toEqual(["agent:ops:work"]);
   expect(store["agent:ops:work"]?.thinkingLevel).toBe("medium");
 
-  await writeRawStore({
-    ...store,
-    "agent:ops:main": { ...store["agent:ops:work"] },
-  });
+  await addLegacyAlias(store);
   const compacted = await rpcReq<{ ok: true; compacted: boolean }>(ws, "sessions.compact", {
     key: "main",
     maxLines: 3,
   });
   expect(compacted.ok).toBe(true);
   expect(compacted.payload?.compacted).toBe(true);
-  store = await readStore();
+  store = readStore();
   expect(Object.keys(store).toSorted()).toEqual(["agent:ops:work"]);
 
-  await writeRawStore({
-    ...store,
-    "agent:ops:main": { ...store["agent:ops:work"] },
-  });
+  await addLegacyAlias(store);
   const reset = await rpcReq<{ ok: true; key: string }>(ws, "sessions.reset", { key: "main" });
   expect(reset.ok).toBe(true);
   expect(reset.payload?.key).toBe("agent:ops:work");
-  store = await readStore();
+  store = readStore();
   expect(Object.keys(store).toSorted()).toEqual(["agent:ops:work"]);
 
   ws.close();

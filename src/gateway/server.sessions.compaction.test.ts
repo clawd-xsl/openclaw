@@ -24,6 +24,7 @@ import {
   sessionStoreEntry,
   createCheckpointFixture,
   directSessionReq,
+  loadTestSessionStore,
 } from "./test/server-sessions.test-helpers.js";
 
 const { createSessionStoreDir, createSelectedGlobalSessionStore, openClient } =
@@ -247,14 +248,7 @@ test("sessions.compaction.* lists checkpoints and branches or restores from comp
       ),
   ).toBe(false);
 
-  const storeAfterBranch = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
-    string,
-    {
-      parentSessionKey?: string;
-      compactionCheckpoints?: unknown[];
-      sessionId?: string;
-    }
-  >;
+  const storeAfterBranch = loadTestSessionStore(storePath);
   const branchedEntry = storeAfterBranch[branched.payload!.key];
   expect(branchedEntry?.parentSessionKey).toBe("agent:main:main");
   expect(branchedEntry?.compactionCheckpoints).toBeUndefined();
@@ -319,10 +313,7 @@ test("sessions.compaction.* lists checkpoints and branches or restores from comp
       ),
   ).toBe(false);
 
-  const storeAfterRestore = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
-    string,
-    { compactionCheckpoints?: unknown[]; sessionId?: string }
-  >;
+  const storeAfterRestore = loadTestSessionStore(storePath);
   expect(storeAfterRestore["agent:main:main"]?.sessionId).toBe(restored.payload?.sessionId);
   expect(storeAfterRestore["agent:main:main"]?.compactionCheckpoints).toHaveLength(1);
 
@@ -391,14 +382,8 @@ test("sessions.compaction.* scopes selected global checkpoints to the requested 
   );
   expect(restored.ok).toBe(true);
   expect(restored.payload?.key).toBe("global");
-  const mainStore = JSON.parse(await fs.readFile(mainStorePath, "utf-8")) as Record<
-    string,
-    { sessionId?: string }
-  >;
-  const workStore = JSON.parse(await fs.readFile(workStorePath, "utf-8")) as Record<
-    string,
-    { sessionId?: string }
-  >;
+  const mainStore = loadTestSessionStore(mainStorePath);
+  const workStore = loadTestSessionStore(workStorePath, "work");
   expect(mainStore.global?.sessionId).toBe("sess-main-global");
   expect(workStore.global?.sessionId).toBe(restored.payload?.sessionId);
   testState.sessionStorePath = undefined;
@@ -534,15 +519,7 @@ test("sessions.compact without maxLines runs embedded manual compaction for chec
   });
   expect(compactionCall.trigger).toBe("manual");
 
-  const store = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
-    string,
-    {
-      compactionCount?: number;
-      contextBudgetStatus?: unknown;
-      totalTokens?: number;
-      totalTokensFresh?: boolean;
-    }
-  >;
+  const store = loadTestSessionStore(storePath);
   expect(store["agent:main:main"]?.compactionCount).toBe(1);
   expect(store["agent:main:main"]?.contextBudgetStatus).toBeUndefined();
   expect(store["agent:main:main"]?.totalTokens).toBe(80);
@@ -612,14 +589,7 @@ test("sessions.compact treats Codex native compaction start as pending, not comp
     completed: false,
   });
 
-  const store = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
-    string,
-    {
-      compactionCount?: number;
-      totalTokens?: number;
-      totalTokensFresh?: boolean;
-    }
-  >;
+  const store = loadTestSessionStore(storePath);
   expect(store["agent:main:main"]?.compactionCount).toBe(2);
   expect(store["agent:main:main"]?.totalTokens).toBe(54_321);
   expect(store["agent:main:main"]?.totalTokensFresh).toBe(true);
@@ -787,7 +757,7 @@ test("sessions.compact maxLines aborts without truncating when an active run can
   const untouched = (await fs.readFile(transcriptPath, "utf-8")).trim().split("\n");
   expect(untouched).toHaveLength(500);
   const dirEntries = await fs.readdir(dir);
-  expect(dirEntries.some((name) => name.includes(".bak"))).toBe(false);
+  expect(dirEntries.some((name) => name.startsWith("sess-main.jsonl.bak."))).toBe(false);
   expect(storePath).toBeTruthy();
 
   ws.close();

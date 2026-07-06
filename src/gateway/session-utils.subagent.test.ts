@@ -10,7 +10,7 @@ import {
   resetSubagentRegistryForTests,
 } from "../agents/subagent-registry.js";
 import type { OpenClawConfig } from "../config/config.js";
-import { loadSessionStore, type SessionEntry } from "../config/sessions.js";
+import { loadSessionStore, resolveStorePath, type SessionEntry } from "../config/sessions.js";
 import { registerAgentRunContext, resetAgentRunContextForTest } from "../infra/agent-events.js";
 import { withStateDirEnv } from "../test-helpers/state-dir-env.js";
 import { withEnv } from "../test-utils/env.js";
@@ -1319,24 +1319,15 @@ describe("loadCombinedSessionStoreForGateway includes disk-only agents (#32804)"
         },
       } as OpenClawConfig;
 
-      const readSpy = vi.spyOn(fs, "readFileSync");
-
       const { store, storePath } = loadCombinedSessionStoreForGateway(cfg, { agentId: "codex" });
 
-      expect(storePath).toBe(fs.realpathSync.native(codexStorePath));
+      expect(storePath).toBe(fs.realpathSync.native(resolveStorePath(codexStorePath)));
       expect(store["agent:codex:acp-task"]?.sessionId).toBe("s-codex");
       expect(store["agent:main:main"]).toBeUndefined();
-      const readPaths = readSpy.mock.calls
-        .map((call) => call[0])
-        .filter((arg): arg is string => typeof arg === "string");
-      expect(readPaths).toContain(fs.realpathSync.native(codexStorePath));
-      expect(readPaths).not.toContain(fs.realpathSync.native(mainStorePath));
-
-      readSpy.mockRestore();
     });
   });
 
-  test("keeps canonical single-target entries by reference", async () => {
+  test("returns detached canonical single-target SQLite entries", async () => {
     await withStateDirEnv("openclaw-acp-canonical-", async ({ stateDir }) => {
       const customRoot = path.join(stateDir, "custom-state");
       const codexDir = path.join(customRoot, "agents", "codex", "sessions");
@@ -1365,12 +1356,13 @@ describe("loadCombinedSessionStoreForGateway includes disk-only agents (#32804)"
         },
       } as OpenClawConfig;
 
-      const cachedStore = loadSessionStore(fs.realpathSync.native(codexStorePath), {
+      const cachedStore = loadSessionStore(resolveStorePath(codexStorePath), {
         clone: false,
       });
       const { store } = loadCombinedSessionStoreForGateway(cfg, { agentId: "codex" });
 
-      expect(store["agent:codex:acp-task"]).toBe(cachedStore["agent:codex:acp-task"]);
+      expect(store["agent:codex:acp-task"]).toEqual(cachedStore["agent:codex:acp-task"]);
+      expect(store["agent:codex:acp-task"]).not.toBe(cachedStore["agent:codex:acp-task"]);
     });
   });
 });

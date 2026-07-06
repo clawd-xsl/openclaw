@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
+import { resolveStorePath } from "../config/sessions.js";
 import { appendAssistantMessageToSessionTranscript } from "../config/sessions/transcript.js";
 import { emitSessionLifecycleEvent } from "../sessions/session-lifecycle-events.js";
 import * as transcriptEvents from "../sessions/transcript-events.js";
@@ -260,7 +261,7 @@ describe("session.message websocket events", () => {
       const appended = await appendAssistantMessageToSessionTranscript({
         sessionKey: "agent:main:main",
         text: "subscribed only",
-        storePath,
+        storePath: resolveStorePath(storePath),
       });
       expect(appended.ok).toBe(true);
       const event = await subscribedEvent;
@@ -308,7 +309,7 @@ describe("session.message websocket events", () => {
       const appended = await appendAssistantMessageToSessionTranscript({
         sessionKey: "agent:main:main",
         text: "live websocket message",
-        storePath,
+        storePath: resolveStorePath(storePath),
       });
       expect(appended.ok).toBe(true);
       if (!appended.ok) {
@@ -1130,7 +1131,7 @@ describe("session.message websocket events", () => {
         appendAssistantMessageToSessionTranscript({
           sessionKey: "agent:main:main",
           text: "main only",
-          storePath,
+          storePath: resolveStorePath(storePath),
         }),
         mainEvent,
       ]);
@@ -1151,7 +1152,7 @@ describe("session.message websocket events", () => {
           const workerAppend = await appendAssistantMessageToSessionTranscript({
             sessionKey: "agent:main:worker",
             text: "worker hidden",
-            storePath,
+            storePath: resolveStorePath(storePath),
           });
           expect(workerAppend.ok).toBe(true);
         },
@@ -1178,7 +1179,7 @@ describe("session.message websocket events", () => {
           const hiddenAppend = await appendAssistantMessageToSessionTranscript({
             sessionKey: "agent:main:main",
             text: "hidden after unsubscribe",
-            storePath,
+            storePath: resolveStorePath(storePath),
           });
           expect(hiddenAppend.ok).toBe(true);
         },

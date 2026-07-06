@@ -6,7 +6,11 @@ import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { testing as agentStepTesting } from "../agents/tools/agent-step.js";
 import { runSessionsSendA2AFlow } from "../agents/tools/sessions-send-tool.a2a.js";
-import { resolveSessionTranscriptPath } from "../config/sessions.js";
+import {
+  loadSessionStore,
+  resolveSessionTranscriptPath,
+  resolveStorePath,
+} from "../config/sessions.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { emitAgentEvent } from "../infra/agent-events.js";
 import { createOutboundTestPlugin, createTestRegistry } from "../test-utils/channel-plugins.js";
@@ -76,13 +80,9 @@ async function emitLifecycleAssistantReply(params: {
   const runId = commandParams.runId ?? sessionId;
   let sessionFile = resolveSessionTranscriptPath(sessionId);
   if (testState.sessionStorePath && commandParams.sessionKey) {
-    const rawStore = JSON.parse(await fs.readFile(testState.sessionStorePath, "utf-8")) as Record<
-      string,
-      {
-        sessionId?: string;
-        sessionFile?: string;
-      }
-    >;
+    const rawStore = loadSessionStore(resolveStorePath(testState.sessionStorePath), {
+      skipCache: true,
+    });
     const entry = rawStore[commandParams.sessionKey];
     if (entry?.sessionId === sessionId && entry.sessionFile) {
       sessionFile = entry.sessionFile;
@@ -427,14 +427,9 @@ describe("sessions_send agent targeting", () => {
         expect(orionCall).toBeDefined();
         expect(orionCall?.sessionId).toBeTypeOf("string");
 
-        const rawStore = JSON.parse(
-          await fs.readFile(testState.sessionStorePath, "utf-8"),
-        ) as Record<
-          string,
-          {
-            sessionId?: string;
-          }
-        >;
+        const rawStore = loadSessionStore(resolveStorePath(testState.sessionStorePath), {
+          skipCache: true,
+        });
         expect(rawStore["agent:orion:main"]?.sessionId).toBe(orionCall?.sessionId);
       } finally {
         testState.agentsConfig = undefined;

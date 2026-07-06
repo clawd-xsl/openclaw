@@ -25,6 +25,8 @@ import {
   sessionStoreEntry,
   expectActiveRunCleanup,
   directSessionReq,
+  loadTestSessionStore,
+  updateTestSessionStore,
 } from "./test/server-sessions.test-helpers.js";
 
 const { createSessionStoreDir, seedActiveMainSession } = setupGatewaySessionsTestHarness();
@@ -256,10 +258,7 @@ test("sessions.reset closes ACP runtime handles for ACP sessions", async () => {
   expect(prepareFreshSession).toHaveBeenCalledWith({
     sessionKey: "agent:main:main",
   });
-  const store = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
-    string,
-    { acp?: ResetAcpState }
-  >;
+  const store = loadTestSessionStore(storePath);
   expect(store["agent:main:main"]).not.toHaveProperty("acp");
   expectResetAcpState(readAcpSessionMeta({ sessionKey: "agent:main:main" }));
 });
@@ -327,10 +326,8 @@ test("sessions.reset preserves a newer session after lifecycle rotation", async 
   let lifecycleCurrent = true;
   acpManagerMocks.closeSession.mockImplementationOnce(async () => {
     lifecycleCurrent = false;
-    await writeSessionStore({
-      entries: {
-        main: sessionStoreEntry("new-owner-session"),
-      },
+    await updateTestSessionStore(storePath, (store) => {
+      store["agent:main:main"] = sessionStoreEntry("new-owner-session");
     });
   });
   const { performGatewaySessionReset } = await import("./session-reset-service.js");
@@ -348,10 +345,7 @@ test("sessions.reset preserves a newer session after lifecycle rotation", async 
     }),
   ).rejects.toThrow("stale lifecycle");
 
-  const store = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
-    string,
-    { sessionId?: string }
-  >;
+  const store = loadTestSessionStore(storePath);
   expect(store["agent:main:main"]?.sessionId).toBe("new-owner-session");
 });
 

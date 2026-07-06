@@ -22,6 +22,7 @@ import {
   sessionStoreEntry,
   expectActiveRunCleanup,
   directSessionReq,
+  loadTestSessionStore,
 } from "./test/server-sessions.test-helpers.js";
 
 const {
@@ -192,12 +193,8 @@ test("sessions.delete scopes selected global deletes to the requested agent", as
     agentId: "work",
     deleteTranscript: false,
   });
-  const mainStore = JSON.parse(await fs.readFile(globalStores.mainStorePath, "utf-8")) as {
-    global?: { sessionId?: string };
-  };
-  const workStore = JSON.parse(await fs.readFile(globalStores.workStorePath, "utf-8")) as {
-    global?: { sessionId?: string };
-  };
+  const mainStore = loadTestSessionStore(globalStores.mainStorePath);
+  const workStore = loadTestSessionStore(globalStores.workStorePath, "work");
   expect(mainStore.global?.sessionId).toBe("sess-main-global");
   expect(workStore.global).toBeUndefined();
   await resetConfiguredGlobalAgentSessionStore(globalStores);
@@ -444,10 +441,7 @@ test("sessions.delete returns unavailable when active run does not stop", async 
   );
   expect(browserSessionTabMocks.closeTrackedBrowserTabsForSessions).not.toHaveBeenCalled();
 
-  const store = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
-    string,
-    { sessionId?: string }
-  >;
+  const store = loadTestSessionStore(storePath);
   expect(store["agent:main:discord:group:dev"]?.sessionId).toBe("sess-active");
   const filesAfterDeleteAttempt = await fs.readdir(dir);
   expect(

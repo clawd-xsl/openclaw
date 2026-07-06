@@ -7,7 +7,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { writeAcpSessionMetaForMigration } from "../acp/runtime/session-meta.js";
 import { resetConfigRuntimeState, setRuntimeConfigSnapshot } from "../config/config.js";
 import type { OpenClawConfig } from "../config/config.js";
-import { loadSessionStore, type SessionEntry } from "../config/sessions.js";
+import { loadSessionStore, resolveStorePath, type SessionEntry } from "../config/sessions.js";
 import { writeSessionStoreForTest } from "../config/sessions/test-helpers.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../plugins/runtime.js";
@@ -1131,7 +1131,7 @@ describe("gateway session utils", () => {
     expect(target.canonicalKey).toBe("agent:ops:main");
     expect(target.storeKeys).toContain("agent:ops:main");
     expect(target.storeKeys).toContain("main");
-    expect(target.storePath).toBe(path.resolve(storeTemplate.replace("{agentId}", "ops")));
+    expect(target.storePath).toBe(resolveStorePath(storeTemplate, { agentId: "ops" }));
   });
 
   test("resolveGatewaySessionStoreTarget resolves a customized main alias to its canonical key", () => {
@@ -1174,7 +1174,7 @@ describe("gateway session utils", () => {
 
       const target = resolveGatewaySessionStoreTarget({ cfg, key: "agent:retired-agent:main" });
 
-      expect(target.storePath).toBe(resolveSyncRealpath(retiredStorePath));
+      expect(target.storePath).toBe(resolveSyncRealpath(resolveStorePath(retiredStorePath)));
     });
   });
 
@@ -1203,7 +1203,7 @@ describe("gateway session utils", () => {
 
         const loaded = loadSessionEntry("agent:retired-agent:main");
 
-        expect(loaded.storePath).toBe(resolveSyncRealpath(retiredStorePath));
+        expect(loaded.storePath).toBe(resolveSyncRealpath(resolveStorePath(retiredStorePath)));
         expect(loaded.entry?.sessionId).toBe("sess-retired");
       });
     } finally {
@@ -1211,7 +1211,7 @@ describe("gateway session utils", () => {
     }
   });
 
-  test("loadSessionEntry can borrow the cached store for read-only hot paths", async () => {
+  test("loadSessionEntry returns a detached SQLite point-read entry", async () => {
     resetConfigRuntimeState();
     try {
       await withStateDirEnv("session-utils-load-entry-borrowed-", async ({ stateDir }) => {
@@ -1235,9 +1235,10 @@ describe("gateway session utils", () => {
         setRuntimeConfigSnapshot(cfg, cfg);
 
         const loaded = loadSessionEntry("agent:main:main", { clone: false });
-        const borrowedStore = loadSessionStore(loaded.storePath, { clone: false });
+        const storeSnapshot = loadSessionStore(loaded.storePath, { clone: false });
 
-        expect(loaded.entry).toBe(borrowedStore["agent:main:main"]);
+        expect(loaded.entry).toEqual(storeSnapshot["agent:main:main"]);
+        expect(loaded.entry).not.toBe(storeSnapshot["agent:main:main"]);
       });
     } finally {
       resetConfigRuntimeState();
@@ -1315,9 +1316,9 @@ describe("gateway session utils", () => {
 
         expect(target.canonicalKey).toBe("agent:main:main");
         expect(target.agentId).toBe("main");
-        expect(target.storePath).toBe(resolveSyncRealpath(deletedStorePath));
+        expect(target.storePath).toBe(resolveSyncRealpath(resolveStorePath(deletedStorePath)));
         expect(loaded.canonicalKey).toBe("agent:main:main");
-        expect(loaded.storePath).toBe(resolveSyncRealpath(deletedStorePath));
+        expect(loaded.storePath).toBe(resolveSyncRealpath(resolveStorePath(deletedStorePath)));
         expect(loaded.entry?.sessionId).toBe("sess-deleted-main");
       });
     } finally {
@@ -1364,7 +1365,7 @@ describe("gateway session utils", () => {
         const loaded = loadSessionEntry("agent:main:work");
 
         expect(loaded.canonicalKey).toBe("agent:main:work");
-        expect(loaded.storePath).toBe(resolveSyncRealpath(deletedStorePath));
+        expect(loaded.storePath).toBe(resolveSyncRealpath(resolveStorePath(deletedStorePath)));
         expect(loaded.entry?.sessionId).toBe("sess-deleted-main");
       });
     } finally {
