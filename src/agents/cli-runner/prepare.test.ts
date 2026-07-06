@@ -3445,7 +3445,7 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
         })),
         prepareClaudeCliSkillsPlugin: vi.fn(async () => ({
           args: ["--plugin-dir", path.join(dir, `openclaw-skills-${skillsIndex}`)],
-          cleanup: skillsCleanups[skillsIndex++]!,
+          cleanup: skillsCleanups[skillsIndex++],
         })),
       });
 
@@ -3468,7 +3468,7 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
         const args = context.preparedBackend.backend.args ?? [];
         const flagIndex = args.indexOf("--mcp-config");
         expect(flagIndex).toBeGreaterThanOrEqual(0);
-        return args[flagIndex + 1]!;
+        return args[flagIndex + 1];
       });
 
       adoptedCleanup = coldContext.preparedBackend.takeLiveSessionLaunchCleanup?.();
@@ -3477,18 +3477,18 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
 
       expect(executionCleanups[0]).toHaveBeenCalledOnce();
       expect(skillsCleanups[0]).not.toHaveBeenCalled();
-      expect(fs.existsSync(mcpConfigPaths[0]!)).toBe(true);
+      expect(fs.existsSync(mcpConfigPaths[0])).toBe(true);
 
       await warmContext.preparedBackend.cleanup?.();
 
       expect(executionCleanups[1]).toHaveBeenCalledOnce();
       expect(skillsCleanups[1]).toHaveBeenCalledOnce();
-      expect(fs.existsSync(mcpConfigPaths[1]!)).toBe(false);
+      expect(fs.existsSync(mcpConfigPaths[1])).toBe(false);
 
       await adoptedCleanup?.();
       await adoptedCleanup?.();
       expect(skillsCleanups[0]).toHaveBeenCalledOnce();
-      expect(fs.existsSync(mcpConfigPaths[0]!)).toBe(false);
+      expect(fs.existsSync(mcpConfigPaths[0])).toBe(false);
     } finally {
       await adoptedCleanup?.().catch(() => undefined);
       await coldContext?.preparedBackend.cleanup?.().catch(() => undefined);
