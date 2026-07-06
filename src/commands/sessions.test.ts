@@ -1,9 +1,9 @@
 // Sessions command tests cover listing, details, filtering, and transcript display behavior.
-import fs from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   makeRuntime,
   mockSessionsConfig,
+  removeStore,
   resetMockSessionsConfig,
   runSessionsJson,
   setMockSessionsConfig,
@@ -44,7 +44,7 @@ describe("sessionsCommand", () => {
     const { runtime, logs } = makeRuntime();
     await sessionsCommand({ store }, runtime);
 
-    fs.rmSync(store);
+    removeStore(store);
 
     expect(logs.join("\n")).toContain("Tokens (ctx %");
 
@@ -81,7 +81,7 @@ describe("sessionsCommand", () => {
     const { runtime, logs } = makeRuntime();
     await sessionsCommand({ store }, runtime);
 
-    fs.rmSync(store);
+    removeStore(store);
 
     expect(logs.join("\n")).toContain("Runtime");
 
@@ -118,7 +118,7 @@ describe("sessionsCommand", () => {
     const { runtime, logs } = makeRuntime();
     await sessionsCommand({ store }, runtime);
 
-    fs.rmSync(store);
+    removeStore(store);
 
     const row = logs.find((line) => line.includes("agent:main:main")) ?? "";
     expect(row).toBe(
@@ -138,7 +138,7 @@ describe("sessionsCommand", () => {
     const { runtime, logs } = makeRuntime();
     await sessionsCommand({ store }, runtime);
 
-    fs.rmSync(store);
+    removeStore(store);
 
     const row = logs.find((line) => line.includes("quietchat:group:demo")) ?? "";
     expect(row).toBe(
@@ -410,7 +410,7 @@ describe("sessionsCommand", () => {
       "--active must be a positive number of minutes, for example --active 30.",
     ]);
 
-    fs.rmSync(store);
+    removeStore(store);
   });
 
   it("rejects partial --active values", async () => {
@@ -430,7 +430,7 @@ describe("sessionsCommand", () => {
       "--active must be a positive number of minutes, for example --active 30.",
     ]);
 
-    fs.rmSync(store);
+    removeStore(store);
   });
 
   it("rejects invalid --limit values", async () => {
@@ -450,6 +450,6 @@ describe("sessionsCommand", () => {
       '--limit must be a positive integer or "all", for example --limit 25.',
     ]);
 
-    fs.rmSync(store);
+    removeStore(store);
   });
 });

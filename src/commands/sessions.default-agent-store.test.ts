@@ -6,7 +6,7 @@ const loadConfigMock = vi.hoisted(() => vi.fn());
 
 const resolveStorePathMock = vi.hoisted(() =>
   vi.fn((_store: string | undefined, opts?: { agentId?: string }) => {
-    return `/tmp/sessions-${opts?.agentId ?? "missing"}.json`;
+    return `/tmp/sessions-${opts?.agentId ?? "missing"}.sqlite`;
   }),
 );
 const listSessionEntriesMock = vi.hoisted(() =>
@@ -88,7 +88,7 @@ describe("sessionsCommand default store agent selection", () => {
     loadConfigMock.mockImplementation(() => createSessionsConfig());
     resolveStorePathMock.mockImplementation(
       (_store: string | undefined, opts?: { agentId?: string }) => {
-        return `/tmp/sessions-${opts?.agentId ?? "missing"}.json`;
+        return `/tmp/sessions-${opts?.agentId ?? "missing"}.sqlite`;
       },
     );
     listSessionEntriesMock.mockImplementation(() => []);
@@ -142,7 +142,7 @@ describe("sessionsCommand default store agent selection", () => {
     };
     expect(payload.count).toBe(2);
     expect(payload.allAgents).toBe(true);
-    expect(payload.stores).toEqual([{ agentId: "main", path: "/tmp/shared-sessions.json" }]);
+    expect(payload.stores).toEqual([{ agentId: "main", path: "/tmp/shared-sessions.sqlite" }]);
     expect(payload.sessions?.map((session) => session.agentId).toSorted()).toEqual([
       "main",
       "voice",
@@ -159,9 +159,9 @@ describe("sessionsCommand default store agent selection", () => {
 
     expect(listSessionEntriesMock).toHaveBeenCalledWith({
       agentId: "voice",
-      storePath: "/tmp/sessions-voice.json",
+      storePath: "/tmp/sessions-voice.sqlite",
     });
-    expect(logs[0]).toContain("Session store: /tmp/sessions-voice.json");
+    expect(logs[0]).toContain("Session store: /tmp/sessions-voice.sqlite");
   });
 
   it("uses all configured agent stores with --all-agents", async () => {
@@ -179,11 +179,11 @@ describe("sessionsCommand default store agent selection", () => {
 
     expect(listSessionEntriesMock).toHaveBeenNthCalledWith(1, {
       agentId: "main",
-      storePath: "/tmp/sessions-main.json",
+      storePath: "/tmp/sessions-main.sqlite",
     });
     expect(listSessionEntriesMock).toHaveBeenNthCalledWith(2, {
       agentId: "voice",
-      storePath: "/tmp/sessions-voice.json",
+      storePath: "/tmp/sessions-voice.sqlite",
     });
     expect(logs[0]).toContain("Session stores: 2 (main, voice)");
     expect(logs[2]).toContain("Agent");

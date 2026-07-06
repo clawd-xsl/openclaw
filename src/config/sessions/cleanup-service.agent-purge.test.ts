@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../types.openclaw.js";
 import { purgeAgentSessionStoreEntries } from "./cleanup-service.js";
+import { resolveStorePath } from "./paths.js";
 
 const sessionAccessorMocks = vi.hoisted(() => ({
   applySessionEntryLifecycleMutation: vi.fn(async () => ({
@@ -45,7 +46,7 @@ describe("purgeAgentSessionStoreEntries", () => {
       cfg,
       agentId: "ops",
       storeAgentId: "main",
-      storePath: "/tmp/openclaw-agent-purge-sessions.json",
+      storePath: resolveStorePath(cfg.session.store, { agentId: "ops" }),
     });
     expect(sessionAccessorMocks.applySessionEntryLifecycleMutation).not.toHaveBeenCalled();
   });

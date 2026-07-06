@@ -6,6 +6,7 @@ import { SessionManager } from "../../agents/sessions/session-manager.js";
 import { onSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
 import { createCanonicalFixtureSkill } from "../../skills/test-support/test-helpers.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
+import { resolveStorePath } from "./paths.js";
 import {
   applyRestartRecoveryLifecycle,
   appendTranscriptMessage,
@@ -1588,11 +1589,19 @@ describe("session accessor file-backed seam", () => {
       canonicalKey: "agent:retired-agent:main",
       result: "discovered",
     });
-    expect(loadSessionStore(configuredStorePath)["agent:retired-agent:main"]).toMatchObject({
+    const configuredBackendPath = resolveStorePath(configuredStorePath, {
+      agentId: "retired-agent",
+      env,
+    });
+    const discoveredBackendPath = resolveStorePath(discoveredStorePath, {
+      agentId: "retired-agent",
+      env,
+    });
+    expect(loadSessionStore(configuredBackendPath)["agent:retired-agent:main"]).toMatchObject({
       sessionId: "configured",
       updatedAt: 10,
     });
-    expect(Object.values(loadSessionStore(discoveredStorePath))).toContainEqual(
+    expect(Object.values(loadSessionStore(discoveredBackendPath))).toContainEqual(
       expect.objectContaining({
         model: "gpt-5.5",
         sessionId: "discovered",

@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { vi } from "vitest";
+import { resolveStorePath } from "../config/sessions/paths.js";
 import type { RuntimeEnv } from "../runtime.js";
 
 const sessionsConfigState = vi.hoisted<{ loadConfig: () => Record<string, unknown> }>(() => ({
@@ -84,6 +85,18 @@ export function writeStore(data: unknown, prefix = "sessions"): string {
   return file;
 }
 
+export function removeStore(configuredStorePath: string): void {
+  const backendStorePath = resolveStorePath(configuredStorePath);
+  for (const storePath of [
+    configuredStorePath,
+    backendStorePath,
+    `${backendStorePath}-shm`,
+    `${backendStorePath}-wal`,
+  ]) {
+    fs.rmSync(storePath, { force: true });
+  }
+}
+
 export async function runSessionsJson<T>(
   run: (
     opts: { json?: boolean; store?: string; active?: string; limit?: string | number },
@@ -107,7 +120,7 @@ export async function runSessionsJson<T>(
       runtime,
     );
   } finally {
-    fs.rmSync(store, { force: true });
+    removeStore(store);
   }
   return JSON.parse(logs[0] ?? "{}") as T;
 }

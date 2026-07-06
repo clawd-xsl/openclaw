@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resolveStorePath } from "../config/sessions/paths.js";
 import {
   clearSessionStoreCacheForTest,
   loadSessionStore,
@@ -447,7 +448,7 @@ describe("doctor session snapshot stale runtime metadata", () => {
 
     expect(note).toHaveBeenCalledTimes(1);
     const [message] = note.mock.calls[0] as [string, string];
-    expect(message).toContain(configuredStorePath);
+    expect(message).toContain(resolveStorePath(configuredStorePath));
     expect(message).toContain("agent:configured");
     expect(message).toContain(stalePath);
   });
@@ -484,7 +485,7 @@ describe("doctor session snapshot stale runtime metadata", () => {
 
     expect(note).toHaveBeenCalledTimes(1);
     const [message] = note.mock.calls[0] as [string, string];
-    expect(message).toContain(opsStorePath);
+    expect(message).toContain(resolveStorePath(templatedStore, { agentId: "ops" }));
     expect(message).toContain("agent:ops");
     expect(message).toContain(stalePath);
   });

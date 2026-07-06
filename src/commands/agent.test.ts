@@ -13,8 +13,14 @@ import { loadManifestModelCatalog, loadModelCatalog } from "../agents/model-cata
 import * as modelSelectionModule from "../agents/model-selection.js";
 import { BASE_THINKING_LEVELS } from "../auto-reply/thinking.shared.js";
 import * as runtimeSnapshotModule from "../config/runtime-snapshot.js";
+import { resolveStorePath } from "../config/sessions/paths.js";
 import { loadSessionStore } from "../config/sessions/store-load.js";
+import {
+  saveSessionStoreToSqlite,
+  upsertSessionEntryInSqlite,
+} from "../config/sessions/store-sqlite.js";
 import { clearSessionStoreCacheForTest } from "../config/sessions/store.js";
+import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   emitAgentEvent,
@@ -257,7 +263,11 @@ vi.mock("../config/sessions/transcript-resolve.runtime.js", () => {
             sessionFile,
           };
           params.sessionStore[params.sessionKey] = sessionEntry;
-          fs.writeFileSync(params.storePath, JSON.stringify(params.sessionStore));
+          upsertSessionEntryInSqlite({
+            storePath: resolveStorePath(params.storePath),
+            sessionKey: params.sessionKey,
+            entry: sessionEntry,
+          });
         }
         return { sessionFile, sessionEntry };
       },
@@ -306,7 +316,9 @@ function writeSessionStoreSeed(
   sessions: Record<string, Record<string, unknown>>,
 ) {
   fs.mkdirSync(path.dirname(storePath), { recursive: true });
-  fs.writeFileSync(storePath, JSON.stringify(sessions));
+  clearSessionStoreCacheForTest();
+  saveSessionStoreToSqlite(resolveStorePath(storePath), sessions as Record<string, SessionEntry>);
+  clearSessionStoreCacheForTest();
 }
 
 function createDefaultAgentResult(params?: {
@@ -334,7 +346,7 @@ function expectLastRunProviderModel(provider: string, model: string): void {
 }
 
 function readSessionStore<T>(storePath: string): Record<string, T> {
-  return JSON.parse(fs.readFileSync(storePath, "utf-8")) as Record<string, T>;
+  return loadSessionStore(resolveStorePath(storePath), { skipCache: true }) as Record<string, T>;
 }
 
 async function runAgentWithSessionKey(sessionKey: string): Promise<void> {
@@ -524,10 +536,7 @@ describe("agentCommand", () => {
         runtime,
       );
 
-      const saved = JSON.parse(fs.readFileSync(store, "utf-8")) as Record<
-        string,
-        { thinkingLevel?: string; verboseLevel?: string }
-      >;
+      const saved = readSessionStore<{ thinkingLevel?: string; verboseLevel?: string }>(store);
       const entry = Object.values(saved)[0];
       expect(entry.thinkingLevel).toBe("high");
       expect(entry.verboseLevel).toBe("on");
@@ -756,7 +765,7 @@ describe("agentCommand", () => {
         },
         runtime,
       );
-      const cached = loadSessionStore(store, { clone: false });
+      const cached = loadSessionStore(resolveStorePath(store), { clone: false });
 
       expect(prepared.sessionStore).not.toBe(cached);
       expect(prepared.sessionEntry).not.toBe(cached[sessionKey]);
