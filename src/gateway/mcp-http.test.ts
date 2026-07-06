@@ -9,7 +9,7 @@ type MockGatewayTool = {
   name: string;
   description: string;
   parameters: Record<string, unknown>;
-  execute: (...args: unknown[]) => Promise<{ content: Array<{ type: string; text: string }> }>;
+  execute: (...args: unknown[]) => Promise<{ content: unknown[] }>;
 };
 
 type MockGatewayScopedTools = {
@@ -55,7 +55,7 @@ type BeforeToolCallHookInput = {
 type McpToolResultPayload = {
   result?: {
     tools?: Array<{ name: string; inputSchema?: Record<string, unknown> }>;
-    content?: Array<{ text?: string }>;
+    content?: Array<Record<string, unknown>>;
     isError?: boolean;
   };
 };
@@ -1150,6 +1150,75 @@ describe("mcp loopback server", () => {
 
     expect(cronExecute).toHaveBeenCalledTimes(1);
     expectMcpResultText(payload, "CRON_EXECUTED");
+  });
+
+  it.each([
+    {
+      name: "image",
+      block: { type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
+    },
+    {
+      name: "audio",
+      block: { type: "audio", data: "YXVkaW8=", mimeType: "audio/ogg" },
+    },
+    {
+      name: "resource link",
+      block: {
+        type: "resource_link",
+        name: "runbook",
+        title: "Runbook",
+        uri: "file:///tmp/runbook.md",
+        description: "Operational notes",
+        mimeType: "text/markdown",
+        size: 42,
+      },
+    },
+    {
+      name: "embedded resource",
+      block: {
+        type: "resource",
+        resource: {
+          uri: "file:///tmp/context.txt",
+          mimeType: "text/plain",
+          text: "context",
+        },
+      },
+    },
+  ])("preserves $name tool result content", async ({ block }) => {
+    mockScopedTools([
+      makeMockTool({
+        execute: async () => ({ content: [block] }),
+      }),
+    ]);
+    const { runtime } = await startLoopbackServerForTest();
+
+    const payload = await callMainSessionTool({
+      token: runtime.ownerToken,
+      name: "mockplugin_tool",
+    });
+
+    expect(payload.result?.content).toEqual([block]);
+  });
+
+  it("normalizes undefined and unknown tool result blocks to text", async () => {
+    mockScopedTools([
+      makeMockTool({
+        execute: async () => ({
+          content: [undefined, { type: "future_content", payload: 1 }],
+        }),
+      }),
+    ]);
+    const { runtime } = await startLoopbackServerForTest();
+
+    const payload = await callMainSessionTool({
+      token: runtime.ownerToken,
+      name: "mockplugin_tool",
+    });
+
+    expect(payload.result?.content).toEqual([
+      { type: "text", text: "undefined" },
+      { type: "text", text: '{"type":"future_content","payload":1}' },
+    ]);
   });
 
   it("captures only successful calls with an explicit CLI capture key", async () => {

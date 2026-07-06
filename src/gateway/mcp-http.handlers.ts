@@ -1,6 +1,7 @@
 // Gateway MCP loopback JSON-RPC handlers.
 // Implements initialize, tools/list, tools/call, and notification handling.
 import crypto from "node:crypto";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { runBeforeToolCallHook, type HookContext } from "../agents/agent-tools.before-tool-call.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import {
@@ -17,27 +18,100 @@ import {
   type McpToolSchemaEntry,
 } from "./mcp-http.schema.js";
 
-type McpTextContent = {
-  type: "text";
-  text: string;
-};
+type McpToolCallContent = NonNullable<CallToolResult["content"]>[number];
+type McpTextContent = Extract<McpToolCallContent, { type: "text" }>;
+type McpImageContent = Extract<McpToolCallContent, { type: "image" }>;
+type McpAudioContent = Extract<McpToolCallContent, { type: "audio" }>;
+type McpResourceLinkContent = Extract<McpToolCallContent, { type: "resource_link" }>;
+type McpResourceContent = Extract<McpToolCallContent, { type: "resource" }>;
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function toTextFallback(block: unknown): McpTextContent {
+  let text: string;
+  if (typeof block === "string") {
+    text = block;
+  } else {
+    try {
+      text = JSON.stringify(block) ?? String(block);
+    } catch {
+      text = String(block);
+    }
+  }
+  return {
+    type: "text",
+    text,
+  };
+}
+
+function normalizeToolCallBlock(block: unknown): McpToolCallContent {
+  if (!isPlainRecord(block)) {
+    return toTextFallback(block);
+  }
+  if (block.type === "text" && typeof block.text === "string") {
+    return { type: "text", text: block.text } satisfies McpTextContent;
+  }
+  if (
+    block.type === "image" &&
+    typeof block.data === "string" &&
+    typeof block.mimeType === "string"
+  ) {
+    return {
+      type: "image",
+      data: block.data,
+      mimeType: block.mimeType,
+    } satisfies McpImageContent;
+  }
+  if (
+    block.type === "audio" &&
+    typeof block.data === "string" &&
+    typeof block.mimeType === "string"
+  ) {
+    return {
+      type: "audio",
+      data: block.data,
+      mimeType: block.mimeType,
+    } satisfies McpAudioContent;
+  }
+  if (
+    block.type === "resource_link" &&
+    typeof block.name === "string" &&
+    typeof block.uri === "string"
+  ) {
+    return {
+      type: "resource_link",
+      name: block.name,
+      uri: block.uri,
+      ...(typeof block.title === "string" ? { title: block.title } : {}),
+      ...(typeof block.description === "string" ? { description: block.description } : {}),
+      ...(typeof block.mimeType === "string" ? { mimeType: block.mimeType } : {}),
+      ...(typeof block.size === "number" ? { size: block.size } : {}),
+    } satisfies McpResourceLinkContent;
+  }
+  if (
+    block.type === "resource" &&
+    isPlainRecord(block.resource) &&
+    typeof block.resource.uri === "string" &&
+    (typeof block.resource.text === "string" || typeof block.resource.blob === "string")
+  ) {
+    return {
+      type: "resource",
+      resource: block.resource as McpResourceContent["resource"],
+    } satisfies McpResourceContent;
+  }
+  return toTextFallback(block);
+}
 
 // Tool implementations may return MCP content blocks, plain strings, or
-// arbitrary JSON. Normalize them into text blocks for consistent loopback output.
-function normalizeToolCallContent(result: unknown): McpTextContent[] {
+// arbitrary JSON. Preserve valid structured blocks and safely stringify unknown ones.
+function normalizeToolCallContent(result: unknown): NonNullable<CallToolResult["content"]> {
   const content = (result as { content?: unknown })?.content;
   if (Array.isArray(content)) {
-    return content.map((block: { type?: string; text?: string }) => ({
-      type: (block.type ?? "text") as "text",
-      text: block.text ?? (typeof block === "string" ? block : JSON.stringify(block)),
-    }));
+    return content.map(normalizeToolCallBlock);
   }
-  return [
-    {
-      type: "text",
-      text: typeof result === "string" ? result : JSON.stringify(result),
-    },
-  ];
+  return [toTextFallback(result)];
 }
 
 /** Handles one MCP loopback JSON-RPC message and returns a response or notification null. */
