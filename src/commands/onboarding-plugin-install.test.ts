@@ -1,4 +1,5 @@
 // Onboarding plugin install tests cover install sources, trust checks, and install records.
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -1078,6 +1079,21 @@ describe("ensureOnboardingPluginInstalled", () => {
           }
         | undefined;
 
+      const realStatSync = fsSync.statSync.bind(fsSync);
+      const statSpy = vi.spyOn(fsSync, "statSync").mockImplementation((candidate, options) => {
+        const candidatePath = path.resolve(candidate.toString());
+        const relativeToFixture = path.relative(temp, candidatePath);
+        const outsideFixture =
+          relativeToFixture === ".." ||
+          relativeToFixture.startsWith(`..${path.sep}`) ||
+          path.isAbsolute(relativeToFixture);
+        if (outsideFixture && path.basename(candidatePath) === ".git") {
+          throw Object.assign(new Error(`missing fixture path: ${candidatePath}`), {
+            code: "ENOENT",
+          });
+        }
+        return realStatSync(candidate, options as never);
+      });
       const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(cwdDir);
       let result: Awaited<ReturnType<typeof ensureOnboardingPluginInstalled>> | undefined;
       try {
@@ -1101,6 +1117,7 @@ describe("ensureOnboardingPluginInstalled", () => {
         });
       } finally {
         cwdSpy.mockRestore();
+        statSpy.mockRestore();
       }
 
       const prompt = requireCapturedPrompt(captured);
