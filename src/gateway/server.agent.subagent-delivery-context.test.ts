@@ -1,6 +1,5 @@
 // Subagent delivery-context tests protect route metadata inheritance for child
 // agent sessions and outbound delivery through channel plugins.
-import fs from "node:fs/promises";
 import { describe, expect, test } from "vitest";
 import type { ChannelPlugin } from "../channels/plugins/types.js";
 import {
@@ -9,7 +8,10 @@ import {
 } from "../test-utils/channel-plugins.js";
 import { setRegistry } from "./server.agent.gateway-server-agent.mocks.js";
 import { createRegistry } from "./server.e2e-registry-helpers.js";
-import { installConnectedSessionStoreGatewaySuite } from "./test-helpers.connected-session-store.js";
+import {
+  installConnectedSessionStoreGatewaySuite,
+  readCanonicalSessionStore,
+} from "./test-helpers.connected-session-store.js";
 import { installGatewayTestHooks, rpcReq, testState, writeSessionStore } from "./test-helpers.js";
 
 installGatewayTestHooks({ scope: "suite" });
@@ -81,8 +83,8 @@ function readDeliveryContext(entry: StoredEntry): NonNullable<StoredEntry["deliv
   return entry.deliveryContext;
 }
 
-async function readStoredSessionEntry(key: string): Promise<StoredEntry> {
-  const stored = JSON.parse(await fs.readFile(gatewaySuite.sessionStorePath, "utf-8")) as Record<
+function readStoredSessionEntry(key: string): StoredEntry {
+  const stored = readCanonicalSessionStore(gatewaySuite.sessionStorePath) as Record<
     string,
     StoredEntry
   >;
@@ -118,7 +120,7 @@ describe("subagent session deliveryContext from spawn request params", () => {
       idempotencyKey: "idem-subagent-delivery-ctx-1",
     });
 
-    const entry = await readStoredSessionEntry("agent:main:subagent:test-delivery-ctx");
+    const entry = readStoredSessionEntry("agent:main:subagent:test-delivery-ctx");
     expectDeliveryContextFields(entry, {
       channel: "slack",
       to: "channel:C0AF8TW48UQ",
@@ -162,7 +164,7 @@ describe("subagent session deliveryContext from spawn request params", () => {
       idempotencyKey: "idem-subagent-delivery-ctx-2",
     });
 
-    const entry = await readStoredSessionEntry("agent:main:subagent:existing-ctx");
+    const entry = readStoredSessionEntry("agent:main:subagent:existing-ctx");
     // The ORIGINAL deliveryContext should be preserved (primary wins in merge).
     expectDeliveryContextFields(entry, {
       to: "user:U09U1LV7JDN",
@@ -213,7 +215,7 @@ describe("subagent session deliveryContext from spawn request params", () => {
       idempotencyKey: "idem-subagent-delivery-route-metadata",
     });
 
-    const entry = await readStoredSessionEntry("agent:main:subagent:existing-route-metadata");
+    const entry = readStoredSessionEntry("agent:main:subagent:existing-route-metadata");
     expect(entry.route).toEqual({
       channel: "slack",
       accountId: "default",
@@ -254,7 +256,7 @@ describe("subagent session deliveryContext from spawn request params", () => {
       idempotencyKey: "idem-subagent-delivery-ctx-prepatched",
     });
 
-    const entry = await readStoredSessionEntry("agent:main:subagent:pre-patched");
+    const entry = readStoredSessionEntry("agent:main:subagent:pre-patched");
     expectDeliveryContextFields(entry, {
       channel: "slack",
       to: "user:U07FDR83W6N",
@@ -280,7 +282,7 @@ describe("subagent session deliveryContext from spawn request params", () => {
       idempotencyKey: "idem-subagent-delivery-ctx-3",
     });
 
-    const entry = await readStoredSessionEntry("agent:main:subagent:no-routing");
+    const entry = readStoredSessionEntry("agent:main:subagent:no-routing");
     expectDeliveryContextFields(entry, { channel: "slack" });
     const deliveryContext = readDeliveryContext(entry);
     expect(deliveryContext.to).toBeUndefined();

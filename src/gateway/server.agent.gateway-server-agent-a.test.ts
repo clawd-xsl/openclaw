@@ -1,7 +1,6 @@
 /**
  * Gateway server-agent integration tests for agent startup and session dispatch.
  */
-import fs from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { ChannelPlugin } from "../channels/plugins/types.js";
 import {
@@ -12,7 +11,10 @@ import { waitForAgentCommandCall } from "./agent-command.test-helpers.js";
 import { resetModelCatalogCacheForTest as resetGatewayModelCatalogCacheForTest } from "./server-model-catalog.js";
 import { setRegistry } from "./server.agent.gateway-server-agent.mocks.js";
 import { createRegistry } from "./server.e2e-registry-helpers.js";
-import { installConnectedSessionStoreGatewaySuite } from "./test-helpers.connected-session-store.js";
+import {
+  installConnectedSessionStoreGatewaySuite,
+  readCanonicalSessionStore,
+} from "./test-helpers.connected-session-store.js";
 import {
   agentCommand,
   installGatewayTestHooks,
@@ -301,11 +303,7 @@ describe("gateway server agent", () => {
     expect(res.ok).toBe(true);
     await waitForAgentCommandCall("idem-agent-subdepth");
 
-    const raw = await fs.readFile(gatewaySuite.sessionStorePath, "utf-8");
-    const persisted = JSON.parse(raw) as Record<
-      string,
-      { spawnDepth?: number; spawnedBy?: string }
-    >;
+    const persisted = readCanonicalSessionStore(gatewaySuite.sessionStorePath);
     expect(persisted["agent:main:subagent:depth"]?.spawnDepth).toBe(2);
     expect(persisted["agent:main:subagent:depth"]?.spawnedBy).toBe("agent:main:main");
   });

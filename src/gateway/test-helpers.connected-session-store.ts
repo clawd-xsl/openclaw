@@ -3,12 +3,21 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll } from "vitest";
+import { afterAll, beforeAll, beforeEach } from "vitest";
+import { resolveStorePath } from "../config/sessions/paths.js";
+import { loadSessionStore } from "../config/sessions/store-load.js";
 import { startConnectedServerWithClient } from "./test-helpers.js";
 
 // Suite-level connected Gateway fixture with isolated session store path.
 
 type ConnectedGateway = Awaited<ReturnType<typeof startConnectedServerWithClient>>;
+
+/** Read the canonical backend for a configured session-store path. */
+export function readCanonicalSessionStore(configuredStorePath: string, agentId = "main") {
+  return loadSessionStore(resolveStorePath(configuredStorePath, { agentId }), {
+    skipCache: true,
+  });
+}
 
 /** Return a required suite value or fail with a clear readiness label. */
 function requireValue<T>(value: T | undefined, label: string): T {
@@ -23,11 +32,16 @@ export function installConnectedSessionStoreGatewaySuite(prefix: string) {
   let started: ConnectedGateway | undefined;
   let sessionStoreDir: string | undefined;
   let sessionStorePath: string | undefined;
+  let sessionStoreSequence = 0;
 
   beforeAll(async () => {
     started = await startConnectedServerWithClient();
     sessionStoreDir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
-    sessionStorePath = path.join(sessionStoreDir, "sessions.json");
+  });
+
+  beforeEach(() => {
+    const storeDir = requireValue(sessionStoreDir, "session store directory");
+    sessionStorePath = path.join(storeDir, `case-${sessionStoreSequence++}`, "sessions.json");
   });
 
   afterAll(async () => {
