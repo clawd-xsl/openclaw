@@ -889,7 +889,7 @@ describe("session-compaction-checkpoints", () => {
   });
 
   test("persist stores codex-style checkpoint metadata and trims old legacy snapshot files", async () => {
-    const { storePath, sessionId, sessionKey, now } = await makeTempSessionStore(
+    const { dir, storePath, sessionId, sessionKey, now } = await makeTempSessionStore(
       "openclaw-checkpoint-trim-",
     );
     const existingCheckpoints = await createLegacyCheckpointFixtures({
@@ -958,7 +958,7 @@ describe("session-compaction-checkpoints", () => {
   });
 
   test("persist skips malformed session rows without synthesizing a session id", async () => {
-    const { dir, storePath, sessionId, sessionKey, now } = await makeTempSessionStore(
+    const { storePath, sessionId, sessionKey, now } = await makeTempSessionStore(
       "openclaw-checkpoint-malformed-row-",
     );
     await writeSessionStore(storePath, sessionKey, {
