@@ -786,6 +786,7 @@ async function initSessionStateAttemptLocked(
       persistedAuthProfileOverrideCompactionCount ?? baseEntry?.authProfileOverrideCompactionCount,
     cliSessionIds: baseEntry?.cliSessionIds,
     cliSessionBindings: baseEntry?.cliSessionBindings,
+    cliCompactionOverlays: isNewSession ? undefined : baseEntry?.cliCompactionOverlays,
     claudeCliSessionId: baseEntry?.claudeCliSessionId,
     label: persistedLabel ?? baseEntry?.label,
     spawnedBy: persistedSpawnedBy ?? baseEntry?.spawnedBy,

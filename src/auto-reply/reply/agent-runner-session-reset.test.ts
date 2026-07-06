@@ -98,6 +98,15 @@ describe("resetReplyRunSession", () => {
       cliSessionIds: { "claude-cli": "future-cli" },
       cliSessionBindings: { "claude-cli": { sessionId: "future-cli" } },
       claudeCliSessionId: "future-cli",
+      cliCompactionOverlays: {
+        "claude-cli": {
+          provider: "claude-cli",
+          localSessionId: "session",
+          summary: "continuity for the retired local session",
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      },
       systemPromptReport: {
         source: "run",
         generatedAt: 1,
@@ -158,6 +167,7 @@ describe("resetReplyRunSession", () => {
     expect(activeSessionEntry?.cliSessionIds).toEqual(sessionEntry.cliSessionIds);
     expect(activeSessionEntry?.cliSessionBindings).toEqual(sessionEntry.cliSessionBindings);
     expect(activeSessionEntry?.claudeCliSessionId).toBe(sessionEntry.claudeCliSessionId);
+    expect(activeSessionEntry?.cliCompactionOverlays).toBeUndefined();
     expect(refreshQueuedFollowupSessionMock).toHaveBeenCalledWith({
       key: "main",
       previousSessionId: "session",

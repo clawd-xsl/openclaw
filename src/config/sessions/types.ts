@@ -67,6 +67,25 @@ export type CliSessionBinding = {
   reseedReceipt?: CliSessionReseedReceipt;
 };
 
+/** Provider-scoped continuity summary used when a native CLI thread is rolled over. */
+export type CliCompactionOverlay = {
+  provider: string;
+  /** OpenClaw transcript identity this summary was generated to continue. */
+  localSessionId: string;
+  /** Native provider thread summarized before the binding was cleared. */
+  nativeSessionId?: string;
+  summary: string;
+  firstKeptEntryId?: string;
+  compactionModel?: string;
+  compactedAtPromptTokens?: number;
+  tokensBefore?: number;
+  tokensAfter?: number;
+  contextWindowTokens?: number;
+  thresholdTokens?: number;
+  createdAt: number;
+  updatedAt: number;
+};
+
 export type SessionCompactionCheckpointReason =
   | "manual"
   | "auto-threshold"
@@ -417,6 +436,8 @@ export type SessionEntry = {
   memoryFlushLastFailureError?: string;
   cliSessionIds?: Record<string, string>;
   cliSessionBindings?: Record<string, CliSessionBinding>;
+  /** Durable summaries for provider-owned CLI histories after native thread rollover. */
+  cliCompactionOverlays?: Record<string, CliCompactionOverlay>;
   claudeCliSessionId?: string;
   label?: string;
   displayName?: string;

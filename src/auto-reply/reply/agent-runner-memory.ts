@@ -7,6 +7,11 @@ import {
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
 import { resolveBootstrapWarningSignaturesSeen } from "../../agents/bootstrap-budget.js";
+import {
+  clearCliSession,
+  getCliCompactionOverlay,
+  setCliCompactionOverlay,
+} from "../../agents/cli-session.js";
 import { estimateMessagesTokens } from "../../agents/compaction.js";
 import { classifyCompactionReason } from "../../agents/embedded-agent-runner/compact-reasons.js";
 import { resolveAgentHarnessPolicy } from "../../agents/harness/policy.js";
@@ -41,6 +46,7 @@ import { logVerbose } from "../../globals.js";
 import { isAbortError } from "../../infra/abort-signal.js";
 import { emitAgentEvent, registerAgentRunContext } from "../../infra/agent-events.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import { isClaudeCliProvider } from "../../plugin-sdk/anthropic-cli.js";
 import { resolveMemoryFlushPlan } from "../../plugins/memory-state.js";
 import { CommandLane } from "../../process/lanes.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
@@ -70,6 +76,7 @@ import { incrementCompactionCount } from "./session-updates.js";
 
 type EmbeddedAgentRuntime = typeof import("../../agents/embedded-agent.js");
 type CliMemoryFlushRuntime = typeof import("./agent-runner-memory-cli.runtime.js");
+type CliContinuityRuntime = typeof import("./agent-runner-cli-continuity.runtime.js");
 type UpdateSessionEntryParams = {
   storePath: string;
   sessionKey: string;
@@ -90,6 +97,9 @@ const embeddedAgentRuntimeLoader = createLazyImportLoader<EmbeddedAgentRuntime>(
 const cliMemoryFlushRuntimeLoader = createLazyImportLoader<CliMemoryFlushRuntime>(
   () => import("./agent-runner-memory-cli.runtime.js"),
 );
+const cliContinuityRuntimeLoader = createLazyImportLoader<CliContinuityRuntime>(
+  () => import("./agent-runner-cli-continuity.runtime.js"),
+);
 
 function loadEmbeddedAgentRuntime(): Promise<EmbeddedAgentRuntime> {
   return embeddedAgentRuntimeLoader.load();
@@ -97,6 +107,10 @@ function loadEmbeddedAgentRuntime(): Promise<EmbeddedAgentRuntime> {
 
 function loadCliMemoryFlushRuntime(): Promise<CliMemoryFlushRuntime> {
   return cliMemoryFlushRuntimeLoader.load();
+}
+
+function loadCliContinuityRuntime(): Promise<CliContinuityRuntime> {
+  return cliContinuityRuntimeLoader.load();
 }
 
 async function compactEmbeddedAgentSessionDefault(
@@ -113,6 +127,16 @@ async function runEmbeddedAgentDefault(
 ): Promise<Awaited<ReturnType<typeof import("../../agents/embedded-agent.js").runEmbeddedAgent>>> {
   const { runEmbeddedAgent } = await loadEmbeddedAgentRuntime();
   return await runEmbeddedAgent(...args);
+}
+
+async function readClaudeCliNativePromptTokensDefault(cliSessionId: string) {
+  return await (await loadCliContinuityRuntime()).readClaudeCliNativePromptTokens(cliSessionId);
+}
+
+async function generateClaudeCliContinuitySummaryDefault(
+  ...args: Parameters<CliContinuityRuntime["generateClaudeCliContinuitySummary"]>
+) {
+  return await (await loadCliContinuityRuntime()).generateClaudeCliContinuitySummary(...args);
 }
 
 async function updateSessionEntryDefault(
@@ -160,6 +184,8 @@ const memoryDeps = {
   runWithModelFallback,
   ensureSelectedAgentHarnessPlugin,
   runEmbeddedAgent: runEmbeddedAgentDefault,
+  readClaudeCliNativePromptTokens: readClaudeCliNativePromptTokensDefault,
+  generateClaudeCliContinuitySummary: generateClaudeCliContinuitySummaryDefault,
   ensureMemoryFlushTargetFile,
   registerAgentRunContext,
   refreshQueuedFollowupSession,
@@ -177,6 +203,8 @@ export function setAgentRunnerMemoryTestDeps(overrides?: Partial<typeof memoryDe
     ensureSelectedAgentHarnessPlugin,
     compactEmbeddedAgentSession: compactEmbeddedAgentSessionDefault,
     runEmbeddedAgent: runEmbeddedAgentDefault,
+    readClaudeCliNativePromptTokens: readClaudeCliNativePromptTokensDefault,
+    generateClaudeCliContinuitySummary: generateClaudeCliContinuitySummaryDefault,
     ensureMemoryFlushTargetFile,
     registerAgentRunContext,
     refreshQueuedFollowupSession,
@@ -456,6 +484,227 @@ export type SessionTranscriptUsageSnapshot = {
 const TRANSCRIPT_OUTPUT_READ_BUFFER_TOKENS = 8192;
 const TRANSCRIPT_TAIL_CHUNK_BYTES = 64 * 1024;
 const FALLBACK_TRANSCRIPT_BYTES_PER_TOKEN = 4;
+const CLI_CONTINUITY_CONTEXT_RATIO = 0.8;
+
+async function persistCliContinuityOverlay(params: {
+  entry: SessionEntry;
+  provider: string;
+  summary: string;
+  sourceModel?: string;
+  tokensBefore: number;
+  tokensAfter?: number;
+  contextWindowTokens: number;
+  thresholdTokens: number;
+  sessionKey: string;
+  sessionStore?: Record<string, SessionEntry>;
+  storePath?: string;
+}): Promise<{ entry: SessionEntry; persisted: boolean }> {
+  const now = memoryDeps.now();
+  const previousOverlay = getCliCompactionOverlay(params.entry, params.provider);
+  const mutate = (entry: SessionEntry): SessionEntry => {
+    const next = { ...entry };
+    clearCliSession(next, params.provider);
+    const nativeSessionId = getCliSessionBinding(params.entry, params.provider)?.sessionId;
+    setCliCompactionOverlay(next, params.provider, {
+      provider: params.provider,
+      localSessionId: params.entry.sessionId,
+      ...(nativeSessionId ? { nativeSessionId } : {}),
+      summary: params.summary,
+      ...(params.sourceModel ? { compactionModel: params.sourceModel } : {}),
+      tokensBefore: params.tokensBefore,
+      ...(params.tokensAfter !== undefined
+        ? {
+            compactedAtPromptTokens: params.tokensAfter,
+            tokensAfter: params.tokensAfter,
+          }
+        : {}),
+      contextWindowTokens: params.contextWindowTokens,
+      thresholdTokens: params.thresholdTokens,
+      createdAt: previousOverlay?.createdAt ?? now,
+      updatedAt: now,
+    });
+    return next;
+  };
+
+  const currentMemoryEntry = params.sessionStore?.[params.sessionKey];
+  if (currentMemoryEntry && currentMemoryEntry.sessionId !== params.entry.sessionId) {
+    return { entry: currentMemoryEntry, persisted: false };
+  }
+  if (params.storePath) {
+    const updated = await memoryDeps.updateSessionEntry({
+      storePath: params.storePath,
+      sessionKey: params.sessionKey,
+      update: (current) => (current.sessionId === params.entry.sessionId ? mutate(current) : null),
+    });
+    if (!updated) {
+      return {
+        entry: params.sessionStore?.[params.sessionKey] ?? params.entry,
+        persisted: false,
+      };
+    }
+    if (params.sessionStore) {
+      params.sessionStore[params.sessionKey] = updated;
+    }
+    return { entry: updated, persisted: true };
+  }
+  const resolved = mutate(params.entry);
+  if (params.sessionStore) {
+    params.sessionStore[params.sessionKey] = resolved;
+  }
+  return { entry: resolved, persisted: true };
+}
+
+async function runClaudeCliPreflightCompactionIfNeeded(params: {
+  cfg: OpenClawConfig;
+  followupRun: FollowupRun;
+  promptForEstimate?: string;
+  defaultModel: string;
+  agentCfgContextTokens?: number;
+  entry: SessionEntry;
+  provider: string;
+  sessionStore?: Record<string, SessionEntry>;
+  sessionKey: string;
+  storePath?: string;
+  replyOperation: ReplyOperation;
+  onCompactionNotice?: (phase: CompactionNoticePhase) => Promise<void> | void;
+}): Promise<SessionEntry> {
+  const binding = getCliSessionBinding(params.entry, params.provider);
+  const cliSessionId = binding?.sessionId?.trim();
+  if (!cliSessionId) {
+    return params.entry;
+  }
+
+  const contextWindowTokens = resolveMemoryFlushContextWindowTokens({
+    cfg: params.cfg,
+    provider: resolveFollowupContextConfigProvider({
+      cfg: params.cfg,
+      followupRun: params.followupRun,
+      sessionEntry: params.entry,
+      sessionKey: params.sessionKey,
+    }),
+    modelId: params.followupRun.run.model ?? params.defaultModel,
+    agentCfgContextTokens: params.agentCfgContextTokens,
+  });
+  const memoryFlushPlan = resolveMemoryFlushPlan({ cfg: params.cfg });
+  const reserveTokensFloor =
+    memoryFlushPlan?.reserveTokensFloor ??
+    params.cfg.agents?.defaults?.compaction?.reserveTokensFloor ??
+    20_000;
+  const softThresholdTokens = memoryFlushPlan?.softThresholdTokens ?? 4_000;
+  const transcriptThreshold = Math.max(
+    1,
+    contextWindowTokens - reserveTokensFloor - softThresholdTokens,
+  );
+  const thresholdTokens = Math.max(
+    1,
+    Math.min(transcriptThreshold, Math.floor(contextWindowTokens * CLI_CONTINUITY_CONTEXT_RATIO)),
+  );
+  let promptTokens: number | undefined;
+  try {
+    promptTokens = await memoryDeps.readClaudeCliNativePromptTokens(cliSessionId);
+  } catch (error) {
+    logVerbose(
+      `preflightCompaction skipped: sessionKey=${params.sessionKey} runtime=${params.provider} native_usage_error=${formatErrorMessage(error)}`,
+    );
+    return params.entry;
+  }
+  logVerbose(
+    `preflightCompaction check: sessionKey=${params.sessionKey} runtime=${params.provider} ` +
+      `nativeSession=${cliSessionId} nativePromptTokens=${promptTokens ?? "undefined"} ` +
+      `threshold=${thresholdTokens} overlay=${getCliCompactionOverlay(params.entry, params.provider) ? "yes" : "no"}`,
+  );
+  if (!promptTokens || promptTokens < thresholdTokens) {
+    return params.entry;
+  }
+
+  const notify = async (phase: CompactionNoticePhase) => {
+    try {
+      await params.onCompactionNotice?.(phase);
+    } catch (error) {
+      logVerbose(`preflightCompaction notice delivery failed: ${formatErrorMessage(error)}`);
+    }
+  };
+  params.replyOperation.setPhase("preflight_compacting");
+  await notify("start");
+  let result: Awaited<ReturnType<typeof memoryDeps.generateClaudeCliContinuitySummary>>;
+  try {
+    result = await memoryDeps.generateClaudeCliContinuitySummary({
+      cfg: params.cfg,
+      cliSessionId,
+      workspaceDir: params.followupRun.run.workspaceDir,
+      provider: params.provider,
+      timeoutMs: params.followupRun.run.timeoutMs,
+      ...(params.followupRun.run.agentId ? { agentId: params.followupRun.run.agentId } : {}),
+      ...(params.followupRun.run.model ? { model: params.followupRun.run.model } : {}),
+      ...(params.followupRun.run.thinkLevel
+        ? { thinkLevel: params.followupRun.run.thinkLevel }
+        : {}),
+      ...(params.followupRun.run.fastMode ? { fastMode: params.followupRun.run.fastMode } : {}),
+      ...(params.followupRun.run.authProfileId
+        ? { authProfileId: params.followupRun.run.authProfileId }
+        : {}),
+      ...(params.followupRun.run.senderIsOwner !== undefined
+        ? { senderIsOwner: params.followupRun.run.senderIsOwner }
+        : {}),
+      ...(params.replyOperation.abortSignal
+        ? { abortSignal: params.replyOperation.abortSignal }
+        : {}),
+    });
+  } catch (error) {
+    logVerbose(
+      `preflightCompaction skipped: sessionKey=${params.sessionKey} runtime=${params.provider} generation_error=${formatErrorMessage(error)}`,
+    );
+    await notify("incomplete");
+    return params.entry;
+  }
+  if (!result.ok) {
+    logVerbose(
+      `preflightCompaction skipped: sessionKey=${params.sessionKey} runtime=${params.provider} reason=${result.reason}`,
+    );
+    await notify("skipped");
+    return params.entry;
+  }
+
+  const promptForEstimate = params.promptForEstimate ?? params.followupRun.prompt;
+  const tokensAfter = estimatePromptTokensForMemoryFlush(
+    `${result.summary}\n\n${promptForEstimate}`,
+  );
+  let persisted: Awaited<ReturnType<typeof persistCliContinuityOverlay>>;
+  try {
+    persisted = await persistCliContinuityOverlay({
+      entry: params.entry,
+      provider: params.provider,
+      summary: result.summary,
+      sourceModel: result.model,
+      tokensBefore: promptTokens,
+      tokensAfter,
+      contextWindowTokens,
+      thresholdTokens,
+      sessionKey: params.sessionKey,
+      ...(params.sessionStore ? { sessionStore: params.sessionStore } : {}),
+      ...(params.storePath ? { storePath: params.storePath } : {}),
+    });
+  } catch (error) {
+    logVerbose(
+      `preflightCompaction skipped: sessionKey=${params.sessionKey} runtime=${params.provider} persist_error=${formatErrorMessage(error)}`,
+    );
+    await notify("incomplete");
+    return params.entry;
+  }
+  if (!persisted.persisted) {
+    logVerbose(
+      `preflightCompaction discarded: sessionKey=${params.sessionKey} runtime=${params.provider} reason=session_changed_during_summary`,
+    );
+    await notify("skipped");
+    return persisted.entry;
+  }
+  logVerbose(
+    `preflightCompaction summarized: sessionKey=${params.sessionKey} runtime=${params.provider} ` +
+      `sourceMessages=${result.sourceMessageCount} summaryChars=${result.summary.length}`,
+  );
+  await notify("end");
+  return persisted.entry;
+}
 
 function parseUsageFromTranscriptLine(line: string): ReturnType<typeof normalizeUsage> | undefined {
   const trimmed = line.trim();
@@ -830,8 +1079,26 @@ export async function runPreflightCompactionIfNeeded(params: {
     followupRun: params.followupRun,
     sessionEntry: entry,
   });
-  if (params.isHeartbeat || cliRuntimeId) {
+  if (params.isHeartbeat) {
     return entry ?? params.sessionEntry;
+  }
+  if (cliRuntimeId) {
+    return isClaudeCliProvider(cliRuntimeId)
+      ? await runClaudeCliPreflightCompactionIfNeeded({
+          cfg: params.cfg,
+          followupRun: params.followupRun,
+          promptForEstimate: params.promptForEstimate,
+          defaultModel: params.defaultModel,
+          agentCfgContextTokens: params.agentCfgContextTokens,
+          entry,
+          provider: cliRuntimeId,
+          sessionStore: params.sessionStore,
+          sessionKey: params.sessionKey,
+          storePath: params.storePath,
+          replyOperation: params.replyOperation,
+          onCompactionNotice: params.onCompactionNotice,
+        })
+      : entry;
   }
   if (
     followupUsesCodexRuntime({

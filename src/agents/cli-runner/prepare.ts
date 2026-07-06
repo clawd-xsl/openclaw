@@ -49,7 +49,11 @@ import {
 } from "../bootstrap-files.js";
 import { CLI_AUTH_EPOCH_VERSION, resolveCliAuthEpoch } from "../cli-auth-epoch.js";
 import { resolveCliBackendConfig } from "../cli-backends.js";
-import { hashCliSessionText, resolveCliSessionReuse } from "../cli-session.js";
+import {
+  getCliCompactionOverlay,
+  hashCliSessionText,
+  resolveCliSessionReuse,
+} from "../cli-session.js";
 import {
   claudeCliSessionTranscriptHasContent,
   claudeCliSessionTranscriptHasOrphanedToolUse,
@@ -963,6 +967,9 @@ export async function prepareCliRunContext(
           }),
           prompt: historyPromptCurrentTurn,
           maxHistoryChars: autoReseedHistoryChars,
+          compactionOverlay: getCliCompactionOverlay(params.sessionEntry, params.provider, {
+            localSessionId: params.sessionId,
+          }),
         })
       : undefined;
     const systemPromptWithReplacements = applyPluginTextReplacements(

@@ -9,16 +9,63 @@ import {
   rebindCliSessionReseedReceiptsForReset,
 } from "../config/sessions/cli-session-binding.js";
 import {
+  clearCliCompactionOverlay,
   clearAllCliSessions,
   clearCliSession,
+  getCliCompactionOverlay,
   getCliSessionBinding,
   hashCliSessionText,
   resolveCliSessionReuse,
+  setCliCompactionOverlay,
   setCliSessionBinding,
   setCliSessionId,
 } from "./cli-session.js";
 
 describe("cli-session helpers", () => {
+  it("normalizes provider-scoped continuity overlays", () => {
+    const entry: SessionEntry = { sessionId: "openclaw-session", updatedAt: 1 };
+    setCliCompactionOverlay(entry, "CLAUDE-CLI", {
+      provider: "ignored",
+      localSessionId: "openclaw-session",
+      summary: "  durable continuity  ",
+      tokensBefore: 1000.8,
+      tokensAfter: 120.2,
+      contextWindowTokens: 200_000,
+      thresholdTokens: 176_000,
+      createdAt: 10.8,
+      updatedAt: 20.9,
+    });
+
+    expect(getCliCompactionOverlay(entry, "claude-cli")).toEqual({
+      provider: "claude-cli",
+      localSessionId: "openclaw-session",
+      summary: "durable continuity",
+      tokensBefore: 1000,
+      tokensAfter: 120,
+      contextWindowTokens: 200_000,
+      thresholdTokens: 176_000,
+      createdAt: 10,
+      updatedAt: 20,
+    });
+    clearCliCompactionOverlay(entry, "claude-cli");
+    expect(entry.cliCompactionOverlays).toBeUndefined();
+  });
+
+  it("rejects continuity overlays anchored to another OpenClaw session", () => {
+    const entry: SessionEntry = { sessionId: "new-session", updatedAt: 1 };
+    setCliCompactionOverlay(entry, "claude-cli", {
+      provider: "claude-cli",
+      localSessionId: "old-session",
+      summary: "stale summary",
+      createdAt: 1,
+      updatedAt: 1,
+    });
+
+    expect(
+      getCliCompactionOverlay(entry, "claude-cli", { localSessionId: "new-session" }),
+    ).toBeUndefined();
+    expect(entry.cliCompactionOverlays?.["claude-cli"]?.summary).toBe("stale summary");
+  });
   it("persists binding metadata alongside legacy session ids", () => {
     const entry: SessionEntry = {
       sessionId: "openclaw-session",

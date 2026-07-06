@@ -930,6 +930,27 @@ describe("buildCliSessionHistoryPrompt", () => {
     expect(prompt).toContain("<next_user_message>\nnext ask\n</next_user_message>");
   });
 
+  it("pins a provider continuity overlay ahead of stale local compaction summaries", () => {
+    const prompt = buildCliSessionHistoryPrompt({
+      messages: [
+        { role: "compactionSummary", summary: "stale local summary" },
+        { role: "user", content: "recent exact turn" },
+      ],
+      prompt: "next ask",
+      compactionOverlay: {
+        provider: "claude-cli",
+        localSessionId: "local-session",
+        summary: "## Decisions\nKeep the persistent backend",
+        createdAt: 10,
+        updatedAt: 20,
+      },
+    });
+
+    expect(prompt).toContain("Compaction summary: ## Decisions\nKeep the persistent backend");
+    expect(prompt).toContain("User: recent exact turn");
+    expect(prompt).not.toContain("stale local summary");
+  });
+
   it("caps oversize compaction summary while preserving recent post-summary tail", () => {
     // Two regressions covered here:
     // 1. `tailRaw.slice(-0)` would return the entire tail (JS quirk:

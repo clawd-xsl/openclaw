@@ -45,6 +45,16 @@ function removeRetiredClaudeCliMapKey<T>(map: Record<string, T> | undefined): bo
 
 function migrateClaudeCliSessionEntry(entry: SessionEntry): boolean {
   let changed = false;
+  if (entry.cliCompactionOverlays) {
+    const overlays = { ...entry.cliCompactionOverlays };
+    for (const [provider, overlay] of Object.entries(overlays)) {
+      if (!overlay.localSessionId) {
+        overlays[provider] = { ...overlay, localSessionId: entry.sessionId };
+        changed = true;
+      }
+    }
+    entry.cliCompactionOverlays = overlays;
+  }
   for (const key of [
     "modelProvider",
     "providerOverride",
@@ -58,6 +68,19 @@ function migrateClaudeCliSessionEntry(entry: SessionEntry): boolean {
   }
   changed = removeRetiredClaudeCliMapKey(entry.cliSessionIds) || changed;
   changed = removeRetiredClaudeCliMapKey(entry.cliSessionBindings) || changed;
+  const legacyOverlay = entry.cliCompactionOverlays?.[LEGACY_CLAUDE_CLI_BACKEND_ID];
+  if (legacyOverlay) {
+    entry.cliCompactionOverlays = { ...entry.cliCompactionOverlays };
+    if (!entry.cliCompactionOverlays[CLAUDE_CLI_BACKEND_ID]) {
+      entry.cliCompactionOverlays[CLAUDE_CLI_BACKEND_ID] = {
+        ...legacyOverlay,
+        provider: CLAUDE_CLI_BACKEND_ID,
+        localSessionId: legacyOverlay.localSessionId || entry.sessionId,
+      };
+    }
+    delete entry.cliCompactionOverlays[LEGACY_CLAUDE_CLI_BACKEND_ID];
+    changed = true;
+  }
   return changed;
 }
 
@@ -83,11 +106,7 @@ export function applySessionStoreMigrations(store: Record<string, SessionEntry>)
       entry.memoryFlushCliPromptTokens = Math.floor(legacyMemoryFlushPromptTokens);
       changed = true;
     }
-    for (const retiredKey of [
-      "cliCompactionOverlays",
-      "memoryFlushPromptTokens",
-      "memoryFlushContextHash",
-    ] as const) {
+    for (const retiredKey of ["memoryFlushPromptTokens", "memoryFlushContextHash"] as const) {
       if (Object.hasOwn(rec, retiredKey)) {
         delete rec[retiredKey];
         changed = true;

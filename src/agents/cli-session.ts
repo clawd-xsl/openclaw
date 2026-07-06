@@ -6,7 +6,7 @@
 import crypto from "node:crypto";
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import type { CliSessionBinding, SessionEntry } from "../config/sessions.js";
+import type { CliCompactionOverlay, CliSessionBinding, SessionEntry } from "../config/sessions.js";
 import { normalizeCliSessionReseedReceipt } from "../config/sessions/cli-session-binding.js";
 export { getCliSessionBinding, getCliSessionId } from "../config/sessions/cli-session-binding.js";
 
@@ -112,6 +112,100 @@ export function clearAllCliSessions(entry: Partial<MutableCliSessionFields>): vo
   entry.cliSessionBindings = undefined;
   entry.cliSessionIds = undefined;
   entry.claudeCliSessionId = undefined;
+}
+
+function normalizePositiveInteger(value: number | undefined): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : undefined;
+}
+
+function normalizeTimestamp(value: number | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.floor(value)
+    : Date.now();
+}
+
+/** Read one normalized provider-owned CLI continuity overlay. */
+export function getCliCompactionOverlay(
+  entry: SessionEntry | undefined,
+  provider: string,
+  options: { localSessionId?: string } = {},
+): CliCompactionOverlay | undefined {
+  const normalized = normalizeProviderId(provider);
+  const overlay = entry?.cliCompactionOverlays?.[normalized];
+  const summary = normalizeOptionalString(overlay?.summary);
+  if (!overlay || !summary) {
+    return undefined;
+  }
+  const localSessionId = normalizeOptionalString(overlay.localSessionId);
+  if (!localSessionId || (options.localSessionId && localSessionId !== options.localSessionId)) {
+    return undefined;
+  }
+  const nativeSessionId = normalizeOptionalString(overlay.nativeSessionId);
+  const firstKeptEntryId = normalizeOptionalString(overlay.firstKeptEntryId);
+  const compactionModel = normalizeOptionalString(overlay.compactionModel);
+  const compactedAtPromptTokens = normalizePositiveInteger(overlay.compactedAtPromptTokens);
+  const tokensBefore = normalizePositiveInteger(overlay.tokensBefore);
+  const tokensAfter = normalizePositiveInteger(overlay.tokensAfter);
+  const contextWindowTokens = normalizePositiveInteger(overlay.contextWindowTokens);
+  const thresholdTokens = normalizePositiveInteger(overlay.thresholdTokens);
+  return {
+    provider: normalized,
+    localSessionId,
+    ...(nativeSessionId ? { nativeSessionId } : {}),
+    summary,
+    ...(firstKeptEntryId ? { firstKeptEntryId } : {}),
+    ...(compactionModel ? { compactionModel } : {}),
+    ...(compactedAtPromptTokens ? { compactedAtPromptTokens } : {}),
+    ...(tokensBefore ? { tokensBefore } : {}),
+    ...(tokensAfter ? { tokensAfter } : {}),
+    ...(contextWindowTokens ? { contextWindowTokens } : {}),
+    ...(thresholdTokens ? { thresholdTokens } : {}),
+    createdAt: normalizeTimestamp(overlay.createdAt),
+    updatedAt: normalizeTimestamp(overlay.updatedAt),
+  };
+}
+
+/** Persist one normalized provider-owned CLI continuity overlay. */
+export function setCliCompactionOverlay(
+  entry: SessionEntry,
+  provider: string,
+  overlay: CliCompactionOverlay,
+): void {
+  const normalized = normalizeProviderId(provider);
+  const summary = normalizeOptionalString(overlay.summary);
+  if (!normalized || !summary) {
+    return;
+  }
+  entry.cliCompactionOverlays = {
+    ...entry.cliCompactionOverlays,
+    [normalized]: {
+      ...overlay,
+      provider: normalized,
+      summary,
+      createdAt: normalizeTimestamp(overlay.createdAt),
+      updatedAt: normalizeTimestamp(overlay.updatedAt),
+    },
+  };
+}
+
+/** Remove one provider's CLI continuity overlay without disturbing other backends. */
+export function clearCliCompactionOverlay(entry: SessionEntry, provider: string): void {
+  const normalized = normalizeProviderId(provider);
+  if (!entry.cliCompactionOverlays?.[normalized]) {
+    return;
+  }
+  const next = { ...entry.cliCompactionOverlays };
+  delete next[normalized];
+  entry.cliCompactionOverlays = Object.keys(next).length > 0 ? next : undefined;
+}
+
+/** Remove all provider continuity summaries at an OpenClaw session boundary. */
+export function clearAllCliCompactionOverlays(
+  entry: Pick<SessionEntry, "cliCompactionOverlays">,
+): void {
+  entry.cliCompactionOverlays = undefined;
 }
 
 export type CliSessionInvalidatedReason =

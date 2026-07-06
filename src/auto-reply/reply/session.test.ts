@@ -1875,6 +1875,15 @@ describe("initSessionState reset policy", () => {
       [sessionKey]: {
         sessionId: existingSessionId,
         updatedAt: new Date(2026, 0, 18, 3, 0, 0).getTime(),
+        cliCompactionOverlays: {
+          "claude-cli": {
+            provider: "claude-cli",
+            localSessionId: existingSessionId,
+            summary: "daily rollover continuity",
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        },
       },
     });
     enqueueSystemEvent("stale daily rollover event", { sessionKey });
@@ -1891,6 +1900,7 @@ describe("initSessionState reset policy", () => {
 
     expect(result.isNewSession).toBe(true);
     expect(result.sessionId).not.toBe(existingSessionId);
+    expect(result.sessionEntry.cliCompactionOverlays).toBeUndefined();
     expect(clearBootstrapSnapshotOnSessionRolloverSpy).toHaveBeenCalledWith({
       sessionKey,
       previousSessionId: existingSessionId,
@@ -1942,6 +1952,15 @@ describe("initSessionState reset policy", () => {
       [sessionKey]: {
         sessionId: existingSessionId,
         updatedAt: new Date(2026, 0, 18, 4, 45, 0).getTime(),
+        cliCompactionOverlays: {
+          "claude-cli": {
+            provider: "claude-cli",
+            localSessionId: existingSessionId,
+            summary: "idle rollover continuity",
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        },
       },
     });
 
@@ -1959,6 +1978,7 @@ describe("initSessionState reset policy", () => {
 
     expect(result.isNewSession).toBe(true);
     expect(result.sessionId).not.toBe(existingSessionId);
+    expect(result.sessionEntry.cliCompactionOverlays).toBeUndefined();
   });
 
   it("preserves idle rollover when an ordinary send asserts the current session id", async () => {
@@ -3062,6 +3082,48 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
       expect(result.sessionId, testCase.name).not.toBe(existingSessionId);
       expectEntryFields(result.sessionEntry, overrides, testCase.name);
     }
+  });
+
+  it.each(["/new", "/reset"])("clears CLI continuity overlays on %s", async (body) => {
+    const storePath = await createStorePath("openclaw-reset-cli-continuity-");
+    const sessionKey = "agent:main:telegram:dm:cli-continuity";
+    const existingSessionId = "existing-cli-continuity-session";
+    await seedSessionStoreWithOverrides({
+      storePath,
+      sessionKey,
+      sessionId: existingSessionId,
+      overrides: {
+        cliCompactionOverlays: {
+          "claude-cli": {
+            provider: "claude-cli",
+            localSessionId: existingSessionId,
+            summary: "continuity that belongs only to the old session",
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        },
+      },
+    });
+
+    const result = await initSessionState({
+      ctx: {
+        Body: body,
+        RawBody: body,
+        CommandBody: body,
+        From: "cli-continuity-user",
+        To: "bot",
+        ChatType: "direct",
+        SessionKey: sessionKey,
+        Provider: "telegram",
+        Surface: "telegram",
+      },
+      cfg: { session: { store: storePath, idleMinutes: 999 } } as OpenClawConfig,
+      commandAuthorized: true,
+    });
+
+    expect(result.isNewSession).toBe(true);
+    expect(result.sessionId).not.toBe(existingSessionId);
+    expect(result.sessionEntry.cliCompactionOverlays).toBeUndefined();
   });
 
   it("preserves usage family metadata across /new and /reset", async () => {

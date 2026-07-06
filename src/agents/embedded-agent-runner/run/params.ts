@@ -296,6 +296,8 @@ export type RunEmbeddedAgentParams = {
    * exit promptly after emitting the final JSON result.
    */
   cleanupBundleMcpOnRunEnd?: boolean;
+  /** Close a reusable CLI child created for an ephemeral helper run when that run ends. */
+  cleanupCliLiveSessionOnRunEnd?: boolean;
   /** Mark explicit one-shot local CLI runs so plugin tools can release resources promptly. */
   oneShotCliRun?: boolean;
 };

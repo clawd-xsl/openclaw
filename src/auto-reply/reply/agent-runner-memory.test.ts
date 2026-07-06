@@ -36,6 +36,8 @@ const incrementCompactionCountMock = vi.fn();
 const ensureSelectedAgentHarnessPluginMock = vi.fn();
 const ensureMemoryFlushTargetFileMock = vi.fn();
 const emitAgentEventMock = vi.fn();
+const readClaudeCliNativePromptTokensMock = vi.fn();
+const generateClaudeCliContinuitySummaryMock = vi.fn();
 const TEST_MAX_FLUSH_FAILURES = 3;
 
 function registerMemoryFlushPlanResolverForTest(resolver: MemoryFlushPlanResolver): void {
@@ -209,6 +211,8 @@ describe("runMemoryFlushIfNeeded", () => {
     ensureMemoryFlushTargetFileMock.mockReset().mockResolvedValue(undefined);
     ensureSelectedAgentHarnessPluginMock.mockReset().mockResolvedValue(undefined);
     emitAgentEventMock.mockReset();
+    readClaudeCliNativePromptTokensMock.mockReset().mockResolvedValue(undefined);
+    generateClaudeCliContinuitySummaryMock.mockReset();
     incrementCompactionCountMock.mockReset().mockImplementation(async (params) => {
       const sessionKey = String(params.sessionKey ?? "");
       if (!sessionKey || !params.sessionStore?.[sessionKey]) {
@@ -248,6 +252,8 @@ describe("runMemoryFlushIfNeeded", () => {
       ensureSelectedAgentHarnessPlugin: ensureSelectedAgentHarnessPluginMock as never,
       registerAgentRunContext: vi.fn() as never,
       emitAgentEvent: emitAgentEventMock as never,
+      readClaudeCliNativePromptTokens: readClaudeCliNativePromptTokensMock as never,
+      generateClaudeCliContinuitySummary: generateClaudeCliContinuitySummaryMock as never,
       randomUUID: () => {
         randomUuidIndex += 1;
         return `00000000-0000-0000-0000-${String(randomUuidIndex).padStart(12, "0")}`;
@@ -2659,6 +2665,219 @@ describe("runMemoryFlushIfNeeded", () => {
 
     expect(entry).toBe(sessionEntry);
     expect(compactEmbeddedAgentSessionMock).not.toHaveBeenCalled();
+    expect(readClaudeCliNativePromptTokensMock).not.toHaveBeenCalled();
+  });
+
+  it("rolls a pressured Claude CLI binding into a provider-scoped continuity overlay", async () => {
+    cliBackendsTesting.setDepsForTest({
+      resolveRuntimeCliBackends: () => [
+        {
+          id: "claude-cli",
+          modelProvider: "anthropic",
+          pluginId: "anthropic",
+          config: { command: "claude" },
+        },
+      ],
+    });
+    registerMemoryFlushPlanResolverForTest(() => ({
+      softThresholdTokens: 4_000,
+      forceFlushTranscriptBytes: 1_000_000_000,
+      reserveTokensFloor: 0,
+      prompt: "Pre-compaction memory flush.\nNO_REPLY",
+      systemPrompt: "Write memory to memory/YYYY-MM-DD.md.",
+      relativePath: "memory/2023-11-14.md",
+    }));
+    readClaudeCliNativePromptTokensMock.mockResolvedValue(300_000);
+    generateClaudeCliContinuitySummaryMock.mockResolvedValue({
+      ok: true,
+      summary:
+        "## Decisions\nKeep the persistent backend.\n## Open TODOs\nContinue.\n## Constraints/Rules\nLow latency.\n## Pending user asks\nNone\n## Exact identifiers\nnative-session\n## Useful recent context\nReady.",
+      sourceMessageCount: 18,
+      model: "anthropic/claude-sonnet-4-6",
+    });
+    const storePath = path.join(rootDir, "claude-continuity-sessions.json");
+    const sessionEntry: SessionEntry = {
+      sessionId: "local-session",
+      updatedAt: Date.now(),
+      agentRuntimeOverride: "claude-cli",
+      cliSessionIds: { "claude-cli": "native-session" },
+      cliSessionBindings: { "claude-cli": { sessionId: "native-session" } },
+      claudeCliSessionId: "native-session",
+    };
+    const sessionStore = { main: sessionEntry };
+    await writeTestSessionStore(storePath, "main", sessionEntry);
+    const notice = vi.fn();
+    const replyOperation = createReplyOperation();
+
+    const entry = await runPreflightCompactionIfNeeded({
+      cfg: {
+        models: {
+          providers: {
+            anthropic: { models: [{ id: "claude-opus-4-6", contextWindow: 350_000 }] },
+          },
+        },
+        agents: { defaults: { compaction: { memoryFlush: {} } } },
+      } as never,
+      followupRun: createTestFollowupRun({
+        provider: "anthropic",
+        model: "claude-opus-4-6",
+        sessionId: "local-session",
+        sessionKey: "main",
+      }),
+      defaultModel: "anthropic/claude-opus-4-6",
+      sessionEntry,
+      sessionStore,
+      sessionKey: "main",
+      storePath,
+      isHeartbeat: false,
+      replyOperation,
+      onCompactionNotice: notice,
+    });
+
+    expect(readClaudeCliNativePromptTokensMock).toHaveBeenCalledWith("native-session");
+    expect(generateClaudeCliContinuitySummaryMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cliSessionId: "native-session",
+        provider: "claude-cli",
+      }),
+    );
+    expect(entry?.cliSessionBindings).toBeUndefined();
+    expect(entry?.cliSessionIds).toBeUndefined();
+    expect(entry?.claudeCliSessionId).toBeUndefined();
+    expect(entry?.cliCompactionOverlays?.["claude-cli"]).toMatchObject({
+      provider: "claude-cli",
+      localSessionId: "local-session",
+      nativeSessionId: "native-session",
+      tokensBefore: 300_000,
+      contextWindowTokens: 350_000,
+      thresholdTokens: 280_000,
+      compactionModel: "anthropic/claude-sonnet-4-6",
+    });
+    expect(notice.mock.calls.map(([phase]) => phase)).toEqual(["start", "end"]);
+    expect(replyOperation.setPhase).toHaveBeenCalledWith("preflight_compacting");
+    const persisted = JSON.parse(await fs.readFile(storePath, "utf8")) as Record<
+      string,
+      SessionEntry
+    >;
+    expect(persisted.main.cliCompactionOverlays?.["claude-cli"]?.summary).toContain(
+      "Keep the persistent backend",
+    );
+  });
+
+  it("discards a Claude CLI summary when the local session changes during generation", async () => {
+    cliBackendsTesting.setDepsForTest({
+      resolveRuntimeCliBackends: () => [
+        {
+          id: "claude-cli",
+          modelProvider: "anthropic",
+          pluginId: "anthropic",
+          config: { command: "claude" },
+        },
+      ],
+    });
+    readClaudeCliNativePromptTokensMock.mockResolvedValue(90_000);
+    const oldEntry: SessionEntry = {
+      sessionId: "old-local-session",
+      updatedAt: 1,
+      agentRuntimeOverride: "claude-cli",
+      cliSessionBindings: { "claude-cli": { sessionId: "native-session" } },
+    };
+    const newEntry: SessionEntry = {
+      sessionId: "new-local-session",
+      updatedAt: 2,
+      agentRuntimeOverride: "claude-cli",
+    };
+    const sessionStore = { main: oldEntry };
+    generateClaudeCliContinuitySummaryMock.mockImplementation(async () => {
+      sessionStore.main = newEntry;
+      return {
+        ok: true,
+        summary: "## Decisions\nStale summary",
+        sourceMessageCount: 2,
+      };
+    });
+    const notice = vi.fn();
+
+    const entry = await runPreflightCompactionIfNeeded({
+      cfg: {
+        models: {
+          providers: {
+            anthropic: { models: [{ id: "claude-opus-4-6", contextWindow: 100_000 }] },
+          },
+        },
+        agents: { defaults: { compaction: { memoryFlush: {} } } },
+      } as never,
+      followupRun: createTestFollowupRun({
+        provider: "anthropic",
+        model: "claude-opus-4-6",
+        sessionId: "old-local-session",
+        sessionKey: "main",
+      }),
+      defaultModel: "anthropic/claude-opus-4-6",
+      sessionEntry: oldEntry,
+      sessionStore,
+      sessionKey: "main",
+      storePath: path.join(rootDir, "stale-continuity-sessions.json"),
+      isHeartbeat: false,
+      replyOperation: createReplyOperation(),
+      onCompactionNotice: notice,
+    });
+
+    expect(entry).toBe(newEntry);
+    expect(sessionStore.main).toBe(newEntry);
+    expect(newEntry.cliCompactionOverlays).toBeUndefined();
+    expect(notice.mock.calls.map(([phase]) => phase)).toEqual(["start", "skipped"]);
+  });
+
+  it("fails soft when Claude CLI continuity generation fails", async () => {
+    cliBackendsTesting.setDepsForTest({
+      resolveRuntimeCliBackends: () => [
+        {
+          id: "claude-cli",
+          modelProvider: "anthropic",
+          pluginId: "anthropic",
+          config: { command: "claude" },
+        },
+      ],
+    });
+    readClaudeCliNativePromptTokensMock.mockResolvedValue(90_000);
+    generateClaudeCliContinuitySummaryMock.mockRejectedValue(new Error("summary process failed"));
+    const sessionEntry: SessionEntry = {
+      sessionId: "local-session",
+      updatedAt: 1,
+      agentRuntimeOverride: "claude-cli",
+      cliSessionBindings: { "claude-cli": { sessionId: "native-session" } },
+    };
+    const notice = vi.fn();
+
+    await expect(
+      runPreflightCompactionIfNeeded({
+        cfg: {
+          models: {
+            providers: {
+              anthropic: { models: [{ id: "claude-opus-4-6", contextWindow: 100_000 }] },
+            },
+          },
+          agents: { defaults: { compaction: { memoryFlush: {} } } },
+        } as never,
+        followupRun: createTestFollowupRun({
+          provider: "anthropic",
+          model: "claude-opus-4-6",
+          sessionId: "local-session",
+          sessionKey: "main",
+        }),
+        defaultModel: "anthropic/claude-opus-4-6",
+        sessionEntry,
+        sessionStore: { main: sessionEntry },
+        sessionKey: "main",
+        isHeartbeat: false,
+        replyOperation: createReplyOperation(),
+        onCompactionNotice: notice,
+      }),
+    ).resolves.toBe(sessionEntry);
+    expect(notice.mock.calls.map(([phase]) => phase)).toEqual(["start", "incomplete"]);
+    expect(sessionEntry.cliSessionBindings?.["claude-cli"]?.sessionId).toBe("native-session");
+    expect(sessionEntry.cliCompactionOverlays).toBeUndefined();
   });
 
   it("keeps the OpenAI API context window for persisted OpenClaw runtime overrides", async () => {

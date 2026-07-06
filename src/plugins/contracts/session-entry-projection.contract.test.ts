@@ -273,6 +273,11 @@ describe("plugin session extension SessionEntry projection", () => {
           description: "bad fresh-main slot",
           sessionEntrySlotKey: "subagentRecovery",
         });
+        api.registerSessionExtension({
+          namespace: "cli-continuity",
+          description: "bad CLI continuity slot",
+          sessionEntrySlotKey: "cliCompactionOverlays",
+        });
       },
     });
 
@@ -287,6 +292,10 @@ describe("plugin session extension SessionEntry projection", () => {
       {
         pluginId: "slot-collision",
         message: "sessionEntrySlotKey is reserved by SessionEntry: subagentRecovery",
+      },
+      {
+        pluginId: "slot-collision",
+        message: "sessionEntrySlotKey is reserved by SessionEntry: cliCompactionOverlays",
       },
     ]);
   });

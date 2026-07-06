@@ -12,6 +12,7 @@ import {
   scanSessionTranscriptTree,
   selectSessionTranscriptLeafControlledPath,
 } from "../../config/sessions/transcript-tree.js";
+import type { CliCompactionOverlay } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { isPathInside } from "../../infra/path-guards.js";
@@ -180,8 +181,22 @@ export function buildCliSessionHistoryPrompt(params: {
   messages: unknown[];
   prompt: string;
   maxHistoryChars?: number;
+  compactionOverlay?: CliCompactionOverlay;
 }): string | undefined {
   const maxHistoryChars = params.maxHistoryChars ?? MAX_CLI_SESSION_RESEED_HISTORY_CHARS;
+  const overlaySummary = params.compactionOverlay?.summary.trim();
+  const sourceMessages = overlaySummary
+    ? [
+        { role: "compactionSummary", summary: overlaySummary },
+        ...params.messages.filter(
+          (message, index) =>
+            index > 0 ||
+            !message ||
+            typeof message !== "object" ||
+            (message as HistoryMessage).role !== "compactionSummary",
+        ),
+      ]
+    : params.messages;
 
   // loadCliSessionReseedMessages deliberately places a `compactionSummary`
   // entry first when the session was compacted, so the compacted prior
@@ -189,13 +204,13 @@ export function buildCliSessionHistoryPrompt(params: {
   // tail-truncate the post-summary transcript — a blind tail-slice of the
   // joined history would drop the summary whenever the post-summary tail
   // alone exceeds the cap.
-  const firstEntry = params.messages[0];
+  const firstEntry = sourceMessages[0];
   const firstIsCompaction =
     Boolean(firstEntry) &&
     typeof firstEntry === "object" &&
     (firstEntry as HistoryMessage).role === "compactionSummary";
   const summaryRendered = firstIsCompaction ? renderHistoryMessage(firstEntry) : undefined;
-  const tailMessages = firstIsCompaction ? params.messages.slice(1) : params.messages;
+  const tailMessages = firstIsCompaction ? sourceMessages.slice(1) : sourceMessages;
 
   const tailRaw = tailMessages
     .flatMap((message) => {

@@ -1,3 +1,4 @@
+import { clearAllCliCompactionOverlays } from "../../agents/cli-session.js";
 // Handles session reset requests produced during agent runner execution.
 import type { SessionEntry } from "../../config/sessions.js";
 import {
@@ -91,6 +92,7 @@ export async function resetReplyRunSession(params: {
     fallbackNoticeActiveModel: undefined,
     fallbackNoticeReason: undefined,
   };
+  clearAllCliCompactionOverlays(nextEntry);
   const agentId = resolveAgentIdFromSessionKey(params.sessionKey);
   const nextSessionFile = resolveSessionTranscriptPath(
     nextSessionId,

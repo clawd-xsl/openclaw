@@ -76,11 +76,17 @@ describe("applySessionStoreMigrations", () => {
     });
   });
 
-  it("migrates valid CLI prompt-growth state and drops retired custom fields", () => {
+  it("migrates valid CLI prompt-growth state without dropping continuity overlays", () => {
     const entry = createEntry({ agentRuntimeOverride: "claude-cli" }) as SessionEntry &
       Record<string, unknown>;
     entry.cliCompactionOverlays = {
-      "claude-cli": { summary: "obsolete provider-owned compaction overlay" },
+      "claude-cli": {
+        provider: "claude-cli",
+        localSessionId: "local-session",
+        summary: "durable provider-owned compaction overlay",
+        createdAt: 10,
+        updatedAt: 20,
+      },
     };
     entry.memoryFlushPromptTokens = 123_456.75;
     entry.memoryFlushContextHash = "retired-tail-hash";
@@ -88,10 +94,66 @@ describe("applySessionStoreMigrations", () => {
 
     expect(applySessionStoreMigrations(store)).toBe(true);
     expect(store.main.memoryFlushCliPromptTokens).toBe(123_456);
-    expect(store.main).not.toHaveProperty("cliCompactionOverlays");
+    expect(store.main.cliCompactionOverlays).toEqual({
+      "claude-cli": {
+        provider: "claude-cli",
+        localSessionId: "local-session",
+        summary: "durable provider-owned compaction overlay",
+        createdAt: 10,
+        updatedAt: 20,
+      },
+    });
     expect(store.main).not.toHaveProperty("memoryFlushPromptTokens");
     expect(store.main).not.toHaveProperty("memoryFlushContextHash");
     expect(applySessionStoreMigrations(store)).toBe(false);
+  });
+
+  it("anchors legacy continuity overlays to their owning OpenClaw session", () => {
+    const entry = createEntry() as SessionEntry & Record<string, unknown>;
+    entry.cliCompactionOverlays = {
+      "claude-cli": {
+        provider: "claude-cli",
+        summary: "legacy summary without a local-session anchor",
+        createdAt: 10,
+        updatedAt: 20,
+      },
+    } as SessionEntry["cliCompactionOverlays"];
+
+    expect(applySessionStoreMigrations({ main: entry })).toBe(true);
+    expect(entry.cliCompactionOverlays?.["claude-cli"]?.localSessionId).toBe("local-session");
+    expect(applySessionStoreMigrations({ main: entry })).toBe(false);
+  });
+
+  it("canonicalizes retired Claude overlay keys without overwriting a newer overlay", () => {
+    const entry = createEntry({
+      cliCompactionOverlays: {
+        "claude-cli": {
+          provider: "claude-cli",
+          localSessionId: "local-session",
+          summary: "new summary",
+          createdAt: 20,
+          updatedAt: 20,
+        },
+        "claude-cli-streaming": {
+          provider: "claude-cli-streaming",
+          localSessionId: "local-session",
+          summary: "legacy summary",
+          createdAt: 10,
+          updatedAt: 10,
+        },
+      },
+    });
+
+    expect(applySessionStoreMigrations({ main: entry })).toBe(true);
+    expect(entry.cliCompactionOverlays).toEqual({
+      "claude-cli": {
+        provider: "claude-cli",
+        localSessionId: "local-session",
+        summary: "new summary",
+        createdAt: 20,
+        updatedAt: 20,
+      },
+    });
   });
 
   it("drops invalid or non-CLI legacy prompt-growth state without migrating it", () => {
