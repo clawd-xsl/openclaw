@@ -163,6 +163,8 @@ export type CliPreparedBackend = {
   backend: CliBackendConfig;
   beforeExecution?: () => Promise<void>;
   cleanup?: () => Promise<void>;
+  /** Transfers launch-only temp resources to a newly created live child, at most once. */
+  takeLiveSessionLaunchCleanup?: () => (() => Promise<void>) | undefined;
   mcpConfigHash?: string;
   mcpResumeHash?: string;
   env?: Record<string, string>;

@@ -621,14 +621,59 @@ export async function prepareCliRunContext(
             backendId: backendResolved.id,
             skillsSnapshot: params.skillsSnapshot,
           });
+    const hasLaunchResources = Boolean(
+      preparedBackend.cleanup || claudeSkillsPlugin.args.length > 0,
+    );
+    const canTransferLaunchResources =
+      !isSideQuestion &&
+      backendResolved.id === "claude-cli" &&
+      preparedBackend.backend.liveSession === "claude-stdio" &&
+      hasLaunchResources;
+    let launchResourceOwner: "turn" | "live-session" | "cleaned" = "turn";
+    let launchResourceCleanupPromise: Promise<void> | undefined;
+    const cleanupLaunchResources = () => {
+      launchResourceOwner = "cleaned";
+      launchResourceCleanupPromise ??= (async () => {
+        try {
+          await claudeSkillsPlugin.cleanup();
+        } finally {
+          await preparedBackend.cleanup?.();
+        }
+      })();
+      return launchResourceCleanupPromise;
+    };
+    const takeLiveSessionLaunchCleanup = canTransferLaunchResources
+      ? () => {
+          if (launchResourceOwner !== "turn") {
+            return undefined;
+          }
+          // A warm turn never calls this seam, so its unused temp launch files
+          // remain turn-owned. A cold/restarted child releases adopted files on close.
+          launchResourceOwner = "live-session";
+          return cleanupLaunchResources;
+        }
+      : undefined;
+    let preparedCleanupPromise: Promise<void> | undefined;
     const preparedCleanup =
-      preparedBackendCleanup || claudeSkillsPlugin.args.length > 0
-        ? async () => {
-            try {
-              await claudeSkillsPlugin.cleanup();
-            } finally {
-              await preparedBackendCleanup?.();
-            }
+      preparedExecution?.cleanup || hasLaunchResources
+        ? () => {
+            preparedCleanupPromise ??= (async () => {
+              if (launchResourceOwner !== "turn") {
+                await preparedExecution?.cleanup?.();
+                return;
+              }
+              launchResourceOwner = "cleaned";
+              try {
+                await claudeSkillsPlugin.cleanup();
+              } finally {
+                try {
+                  await preparedExecution?.cleanup?.();
+                } finally {
+                  await preparedBackend.cleanup?.();
+                }
+              }
+            })();
+            return preparedCleanupPromise;
           }
         : undefined;
     cleanupPreparedResources = preparedCleanup ?? preparedBackendCleanup;
@@ -656,6 +701,7 @@ export async function prepareCliRunContext(
         ? { beforeExecution: preparedBackendBeforeExecution }
         : {}),
       ...(preparedCleanup ? { cleanup: preparedCleanup } : {}),
+      ...(takeLiveSessionLaunchCleanup ? { takeLiveSessionLaunchCleanup } : {}),
     };
     const promptTools =
       bundleMcpEnabled && mcpLoopbackRuntime

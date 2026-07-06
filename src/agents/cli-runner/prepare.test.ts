@@ -3403,6 +3403,100 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
     }
   });
 
+  it("transfers only adopted Claude live launch resources beyond turn cleanup", async () => {
+    const { dir, sessionFile } = createSessionFile();
+    const executionCleanups = [vi.fn(async () => undefined), vi.fn(async () => undefined)];
+    const skillsCleanups = [vi.fn(async () => undefined), vi.fn(async () => undefined)];
+    let executionIndex = 0;
+    let skillsIndex = 0;
+    let coldContext: Awaited<ReturnType<typeof prepareCliRunContext>> | undefined;
+    let warmContext: Awaited<ReturnType<typeof prepareCliRunContext>> | undefined;
+    let adoptedCleanup: (() => Promise<void>) | undefined;
+
+    try {
+      cliBackendsTesting.setDepsForTest({
+        resolvePluginSetupCliBackend: () => undefined,
+        resolveRuntimeCliBackends: () => [
+          {
+            id: "claude-cli",
+            pluginId: "anthropic",
+            bundleMcp: true,
+            bundleMcpMode: "claude-config-file",
+            prepareExecution: vi.fn(async () => ({
+              cleanup: executionCleanups[executionIndex++],
+            })),
+            config: {
+              command: "claude",
+              args: ["--print"],
+              resumeArgs: ["--resume", "{sessionId}"],
+              output: "jsonl",
+              input: "stdin",
+              sessionMode: "existing",
+              liveSession: "claude-stdio",
+            },
+          },
+        ],
+      });
+      setCliRunnerPrepareTestDeps({
+        getActiveMcpLoopbackRuntime: vi.fn(() => ({
+          port: 31784,
+          ownerToken: "loopback-owner-token",
+          nonOwnerToken: "loopback-non-owner-token",
+        })),
+        prepareClaudeCliSkillsPlugin: vi.fn(async () => ({
+          args: ["--plugin-dir", path.join(dir, `openclaw-skills-${skillsIndex}`)],
+          cleanup: skillsCleanups[skillsIndex++]!,
+        })),
+      });
+
+      const prepare = (runId: string) =>
+        prepareCliRunContext({
+          sessionId: "session-test",
+          sessionKey: "agent:main:main",
+          sessionFile,
+          workspaceDir: dir,
+          prompt: "latest ask",
+          provider: "claude-cli",
+          model: "opus",
+          timeoutMs: 1_000,
+          runId,
+          config: {},
+        });
+      coldContext = await prepare("run-claude-live-launch-cold");
+      warmContext = await prepare("run-claude-live-launch-warm");
+      const mcpConfigPaths = [coldContext, warmContext].map((context) => {
+        const args = context.preparedBackend.backend.args ?? [];
+        const flagIndex = args.indexOf("--mcp-config");
+        expect(flagIndex).toBeGreaterThanOrEqual(0);
+        return args[flagIndex + 1]!;
+      });
+
+      adoptedCleanup = coldContext.preparedBackend.takeLiveSessionLaunchCleanup?.();
+      expect(adoptedCleanup).toBeTypeOf("function");
+      await coldContext.preparedBackend.cleanup?.();
+
+      expect(executionCleanups[0]).toHaveBeenCalledOnce();
+      expect(skillsCleanups[0]).not.toHaveBeenCalled();
+      expect(fs.existsSync(mcpConfigPaths[0]!)).toBe(true);
+
+      await warmContext.preparedBackend.cleanup?.();
+
+      expect(executionCleanups[1]).toHaveBeenCalledOnce();
+      expect(skillsCleanups[1]).toHaveBeenCalledOnce();
+      expect(fs.existsSync(mcpConfigPaths[1]!)).toBe(false);
+
+      await adoptedCleanup?.();
+      await adoptedCleanup?.();
+      expect(skillsCleanups[0]).toHaveBeenCalledOnce();
+      expect(fs.existsSync(mcpConfigPaths[0]!)).toBe(false);
+    } finally {
+      await adoptedCleanup?.().catch(() => undefined);
+      await coldContext?.preparedBackend.cleanup?.().catch(() => undefined);
+      await warmContext?.preparedBackend.cleanup?.().catch(() => undefined);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("omits Claude CLI prompt skills when the native skills plugin can carry them", async () => {
     const { dir, sessionFile } = createSessionFile();
     const skillDir = path.join(dir, "skills", "weather");
@@ -3421,6 +3515,7 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
       "utf-8",
     );
 
+    const cleanupClaudeSkillsPlugin = vi.fn(async () => undefined);
     try {
       cliBackendsTesting.setDepsForTest({
         resolvePluginSetupCliBackend: () => undefined,
@@ -3442,7 +3537,7 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
       setCliRunnerPrepareTestDeps({
         prepareClaudeCliSkillsPlugin: vi.fn(async () => ({
           args: ["--plugin-dir", path.join(dir, "openclaw-skills")],
-          cleanup: vi.fn(async () => undefined),
+          cleanup: cleanupClaudeSkillsPlugin,
           pluginDir: path.join(dir, "openclaw-skills"),
         })),
       });
@@ -3495,6 +3590,9 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
         "--plugin-dir",
         path.join(dir, "openclaw-skills"),
       ]);
+      expect(context.preparedBackend.takeLiveSessionLaunchCleanup).toBeUndefined();
+      await context.preparedBackend.cleanup?.();
+      expect(cleanupClaudeSkillsPlugin).toHaveBeenCalledOnce();
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

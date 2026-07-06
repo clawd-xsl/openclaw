@@ -184,7 +184,7 @@ export async function closeClaudeLiveSessionForContext(
   const session = liveSessions.get(key);
   if (session) {
     closeLiveSession(session, "restart");
-    await waitForManagedRunExit(session.managedRun);
+    await Promise.all([waitForManagedRunExit(session.managedRun), cleanupLiveSession(session)]);
   }
   liveSessionCreates.delete(key);
 }
@@ -1145,14 +1145,32 @@ async function createClaudeLiveSession(params: {
   cleanup: () => Promise<void>;
 }): Promise<ClaudeLiveSession> {
   let session: ClaudeLiveSession | null = null;
-  const mcpCaptureAttempt = await prepareCliBundleMcpCaptureAttempt({
-    mode: params.context.backendResolved.bundleMcpMode,
-    backend: params.context.preparedBackend.backend,
-    env: params.env,
-    captureKey: params.mcpCaptureKey,
-  });
+  const cleanupLaunchResources = params.context.preparedBackend.takeLiveSessionLaunchCleanup?.();
+  let cleanupMcpCaptureAttempt: (() => Promise<void>) | undefined;
+  let childCleanupPromise: Promise<void> | undefined;
+  const cleanupChildResources = () => {
+    childCleanupPromise ??= (async () => {
+      try {
+        await cleanupMcpCaptureAttempt?.();
+      } finally {
+        try {
+          await cleanupLaunchResources?.();
+        } finally {
+          await params.cleanup();
+        }
+      }
+    })();
+    return childCleanupPromise;
+  };
   let managedRun: ManagedRun;
   try {
+    const mcpCaptureAttempt = await prepareCliBundleMcpCaptureAttempt({
+      mode: params.context.backendResolved.bundleMcpMode,
+      backend: params.context.preparedBackend.backend,
+      env: params.env,
+      captureKey: params.mcpCaptureKey,
+    });
+    cleanupMcpCaptureAttempt = mcpCaptureAttempt.cleanup;
     managedRun = await params.supervisor.spawn({
       sessionId: params.context.params.sessionId,
       backendId: params.context.backendResolved.id,
@@ -1185,7 +1203,13 @@ async function createClaudeLiveSession(params: {
       },
     });
   } catch (error) {
-    await mcpCaptureAttempt.cleanup?.();
+    try {
+      await cleanupChildResources();
+    } catch (cleanupError) {
+      cliBackendLog.warn(
+        `Claude live session launch cleanup failed: ${formatErrorMessage(cleanupError)}`,
+      );
+    }
     throw error;
   }
   const pinnedMainOwnerKey = resolvePinnedMainOwnerKey(params.context);
@@ -1206,10 +1230,7 @@ async function createClaudeLiveSession(params: {
     stdoutBuffer: "",
     currentTurn: null,
     idleTimer: null,
-    cleanup: async () => {
-      await mcpCaptureAttempt.cleanup?.();
-      await params.cleanup();
-    },
+    cleanup: cleanupChildResources,
     cleanupPromise: null,
     closing: false,
     mcpCaptureKey: params.mcpCaptureKey,
