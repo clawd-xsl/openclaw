@@ -242,9 +242,15 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
     replyToBody?: string;
     replyToSender?: string;
     replyToIsQuote?: boolean;
+    replyAbortToken: symbol;
+    replyAbortController: AbortController;
+    typingStartedAt?: number;
   };
 
   async function handleSignalInboundMessage(entry: SignalInboundEntry) {
+    if (entry.replyAbortController.signal.aborted) {
+      return;
+    }
     const fromLabel = formatInboundFromLabel({
       isGroup: entry.isGroup,
       groupLabel: entry.groupName ?? undefined,
@@ -260,22 +266,13 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
       groupId: entry.groupId,
       senderPeerId: entry.senderPeerId,
     });
-    const replyAbortToken = Symbol(route.sessionKey);
-    const replyAbortController = new AbortController();
-    const previousReplyAbort = activeReplyAbortControllers.get(route.sessionKey);
-    previousReplyAbort?.controller.abort(
-      new Error(`Signal inbound reply superseded for ${route.sessionKey}`),
-    );
-    activeReplyAbortControllers.set(route.sessionKey, {
-      token: replyAbortToken,
-      controller: replyAbortController,
-    });
+    const { replyAbortToken, replyAbortController } = entry;
     try {
       const signalToRaw = entry.isGroup
         ? `group:${entry.groupId}`
         : `signal:${entry.senderRecipient}`;
       const signalTo = normalizeSignalMessagingTarget(signalToRaw) ?? signalToRaw;
-      let lastTypingSignalAt: number | undefined;
+      let lastTypingSignalAt = entry.typingStartedAt;
       const handleTypingStartError = (err: unknown) => {
         logTypingFailure({
           log: logVerbose,
@@ -302,7 +299,7 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
           abortSignal: replyAbortController.signal,
         });
       };
-      if (!entry.isGroup) {
+      if (!entry.isGroup && lastTypingSignalAt === undefined) {
         void startSignalTyping().catch(handleTypingStartError);
       }
 
@@ -1123,6 +1120,36 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
       return;
     }
 
+    const replyAbortToken = Symbol(route.sessionKey);
+    const replyAbortController = new AbortController();
+    activeReplyAbortControllers
+      .get(route.sessionKey)
+      ?.controller.abort(new Error(`Signal inbound reply superseded for ${route.sessionKey}`));
+    activeReplyAbortControllers.set(route.sessionKey, {
+      token: replyAbortToken,
+      controller: replyAbortController,
+    });
+    const signalToRaw = isGroup ? `group:${groupId}` : `signal:${senderRecipient}`;
+    const signalTo = normalizeSignalMessagingTarget(signalToRaw) ?? signalToRaw;
+    const typingStartedAt = isGroup ? undefined : Date.now();
+    if (!isGroup) {
+      void sendTypingSignal(signalTo, {
+        cfg: deps.cfg,
+        baseUrl: deps.baseUrl,
+        account: deps.account,
+        accountId: deps.accountId,
+        runtime: deps.runtime,
+        abortSignal: replyAbortController.signal,
+      }).catch((err: unknown) => {
+        logTypingFailure({
+          log: logVerbose,
+          channel: "signal",
+          target: signalTo,
+          error: err,
+        });
+      });
+    }
+
     let mediaPath: string | undefined;
     let mediaType: string | undefined;
     const mediaPaths: string[] = [];
@@ -1131,6 +1158,9 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
     const attachments = dataMessage.attachments ?? [];
     if (!deps.ignoreAttachments) {
       for (const attachment of attachments) {
+        if (replyAbortController.signal.aborted) {
+          return;
+        }
         if (!attachment?.id) {
           continue;
         }
@@ -1157,6 +1187,10 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
           deps.runtime.error?.(danger(`attachment fetch failed: ${String(err)}`));
         }
       }
+    }
+
+    if (replyAbortController.signal.aborted) {
+      return;
     }
 
     const stickerPlaceholder = formatSignalStickerPlaceholder(dataMessage.sticker);
@@ -1204,6 +1238,10 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
       logVerbose(`signal read receipt skipped (missing timestamp) for ${senderDisplay}`);
     }
 
+    if (replyAbortController.signal.aborted) {
+      return;
+    }
+
     const senderName = envelope.sourceName ?? senderDisplay;
     const messageId = typeof inboundTimestamp === "number" ? String(inboundTimestamp) : undefined;
     await inboundDebouncer.enqueue({
@@ -1229,6 +1267,9 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
       replyToBody: visibleQuoteText || undefined,
       replyToSender: visibleQuoteSender,
       replyToIsQuote: visibleQuoteText ? true : undefined,
+      replyAbortToken,
+      replyAbortController,
+      typingStartedAt,
     });
   };
 }

@@ -352,6 +352,40 @@ describe("signal createSignalEventHandler inbound context", () => {
     );
   });
 
+  it("claims DM supersession and starts typing before a debounced turn flushes", async () => {
+    const handler = createSignalEventHandler(
+      createBaseSignalEventHandlerDeps({
+        cfg: {
+          messages: { inbound: { debounceMs: 60_000 } },
+          channels: { signal: { dmPolicy: "open", allowFrom: ["*"] } },
+        },
+        historyLimit: 0,
+      }),
+    );
+    const event = (timestamp: number, message: string) =>
+      createSignalReceiveEvent({
+        timestamp,
+        dataMessage: { timestamp, message, attachments: [] },
+      });
+
+    await handler(event(1700000000001, "first"));
+    const firstTypingOptions = sendTypingMock.mock.calls[0]?.[1] as
+      | { abortSignal?: AbortSignal }
+      | undefined;
+    expect(firstTypingOptions?.abortSignal).toBeInstanceOf(AbortSignal);
+    expect(firstTypingOptions?.abortSignal?.aborted).toBe(false);
+    expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
+
+    await handler(event(1700000000002, "second"));
+    const secondTypingOptions = sendTypingMock.mock.calls[1]?.[1] as
+      | { abortSignal?: AbortSignal }
+      | undefined;
+    expect(firstTypingOptions?.abortSignal?.aborted).toBe(true);
+    expect(secondTypingOptions?.abortSignal).toBeInstanceOf(AbortSignal);
+    expect(secondTypingOptions?.abortSignal?.aborted).toBe(false);
+    expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
+  });
+
   it("keeps supersession ownership on the newest same-session inbound turn", async () => {
     const replySignals: AbortSignal[] = [];
     const runTurn = async (params: DispatchInboundMessageMockParams) => {
