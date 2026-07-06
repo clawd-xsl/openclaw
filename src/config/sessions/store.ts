@@ -6,6 +6,7 @@ import type { MsgContext } from "../../auto-reply/templating.js";
 import { resolveStoredSessionOwnerAgentId } from "../../gateway/session-store-key.js";
 import { writeTextAtomic } from "../../infra/json-files.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
+import { requiresFoldedSessionKeyAliasProof } from "../../sessions/session-key-utils.js";
 import { emitSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
 import { createLazyRuntimeModule } from "../../shared/lazy-runtime.js";
 import {
@@ -48,7 +49,11 @@ import {
   takeMutableSessionStoreCache,
   writeSessionStoreCache,
 } from "./store-cache.js";
-import { normalizeStoreSessionKey, resolveSessionStoreEntry } from "./store-entry.js";
+import {
+  hasMismatchedCaseSensitiveDeliveryProof,
+  normalizeStoreSessionKey,
+  resolveSessionStoreEntry,
+} from "./store-entry.js";
 import {
   ensureSqliteSessionStoreJsonImport,
   loadSessionStore,
@@ -163,7 +168,9 @@ export function readSessionUpdatedAt(params: {
     if (isSqliteSessionStorePath(params.storePath)) {
       ensureSqliteSessionStoreJsonImport(params.storePath);
       const normalizedKey = normalizeStoreSessionKey(params.sessionKey);
-      const direct = readSessionUpdatedAtFromSqlite(params.storePath, normalizedKey);
+      const direct = requiresFoldedSessionKeyAliasProof(normalizedKey)
+        ? undefined
+        : readSessionUpdatedAtFromSqlite(params.storePath, normalizedKey);
       return (
         direct ??
         readSessionEntry(params.storePath, params.sessionKey, {
@@ -1929,11 +1936,11 @@ async function updateSqliteSessionStoreEntryFastPath(params: {
   const normalizedKey = normalizeStoreSessionKey(params.sessionKey);
   ensureSqliteSessionStoreJsonImport(params.storePath);
   const rawEntry = loadSessionEntryFromSqlite(params.storePath, normalizedKey);
-  if (!rawEntry) {
-    // A miss cannot be treated as a proven-new key. Compatibility aliases can
-    // use a differently cased structural key or require persisted delivery
-    // metadata to prove a historical folded opaque id. Let the full resolver
-    // handle that cold path before a fallback entry is created or replaced.
+  if (!rawEntry || hasMismatchedCaseSensitiveDeliveryProof(rawEntry, normalizedKey)) {
+    // A miss or delivery-proof mismatch cannot be treated as a proven target.
+    // Compatibility aliases can use a differently cased structural key or need
+    // persisted delivery metadata to prove a historical folded opaque id. Let
+    // the full resolver handle that path before creating or replacing an entry.
     return { handled: false, entry: null };
   }
   const normalizedStore = { [normalizedKey]: rawEntry };

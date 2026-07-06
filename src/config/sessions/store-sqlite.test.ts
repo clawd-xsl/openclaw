@@ -650,6 +650,45 @@ describe("SQLite session store", () => {
     expect(readSessionEntry(storePath, "agent:main:new")?.sessionId).toBe("new");
   });
 
+  it("does not mutate a direct opaque-key row with mismatched delivery proof", async () => {
+    const dir = await suiteRootTracker.make("exact-mutation-delivery-proof");
+    const storePath = path.join(dir, "sessions.sqlite");
+    const sessionKey = "agent:main:matrix:channel:!RoomABC:example.org";
+    await saveSessionStore(
+      storePath,
+      {
+        [sessionKey]: {
+          lastTo: "!Different:example.org",
+          sessionId: "wrong-target",
+          updatedAt: 10,
+        },
+      },
+      { skipMaintenance: true },
+    );
+    resetSessionStoreSqliteStatsForTest();
+
+    const updated = await updateSessionStoreEntry({
+      storePath,
+      sessionKey,
+      skipMaintenance: true,
+      update: () => ({ label: "must-not-cross-targets" }),
+    });
+
+    expect(updated).toBeNull();
+    expect(JSON.parse(readRawEntryJson(storePath, sessionKey) ?? "null")).toMatchObject({
+      lastTo: "!Different:example.org",
+      sessionId: "wrong-target",
+    });
+    expect(JSON.parse(readRawEntryJson(storePath, sessionKey) ?? "null")).not.toHaveProperty(
+      "label",
+    );
+    expect(getSessionStoreSqliteStatsForTest()).toMatchObject({
+      selectAll: 1,
+      selectByKey: 1,
+      upsert: 0,
+    });
+  });
+
   it("disables JSON-sized disk eviction for SQLite and warns once", async () => {
     const dir = await suiteRootTracker.make("disk-budget");
     const storePath = path.join(dir, "sessions.sqlite");
