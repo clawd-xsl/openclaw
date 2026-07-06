@@ -8,6 +8,7 @@ import type { OpenClawConfig } from "../../config/config.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { loadSessionStore } from "../../config/sessions.js";
 import { resolveStorePath } from "../../config/sessions/paths.js";
+import { readSessionEntry } from "../../config/sessions/store-load.js";
 import type { EmbeddedAgentRunResult } from "../embedded-agent.js";
 import {
   clearCliSessionInStore,
@@ -829,9 +830,9 @@ describe("updateSessionStoreAfterAgentRun", () => {
         authEpoch: "auth-epoch-1",
       });
 
-      const persisted = loadSessionStore(resolveStorePath(storePath), { skipCache: true })[
-        first.sessionKey!
-      ];
+      const persisted = readSessionEntry(resolveStorePath(storePath), first.sessionKey!, {
+        exact: true,
+      });
       expect(persisted?.cliSessionBindings?.["claude-cli"]).toEqual({
         sessionId: "claude-cli-session-1",
         authEpoch: "auth-epoch-1",

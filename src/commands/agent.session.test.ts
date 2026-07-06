@@ -6,9 +6,12 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { resolveAgentDir, resolveSessionAgentId } from "../agents/agent-scope.js";
 import { updateSessionStoreAfterAgentRun } from "../agents/command/session-store.js";
 import { resolveSession } from "../agents/command/session.js";
+import { resolveStorePath } from "../config/sessions/paths.js";
 import { loadSessionStore } from "../config/sessions/store-load.js";
+import { saveSessionStoreToSqlite } from "../config/sessions/store-sqlite.js";
 import { clearSessionStoreCacheForTest } from "../config/sessions/store.js";
 import { resolveSessionTranscriptFile } from "../config/sessions/transcript.js";
+import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { buildOutboundSessionContext } from "../infra/outbound/session-context.js";
 
@@ -42,7 +45,9 @@ function writeSessionStoreSeed(
   sessions: Record<string, Record<string, unknown>>,
 ) {
   fs.mkdirSync(path.dirname(storePath), { recursive: true });
-  fs.writeFileSync(storePath, JSON.stringify(sessions));
+  clearSessionStoreCacheForTest();
+  saveSessionStoreToSqlite(resolveStorePath(storePath), sessions as Record<string, SessionEntry>);
+  clearSessionStoreCacheForTest();
 }
 
 async function withCrossAgentResumeFixture(
@@ -119,7 +124,7 @@ describe("agent session resolution", () => {
       const resolution = resolveSession({ cfg, sessionId: "run-dup" });
 
       expect(resolution.sessionKey).toBe("agent:retired:acp:run-dup");
-      expect(resolution.storePath).toBe(retiredStore);
+      expect(resolution.storePath).toBe(resolveStorePath(retiredStore));
     });
   });
 

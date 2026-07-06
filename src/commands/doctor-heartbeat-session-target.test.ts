@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveStorePath } from "../config/sessions/paths.js";
+import { saveSessionStoreToSqlite } from "../config/sessions/store-sqlite.js";
+import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { describeHeartbeatSessionTargetIssues } from "./doctor-heartbeat-session-target.js";
 
@@ -62,7 +64,7 @@ describe("describeHeartbeatSessionTargetIssues", () => {
   function writeStore(cfg: OpenClawConfig, entries: Record<string, unknown>) {
     const storePath = resolveStorePath(cfg.session?.store, { agentId: "ops" });
     fs.mkdirSync(path.dirname(storePath), { recursive: true });
-    fs.writeFileSync(storePath, JSON.stringify(entries, null, 2));
+    saveSessionStoreToSqlite(storePath, entries as Record<string, SessionEntry>);
   }
 
   it("uses runtime session canonicalization before warning", () => {

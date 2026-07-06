@@ -4,6 +4,7 @@ import { withTempHome as withTempHomeBase } from "openclaw/plugin-sdk/test-env";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveAgentRuntimeConfig } from "../agents/agent-runtime-config.js";
 import { resolveSession } from "../agents/command/session.js";
+import { resolveStorePath } from "../config/sessions/paths.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { createThrowingTestRuntime } from "./test-runtime-config-helpers.js";
@@ -216,7 +217,7 @@ describe("agentCommand runtime config", () => {
 
       const resolved = resolveSession({ cfg, to: "+1555" });
 
-      expect(resolved.storePath).toBe(store);
+      expect(resolved.storePath).toBe(resolveStorePath(store));
       expect(resolved.sessionKey).toBeTypeOf("string");
       const sessionKey = resolved.sessionKey;
       if (!sessionKey) {
