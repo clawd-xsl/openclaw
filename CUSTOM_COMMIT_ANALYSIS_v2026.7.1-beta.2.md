@@ -18,10 +18,11 @@ which implementation details must not be replayed.
 - Handoff branch: `custom/20260705`, created directly from the peeled target
   commit; no source commit was cherry-picked or rebased
 - Final implementation snapshot before closeout documentation:
-  `bb7844c742d602f2121270cdae6eb5b13996e480`
-  (166 commits after the peeled target)
-- Direct Signal dependency: sibling checkout `../signal-ts` at
-  `d291d7d30159a713681324410ace608a5aa434e0`
+  `26015deda069f8820e6a84f4b9b358d401283522`
+  (170 commits after the peeled target)
+- Direct Signal dependency: the host environment must resolve the bare package
+  identity `@openclaw/signal-ts`. OpenClaw records no package source,
+  filesystem path, version, or revision for that host-provided runtime.
 
 The audit is behavior-based. Patch inequality does not prove that an old fix is
 still needed, while an upstream feature with the same name does not prove that
@@ -106,6 +107,24 @@ result record remains aggregate turn usage for accounting, while the final
 assistant record is `lastCallUsage`, the current context snapshot used by
 transcript persistence, context engines, token-pressure decisions, and session
 state. Aggregate usage is only the fallback when a last-call snapshot is absent.
+
+#### Claude Sonnet 5 is a route-aware model contract
+
+The canonical OpenClaw model identity is `anthropic/claude-sonnet-5`. Sonnet 5
+has an exact 1,000,000-token context window. The direct Anthropic catalog allows
+128,000 output tokens, while the Claude Code catalog advertises the 64,000-token
+limit reported by the installed CLI.
+
+Thinking behavior depends on the route. Direct Anthropic, Anthropic Vertex, and
+Claude CLI default to adaptive thinking at `high` effort and honor explicit
+`off` as disabled thinking. AWS Bedrock and Bedrock Mantle keep adaptive
+thinking enabled: `off` and `minimal` converge to `low`, while `xhigh` and `max`
+retain their native effort values. Both AWS routes are standard-tier-only for
+Sonnet 5; priority and flex service tiers are not advertised.
+
+Claude Code must be at least 2.1.197 for Sonnet 5. At the full 1M context,
+OpenClaw leaves Claude Code's native approximately 967K auto-compaction margin
+intact instead of overriding it with the raw 1,000,000-token ceiling.
 
 ### SQLite session state is an intentional latency architecture
 
@@ -221,8 +240,10 @@ the overlay so it cannot cross lifecycle boundaries.
 
 ### Direct `signal-ts` is retained
 
-The direct transport is implemented against the user-owned sibling repository,
-not blocked or replaced by signal-cli. The Signal plugin selects `signal-ts`
+The direct transport imports only the bare package identity
+`@openclaw/signal-ts`; it is not blocked or replaced by signal-cli. The host
+environment owns package resolution. OpenClaw does not encode a checkout path,
+package version, source URL, or revision. The Signal plugin selects `signal-ts`
 explicitly or when a durable signal-ts state path is configured; existing
 signal-cli installations remain compatible.
 
@@ -246,8 +267,10 @@ media, and signal-ts sends. Caller cancellation is always combined with the
 transport timeout, so cancellation cannot accidentally remove the hard send
 deadline.
 
-The local build contract requires the sibling `../signal-ts` checkout at the
-audited SHA.
+The deployment contract is deliberately narrower than a package-manager
+contract: when the direct backend is selected, the host must make
+`@openclaw/signal-ts` importable. A missing package fails with a targeted
+diagnostic instead of silently falling back to signal-cli.
 
 ### The old WhatsApp sticker sentinel is deliberately dropped
 
@@ -277,7 +300,7 @@ adjacent checks.
 
 The PDF commit contained one still-useful behavior: propagate `AbortSignal`
 through native-provider, document-extractor, fetch, and PDF parsing layers.
-That behavior is reimplemented in `2d443e6651`. The old generic inbound batch
+That behavior is reimplemented in `88fc0c7b25`. The old generic inbound batch
 retry is dropped because a whole-batch replay can duplicate side effects; the
 target already has provider timeouts, SSRF checks, bounded error reads, and
 remote idle timeouts.
@@ -299,7 +322,7 @@ churn are not retained.
 |   4 | `cff4265778` | Agents: fix subagent timeout and revival semantics             | ADOPT UPSTREAM                          | Current task deadlines and terminal-state handling cover the old defects.                                                                                                                                                   |
 |   5 | `357327b264` | Agents: add session continuity and summaries backend           | REDESIGN/IMPLEMENTED                    | Summaries now use memory-core plugin state, typed lifecycle hooks, durable recovery, and scoped lineage.                                                                                                                    |
 |   6 | `535a142909` | UI: add session summaries surface and token restore            | REDESIGN/PARTIAL IMPLEMENTED            | Current Control UI summary history is retained; obsolete token/state restoration is not.                                                                                                                                    |
-|   7 | `6ea3f80775` | Media: support PDF aborts and inbound retries                  | PARTIAL/IMPLEMENTED                     | Caller cancellation was reimplemented in `2d443e6651`; unsafe whole-batch retry is obsolete and was dropped.                                                                                                                |
+|   7 | `6ea3f80775` | Media: support PDF aborts and inbound retries                  | PARTIAL/IMPLEMENTED                     | Caller cancellation was reimplemented in `88fc0c7b25`; unsafe whole-batch retry is obsolete and was dropped.                                                                                                                |
 |   8 | `b65ee3a141` | Channels: port Signal and WhatsApp custom reply flows          | REDESIGN/PARTIAL IMPLEMENTED            | Signal reply/sticker behavior is retained across signal-cli and signal-ts; the WhatsApp `.`/captionless-WebP sticker sentinel is deliberately dropped in favor of explicit sticker APIs.                                    |
 |   9 | `a3b8e3e977` | Skills: add custom porting workflow                            | DROP/REPLACE                            | Hard-coded old release guidance is replaced by this audited decision record and current repository rules.                                                                                                                   |
 |  10 | `2ad305dc79` | Sessions: fix summary generation for current SDK               | REDESIGN/IMPLEMENTED                    | The rebuilt memory-core lifecycle and isolated completion seam remove the old SDK mismatch.                                                                                                                                 |
@@ -368,7 +391,7 @@ churn are not retained.
 |  73 | `341ed7af96` | Chore: fix TypeScript fixture drift                            | DROP                                    | Old generated/test fixture maintenance.                                                                                                                                                                                     |
 |  74 | `f1a44b7941` | CLI: remove auth epoch session binding                         | ADOPT UPSTREAM                          | Current launch identity has the desired token-rotation behavior.                                                                                                                                                            |
 |  75 | `fc0cf1b54b` | Sessions: move store state to SQLite                           | REDESIGN/IMPLEMENTED                    | SQLite is the runtime latency store; configured JSON-like paths map to sibling SQLite, while explicit low-level JSON remains only for tests/offline APIs. Import, repair, and hot consumers are SQLite-safe.                |
-|  76 | `47264aa30f` | Signal: add signal-ts backend integration                      | REDESIGN/IMPLEMENTED                    | Direct backend is rebuilt against sibling signal-ts SHA `d291d7d…` and current plugin seams.                                                                                                                                |
+|  76 | `47264aa30f` | Signal: add signal-ts backend integration                      | REDESIGN/IMPLEMENTED                    | Direct backend uses the host-provided bare `@openclaw/signal-ts` package identity and current plugin seams; OpenClaw does not own its install source or revision.                                                           |
 |  77 | `b787ea4831` | Signal: fix signal-ts disconnect diagnostics                   | REDESIGN/IMPLEMENTED                    | Typed, metadata-only probe and disconnect errors flow through current status APIs.                                                                                                                                          |
 |  78 | `3c1d5a6972` | CLI: avoid duplicate current metadata bootstrap                | ADOPT UPSTREAM                          | Current bounded bootstrap/reseed owns one metadata path.                                                                                                                                                                    |
 |  79 | `318a8c2ad9` | Signal: support signal-ts stickers                             | REDESIGN/IMPLEMENTED                    | Direct inbound and outbound installed stickers are supported with bounded attachment handling.                                                                                                                              |
@@ -401,9 +424,11 @@ resources have one explicit owner, warm preparation caches validate all inputs
 that affect correctness, and aggregate accounting is not confused with the
 last-call context snapshot. The native-history rollover is isolated, bounded,
 redacted, race-fenced, and lifecycle-scoped rather than interleaved with normal
-turn execution. The remaining live latency check is non-blocking: unit tests
-prove cold/warm classification and phase accounting, but a real Claude Code
-process is the only proof that deployed time-to-first-delta meets the target.
+turn execution. Unit coverage proves that repeat turns reuse the same warm
+persistent child, including captured resume turns. An authenticated local
+Gateway run also completed an initial Sonnet 5 turn and a resumed follow-up.
+That is functional persistence evidence; a dedicated cold/warm
+time-to-first-delta benchmark remains separate performance work.
 
 ### Session storage and memory
 
@@ -450,10 +475,13 @@ decisions reviewable and keeps lazy loading intact. Stable retry timestamps and
 fatal-error normalization close the monitor/delivery correctness gaps. Early
 typing and accepted-ingress supersession are explicitly ordered before slow
 attachment and session work, while the combined abort/deadline contract bounds
-outbound cancellation. Its intentional local-file dependency means a clean
-checkout is not self-contained: the sibling repository and audited SHA must be
-provisioned before install/build. Live channel-status and reaction round-trip
-evidence remains useful but is not a migration blocker.
+outbound cancellation. The runtime seam imports only
+`@openclaw/signal-ts` and leaves resolution to the host without recording a
+path, version, or revision in OpenClaw. A clean external package checkout passed
+its own check and build; positive host-injection coverage proved the bare import
+resolves when supplied, and negative coverage proved the missing-package error
+is explicit. A linked-account channel-status and reaction round-trip remains
+useful but is not a migration blocker.
 
 ### Explicit opt-ins
 
@@ -465,29 +493,39 @@ must not become implicit defaults during later upstream merges.
 ## Snapshot caveats
 
 This audit describes committed implementation behavior through
-`bb7844c742d602f2121270cdae6eb5b13996e480` (166 commits after the peeled
+`26015deda069f8820e6a84f4b9b358d401283522` (170 commits after the peeled
 target). The documentation-only commit containing this closeout update is
 intentionally outside that implementation count.
 
-`f08c52d711` (`Chore: satisfy custom migration lint gates`) is a historical
-scope caveat. It aggregated lint-driven edits across nine migration files and
-is broader than the branch's preferred feature-scoped commit style. It is kept
-as immutable history rather than rewritten, and later functional closeouts are
-separately scoped; future work should not use that commit as a grouping model.
+`c41165e857` (`chore(lint): satisfy custom migration lint gates`) is a
+historical scope caveat. It aggregated lint-driven edits across nine migration
+files and is broader than the branch's preferred feature-scoped commit style.
+The metadata rewrite preserved its tree and commit boundary instead of
+redistributing those edits; future work should not use that commit as a
+grouping model.
 
 The audit has no remaining product-design or broad-gate blocker. Runtime code
-snapshot `46c6826740f106941b5e402403ee120cf62d5877` passed all 89 Vitest shards in
+snapshot `8d0f378333c0d50125968a97b8b313d0caee38bd` passed all 89 Vitest shards in
 a clean-room `/var/tmp` environment. The later commits refresh the generated
 Plugin SDK API hash, make pending Claude child creation atomically visible, and
-remove two lint-only placeholder/assertion patterns. The exact final tree then
-passed a four-shard, 247-test closeout batch plus the broad check, build, tsgo,
-generated-baseline checks, and scoped format checks recorded in the companion
-closeout plan. The write-mode full formatter also exposed inherited target-tag
-drift in 203 untouched files; none overlaps a path changed by this branch, so it
-was deliberately excluded from the port.
+remove two lint-only placeholder/assertion patterns. That pre-follow-up tree
+passed a four-shard, 247-test closeout batch. The subsequent Sonnet 5 and
+host-provided Signal commits passed their targeted provider, replay, packaging,
+channel, and persistent-process tests; the final `26015deda0` tree passed the
+broad check, production build, core/extension typechecks, generated-baseline
+checks, documentation MDX/link/map checks, and authenticated Claude first/resume
+probes recorded in the companion closeout plan. The write-mode full formatter
+also exposed inherited target-tag drift in 203 untouched files; none overlaps a
+path changed by this branch, so it was deliberately excluded from the port.
 
-Two non-blocking live evidence items remain: measure cold/warm
-time-to-first-delta and process reuse against a real Claude Code installation,
-and exercise direct signal-ts channel status plus reaction round-trips against a
-live Signal account. These checks validate deployed latency and integration
-state; they do not change the 95 source-commit dispositions above.
+Follow-up live evidence used Claude Code 2.1.201. Direct `claude` CLI Sonnet 5
+probes passed at the normal adaptive setting and at `xhigh`; the OpenClaw
+Gateway then passed both an initial real turn and a resumed follow-up.
+Deterministic live-session unit coverage separately proves same-process warm
+reuse, so the remaining Claude work is a latency benchmark rather than a
+functional persistence gap.
+
+Signal package validation passed the external package's own check/build, a
+positive host-injection import, and the targeted missing-package diagnostic. A
+linked-account direct Signal status/reaction E2E has not run. These follow-up
+checks do not change the 95 source-commit dispositions above.

@@ -19,22 +19,28 @@ and feature-family disposition of every source-only commit.
   shape should be implemented, redesigned, adopted from upstream, or dropped.
 - Handoff branch: `custom/20260705`, created directly from the peeled target
   release. No source commit was cherry-picked, rebased, or replayed.
+- Commit metadata: every branch-local subject follows the upstream
+  `type(scope): summary` convention. Original author lines and timestamps are
+  preserved, and every committer is `小C (clawd-xsl)`.
 - Final implementation snapshot immediately before the closeout documentation
-  commit: `bb7844c742d602f2121270cdae6eb5b13996e480`.
-- Implementation commits after the peeled target at that snapshot: 166.
-- Final gate status: runtime-code snapshot `46c6826740` passed all 89 Vitest
-  shards in the clean-room run. The final implementation tree at `bb7844c742`
-  passed the targeted closeout tests, broad check, build, tsgo,
-  generated-baseline checks, and scoped format checks recorded below.
-- Direct Signal dependency: sibling `../signal-ts` at
-  `d291d7d30159a713681324410ace608a5aa434e0`.
+  commit: `26015deda069f8820e6a84f4b9b358d401283522`.
+- Implementation commits after the peeled target at that snapshot: 170.
+- Final gate status: runtime-code snapshot `8d0f378333` passed all 89 Vitest
+  shards in the clean-room run. The final implementation tree at `26015deda0`
+  passed the broad check, production build, targeted closeout and
+  provider/replay/channel tests, tsgo, generated-baseline checks,
+  documentation checks, scoped format checks, and authenticated Claude live
+  probes recorded below.
+- Direct Signal dependency: the host environment must resolve the bare package
+  identity `@openclaw/signal-ts`. OpenClaw records no package source,
+  filesystem path, version, or revision for that host-provided runtime.
 
 A committed file cannot contain its own stable commit SHA: adding that SHA
 changes the commit again. The ledger below is therefore the mechanically
 generated pre-closeout log through
-`bb7844c742d602f2121270cdae6eb5b13996e480` (166 commits). The
+`26015deda069f8820e6a84f4b9b358d401283522` (170 commits). The
 documentation-only closeout commit is intentionally outside that count and is
-expected to make the branch count 167.
+expected to make the branch count 171.
 
 ## Audit outcome
 
@@ -59,7 +65,7 @@ is the durable 95-row decision matrix; this file records the resulting target
 architecture and implementation history.
 
 The branch also carries one later upstream correction that is not part of the
-95 source-only custom commits. `79ddc14602` adapts upstream `49302fcb7d` to the
+95 source-only custom commits. `08675f375a` adapts upstream `49302fcb7d` to the
 target tree so officially externalized providers retain endpoint
 classification when their plugins are not installed.
 
@@ -163,6 +169,20 @@ surfaces, migration handling, catalog labels, context metadata, and adaptive
 reasoning policy. Explicit `[1m]` selectors for supported Claude CLI models are
 preserved instead of being silently normalized away.
 
+Sonnet 5 uses the canonical OpenClaw identity
+`anthropic/claude-sonnet-5` and an exact 1,000,000-token context window. Direct
+Anthropic metadata allows 128,000 output tokens; Claude Code metadata reports a
+64,000-token maximum. Direct Anthropic, Anthropic Vertex, and Claude CLI default
+to adaptive thinking at `high` effort and honor explicit `off` as disabled.
+AWS Bedrock and Bedrock Mantle keep adaptive thinking active, map `off` and
+`minimal` to `low`, retain native `xhigh` and `max`, and expose only the
+standard/default service tier for Sonnet 5 rather than priority or flex.
+
+Claude Code Sonnet 5 requires version 2.1.197 or later. When the effective
+context is the full 1M, OpenClaw preserves Claude Code's native approximately
+967K auto-compaction threshold instead of replacing its safety margin with a
+1,000,000-token override.
+
 ### SQLite session state preserves configured paths and hot-path latency
 
 The canonical per-agent default is `sessions.sqlite`. Configuration resolution
@@ -264,14 +284,16 @@ after real context growth.
 
 ### Direct `signal-ts`, early supersession, typing, and deadlines
 
-The Signal plugin contains a lazy direct transport backed by the user-owned
-sibling `../signal-ts` checkout. Direct client/state ownership, persistent
-receive, envelope conversion, inbound handling, outbound handling, and probe
-logic stay in the plugin. The path supports direct/group text, replies,
-reactions, typing, read and retry receipts, stickers, and bounded attachment
-upload/download through Signal's trusted fetch path. Existing signal-cli
-configuration remains a compatibility path, but it is not a substitute for the
-direct persistent `signal-ts` backend.
+The Signal plugin contains a lazy direct transport that imports only the bare
+package identity `@openclaw/signal-ts`. The runtime environment owns package
+resolution; OpenClaw records no checkout path, package version, source URL, or
+revision. Direct client/state ownership, persistent receive, envelope
+conversion, inbound handling, outbound handling, and probe logic stay in the
+plugin. The path supports direct/group text, replies, reactions, typing, read
+and retry receipts, stickers, and bounded attachment upload/download through
+Signal's trusted fetch path. Existing signal-cli configuration remains a
+compatibility path, but it is not a substitute for the direct persistent
+`signal-ts` backend.
 
 Same-session supersession now begins at accepted ingress, before attachment
 work and before the inbound debounce flush. A newer accepted message aborts the
@@ -287,10 +309,11 @@ send still ends with its deadline. Classified connection retries are bounded,
 abortable, and reuse one logical message timestamp. Fatal monitor values are
 normalized through typed channel errors without logging message content.
 
-Provisioning remains explicit: place the sibling repository at `../signal-ts`,
-check out `d291d7d30159a713681324410ace608a5aa434e0`, and build it before a clean
-local OpenClaw install/build. This is a local deployment dependency, not an
-upstream package assumption.
+Provisioning remains explicit but host-owned: before selecting the direct
+backend, the runtime must make `@openclaw/signal-ts` importable. OpenClaw does
+not prescribe how the host installs or resolves it. If the package is absent,
+the lazy loader emits a targeted diagnostic instead of silently selecting
+signal-cli.
 
 ### Structured MCP results remain structured
 
@@ -350,7 +373,7 @@ The final architecture keeps product forks at their narrowest valid owners:
 - memory-core owns summary policy, durable summary/outbox state, recall, and
   doctor migration.
 - Signal owns direct protocol behavior and delegates cryptographic/protocol
-  implementation to the pinned sibling library.
+  implementation to the host-provided `@openclaw/signal-ts` package.
 
 Hot paths carry prepared identities and use point access instead of rediscovery.
 Resource ownership is explicit across cold, warm, restart, cancellation, and
@@ -368,186 +391,192 @@ its temporary directory is removed. A deterministic regression holds one
 writer, queues another, performs an unrelated health RPC, and proves both
 writes complete in FIFO order.
 
-The remaining material risk is live integration, not an unidentified ownership
-or broad-gate gap: real Claude and Signal accounts are still needed to prove
-deployed warm-process latency and device behavior.
+The remaining material risk is deployment-specific integration, not an
+unidentified ownership or broad-gate gap. Real Claude first-turn and resume
+behavior has been exercised, while a dedicated cold/warm latency benchmark and
+a linked Signal account E2E remain useful follow-up work.
 
 ## Implemented commit ledger
 
-This table is the exact current pre-closeout output of:
+This table is the exact output through the parent of the documentation-only
+closeout commit:
 
 ```bash
-git log --reverse --format='%h%x09%s' v2026.7.1-beta.2..HEAD
+git log --reverse --format='%h%x09%s' v2026.7.1-beta.2..HEAD^
 ```
 
-|   # | Commit       | Subject                                                      |
-| --: | ------------ | ------------------------------------------------------------ |
-|   1 | `f96fdd95aa` | Docs: record v2026.7.1-beta.2 custom migration plan          |
-|   2 | `fc5b8d5fc1` | Gateway: expose coding tools to isolated CLI backends        |
-|   3 | `7c5504cce5` | Anthropic: isolate Claude CLI behind OpenClaw tools          |
-|   4 | `3b80939b61` | Anthropic: enforce isolated Claude CLI overrides             |
-|   5 | `cb33c75017` | CLI: preserve skills with disabled Claude commands           |
-|   6 | `b07bcaabae` | Reply: stream CLI deltas through block delivery              |
-|   7 | `1c819e6024` | Plugin SDK: add bounded transcript reads                     |
-|   8 | `9117d4b37e` | Plugin SDK: sanitize bounded transcript reads                |
-|   9 | `afdd58eade` | Control UI: add session summary history                      |
-|  10 | `b00de71aa4` | Anthropic: retire claude-cli-streaming config id             |
-|  11 | `1942f32d23` | Sessions: migrate retired Claude CLI state                   |
-|  12 | `a38c54d954` | Memory: isolate CLI pressure flushes                         |
-|  13 | `3b713fcce1` | Memory: add durable session summary records                  |
-|  14 | `8f2d2d067e` | Memory: wire session summary lifecycle and recall            |
-|  15 | `ae5d89ab9e` | Memory: migrate legacy session summary config                |
-|  16 | `dedbbedf5b` | Memory: harden session summary boundaries                    |
-|  17 | `c596546b2c` | CLI: forward fast mode to backend execution hooks            |
-|  18 | `31abc29687` | Config: retire custom fork settings                          |
-|  19 | `931b191e42` | Sessions: drop retired custom compaction state               |
-|  20 | `fcfdd96258` | Memory: add durable completed-session flush outbox           |
-|  21 | `b4dd9b3536` | Memory: wire completed-session memory projection             |
-|  22 | `c86830fd87` | Signal: restore reply and sticker delivery                   |
-|  23 | `974030fc71` | Config: refresh custom feature schema baseline               |
-|  24 | `660630a217` | Plugin SDK: enforce bounded transcript snapshots             |
-|  25 | `a728b5be59` | CLI: resolve fast mode after queue admission                 |
-|  26 | `00374ed4b5` | Memory: resolve implicit CLI pressure runtimes               |
-|  27 | `d9bf14acce` | Memory: fence completed-session projections                  |
-|  28 | `a91b3331c1` | Plugin state: expose doctor migration capacity               |
-|  29 | `9b9f23a6a3` | Memory: import legacy session summaries                      |
-|  30 | `71d97e388d` | Docs: document custom continuity migration                   |
-|  31 | `ef9678f149` | Chore: format custom migration files                         |
-|  32 | `f08c52d711` | Chore: satisfy custom migration lint gates                   |
-|  33 | `6cdb51409e` | CLI: route memory temp files through safe wrapper            |
-|  34 | `dee063f31c` | Memory: complete plugin entry test runtime                   |
-|  35 | `8225c24011` | Docs: preserve memory reference manual content               |
-|  36 | `2dcbf4ade6` | Memory: expose session summaries to agents                   |
-|  37 | `8e668c60a4` | Memory: stop injecting failed summary tails                  |
-|  38 | `a9194042ab` | Memory: document session summary policy                      |
-|  39 | `481f3205d3` | Memory: repeat CLI pressure flushes after context growth     |
-|  40 | `2d7f2d59ff` | Sessions: clear transient CLI flush state on reset           |
-|  41 | `6d210c42fb` | Docs: finalize custom migration ledger                       |
-|  42 | `348f0c4712` | CLI: keep captured Claude sessions warm                      |
-|  43 | `0f599f9f2d` | Sessions: move default store to SQLite                       |
-|  44 | `dd942c3ef2` | CLI: preserve assistant message boundaries                   |
-|  45 | `f9733ca43a` | Build: support local file dependency shrinkwraps             |
-|  46 | `0bfc11b5a3` | Signal: add direct signal-ts runtime                         |
-|  47 | `8007ac4440` | Signal: route channel through signal-ts                      |
-|  48 | `6a96445633` | Memory: project fresh CLI output pressure                    |
-|  49 | `53a80b0888` | CLI: trace warm Claude turn latency                          |
-|  50 | `e6bb981364` | CLI: expose effective context to backends                    |
-|  51 | `03d5c25338` | Anthropic: retain Claude CLI long context                    |
-|  52 | `917b81e58a` | Media: allow opted-in host attachment types                  |
-|  53 | `5059233fa9` | Gateway: allow explicit unauthenticated custom binds         |
-|  54 | `2d443e6651` | PDF: propagate caller cancellation through analysis          |
-|  55 | `3ec40849b0` | Signal: reuse timestamps across send retries                 |
-|  56 | `4c0c3e6e97` | Sessions: harden SQLite import and migration primitives      |
-|  57 | `b8b1b7a04b` | Sessions: migrate legacy repair flows to SQLite              |
-|  58 | `4f0b55b1bd` | Doctor: inspect and repair SQLite session stores             |
-|  59 | `d2a9943ef1` | Memory: resolve transcript identity through session accessor |
-|  60 | `f232517692` | QA Lab: read sessions through canonical store                |
-|  61 | `295345eb20` | Codex: read startup session metadata by key                  |
-|  62 | `8af1844d64` | QQBot: read group activation by session key                  |
-|  63 | `8809338099` | macOS: keep the default SQLite store implicit                |
-|  64 | `ff00bd5f12` | Sessions: add race-safe store inspection and deletion        |
-|  65 | `3b2ff6f785` | Feishu: make session repair SQLite-safe                      |
-|  66 | `644dc1aa09` | Sessions: keep latest SQLite reads keyed                     |
-|  67 | `2d068c1ce1` | Agents: recover subagent depth from SQLite                   |
-|  68 | `c38afca9ea` | Sessions: keep logical SQLite access row-scoped              |
-|  69 | `24c18e9956` | Plugin SDK: append scoped transcript events                  |
-|  70 | `a79ac36f19` | Microsoft Teams: persist feedback through session accessors  |
-|  71 | `754ad61ccc` | Gateway: use point reads for keyed session lookups           |
-|  72 | `9a731e2121` | Agents: point-read known command sessions                    |
-|  73 | `645dda4aa1` | Reply: point-read dispatch session state                     |
-|  74 | `f1c9d0b10c` | Heartbeat: keep session access row-scoped                    |
-|  75 | `7e881d9d32` | Cron: point-read isolated session state                      |
-|  76 | `55693813b2` | Agents: point-read follow-up session state                   |
-|  77 | `83fdc2dbd1` | Reply: point-read export session state                       |
-|  78 | `658ec70397` | Config: refresh generated schema baseline                    |
-|  79 | `cf0d294efe` | Plugin SDK: refresh generated API baseline                   |
-|  80 | `7dd420188d` | Build: refresh root dependency shrinkwrap                    |
-|  81 | `0e70784c11` | Build: refresh llama-cpp shrinkwrap                          |
-|  82 | `3c5584dcd3` | Build: refresh Microsoft Teams shrinkwrap                    |
-|  83 | `d783dcbfb3` | Build: refresh Twitch shrinkwrap                             |
-|  84 | `40fda913ba` | Signal: normalize fatal monitor errors                       |
-|  85 | `5ffc6489b0` | Agents: load source workers on Node 22                       |
-|  86 | `aafbcac3f1` | Sessions: keep temporary mapping restores keyed              |
-|  87 | `643c3fec3c` | Gateway: isolate boot session store tests                    |
-|  88 | `1188f6aa34` | Gateway: isolate shared worker test state                    |
-|  89 | `445b41cf57` | Sessions: close SQLite handles in test cleanup               |
-|  90 | `b2b111279a` | Tasks: exercise maintenance through SQLite stores            |
-|  91 | `6555ad5ad4` | Cron: seed delivery tests through session stores             |
-|  92 | `4600fa2509` | ACP: expect canonical SQLite session stores                  |
-|  93 | `8f4ae7e36a` | Agents: persist subagent fixtures through session stores     |
-|  94 | `e62b155ee5` | Agents: align ACP spawn fixture with depth policy            |
-|  95 | `8c5b0222d7` | Reply: test default per-agent SQLite stores                  |
-|  96 | `77240cd509` | Doctor: honor resolved session stores                        |
-|  97 | `c97e4e370b` | Memory: exercise dreaming cleanup through SQLite             |
-|  98 | `3ef24c13fe` | Matrix: clear runtime state after approval tests             |
-|  99 | `6e6606fc1a` | iMessage: isolate watch retry runtime state                  |
-| 100 | `d6a9fd034d` | CLI: isolate gateway auth test state                         |
-| 101 | `5ff36a98ec` | Node host: compare canonical allowlist executables           |
-| 102 | `af2995fbb2` | Plugin SDK: refresh public surface budgets                   |
-| 103 | `ce79c895eb` | Build: share pnpm lock package parsing                       |
-| 104 | `5c5c9235ac` | Memory: register typed hook contract surfaces                |
-| 105 | `1b11d954d9` | Plugins: expect memory-core at gateway startup               |
-| 106 | `c757fa6147` | Reply: point-read fast path session state                    |
-| 107 | `72c0bf9706` | CLI: restore gateway auth test environment                   |
-| 108 | `10c09e0c16` | Memory: close dreaming SQLite handles                        |
-| 109 | `ba08f08946` | Claude CLI: retire reset main generations                    |
-| 110 | `90115b2dfe` | Memory: close isolated Claude maintenance sessions           |
-| 111 | `bd45689bc1` | Claude CLI: restore Fable 5 routing                          |
-| 112 | `4335ee3490` | Sessions: point-write inbound SQLite state                   |
-| 113 | `eb43bdcee1` | Claude CLI: restore explicit 1M selectors                    |
-| 114 | `b577151dfc` | Control UI: restore scoped tokens on gateway confirm         |
-| 115 | `427d45c87e` | Gateway: release ephemeral CLI live sessions                 |
-| 116 | `499a0ddaba` | CLI: close ephemeral helper sessions                         |
-| 117 | `eaeb59334e` | Claude CLI: separate aggregate and context usage             |
-| 118 | `24925c104b` | Sessions: preserve legacy SQLite store paths                 |
-| 119 | `4749a74f2a` | Sessions: keep exact SQLite mutations row-scoped             |
-| 120 | `65c6eece37` | Sessions: point-read transcript persistence                  |
-| 121 | `db499674c3` | Reply: cancel superseded queued deliveries                   |
-| 122 | `fd197c92c5` | Signal: preempt stale inbound replies                        |
-| 123 | `85f2585789` | Gateway: preserve structured MCP tool results                |
-| 124 | `8ba169d2d6` | Sessions: preserve arbitrary legacy store paths              |
-| 125 | `2d02358e7b` | Sessions: verify SQLite fast-path targets                    |
-| 126 | `6fc4413ab9` | Memory: restore summary lineage and backfill                 |
-| 127 | `4d4d3c8e42` | Reply: cache validated workspace preparation                 |
-| 128 | `119402733b` | CLI: cache complete warm system prompts                      |
-| 129 | `94814b4e77` | Claude CLI: use last-call context usage                      |
-| 130 | `b429eb2cce` | Signal: supersede replies at accepted ingress                |
-| 131 | `cf8490d5eb` | Signal: retain send deadlines under cancellation             |
-| 132 | `d528187d5d` | Claude CLI: bind launch resources to live children           |
-| 133 | `6a5f2955fa` | Tests: read configured SQLite session state                  |
-| 134 | `21aecdcc7b` | Claude CLI: restore structured continuity rollover           |
-| 135 | `78a1eb10e1` | Config: refresh memory summary baseline                      |
-| 136 | `41276e07ed` | Tests: resolve configured plugin session stores              |
-| 137 | `5ca56b84bf` | Docs: document summary continuity                            |
-| 138 | `79ddc14602` | Providers: classify externalized endpoints without plugins   |
-| 139 | `d6afc7a25f` | Sessions: preserve JSON5 legacy imports                      |
-| 140 | `873b8d2307` | MS Teams: discover legacy feedback sidecars                  |
-| 141 | `8ac26907ee` | Tests: resolve gateway session backends                      |
-| 142 | `adc3caf6a2` | Tests: resolve scheduled session backends                    |
-| 143 | `67ee7baf92` | Tests: resolve channel session backends                      |
-| 144 | `b7f2bcd55d` | Tests: resolve agent session backends                        |
-| 145 | `1d8cd3b705` | Tests: resolve ACP session backends                          |
-| 146 | `4cf13e1195` | Tests: resolve reply session backends                        |
-| 147 | `0914851f94` | Tests: resolve session management backends                   |
-| 148 | `7354cc787f` | Tests: exercise SQLite state migrations                      |
-| 149 | `e39c6543f7` | Tests: resolve plugin host session backends                  |
-| 150 | `45357b8053` | MS Teams: key migrated feedback by runtime store             |
-| 151 | `14a6c1be17` | Tests: preserve malformed checkpoint sources                 |
-| 152 | `d0de347533` | Sessions: normalize migration store path planning            |
-| 153 | `7cf199b64f` | Heartbeat: restore activity timestamps exactly               |
-| 154 | `66b99a07c1` | Tests: preserve seeded heartbeat timestamps                  |
-| 155 | `4dd25e6c9b` | Tests: restore checkpoint trim fixture directory             |
-| 156 | `afe8114353` | Tests: resolve gateway agent session backends                |
-| 157 | `5621f3dae1` | Tests: resolve gateway chat session backends                 |
-| 158 | `d21e1bd4aa` | Tests: resolve command session backends                      |
-| 159 | `efcbda721d` | Tests: isolate onboarding git trust fixture                  |
-| 160 | `b12a483414` | Tests: read migrated orphan keys from SQLite                 |
-| 161 | `f2e3a222f2` | Tests: close SQLite stores before temp cleanup               |
-| 162 | `46c6826740` | Tests: preserve active Gateway session writers               |
-| 163 | `5db8988bbc` | Plugin SDK: refresh generated API baseline                   |
-| 164 | `5cb6bed3b2` | Claude CLI: initialize pending sessions atomically           |
-| 165 | `48b8f358c5` | Tests: simplify Claude launch cleanup assertions             |
-| 166 | `bb7844c742` | Memory: avoid placeholder backfill timestamps                |
+|   # | Commit       | Subject                                                           |
+| --: | ------------ | ----------------------------------------------------------------- |
+|   1 | `7babaa734c` | docs: record v2026.7.1-beta.2 custom migration plan               |
+|   2 | `45f0025f50` | feat(gateway): expose coding tools to isolated CLI backends       |
+|   3 | `bea1bcb924` | feat(anthropic): isolate Claude CLI behind OpenClaw tools         |
+|   4 | `a2576d6c4e` | fix(anthropic): enforce isolated Claude CLI overrides             |
+|   5 | `5262f27848` | fix(agents): preserve skills with disabled Claude commands        |
+|   6 | `8711065b7e` | feat(auto-reply): stream CLI deltas through block delivery        |
+|   7 | `2d756725f7` | feat(plugin-sdk): add bounded transcript reads                    |
+|   8 | `ac9ecc81d9` | fix(plugin-sdk): sanitize bounded transcript reads                |
+|   9 | `c244d76c90` | feat(control-ui): add session summary history                     |
+|  10 | `1c489172be` | refactor(anthropic): retire claude-cli-streaming config id        |
+|  11 | `901638b1bc` | fix(sessions): migrate retired Claude CLI state                   |
+|  12 | `1ef85ccb6a` | fix(memory): isolate CLI pressure flushes                         |
+|  13 | `77ca164810` | feat(memory-core): add durable session summary records            |
+|  14 | `99761f0ec5` | feat(memory-core): wire session summary lifecycle and recall      |
+|  15 | `b6d35ac429` | fix(doctor): migrate legacy session summary config                |
+|  16 | `14b76f3c96` | fix(memory-core): harden session summary boundaries               |
+|  17 | `22de178e43` | fix(agents): forward fast mode to backend execution hooks         |
+|  18 | `d02101dc34` | refactor(config): retire custom fork settings                     |
+|  19 | `c3d98e846a` | refactor(sessions): drop retired custom compaction state          |
+|  20 | `b0d9bedb10` | feat(memory-core): add durable completed-session flush outbox     |
+|  21 | `94f774ba69` | feat(memory-core): wire completed-session memory projection       |
+|  22 | `8f571c630e` | fix(signal): restore reply and sticker delivery                   |
+|  23 | `a659b5e2bf` | chore(config): refresh custom feature schema baseline             |
+|  24 | `69df8c4372` | fix(plugin-sdk): enforce bounded transcript snapshots             |
+|  25 | `3568991d9e` | fix(agents): resolve fast mode after queue admission              |
+|  26 | `ef5ef5efab` | fix(memory): resolve implicit CLI pressure runtimes               |
+|  27 | `449ceaa16e` | fix(memory-core): fence completed-session projections             |
+|  28 | `1d1fe5c502` | feat(plugin-sdk): expose doctor migration capacity                |
+|  29 | `e633e678dc` | feat(memory-core): import legacy session summaries                |
+|  30 | `c4112c2020` | docs: document custom continuity migration                        |
+|  31 | `5cd1357d51` | chore: format custom migration files                              |
+|  32 | `c41165e857` | chore(lint): satisfy custom migration lint gates                  |
+|  33 | `8e7001bc72` | fix(agents): route memory temp files through safe wrapper         |
+|  34 | `97c9c4477e` | test(memory-core): complete plugin entry test runtime             |
+|  35 | `558ef1b03a` | docs(memory): preserve memory reference manual content            |
+|  36 | `2cbad12618` | feat(memory-core): expose session summaries to agents             |
+|  37 | `c4c97a7815` | fix(memory-core): stop injecting failed summary tails             |
+|  38 | `0277bc9a25` | docs(memory): document session summary policy                     |
+|  39 | `e13bddd510` | fix(memory): repeat CLI pressure flushes after context growth     |
+|  40 | `b4720ba7d8` | fix(sessions): clear transient CLI flush state on reset           |
+|  41 | `6ede630aaf` | docs: finalize custom migration ledger                            |
+|  42 | `009ed270e0` | perf(agents): keep captured Claude sessions warm                  |
+|  43 | `9057a9ade6` | refactor(sessions): move default store to SQLite                  |
+|  44 | `e0f24c285a` | fix(agents): preserve assistant message boundaries                |
+|  45 | `89d8652770` | fix(build): support local file dependency shrinkwraps             |
+|  46 | `a26843929a` | feat(signal): add direct signal-ts runtime                        |
+|  47 | `7a91dd0539` | feat(signal): route channel through signal-ts                     |
+|  48 | `be4e77e4ad` | fix(memory): project fresh CLI output pressure                    |
+|  49 | `8588ca2ede` | perf(agents): trace warm Claude turn latency                      |
+|  50 | `5fbb098933` | feat(agents): expose effective context to backends                |
+|  51 | `33cf239c81` | fix(anthropic): retain Claude CLI long context                    |
+|  52 | `8d535c434d` | feat(media): allow opted-in host attachment types                 |
+|  53 | `47e94c01e7` | feat(gateway): allow explicit unauthenticated custom binds        |
+|  54 | `88fc0c7b25` | fix(pdf): propagate caller cancellation through analysis          |
+|  55 | `ea99c13526` | fix(signal): reuse timestamps across send retries                 |
+|  56 | `a73b81d1b7` | fix(sessions): harden SQLite import and migration primitives      |
+|  57 | `e21ffc53f3` | refactor(sessions): migrate legacy repair flows to SQLite         |
+|  58 | `1e813cb60d` | feat(doctor): inspect and repair SQLite session stores            |
+|  59 | `feec385da8` | fix(memory): resolve transcript identity through session accessor |
+|  60 | `1e0c776200` | refactor(qa-lab): read sessions through canonical store           |
+|  61 | `240d1709f2` | perf(codex): read startup session metadata by key                 |
+|  62 | `f5d930064c` | perf(qqbot): read group activation by session key                 |
+|  63 | `039ddbf632` | fix(macos): keep the default SQLite store implicit                |
+|  64 | `9a90bfd417` | fix(sessions): add race-safe store inspection and deletion        |
+|  65 | `2239930a2f` | fix(feishu): make session repair SQLite-safe                      |
+|  66 | `471163f7d5` | perf(sessions): keep latest SQLite reads keyed                    |
+|  67 | `16e95f67d2` | fix(agents): recover subagent depth from SQLite                   |
+|  68 | `6fcc04d3ab` | perf(sessions): keep logical SQLite access row-scoped             |
+|  69 | `b6c24caba2` | feat(plugin-sdk): append scoped transcript events                 |
+|  70 | `8225ceac64` | fix(msteams): persist feedback through session accessors          |
+|  71 | `2a6fff79ce` | perf(gateway): use point reads for keyed session lookups          |
+|  72 | `4eb6a765f5` | perf(agents): point-read known command sessions                   |
+|  73 | `c0c713317d` | perf(auto-reply): point-read dispatch session state               |
+|  74 | `048457a657` | perf(heartbeat): keep session access row-scoped                   |
+|  75 | `34585298aa` | perf(cron): point-read isolated session state                     |
+|  76 | `cc09f3d07a` | perf(agents): point-read follow-up session state                  |
+|  77 | `5917d90340` | perf(auto-reply): point-read export session state                 |
+|  78 | `754dac2b52` | chore(config): refresh generated schema baseline                  |
+|  79 | `ddbb90d44e` | chore(plugin-sdk): refresh generated API baseline                 |
+|  80 | `2e2279a937` | chore(deps): refresh root dependency shrinkwrap                   |
+|  81 | `27eb5cdeb6` | chore(deps): refresh llama-cpp shrinkwrap                         |
+|  82 | `10d6928ea4` | chore(deps): refresh Microsoft Teams shrinkwrap                   |
+|  83 | `2e294b78ed` | chore(deps): refresh Twitch shrinkwrap                            |
+|  84 | `a49499ec4c` | fix(signal): normalize fatal monitor errors                       |
+|  85 | `300a908950` | fix(agents): load source workers on Node 22                       |
+|  86 | `4392185037` | fix(sessions): keep temporary mapping restores keyed              |
+|  87 | `c0353b9771` | test(gateway): isolate boot session store tests                   |
+|  88 | `67a3b755b1` | test(gateway): isolate shared worker test state                   |
+|  89 | `36f1bb9ceb` | test(sessions): close SQLite handles in test cleanup              |
+|  90 | `4eb2a246d8` | test(tasks): exercise maintenance through SQLite stores           |
+|  91 | `c2a8e7efbe` | test(cron): seed delivery tests through session stores            |
+|  92 | `2ab2e334a6` | test(acp): expect canonical SQLite session stores                 |
+|  93 | `d103ecba87` | test(agents): persist subagent fixtures through session stores    |
+|  94 | `5788f0c443` | test(agents): align ACP spawn fixture with depth policy           |
+|  95 | `84b89cbadd` | test(auto-reply): cover default per-agent SQLite stores           |
+|  96 | `cc3b60d9aa` | fix(doctor): honor resolved session stores                        |
+|  97 | `a9e30036b9` | test(memory-core): exercise dreaming cleanup through SQLite       |
+|  98 | `0211161e47` | test(matrix): clear runtime state after approval tests            |
+|  99 | `c94eae625c` | test(imessage): isolate watch retry runtime state                 |
+| 100 | `8da75e0a02` | test(cli): isolate gateway auth test state                        |
+| 101 | `fe4a9a9f53` | fix(node-host): compare canonical allowlist executables           |
+| 102 | `f151baa844` | chore(plugin-sdk): refresh public surface budgets                 |
+| 103 | `c541567aac` | refactor(scripts): share pnpm lock package parsing                |
+| 104 | `3c189563ad` | test(plugins): register typed hook contract surfaces              |
+| 105 | `077970d91e` | test(plugins): expect memory-core at gateway startup              |
+| 106 | `4b944dae6d` | perf(auto-reply): point-read fast path session state              |
+| 107 | `7d21349f23` | test(cli): restore gateway auth test environment                  |
+| 108 | `fb71ea0e2f` | test(memory-core): close dreaming SQLite handles                  |
+| 109 | `efcbbcd543` | refactor(agents): retire reset main generations                   |
+| 110 | `44e5af1202` | fix(memory-core): close isolated Claude maintenance sessions      |
+| 111 | `48d8bdb9ed` | fix(anthropic): restore Fable 5 routing                           |
+| 112 | `9d702cc6ca` | perf(sessions): point-write inbound SQLite state                  |
+| 113 | `191de7df07` | fix(anthropic): restore explicit 1M selectors                     |
+| 114 | `40762ae4ef` | fix(control-ui): restore scoped tokens on gateway confirm         |
+| 115 | `bf604bb4e5` | fix(gateway): release ephemeral CLI live sessions                 |
+| 116 | `512f17c8af` | fix(agents): close ephemeral helper sessions                      |
+| 117 | `c53086e348` | fix(agents): separate aggregate and context usage                 |
+| 118 | `7060fdee11` | fix(sessions): preserve legacy SQLite store paths                 |
+| 119 | `3aad9ede23` | perf(sessions): keep exact SQLite mutations row-scoped            |
+| 120 | `663b3137b9` | perf(sessions): point-read transcript persistence                 |
+| 121 | `8efb2058b7` | fix(auto-reply): cancel superseded queued deliveries              |
+| 122 | `f680066691` | fix(signal): preempt stale inbound replies                        |
+| 123 | `0e0bd19766` | fix(gateway): preserve structured MCP tool results                |
+| 124 | `78065b85af` | fix(sessions): preserve arbitrary legacy store paths              |
+| 125 | `b75ce31200` | fix(sessions): verify SQLite fast-path targets                    |
+| 126 | `a52c304f80` | fix(memory-core): restore summary lineage and backfill            |
+| 127 | `f8633030d1` | perf(agents): cache validated workspace preparation               |
+| 128 | `327719b4da` | perf(agents): cache complete warm system prompts                  |
+| 129 | `3f1118384f` | fix(agents): use last-call context usage                          |
+| 130 | `3f97c57ff8` | fix(signal): supersede replies at accepted ingress                |
+| 131 | `0b19a2d5b2` | fix(signal): retain send deadlines under cancellation             |
+| 132 | `a78799edbd` | fix(agents): bind launch resources to live children               |
+| 133 | `c0e71e6a91` | test(sessions): read configured SQLite session state              |
+| 134 | `88b7e93a99` | fix(agents): restore structured continuity rollover               |
+| 135 | `3c81d13298` | chore(config): refresh memory summary baseline                    |
+| 136 | `96f1fb69d8` | test(plugins): resolve configured plugin session stores           |
+| 137 | `94dbdf9239` | docs(memory): document summary continuity                         |
+| 138 | `08675f375a` | feat(providers): classify externalized endpoints without plugins  |
+| 139 | `476e4e73a7` | fix(sessions): preserve JSON5 legacy imports                      |
+| 140 | `d7eedc101f` | fix(msteams): discover legacy feedback sidecars                   |
+| 141 | `1f1b5cf2ea` | test(gateway): resolve gateway session backends                   |
+| 142 | `6ec018752a` | test(cron): resolve scheduled session backends                    |
+| 143 | `afd3ad2c2e` | test(channels): resolve channel session backends                  |
+| 144 | `62bdbb2f95` | test(agents): resolve agent session backends                      |
+| 145 | `5b88ec6ebb` | test(acp): resolve ACP session backends                           |
+| 146 | `d77c405d6d` | test(auto-reply): resolve reply session backends                  |
+| 147 | `06ce751044` | test(sessions): resolve session management backends               |
+| 148 | `35cf069cb7` | test(state): exercise SQLite state migrations                     |
+| 149 | `2c29716b49` | test(plugins): resolve plugin host session backends               |
+| 150 | `16287058b2` | fix(msteams): key migrated feedback by runtime store              |
+| 151 | `7786c5c4ce` | test(gateway): preserve malformed checkpoint sources              |
+| 152 | `2ac99bb73f` | refactor(sessions): normalize migration store path planning       |
+| 153 | `9addef3bfc` | fix(heartbeat): restore activity timestamps exactly               |
+| 154 | `dcea59bc7d` | test(heartbeat): preserve seeded heartbeat timestamps             |
+| 155 | `269a677032` | test(gateway): restore checkpoint trim fixture directory          |
+| 156 | `98a27c7589` | test(gateway): resolve gateway agent session backends             |
+| 157 | `52c6246780` | test(gateway): resolve gateway chat session backends              |
+| 158 | `bc33a90ad0` | test(cli): resolve command session backends                       |
+| 159 | `a10019d07c` | test(onboarding): isolate onboarding git trust fixture            |
+| 160 | `924383803f` | test(state): read migrated orphan keys from SQLite                |
+| 161 | `e8c2bb66b0` | test(sessions): close SQLite stores before temp cleanup           |
+| 162 | `8d0f378333` | test(gateway): preserve active Gateway session writers            |
+| 163 | `943be66042` | chore(plugin-sdk): refresh generated API baseline                 |
+| 164 | `f646eaf1df` | fix(agents): initialize pending sessions atomically               |
+| 165 | `6f6082b50a` | test(agents): simplify Claude launch cleanup assertions           |
+| 166 | `b6ad4a78a7` | fix(memory-core): avoid placeholder backfill timestamps           |
+| 167 | `646a3d4a73` | docs: finalize custom port audit                                  |
+| 168 | `402702439b` | feat(anthropic): add Claude Sonnet 5 support                      |
+| 169 | `44e5296688` | refactor(signal): decouple signal-ts host runtime                 |
+| 170 | `26015deda0` | docs: document Sonnet 5 and direct Signal runtime                 |
 
 No commit from `origin/custom/20260415` was replayed. Runtime behavior,
 migration/config boundaries, generated artifacts, package shrinkwraps,
@@ -581,13 +610,22 @@ single suite total:
   passed;
 - final Claude live-session, launch-resource, and memory closeout batch: 4
   shards, 247 tests passed on the exact final implementation tree;
+- local Claude Code 2.1.201 selected Sonnet 5 successfully in both its normal
+  adaptive mode and `xhigh` mode;
+- the authenticated OpenClaw Gateway Sonnet 5 probe passed a real initial turn
+  and a resumed follow-up; deterministic unit coverage separately proves that
+  repeated warm turns reuse the same persistent child process;
+- a clean external `@openclaw/signal-ts` checkout passed its own check and
+  build, host-injection validation resolved the bare package import, and the
+  missing-package path returned its targeted diagnostic. No linked-account
+  Signal live E2E is claimed;
 - `pnpm docs:list` passed;
 - scoped formatting/diff checks recorded for the touched fixes passed.
 
 Final verification status for
-`bb7844c742d602f2121270cdae6eb5b13996e480`:
+`26015deda069f8820e6a84f4b9b358d401283522`:
 
-- clean-room full `pnpm test` at runtime-code snapshot `46c6826740`: 89 Vitest
+- clean-room full `pnpm test` at runtime-code snapshot `8d0f378333`: 89 Vitest
   shards passed in 3462.76 seconds. The later atomic pending-session
   initialization and two lint-only cleanups were covered by the exact-tree
   targeted batch above; the generated-hash refresh was verified by the Plugin
@@ -596,7 +634,7 @@ Final verification status for
   plugin assets, Control UI, and CLI startup metadata all built successfully;
   no `[INEFFECTIVE_DYNAMIC_IMPORT]` warning was emitted. The existing Control
   UI chunk-size advisory remains informational;
-- broad `pnpm check --timed`: passed, including all preflight and policy guards,
+- broad `pnpm check`: passed on the final tree, including all preflight and policy guards,
   production core/extension typechecks, and core/extension/script lint;
 - `pnpm config:docs:check` and `pnpm plugin-sdk:api:check`: passed with both
   generated hashes current;
@@ -606,7 +644,13 @@ Final verification status for
   formatter changes inherited unchanged from the peeled target. Their path
   intersection with `v2026.7.1-beta.2..HEAD` is zero, so those unrelated target
   changes were discarded rather than folded into this custom port;
-- live Claude Code and Signal integration: not run.
+- authenticated Claude Code Sonnet 5 direct-CLI and Gateway first/resume probes:
+  passed with Claude Code 2.1.201. A linked-account direct Signal E2E was not
+  run;
+- `pnpm docs:check-mdx`, `pnpm docs:check-links`, and `pnpm docs:map:check`
+  passed. `pnpm docs:check-i18n-glossary` remains blocked by the branch-wide
+  inherited glossary backlog (more than 1,000 existing changed labels); no
+  generated translation or baseline file was altered to hide it.
 
 The first full-suite attempt used a sandbox temp root whose ancestor contained
 an injected empty `.git` directory. Three Git-root assertions failed for that
@@ -615,27 +659,30 @@ recheck, after which the complete 89-shard clean-room run passed. No test,
 baseline, snapshot, or expected-failure file was changed to hide the issue.
 
 Build was treated as a material gate because the migration changes Plugin
-SDK/public types, lazy runtime boundaries, local-file dependency packaging,
-generated configuration, and CLI process/resource ownership. It passed without
-ineffective dynamic-import warnings.
+SDK/public types, lazy runtime boundaries, host-provided Signal dependency
+resolution, generated configuration, and CLI process/resource ownership. It
+passed without ineffective dynamic-import warnings.
 
-No live-provider proof is claimed. Focused and integration tests do not replace
-a real authenticated persistent Claude Code process test, including warm reuse,
-restart, rollover, structured MCP content, and resource cleanup. They also do
-not replace a linked Signal device/account test covering receive, early typing,
-supersession, replies, attachments, retry identity, and deadline behavior.
+The authenticated Claude evidence covers Sonnet 5 selection, normal and
+`xhigh` turns, Gateway first-turn execution, and resume. Unit coverage proves
+same-process warm reuse. It does not replace dedicated latency measurement or
+live restart, rollover, structured MCP content, and resource-cleanup probes.
+The Signal package check/build, positive host-injection import, and negative
+missing-package diagnostic likewise do not replace a linked Signal
+device/account test covering receive, early typing, supersession, replies,
+attachments, retry identity, and deadline behavior.
 
 ## Finalization record
 
 1. Implementation, generated-artifact, and test-fixture work is complete
-   through `bb7844c742d602f2121270cdae6eb5b13996e480`.
+   through `26015deda069f8820e6a84f4b9b358d401283522`.
 2. The final targeted closeout, broad check, and static/build gates ran against
    that implementation tree; the earlier clean-room full-suite snapshot and
    exact results are recorded above.
 3. This ledger was regenerated from the exact command above while the closeout
-   file remained uncommitted; its row count is 166.
+   file remained uncommitted; its row count is 170.
 4. Commit this closeout as the next, documentation-only scope. Its commit is
-   expected to make the branch count 167; do not try to embed that
+   expected to make the branch count 171; do not try to embed that
    self-referential docs commit SHA in this file.
 5. The peeled target is an ancestor of the implementation HEAD, and
    `origin/custom/20260415` still points at its audited source SHA.
