@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterAll, beforeAll, beforeEach } from "vitest";
 import { resolveStorePath } from "../config/sessions/paths.js";
 import { loadSessionStore } from "../config/sessions/store-load.js";
+import { clearSessionStoreCacheForTest } from "../config/sessions/store.js";
 import { startConnectedServerWithClient } from "./test-helpers.js";
 
 // Suite-level connected Gateway fixture with isolated session store path.
@@ -46,9 +47,13 @@ export function installConnectedSessionStoreGatewaySuite(prefix: string) {
 
   afterAll(async () => {
     started?.ws.close();
-    await started?.server.close();
-    if (sessionStoreDir) {
-      await fs.rm(sessionStoreDir, { recursive: true, force: true });
+    try {
+      await started?.server.close();
+    } finally {
+      clearSessionStoreCacheForTest();
+      if (sessionStoreDir) {
+        await fs.rm(sessionStoreDir, { recursive: true, force: true });
+      }
     }
   });
 

@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadSessionStore, saveSessionStore, type SessionEntry } from "../config/sessions.js";
 import { resolveStorePath } from "../config/sessions/paths.js";
+import { clearSessionStoreCacheForTest } from "../config/sessions/store.js";
 import { CURRENT_SESSION_VERSION } from "../config/sessions/version.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { runAgentAttempt } from "./command/attempt-execution.runtime.js";
@@ -194,6 +195,7 @@ afterEach(async () => {
   state.workspaceDir = undefined;
   state.agentDir = undefined;
   if (storePath) {
+    clearSessionStoreCacheForTest();
     await fs.rm(path.dirname(storePath), { recursive: true, force: true });
   }
 });

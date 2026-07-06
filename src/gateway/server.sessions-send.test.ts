@@ -11,6 +11,7 @@ import {
   resolveSessionTranscriptPath,
   resolveStorePath,
 } from "../config/sessions.js";
+import { clearSessionStoreCacheForTest } from "../config/sessions/store.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { emitAgentEvent } from "../infra/agent-events.js";
 import { createOutboundTestPlugin, createTestRegistry } from "../test-utils/channel-plugins.js";
@@ -145,6 +146,7 @@ beforeEach(() => {
 
 afterAll(async () => {
   await server.close();
+  clearSessionStoreCacheForTest();
   envSnapshot.restore();
 });
 
@@ -288,6 +290,7 @@ describe("sessions_send gateway loopback", () => {
       } finally {
         agentStepTesting.setDepsForTest();
         testState.sessionStorePath = undefined;
+        clearSessionStoreCacheForTest();
         await fs.rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
       }
     },
@@ -434,6 +437,7 @@ describe("sessions_send agent targeting", () => {
       } finally {
         testState.agentsConfig = undefined;
         testState.sessionStorePath = undefined;
+        clearSessionStoreCacheForTest();
         await fs.rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
       }
     },

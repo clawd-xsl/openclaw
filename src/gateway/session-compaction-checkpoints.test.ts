@@ -9,6 +9,7 @@ import { CURRENT_SESSION_VERSION, SessionManager } from "openclaw/plugin-sdk/age
 import type { AssistantMessage } from "openclaw/plugin-sdk/llm";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { loadSessionStore, resolveStorePath } from "../config/sessions.js";
+import { clearSessionStoreCacheForTest } from "../config/sessions/store.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   captureCompactionCheckpointSnapshotAsync,
@@ -163,6 +164,7 @@ async function persistMainCheckpoint(
 }
 
 afterEach(async () => {
+  clearSessionStoreCacheForTest();
   await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
 });
 

@@ -13,6 +13,7 @@ import {
   type SessionEntry,
   updateSessionStore,
 } from "../../config/sessions.js";
+import { clearSessionStoreCacheForTest } from "../../config/sessions/store.js";
 import type { InternalHookEvent } from "../../hooks/internal-hooks.js";
 import { resetSystemEventsForTest } from "../../infra/system-events.js";
 import { createLazyRuntimeModule } from "../../shared/lazy-runtime.js";
@@ -278,6 +279,7 @@ export function setupGatewaySessionsTestHarness() {
 
   afterAll(async () => {
     await harness?.close();
+    clearSessionStoreCacheForTest();
     if (sharedSessionStoreDir) {
       await fs.rm(sharedSessionStoreDir, { recursive: true, force: true });
     }

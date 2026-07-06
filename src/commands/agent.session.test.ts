@@ -16,10 +16,19 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { buildOutboundSessionContext } from "../infra/outbound/session-context.js";
 
 async function withTempHome<T>(fn: (home: string) => Promise<T>): Promise<T> {
-  return withTempHomeBase(fn, {
-    prefix: "openclaw-agent-session-",
-    skipSessionCleanup: true,
-  });
+  return withTempHomeBase(
+    async (home) => {
+      try {
+        return await fn(home);
+      } finally {
+        clearSessionStoreCacheForTest();
+      }
+    },
+    {
+      prefix: "openclaw-agent-session-",
+      skipSessionCleanup: true,
+    },
+  );
 }
 
 function mockConfig(

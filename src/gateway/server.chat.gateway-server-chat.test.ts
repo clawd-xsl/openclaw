@@ -6,6 +6,7 @@ import path from "node:path";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { WebSocket } from "ws";
 import { loadSessionStore, resolveStorePath } from "../config/sessions.js";
+import { clearSessionStoreCacheForTest } from "../config/sessions/store.js";
 import { emitAgentEvent, registerAgentRunContext } from "../infra/agent-events.js";
 import { extractFirstTextBlock } from "../shared/chat-message-content.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
@@ -42,6 +43,7 @@ describe("gateway server chat", () => {
   });
 
   const removeTempDir = async (dir: string): Promise<void> => {
+    clearSessionStoreCacheForTest();
     await fs.rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   };
 
@@ -2066,8 +2068,8 @@ describe("gateway server chat", () => {
       }
     } finally {
       webchatWs.close();
-      await removeTempDir(dir);
       testState.sessionStorePath = undefined;
+      await removeTempDir(dir);
     }
   });
 });

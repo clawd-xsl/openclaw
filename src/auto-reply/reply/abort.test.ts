@@ -6,7 +6,7 @@ import type { SubagentRunRecord } from "../../agents/subagent-registry.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { resolveStorePath } from "../../config/sessions/paths.js";
 import type { SessionAbortTargetResult } from "../../config/sessions/session-accessor.js";
-import { loadSessionStore } from "../../config/sessions/store.js";
+import { clearSessionStoreCacheForTest, loadSessionStore } from "../../config/sessions/store.js";
 import { createSuiteTempRootTracker } from "../../test-helpers/temp-dir.js";
 import {
   testing as abortTesting,
@@ -94,6 +94,7 @@ describe("abort detection", () => {
   });
 
   afterAll(async () => {
+    clearSessionStoreCacheForTest();
     await suiteTempDirs.cleanup();
   });
 

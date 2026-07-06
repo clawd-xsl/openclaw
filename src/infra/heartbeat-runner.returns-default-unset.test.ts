@@ -13,6 +13,7 @@ import {
   resolveStorePath,
   saveSessionStore,
 } from "../config/sessions.js";
+import { clearSessionStoreCacheForTest } from "../config/sessions/store.js";
 import { getActivePluginRegistry, setActivePluginRegistry } from "../plugins/runtime.js";
 import { buildAgentPeerSessionKey } from "../routing/session-key.js";
 import {
@@ -318,11 +319,12 @@ beforeEach(() => {
 });
 
 afterAll(async () => {
-  if (fixtureRoot) {
-    await fs.rm(fixtureRoot, { recursive: true, force: true });
-  }
   if (previousRegistry) {
     setActivePluginRegistry(previousRegistry);
+  }
+  clearSessionStoreCacheForTest();
+  if (fixtureRoot) {
+    await fs.rm(fixtureRoot, { recursive: true, force: true });
   }
 });
 

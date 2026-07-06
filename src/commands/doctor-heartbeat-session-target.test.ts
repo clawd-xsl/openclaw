@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveStorePath } from "../config/sessions/paths.js";
 import { saveSessionStoreToSqlite } from "../config/sessions/store-sqlite.js";
+import { clearSessionStoreCacheForTest } from "../config/sessions/store.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { describeHeartbeatSessionTargetIssues } from "./doctor-heartbeat-session-target.js";
@@ -17,6 +18,7 @@ describe("describeHeartbeatSessionTargetIssues", () => {
   });
 
   afterEach(() => {
+    clearSessionStoreCacheForTest();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 

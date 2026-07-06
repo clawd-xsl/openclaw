@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { resolveStorePath } from "../config/sessions.js";
+import { clearSessionStoreCacheForTest } from "../config/sessions/store.js";
 import { appendAssistantMessageToSessionTranscript } from "../config/sessions/transcript.js";
 import { emitSessionLifecycleEvent } from "../sessions/session-lifecycle-events.js";
 import * as transcriptEvents from "../sessions/transcript-events.js";
@@ -47,9 +48,11 @@ afterAll(async () => {
   if (harness) {
     await harness.close();
   }
+  clearSessionStoreCacheForTest();
 });
 
 afterEach(async () => {
+  clearSessionStoreCacheForTest();
   await Promise.all(
     cleanupDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })),
   );

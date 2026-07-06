@@ -6,6 +6,7 @@ import { WebSocket } from "ws";
 import { cleanupTempDirs, makeTempDir } from "../../test/helpers/temp-dir.js";
 import { AcpRuntimeError } from "../acp/runtime/errors.js";
 import type { ChannelPlugin } from "../channels/plugins/types.js";
+import { clearSessionStoreCacheForTest } from "../config/sessions/store.js";
 import { emitAgentEvent, registerAgentRunContext } from "../infra/agent-events.js";
 import {
   createChannelTestPluginBase,
@@ -35,6 +36,7 @@ installGatewayTestHooks({ scope: "suite" });
 let server: Awaited<ReturnType<typeof startServerWithClient>>["server"];
 let ws: Awaited<ReturnType<typeof startServerWithClient>>["ws"];
 let port: number;
+const gwSessionTempDirs: string[] = [];
 
 beforeAll(async () => {
   const started = await startConnectedServerWithClient();
@@ -45,7 +47,12 @@ beforeAll(async () => {
 
 afterAll(async () => {
   ws.close();
-  await server.close();
+  try {
+    await server.close();
+  } finally {
+    clearSessionStoreCacheForTest();
+    cleanupTempDirs(gwSessionTempDirs);
+  }
 });
 
 const createMSTeamsPlugin = (params?: { aliases?: string[] }): ChannelPlugin => ({
@@ -174,16 +181,10 @@ async function sendAgentWsRequestAndWaitFinal(
   return await finalP;
 }
 
-const gwSessionTempDirs: string[] = [];
-
 async function useTempSessionStorePath() {
   const dir = makeTempDir(gwSessionTempDirs, "openclaw-gw-");
   testState.sessionStorePath = path.join(dir, "sessions.json");
 }
-
-afterAll(() => {
-  cleanupTempDirs(gwSessionTempDirs);
-});
 
 describe("gateway server agent", () => {
   beforeEach(() => {

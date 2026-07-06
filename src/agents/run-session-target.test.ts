@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveStorePath } from "../config/sessions/paths.js";
-import { loadSessionStore } from "../config/sessions/store.js";
+import { clearSessionStoreCacheForTest, loadSessionStore } from "../config/sessions/store.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveAgentRunSessionTarget } from "./run-session-target.js";
 
@@ -15,6 +15,7 @@ describe("agent run session target", () => {
   });
 
   afterEach(() => {
+    clearSessionStoreCacheForTest();
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 

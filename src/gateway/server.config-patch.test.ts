@@ -7,6 +7,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { resolveDefaultAgentDir } from "../agents/agent-scope.js";
 import { AUTH_PROFILE_FILENAME } from "../agents/auth-profiles/constants.js";
 import { loadSessionStore, resolveStorePath } from "../config/sessions.js";
+import { clearSessionStoreCacheForTest } from "../config/sessions/store.js";
 import { deleteTestEnvValue } from "../test-utils/env.js";
 import { testing as controlPlaneRateLimitTesting } from "./control-plane-rate-limit.js";
 import {
@@ -50,13 +51,18 @@ afterAll(async () => {
     return;
   }
   startedServer.ws.close();
-  await startedServer.server.close();
-  startedServer = null;
-  await fs.rm(sharedTempRoot, { recursive: true, force: true });
+  try {
+    await startedServer.server.close();
+  } finally {
+    startedServer = null;
+    clearSessionStoreCacheForTest();
+    await fs.rm(sharedTempRoot, { recursive: true, force: true });
+  }
 });
 
 async function resetTempDir(name: string): Promise<string> {
   const dir = path.join(sharedTempRoot, name);
+  clearSessionStoreCacheForTest();
   await fs.rm(dir, { recursive: true, force: true });
   await fs.mkdir(dir, { recursive: true });
   return dir;

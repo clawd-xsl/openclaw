@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveStorePath } from "../config/sessions/paths.js";
-import { loadSessionStore } from "../config/sessions/store.js";
+import { clearSessionStoreCacheForTest, loadSessionStore } from "../config/sessions/store.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { CallGatewayOptions } from "../gateway/call.js";
 import {
@@ -135,6 +135,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  clearSessionStoreCacheForTest();
   fs.rmSync(tempRoot, { recursive: true, force: true });
 });
 

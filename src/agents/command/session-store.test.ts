@@ -9,6 +9,7 @@ import type { SessionEntry } from "../../config/sessions.js";
 import { loadSessionStore } from "../../config/sessions.js";
 import { resolveStorePath } from "../../config/sessions/paths.js";
 import { readSessionEntry } from "../../config/sessions/store-load.js";
+import { clearSessionStoreCacheForTest } from "../../config/sessions/store.js";
 import type { EmbeddedAgentRunResult } from "../embedded-agent.js";
 import {
   clearCliSessionInStore,
@@ -167,6 +168,7 @@ async function withTempSessionStore<T>(
   try {
     return await run({ dir, storePath: path.join(dir, "sessions.json") });
   } finally {
+    clearSessionStoreCacheForTest();
     await fs.rm(dir, { recursive: true, force: true });
   }
 }

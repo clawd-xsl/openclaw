@@ -17,6 +17,7 @@ import {
   updateSessionStore,
   type SessionEntry,
 } from "../../config/sessions.js";
+import { clearSessionStoreCacheForTest } from "../../config/sessions/store.js";
 import { APPROVALS_SCOPE, READ_SCOPE, WRITE_SCOPE } from "../../gateway/operator-scopes.js";
 import { pluginHostHookHandlers } from "../../gateway/server-methods/plugin-host-hooks.js";
 import { buildGatewaySessionRow } from "../../gateway/session-utils.js";
@@ -122,6 +123,7 @@ async function withHostHookState(
       });
     });
   } finally {
+    clearSessionStoreCacheForTest();
     await fs.rm(stateDir, { recursive: true, force: true });
   }
 }

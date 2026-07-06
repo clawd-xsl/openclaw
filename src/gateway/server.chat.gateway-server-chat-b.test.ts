@@ -8,6 +8,7 @@ import type { GetReplyOptions } from "../auto-reply/get-reply-options.types.js";
 import type { InternalGetReplyOptions } from "../auto-reply/reply/get-reply.types.js";
 import { clearConfigCache } from "../config/config.js";
 import { resolveStorePath, updateSessionStore } from "../config/sessions.js";
+import { clearSessionStoreCacheForTest } from "../config/sessions/store.js";
 import type { AgentModelConfig } from "../config/types.agents-shared.js";
 import { createDeferred } from "../test-utils/deferred.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
@@ -80,6 +81,7 @@ async function withGatewayChatHarness(
     clearConfigCache();
     testState.sessionStorePath = undefined;
     ws.close();
+    clearSessionStoreCacheForTest();
     await Promise.all(
       tempDirs.map((dir) =>
         fs.rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }),

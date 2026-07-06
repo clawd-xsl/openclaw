@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { vi } from "vitest";
 import { resolveStorePath } from "../config/sessions/paths.js";
+import { clearSessionStoreCacheForTest } from "../config/sessions/store.js";
 import type { RuntimeEnv } from "../runtime.js";
 
 const sessionsConfigState = vi.hoisted<{ loadConfig: () => Record<string, unknown> }>(() => ({
@@ -87,6 +88,7 @@ export function writeStore(data: unknown, prefix = "sessions"): string {
 
 export function removeStore(configuredStorePath: string): void {
   const backendStorePath = resolveStorePath(configuredStorePath);
+  clearSessionStoreCacheForTest();
   for (const storePath of [
     configuredStorePath,
     backendStorePath,

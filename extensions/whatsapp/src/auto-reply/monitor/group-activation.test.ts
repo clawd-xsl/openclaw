@@ -2,7 +2,11 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { saveSessionStore, type SessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
+import {
+  clearSessionStoreCacheForTest,
+  saveSessionStore,
+  type SessionEntry,
+} from "openclaw/plugin-sdk/session-store-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadSessionStore, resolveStorePath } from "../config.runtime.js";
 import { resolveGroupActivationFor } from "./group-activation.js";
@@ -28,6 +32,7 @@ async function makeSessionStore(
   return {
     storePath,
     cleanup: async () => {
+      clearSessionStoreCacheForTest();
       await fs.rm(dir, { recursive: true, force: true });
     },
   };
