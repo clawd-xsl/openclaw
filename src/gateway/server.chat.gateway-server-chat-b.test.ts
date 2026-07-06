@@ -30,6 +30,7 @@ import {
 
 installGatewayTestHooks({ scope: "suite" });
 const FAST_WAIT_OPTS = { timeout: 2_000, interval: 5 } as const;
+const CHAT_RUN_TIMEOUT_MS = 10_000;
 type GatewayHarness = Awaited<ReturnType<typeof createGatewaySuiteHarness>>;
 type GatewaySocket = Awaited<ReturnType<GatewayHarness["openWs"]>>;
 let harness: GatewayHarness;
@@ -57,6 +58,29 @@ const sendReq = (
     }),
   );
 };
+
+async function waitForAgentRunOk(ws: GatewaySocket, runId: string) {
+  const result = await rpcReq<{ status?: string }>(ws, "agent.wait", {
+    runId,
+    timeoutMs: CHAT_RUN_TIMEOUT_MS,
+  });
+  expect(result.ok).toBe(true);
+  expect(result.payload?.status).toBe("ok");
+}
+
+function waitForChatPostDispatch(ws: GatewaySocket, runId: string) {
+  const pending = onceMessage(
+    ws,
+    (message) =>
+      message.type === "event" &&
+      message.event === "chat.send_timing" &&
+      message.payload?.runId === runId &&
+      message.payload?.phase === "post-dispatch-completed",
+    CHAT_RUN_TIMEOUT_MS,
+  );
+  void pending.catch(() => undefined);
+  return pending;
+}
 
 async function withGatewayChatHarness(
   run: (ctx: { ws: GatewaySocket; createSessionDir: () => Promise<string> }) => Promise<void>,
@@ -142,6 +166,11 @@ async function writeMainSessionTranscript(
 
 async function removeTempDir(dir: string): Promise<void> {
   await fs.rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+}
+
+async function removeSessionTempDir(dir: string): Promise<void> {
+  clearSessionStoreCacheForTest();
+  await removeTempDir(dir);
 }
 
 async function readTimelineEvents(filePath: string): Promise<Array<Record<string, unknown>>> {
@@ -230,6 +259,63 @@ async function prepareMainHistoryHarness(params: {
 }
 
 describe("gateway server chat", () => {
+  test("ordinary RPC preserves an active SQLite session writer queue", async () => {
+    await withGatewayChatHarness(async ({ ws, createSessionDir }) => {
+      await connectOk(ws);
+      await createSessionDir();
+      await writeMainSessionStore();
+      const configuredStorePath = testState.sessionStorePath;
+      if (!configuredStorePath) {
+        throw new Error("session store path was not initialized");
+      }
+      const storePath = resolveStorePath(configuredStorePath);
+      const firstWriterEntered = createDeferred();
+      const releaseFirstWriter = createDeferred();
+      const writeOrder: string[] = [];
+      let firstWrite: Promise<void> | undefined;
+      let secondWrite: Promise<void> | undefined;
+
+      try {
+        firstWrite = updateSessionStore(storePath, async (store) => {
+          firstWriterEntered.resolve();
+          await releaseFirstWriter.promise;
+          store["agent:main:queued-first"] = {
+            sessionId: "sess-queued-first",
+            updatedAt: Date.now(),
+          };
+          writeOrder.push("first");
+        });
+        await firstWriterEntered.promise;
+
+        secondWrite = updateSessionStore(storePath, (store) => {
+          store["agent:main:queued-second"] = {
+            sessionId: "sess-queued-second",
+            updatedAt: Date.now(),
+          };
+          writeOrder.push("second");
+        });
+        const secondOutcome = secondWrite.then(
+          () => ({ ok: true as const }),
+          (error: unknown) => ({ ok: false as const, error }),
+        );
+
+        const health = await rpcReq(ws, "health");
+        expect(health.ok).toBe(true);
+
+        releaseFirstWriter.resolve();
+        await firstWrite;
+        const outcome = await secondOutcome;
+        expect(outcome).toEqual({ ok: true });
+        expect(writeOrder).toEqual(["first", "second"]);
+      } finally {
+        releaseFirstWriter.resolve();
+        await Promise.allSettled(
+          [firstWrite, secondWrite].filter((write): write is Promise<void> => write !== undefined),
+        );
+      }
+    });
+  });
+
   test("chat.history returns catalog-backed session metadata with history", async () => {
     const sessionDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-gw-"));
     try {
@@ -322,7 +408,7 @@ describe("gateway server chat", () => {
       clearConfigCache();
       testState.agentConfig = undefined;
       testState.sessionStorePath = undefined;
-      await removeTempDir(sessionDir);
+      await removeSessionTempDir(sessionDir);
     }
   });
 
@@ -561,7 +647,7 @@ describe("gateway server chat", () => {
       expect(payload?.metadata).toBeUndefined();
     } finally {
       testState.sessionStorePath = undefined;
-      await removeTempDir(sessionDir);
+      await removeSessionTempDir(sessionDir);
     }
   });
 
@@ -721,7 +807,7 @@ describe("gateway server chat", () => {
       );
     } finally {
       testState.sessionStorePath = undefined;
-      await removeTempDir(sessionDir);
+      await removeSessionTempDir(sessionDir);
     }
   });
 
@@ -926,7 +1012,7 @@ describe("gateway server chat", () => {
       dispatchInboundMessageMock.mockReset();
       testState.sessionStorePath = undefined;
       clearConfigCache();
-      await removeTempDir(sessionDir);
+      await removeSessionTempDir(sessionDir);
     }
   });
 
@@ -1116,7 +1202,7 @@ describe("gateway server chat", () => {
       dispatchInboundMessageMock.mockReset();
       testState.sessionStorePath = undefined;
       clearConfigCache();
-      await removeTempDir(sessionDir);
+      await removeSessionTempDir(sessionDir);
     }
   });
 
@@ -1268,7 +1354,7 @@ describe("gateway server chat", () => {
         testState.agentConfig = undefined;
         testState.sessionStorePath = undefined;
         clearConfigCache();
-        await removeTempDir(sessionDir);
+        await removeSessionTempDir(sessionDir);
       }
     },
   );
@@ -1455,7 +1541,7 @@ describe("gateway server chat", () => {
       dispatchInboundMessageMock.mockReset();
       testState.sessionStorePath = undefined;
       clearConfigCache();
-      await removeTempDir(sessionDir);
+      await removeSessionTempDir(sessionDir);
     }
   });
 
@@ -1570,7 +1656,7 @@ describe("gateway server chat", () => {
       dispatchInboundMessageMock.mockReset();
       testState.sessionStorePath = undefined;
       clearConfigCache();
-      await removeTempDir(sessionDir);
+      await removeSessionTempDir(sessionDir);
     }
   });
 
@@ -1704,7 +1790,7 @@ describe("gateway server chat", () => {
       dispatchInboundMessageMock.mockReset();
       testState.sessionStorePath = undefined;
       clearConfigCache();
-      await removeTempDir(sessionDir);
+      await removeSessionTempDir(sessionDir);
     }
   });
 
@@ -1851,11 +1937,14 @@ describe("gateway server chat", () => {
           }),
         ]),
       );
+      await vi.waitFor(() => {
+        expect(context.removeChatRun).toHaveBeenCalledTimes(1);
+      }, FAST_WAIT_OPTS);
     } finally {
       dispatchInboundMessageMock.mockReset();
       testState.sessionStorePath = undefined;
       clearConfigCache();
-      await removeTempDir(sessionDir);
+      await removeSessionTempDir(sessionDir);
     }
   });
 
@@ -2003,11 +2092,14 @@ describe("gateway server chat", () => {
       expect(
         broadcastToConnIds.mock.invocationCallOrder[firstAssistantTimingCallIndex],
       ).toBeLessThan(broadcast.mock.invocationCallOrder[0]);
+      await vi.waitFor(() => {
+        expect(context.removeChatRun).toHaveBeenCalledTimes(1);
+      }, FAST_WAIT_OPTS);
     } finally {
       dispatchInboundMessageMock.mockReset();
       testState.sessionStorePath = undefined;
       clearConfigCache();
-      await removeTempDir(sessionDir);
+      await removeSessionTempDir(sessionDir);
     }
   });
 
@@ -2377,6 +2469,7 @@ describe("gateway server chat", () => {
         }, FAST_WAIT_OPTS);
 
         expect(capturedOpts?.disableBlockStreaming).toBeUndefined();
+        await waitForAgentRunOk(ws, "idem-block-streaming");
       } finally {
         testState.agentConfig = undefined;
       }
@@ -2450,6 +2543,7 @@ describe("gateway server chat", () => {
               ),
             ).toBe(true);
           }, FAST_WAIT_OPTS);
+          await waitForAgentRunOk(ws, "idem-timeline");
         },
         {
           headers: { origin: `http://127.0.0.1:${harness.port}` },
@@ -2500,6 +2594,7 @@ describe("gateway server chat", () => {
         expect(
           (sendRes.payload as { serverTiming?: unknown } | undefined)?.serverTiming,
         ).toBeUndefined();
+        await waitForAgentRunOk(ws, "idem-public-webchat");
       },
       {
         headers: { origin: `http://127.0.0.1:${harness.port}` },
@@ -2570,6 +2665,7 @@ describe("gateway server chat", () => {
 
         expect(capturedOpts?.requestedSessionId).toBe("sess-main");
         expect(capturedOpts?.resumeRequestedSession).toBe(true);
+        await waitForAgentRunOk(ws, "idem-requested-session-id");
       },
       {
         headers: { origin: `http://127.0.0.1:${harness.port}` },
@@ -3306,86 +3402,100 @@ describe("gateway server chat", () => {
   });
 
   test("smoke: supports abort and idempotent completion", async () => {
-    await withGatewayChatHarness(async ({ ws, createSessionDir }) => {
-      const spy = getReplyFromConfig;
-      let aborted = false;
-      await connectOk(ws);
-
-      await createSessionDir();
-      await writeMainSessionStore();
-
-      mockGetReplyFromConfigOnce(async (_ctx, opts) => {
-        opts?.onAgentRunStart?.(opts.runId ?? "idem-abort-1");
-        const signal = opts?.abortSignal;
-        await new Promise<void>((resolve) => {
-          if (!signal || signal.aborted) {
-            aborted = Boolean(signal?.aborted);
-            resolve();
-            return;
-          }
-          signal.addEventListener(
-            "abort",
-            () => {
-              aborted = true;
-              resolve();
-            },
-            { once: true },
-          );
+    await withGatewayChatHarness(
+      async ({ ws, createSessionDir }) => {
+        const spy = getReplyFromConfig;
+        let aborted = false;
+        await connectOk(ws, {
+          client: {
+            id: GATEWAY_CLIENT_NAMES.CONTROL_UI,
+            version: "1.0.0",
+            platform: "web",
+            mode: GATEWAY_CLIENT_MODES.WEBCHAT,
+          },
         });
-        return undefined;
-      });
 
-      const sendResP = onceMessage(ws, (o) => o.type === "res" && o.id === "send-abort-1", 2_000);
-      sendReq(ws, "send-abort-1", "chat.send", {
-        sessionKey: "main",
-        message: "hello",
-        idempotencyKey: "idem-abort-1",
-        timeoutMs: 30_000,
-      });
+        await createSessionDir();
+        await writeMainSessionStore();
 
-      const sendRes = await sendResP;
-      expect(sendRes.ok).toBe(true);
-      await vi.waitFor(() => {
-        expect(spy.mock.calls.length).toBeGreaterThan(0);
-      }, FAST_WAIT_OPTS);
+        mockGetReplyFromConfigOnce(async (_ctx, opts) => {
+          opts?.onAgentRunStart?.(opts.runId ?? "idem-abort-1");
+          const signal = opts?.abortSignal;
+          await new Promise<void>((resolve) => {
+            if (!signal || signal.aborted) {
+              aborted = Boolean(signal?.aborted);
+              resolve();
+              return;
+            }
+            signal.addEventListener(
+              "abort",
+              () => {
+                aborted = true;
+                resolve();
+              },
+              { once: true },
+            );
+          });
+          return undefined;
+        });
 
-      const inFlight = await rpcReq<{ status?: string }>(ws, "chat.send", {
-        sessionKey: "main",
-        message: "hello",
-        idempotencyKey: "idem-abort-1",
-      });
-      expect(inFlight.ok).toBe(true);
-      expect(["started", "in_flight", "ok"]).toContain(inFlight.payload?.status ?? "");
+        const postDispatch = waitForChatPostDispatch(ws, "idem-abort-1");
+        const sendResP = onceMessage(ws, (o) => o.type === "res" && o.id === "send-abort-1", 2_000);
+        sendReq(ws, "send-abort-1", "chat.send", {
+          sessionKey: "main",
+          message: "hello",
+          idempotencyKey: "idem-abort-1",
+          timeoutMs: 30_000,
+        });
 
-      const abortRes = await rpcReq<{ aborted?: boolean }>(ws, "chat.abort", {
-        sessionKey: "main",
-        runId: "idem-abort-1",
-      });
-      expect(abortRes.ok).toBe(true);
-      expect(abortRes.payload?.aborted).toBe(true);
-      await vi.waitFor(() => {
-        expect(aborted).toBe(true);
-      }, FAST_WAIT_OPTS);
+        const sendRes = await sendResP;
+        expect(sendRes.ok).toBe(true);
+        await vi.waitFor(() => {
+          expect(spy.mock.calls.length).toBeGreaterThan(0);
+        }, FAST_WAIT_OPTS);
 
-      spy.mockClear();
-      spy.mockResolvedValueOnce(undefined);
+        const inFlight = await rpcReq<{ status?: string }>(ws, "chat.send", {
+          sessionKey: "main",
+          message: "hello",
+          idempotencyKey: "idem-abort-1",
+        });
+        expect(inFlight.ok).toBe(true);
+        expect(["started", "in_flight", "ok"]).toContain(inFlight.payload?.status ?? "");
 
-      const completeRes = await rpcReq<{ status?: string }>(ws, "chat.send", {
-        sessionKey: "main",
-        message: "hello",
-        idempotencyKey: "idem-complete-1",
-      });
-      expect(completeRes.ok).toBe(true);
+        const abortRes = await rpcReq<{ aborted?: boolean }>(ws, "chat.abort", {
+          sessionKey: "main",
+          runId: "idem-abort-1",
+        });
+        expect(abortRes.ok).toBe(true);
+        expect(abortRes.payload?.aborted).toBe(true);
+        await vi.waitFor(() => {
+          expect(aborted).toBe(true);
+        }, FAST_WAIT_OPTS);
+        await postDispatch;
 
-      await vi.waitFor(async () => {
-        const again = await rpcReq<{ status?: string }>(ws, "chat.send", {
+        spy.mockClear();
+        spy.mockResolvedValueOnce(undefined);
+
+        const completeRes = await rpcReq<{ status?: string }>(ws, "chat.send", {
           sessionKey: "main",
           message: "hello",
           idempotencyKey: "idem-complete-1",
         });
-        expect(again.ok).toBe(true);
-        expect(again.payload?.status).toBe("ok");
-      }, FAST_WAIT_OPTS);
-    });
+        expect(completeRes.ok).toBe(true);
+
+        await vi.waitFor(async () => {
+          const again = await rpcReq<{ status?: string }>(ws, "chat.send", {
+            sessionKey: "main",
+            message: "hello",
+            idempotencyKey: "idem-complete-1",
+          });
+          expect(again.ok).toBe(true);
+          expect(again.payload?.status).toBe("ok");
+        }, FAST_WAIT_OPTS);
+      },
+      {
+        headers: { origin: `http://127.0.0.1:${harness.port}` },
+      },
+    );
   });
 });

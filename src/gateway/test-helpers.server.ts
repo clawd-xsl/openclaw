@@ -15,6 +15,7 @@ import {
   resolveMainSessionKeyFromConfig,
   type SessionEntry,
 } from "../config/sessions.js";
+import { clearSessionStoreCaches } from "../config/sessions/store-cache.js";
 import { resetAgentRunContextForTest } from "../infra/agent-events.js";
 import {
   loadOrCreateDeviceIdentity,
@@ -1147,11 +1148,10 @@ export async function rpcReq<T extends Record<string, unknown>>(
   if (hasUnsyncedGatewayTestSessionConfig()) {
     await persistTestSessionConfig();
   }
-  // Gateway suites often mutate testState-backed config/session inputs between
-  // RPCs while reusing one server instance; flush caches so the next request
-  // observes the updated test fixture state.
+  // RPCs can run while an agent is still writing its session. Refresh fixture-backed reads
+  // without closing SQLite handles or breaking the active writer queue.
   resetConfigRuntimeState();
-  clearSessionStoreCacheForTest();
+  clearSessionStoreCaches();
   const { randomUUID } = await import("node:crypto");
   const id = randomUUID();
   const responsePromise = onceMessage<{

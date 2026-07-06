@@ -13,6 +13,7 @@ import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
 import {
   connectOk,
+  connectWebchatClient,
   dispatchInboundMessageMock,
   installGatewayTestHooks,
   mockGetReplyFromConfigOnce,
@@ -182,8 +183,23 @@ describe("gateway server chat", () => {
     expect(res.payload?.startedAt).toBe(startedAt);
   };
 
-  const sendChatAndExpectStarted = async (runId: string, message = "/context list") => {
-    const res = await rpcReq(ws, "chat.send", {
+  const openControlUiSocket = async () =>
+    await connectWebchatClient({
+      port,
+      client: {
+        id: GATEWAY_CLIENT_NAMES.CONTROL_UI,
+        version: "1.0.0",
+        platform: "web",
+        mode: GATEWAY_CLIENT_MODES.WEBCHAT,
+      },
+    });
+
+  const sendChatAndExpectStarted = async (
+    runId: string,
+    message = "/context list",
+    targetWs = ws,
+  ) => {
+    const res = await rpcReq(targetWs, "chat.send", {
       sessionKey: "main",
       message,
       idempotencyKey: runId,
@@ -193,8 +209,12 @@ describe("gateway server chat", () => {
     return res;
   };
 
-  const waitForAgentRunOk = async (runId: string, timeoutMs = 1_000) => {
-    const res = await rpcReq(ws, "agent.wait", {
+  const waitForAgentRunOkOn = async (
+    targetWs: WebSocket,
+    runId: string,
+    timeoutMs = CHAT_RESPONSE_TIMEOUT_MS,
+  ) => {
+    const res = await rpcReq(targetWs, "agent.wait", {
       runId,
       timeoutMs,
     });
@@ -202,8 +222,23 @@ describe("gateway server chat", () => {
     expect(res.payload?.status).toBe("ok");
     return res;
   };
-  const abortChatRun = async (runId: string) => {
-    const res = await rpcReq(ws, "chat.abort", {
+  const waitForAgentRunOk = async (runId: string, timeoutMs = CHAT_RESPONSE_TIMEOUT_MS) =>
+    await waitForAgentRunOkOn(ws, runId, timeoutMs);
+  const waitForChatPostDispatch = (targetWs: WebSocket, runId: string) => {
+    const pending = onceMessage(
+      targetWs,
+      (message) =>
+        message.type === "event" &&
+        message.event === "chat.send_timing" &&
+        message.payload?.runId === runId &&
+        message.payload?.phase === "post-dispatch-completed",
+      CHAT_RESPONSE_TIMEOUT_MS,
+    );
+    void pending.catch(() => undefined);
+    return pending;
+  };
+  const abortChatRun = async (runId: string, targetWs = ws) => {
+    const res = await rpcReq(targetWs, "chat.abort", {
       sessionKey: "main",
       runId,
     });
@@ -261,6 +296,7 @@ describe("gateway server chat", () => {
       expect(res.ok).toBe(true);
       expect(res.payload?.runId).toBe("idem-sessions-send-1");
       expect(res.payload?.messageSeq).toBe(1);
+      await waitForAgentRunOk("idem-sessions-send-1");
     } finally {
       testState.sessionStorePath = undefined;
       await removeTempDir(dir);
@@ -286,6 +322,7 @@ describe("gateway server chat", () => {
 
       const rawStore = loadConfiguredSessionStore("orion");
       expect(rawStore["agent:orion:main"]?.sessionId).toBeTypeOf("string");
+      await waitForAgentRunOk("idem-sessions-send-orion");
     } finally {
       testState.agentsConfig = undefined;
       testState.sessionStorePath = undefined;
@@ -314,6 +351,7 @@ describe("gateway server chat", () => {
       expect(res.ok).toBe(true);
       expect(res.payload?.runId).toBe("idem-sessions-steer-1");
       expect(res.payload?.messageSeq).toBe(1);
+      await waitForAgentRunOk("idem-sessions-steer-1");
     } finally {
       testState.sessionStorePath = undefined;
       await removeTempDir(dir);
@@ -323,7 +361,9 @@ describe("gateway server chat", () => {
   test("sessions.abort stops active dashboard runs", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-sessions-abort-"));
     testState.sessionStorePath = path.join(dir, "sessions.json");
+    let scopedWs: WebSocket | undefined;
     try {
+      scopedWs = await openControlUiSocket();
       await writeSessionStore({
         entries: {
           "agent:main:dashboard:test-abort": {
@@ -333,7 +373,8 @@ describe("gateway server chat", () => {
         },
       });
 
-      const sendRes = await rpcReq(ws, "sessions.send", {
+      const postDispatch = waitForChatPostDispatch(scopedWs, "idem-sessions-abort-1");
+      const sendRes = await rpcReq(scopedWs, "sessions.send", {
         key: "agent:main:dashboard:test-abort",
         message: "hello",
         idempotencyKey: "idem-sessions-abort-1",
@@ -342,7 +383,7 @@ describe("gateway server chat", () => {
       expect(sendRes.ok).toBe(true);
 
       const cancelledEventP = onceMessage(
-        ws,
+        scopedWs,
         (o) => {
           const data =
             o.payload?.data && typeof o.payload.data === "object"
@@ -361,7 +402,7 @@ describe("gateway server chat", () => {
       );
       void cancelledEventP.catch(() => undefined);
 
-      const abortRes = await rpcReq(ws, "sessions.abort", {
+      const abortRes = await rpcReq(scopedWs, "sessions.abort", {
         key: "agent:main:dashboard:test-abort",
         runId: "idem-sessions-abort-1",
       });
@@ -376,7 +417,7 @@ describe("gateway server chat", () => {
           aborted: true,
           stopReason: "rpc",
         });
-        const waitRes = await rpcReq(ws, "agent.wait", {
+        const waitRes = await rpcReq(scopedWs, "agent.wait", {
           runId: "idem-sessions-abort-1",
           timeoutMs: 0,
         });
@@ -389,7 +430,9 @@ describe("gateway server chat", () => {
       } else {
         expect(abortRes.payload?.abortedRunId).toBeNull();
       }
+      await postDispatch;
     } finally {
+      scopedWs?.close();
       testState.sessionStorePath = undefined;
       await removeTempDir(dir);
     }
@@ -398,7 +441,9 @@ describe("gateway server chat", () => {
   test("sessions.abort resolves active runs by runId without a caller session key", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-sessions-abort-runid-"));
     testState.sessionStorePath = path.join(dir, "sessions.json");
+    let scopedWs: WebSocket | undefined;
     try {
+      scopedWs = await openControlUiSocket();
       await writeSessionStore({
         entries: {
           "agent:main:dashboard:test-abort-runid": {
@@ -408,7 +453,8 @@ describe("gateway server chat", () => {
         },
       });
 
-      const sendRes = await rpcReq(ws, "sessions.send", {
+      const postDispatch = waitForChatPostDispatch(scopedWs, "idem-sessions-abort-runid-1");
+      const sendRes = await rpcReq(scopedWs, "sessions.send", {
         key: "agent:main:dashboard:test-abort-runid",
         message: "hello",
         idempotencyKey: "idem-sessions-abort-runid-1",
@@ -416,7 +462,7 @@ describe("gateway server chat", () => {
       });
       expect(sendRes.ok).toBe(true);
 
-      const abortRes = await rpcReq(ws, "sessions.abort", {
+      const abortRes = await rpcReq(scopedWs, "sessions.abort", {
         runId: "idem-sessions-abort-runid-1",
       });
       expect(abortRes.ok).toBe(true);
@@ -424,7 +470,9 @@ describe("gateway server chat", () => {
       if (abortRes.payload?.status === "aborted") {
         expect(abortRes.payload?.abortedRunId).toBe("idem-sessions-abort-runid-1");
       }
+      await postDispatch;
     } finally {
+      scopedWs?.close();
       testState.sessionStorePath = undefined;
       await removeTempDir(dir);
     }
@@ -447,6 +495,7 @@ describe("gateway server chat", () => {
       idempotencyKey: "idem-sanitized-1",
     });
     expect(sanitizedRes.ok).toBe(true);
+    await waitForAgentRunOk("idem-sanitized-1");
   });
 
   test("handles chat send and history flows", async () => {
@@ -476,6 +525,7 @@ describe("gateway server chat", () => {
         idempotencyKey: "idem-webchat-1",
       });
       expect(webchatRes.ok).toBe(true);
+      await waitForAgentRunOkOn(webchatWs, "idem-webchat-1");
 
       webchatWs.close();
       webchatWs = undefined;
@@ -488,6 +538,7 @@ describe("gateway server chat", () => {
       });
       expect(timeoutRes.ok).toBe(true);
       expect(timeoutRes.payload?.runId).toBe("idem-timeout-1");
+      await waitForAgentRunOk("idem-timeout-1");
       testState.agentConfig = undefined;
 
       const sessionRes = await rpcReq(ws, "chat.send", {
@@ -497,6 +548,7 @@ describe("gateway server chat", () => {
       });
       expect(sessionRes.ok).toBe(true);
       expect(sessionRes.payload?.runId).toBe("idem-session-key-1");
+      await waitForAgentRunOk("idem-session-key-1");
 
       const sendPolicyDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-gw-"));
       tempDirs.push(sendPolicyDir);
@@ -566,6 +618,7 @@ describe("gateway server chat", () => {
       expect(agentAllowedRes.payload?.status).toBe("accepted");
       expect(agentAllowedRes.payload?.runId).toBe("idem-2");
       await vi.waitFor(() => expect(agentCommand).toHaveBeenCalled());
+      await waitForAgentRunOk("idem-2");
 
       testState.sessionStorePath = undefined;
       testState.sessionConfig = undefined;
@@ -604,6 +657,7 @@ describe("gateway server chat", () => {
       );
       expect(imgRes.ok).toBe(true);
       expectStringRunId(imgRes.payload);
+      await waitForAgentRunOk("idem-img");
       const reqIdOnly = "chat-img-only";
       ws.send(
         JSON.stringify({
@@ -633,6 +687,7 @@ describe("gateway server chat", () => {
       );
       expect(imgOnlyRes.ok).toBe(true);
       expectStringRunId(imgOnlyRes.payload);
+      await waitForAgentRunOk("idem-img-only");
 
       const historyDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-gw-"));
       tempDirs.push(historyDir);
@@ -1379,6 +1434,7 @@ describe("gateway server chat", () => {
       expect(res.ok).toBe(true);
       await eventPromise;
       expect(spy.mock.calls.length).toBe(callsBefore);
+      await waitForAgentRunOk("idem-command-1");
     });
   });
 
@@ -1467,6 +1523,7 @@ describe("gateway server chat", () => {
       expect(historyRes.ok).toBe(true);
       const historyTexts = collectHistoryTextValues(historyRes.payload?.messages ?? []);
       expect(historyTexts).toEqual(["main thread context"]);
+      await waitForAgentRunOk("idem-btw-1");
     });
   });
 
@@ -1536,6 +1593,7 @@ describe("gateway server chat", () => {
         question: "what changed?",
         text: "first chunk\n\nsecond chunk",
       });
+      await waitForAgentRunOk("idem-btw-block-1");
     });
   });
 
@@ -1624,6 +1682,7 @@ describe("gateway server chat", () => {
           const serializedAssistant = JSON.stringify(assistantMessage);
           expect(serializedAssistant).not.toContain("data:image/png;base64");
           expect(serializedAssistant).not.toContain(pngB64);
+          await waitForAgentRunOk("idem-managed-image-history");
         } finally {
           envSnapshot.restore();
         }
@@ -1878,19 +1937,24 @@ describe("gateway server chat", () => {
       expect(seedWaitRes.payload?.status).toBe("ok");
 
       const releaseBlockedReply = mockBlockedChatReply();
+      const scopedWs = await openControlUiSocket();
 
       try {
-        await sendChatAndExpectStarted(runId, "hold chat run open");
+        const postDispatch = waitForChatPostDispatch(scopedWs, runId);
+        await sendChatAndExpectStarted(runId, "hold chat run open", scopedWs);
 
-        const waitWhileChatActive = await rpcReq(ws, "agent.wait", {
+        const waitWhileChatActive = await rpcReq(scopedWs, "agent.wait", {
           runId,
           timeoutMs: 40,
         });
         expectAgentWaitTimeout(waitWhileChatActive);
 
-        await abortChatRun(runId);
+        await abortChatRun(runId, scopedWs);
+        releaseBlockedReply();
+        await postDispatch;
       } finally {
         releaseBlockedReply();
+        scopedWs.close();
       }
     });
   });

@@ -62,7 +62,11 @@ async function withStateFixture(
   await withTempDir({ prefix: "orphan-keys-test-" }, async (tmpDir) => {
     const stateDir = path.join(tmpDir, ".openclaw");
     fs.mkdirSync(stateDir, { recursive: true });
-    await run({ tmpDir, stateDir });
+    try {
+      await run({ tmpDir, stateDir });
+    } finally {
+      clearSessionStoreCacheForTest();
+    }
   });
 }
 
