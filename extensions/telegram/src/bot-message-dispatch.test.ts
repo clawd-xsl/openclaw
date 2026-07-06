@@ -6,6 +6,7 @@ import {
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { setReplyPayloadMetadata } from "openclaw/plugin-sdk/reply-payload-testing";
+import { resolveStorePath as resolveSessionStorePath } from "openclaw/plugin-sdk/session-store-runtime";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveAutoTopicLabelConfig as resolveAutoTopicLabelConfigRuntime } from "./auto-topic-label-config.js";
 import type { TelegramBotDeps } from "./bot-deps.js";
@@ -1968,7 +1969,7 @@ describe("dispatchTelegramMessage draft streaming", () => {
     });
 
     const cache = createTelegramMessageCache({
-      scope: resolveTelegramMessageCacheScope(storePath),
+      scope: resolveTelegramMessageCacheScope(resolveSessionStorePath(storePath)),
     });
     await cache.record({
       accountId: "default",

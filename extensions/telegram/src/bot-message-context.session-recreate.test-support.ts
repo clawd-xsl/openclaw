@@ -8,6 +8,7 @@ import {
 import {
   clearSessionStoreCacheForTest,
   loadSessionStore,
+  resolveStorePath,
   updateSessionStore,
 } from "openclaw/plugin-sdk/session-store-runtime";
 import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
@@ -120,7 +121,7 @@ describe("Telegram direct session recreation after delete", () => {
       onRecordError: context.turn.record.onRecordError,
     });
 
-    const store = loadSessionStore(storePath, { skipCache: true });
+    const store = loadSessionStore(resolveStorePath(storePath), { skipCache: true });
     expect(context?.ctxPayload?.SessionKey).toBe(TELEGRAM_DIRECT_KEY);
     expect(store[TELEGRAM_DIRECT_KEY]).toEqual(
       expect.objectContaining({

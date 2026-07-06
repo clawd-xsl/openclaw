@@ -9,6 +9,7 @@ import {
 } from "openclaw/plugin-sdk/plugin-test-runtime";
 import {
   clearSessionStoreCacheForTest,
+  resolveStorePath,
   saveSessionStore,
   type SessionEntry,
 } from "openclaw/plugin-sdk/session-store-runtime";
@@ -140,7 +141,7 @@ async function saveSessionOverride(params: {
 }): Promise<void> {
   fs.mkdirSync(path.dirname(STORE_PATH), { recursive: true });
   await saveSessionStore(
-    STORE_PATH,
+    resolveStorePath(STORE_PATH),
     {
       [SESSION_KEY]: {
         sessionId: "main",
@@ -249,9 +250,11 @@ describe("discord native /think autocomplete", () => {
 
   afterEach(() => {
     clearSessionStoreCacheForTest();
-    try {
-      fs.unlinkSync(STORE_PATH);
-    } catch {}
+    for (const storePath of [STORE_PATH, resolveStorePath(STORE_PATH)]) {
+      try {
+        fs.unlinkSync(storePath);
+      } catch {}
+    }
   });
 
   function createConfig() {

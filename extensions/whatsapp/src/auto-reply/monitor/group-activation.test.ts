@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { saveSessionStore, type SessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { loadSessionStore } from "../config.runtime.js";
+import { loadSessionStore, resolveStorePath } from "../config.runtime.js";
 import { resolveGroupActivationFor } from "./group-activation.js";
 
 const GROUP_CONVERSATION_ID = "123@g.us";
@@ -55,8 +55,11 @@ const expectWorkGroupActivationEntry = async (
   storePath: string,
   assertEntry?: (entry: SessionStoreEntry | undefined) => void,
 ) => {
+  const backendStorePath = resolveStorePath(storePath);
   await vi.waitFor(() => {
-    const scopedEntry = loadSessionStore(storePath, { skipCache: true })[WORK_GROUP_SESSION_KEY];
+    const scopedEntry = loadSessionStore(backendStorePath, { skipCache: true })[
+      WORK_GROUP_SESSION_KEY
+    ];
     expect(scopedEntry?.groupActivation).toBe("always");
     assertEntry?.(scopedEntry);
   });

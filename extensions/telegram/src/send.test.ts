@@ -6,6 +6,7 @@ import {
   createPluginStateSyncKeyedStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
 import { importFreshModule } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { markdownToTelegramHtml } from "./format.js";
@@ -863,7 +864,7 @@ describe("sendMessageTelegram", () => {
     });
 
     const cache = createTelegramMessageCache({
-      scope: resolveTelegramMessageCacheScope(storePath),
+      scope: resolveTelegramMessageCacheScope(resolveStorePath(storePath)),
     });
     await cache.record({
       accountId: "default",
@@ -919,7 +920,7 @@ describe("sendMessageTelegram", () => {
     });
 
     const cache = createTelegramMessageCache({
-      scope: resolveTelegramMessageCacheScope(storePath),
+      scope: resolveTelegramMessageCacheScope(resolveStorePath(storePath)),
     });
     const node = await cache.get({
       accountId: "default",

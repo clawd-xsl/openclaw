@@ -10,7 +10,7 @@ import {
 } from "openclaw/plugin-sdk/conversation-runtime";
 import { resolveAgentRoute } from "openclaw/plugin-sdk/routing";
 import { resolveThreadSessionKeys } from "openclaw/plugin-sdk/routing";
-import { saveSessionStore } from "openclaw/plugin-sdk/session-store-runtime";
+import { resolveStorePath, saveSessionStore } from "openclaw/plugin-sdk/session-store-runtime";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ResolvedSlackAccount } from "../../accounts.js";
 import {
@@ -1754,8 +1754,9 @@ Second paragraph should still reach the agent after Slack's preview cutoff.`;
     });
 
     history.mockClear();
+    const backendStorePath = resolveStorePath(storePath);
     await saveSessionStore(
-      storePath,
+      backendStorePath,
       {
         [prepared.ctxPayload.SessionKey!]: {
           sessionId: "existing-channel-session",
