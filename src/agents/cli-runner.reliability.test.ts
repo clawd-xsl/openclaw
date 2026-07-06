@@ -605,6 +605,11 @@ describe("runCliAgent reliability", () => {
   });
 
   it("keeps Claude turn totals separate from the last-call context snapshot", async () => {
+    const hookRunner = {
+      hasHooks: vi.fn((hookName: string) => hookName === "llm_output"),
+      runLlmOutput: vi.fn(async () => undefined),
+    };
+    setHookRunnerForTest(hookRunner);
     supervisorSpawnMock.mockClear();
     supervisorSpawnMock.mockResolvedValueOnce(
       createManagedRun({
@@ -666,6 +671,16 @@ describe("runCliAgent reliability", () => {
       cacheRead: 125,
       cacheWrite: undefined,
       total: undefined,
+    });
+    const llmOutputEvent = requireRecord(
+      callArg(hookRunner.runLlmOutput, 0, 0, "llm_output event"),
+      "llm_output event",
+    );
+    expect(llmOutputEvent.usage).toMatchObject({ input: 30, output: 15, cacheRead: 300 });
+    expect(requireRecord(llmOutputEvent.lastAssistant, "last assistant").usage).toMatchObject({
+      input: 11,
+      output: 6,
+      cacheRead: 125,
     });
   });
 

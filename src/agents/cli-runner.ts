@@ -189,6 +189,10 @@ function buildCliHookUserMessage(prompt: string): unknown {
   };
 }
 
+function resolveCliAssistantUsage(output: Pick<CliOutput, "lastCallUsage" | "usage">) {
+  return output.lastCallUsage ?? output.usage;
+}
+
 function buildCliHookAssistantMessage(params: {
   text: string;
   provider: string;
@@ -374,7 +378,7 @@ async function finalizeCliContextEngineTurn(params: {
         text: params.assistantText,
         provider: runParams.provider,
         model: context.modelId,
-        usage: params.output.usage,
+        usage: resolveCliAssistantUsage(params.output),
       }),
     );
   }
@@ -864,7 +868,7 @@ export async function runPreparedCliAgent(
             text: assistantText,
             provider: params.provider,
             model: context.modelId,
-            usage: output.usage,
+            usage: resolveCliAssistantUsage(output),
           })
         : undefined;
     if (assistantText.length > 0 && hasLlmOutputHooks) {
@@ -1105,7 +1109,7 @@ export async function runPreparedCliAgent(
           // Persisting them here would duplicate the same visible assistant reply.
           text: sourceReplyWasDelivered ? "" : assistantText,
           modelId: context.modelId,
-          usage: output.usage,
+          usage: resolveCliAssistantUsage(output),
         });
         const bindingFlushOk = await isCliBindingFlushed(
           effectiveCliSessionId,

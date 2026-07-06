@@ -166,6 +166,14 @@ describe("runPreparedCliAgent context engine lifecycle", () => {
   });
 
   it("finalizes successful CLI turns with the active context engine", async () => {
+    executePreparedCliRunMock.mockResolvedValueOnce({
+      text: " final answer ",
+      rawText: " final answer ",
+      sessionId: "external-cli-session-1",
+      usage: { input: 30, output: 15, cacheRead: 300 },
+      lastCallUsage: { input: 11, output: 7, cacheRead: 125 },
+      finalPromptText: "prompt sent to cli",
+    });
     const bootstrap = vi.fn<NonNullable<ContextEngine["bootstrap"]>>(async () => ({
       bootstrapped: true,
     }));
@@ -180,6 +188,12 @@ describe("runPreparedCliAgent context engine lifecycle", () => {
     const result = await runPreparedCliAgent(context);
 
     expect(result.meta.agentMeta?.sessionId).toBe("external-cli-session-1");
+    expect(result.meta.agentMeta?.usage).toEqual({ input: 30, output: 15, cacheRead: 300 });
+    expect(result.meta.agentMeta?.lastCallUsage).toEqual({
+      input: 11,
+      output: 7,
+      cacheRead: 125,
+    });
     expect(loadCliSessionContextEngineMessagesMock).toHaveBeenCalledWith({
       sessionId: "openclaw-session-1",
       sessionFile: "session.jsonl",
@@ -234,7 +248,7 @@ describe("runPreparedCliAgent context engine lifecycle", () => {
       role: "assistant",
       provider: "claude-cli",
       model: "sonnet-4.6",
-      usage: { input: 11, output: 7, total: 18 },
+      usage: { input: 11, output: 7, cacheRead: 125 },
     });
     expect(maintain).toHaveBeenCalledTimes(2);
     expect(maintain.mock.calls[1]?.[0]).toMatchObject({
