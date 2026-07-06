@@ -377,15 +377,20 @@ WRAP
     direct_token="OPENCLAW-CLAUDE-SUBSCRIPTION-DIRECT"
     direct_probe_log="$(mktemp)"
     set +e
-    claude \
-      -p "Reply exactly: $direct_token" \
-      --output-format text \
-      --model sonnet \
-      --permission-mode bypassPermissions \
-      --setting-sources user \
-      --strict-mcp-config \
-      --mcp-config '{"mcpServers":{}}' \
-      --no-session-persistence >"$direct_probe_log" 2>&1
+    printf '%s\n' \
+      "{\"type\":\"user\",\"session_id\":\"\",\"parent_tool_use_id\":null,\"message\":{\"role\":\"user\",\"content\":\"Reply exactly: $direct_token\"}}" | \
+      claude \
+        --input-format stream-json \
+        --output-format stream-json \
+        --include-partial-messages \
+        --verbose \
+        --model sonnet \
+        --tools "" \
+        --permission-mode bypassPermissions \
+        --setting-sources user \
+        --strict-mcp-config \
+        --mcp-config '{"mcpServers":{}}' \
+        --no-session-persistence >"$direct_probe_log" 2>&1
     direct_probe_status=$?
     set -e
     direct_output="$(<"$direct_probe_log")"
@@ -404,7 +409,7 @@ WRAP
       echo "$direct_output" >&2
       exit 1
     fi
-    echo "[claude-subscription] direct claude -p probe ok"
+    echo "[claude-subscription] direct Claude stream-json probe ok"
   else
     claude auth status || true
   fi

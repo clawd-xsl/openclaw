@@ -540,11 +540,11 @@ Related: [/concepts/oauth](/concepts/oauth) (OAuth flows, token storage, multi-a
     OpenClaw supports both:
 
     - **OAuth / CLI login** often leverages subscription access where the
-      provider supports it. For Anthropic, OpenClaw's Claude CLI backend uses
-      Claude Code `claude -p`; Anthropic currently treats that as Agent
-      SDK/programmatic usage. Anthropic paused the June 15, 2026 separate Agent
-      SDK credit change, so for now this still draws from subscription usage
-      limits. See Anthropic's [Agent SDK plan
+      provider supports it. For Anthropic, OpenClaw's Claude CLI backend uses a
+      persistent Claude Code child with piped `stream-json`; it does not pass
+      `-p` or `--print`. Anthropic currently treats this as Agent SDK/programmatic
+      usage. Anthropic paused the June 15, 2026 separate Agent SDK credit change,
+      so for now this still draws from subscription usage limits. See Anthropic's [Agent SDK plan
       article](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan)
       for the current pause notice.
     - **API keys** use pay-per-token billing.

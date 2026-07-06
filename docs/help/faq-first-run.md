@@ -527,9 +527,9 @@ and troubleshooting see the main [FAQ](/help/faq).
 
     - **Anthropic API key**: normal Anthropic API billing
     - **Claude CLI / Claude subscription auth in OpenClaw**: Anthropic staff
-      told us this usage is allowed again, and OpenClaw is treating `claude -p`
-      usage as sanctioned for this integration unless Anthropic publishes a new
-      policy
+      told us this usage is allowed again, and OpenClaw treats persistent piped
+      `stream-json` usage as sanctioned for this integration unless Anthropic
+      publishes a new policy. OpenClaw does not pass `-p` or `--print`.
 
     For long-lived gateway hosts, Anthropic API keys are still the more
     predictable setup. OpenAI Codex OAuth is explicitly supported for external
@@ -550,8 +550,9 @@ and troubleshooting see the main [FAQ](/help/faq).
     Yes.
 
     Anthropic staff told us OpenClaw-style Claude CLI usage is allowed again, so
-    OpenClaw treats Claude subscription auth and `claude -p` usage as sanctioned
-    for this integration unless Anthropic publishes a new policy. If you want
+    OpenClaw treats Claude subscription auth through its persistent piped
+    `stream-json` transport as sanctioned for this integration unless Anthropic
+    publishes a new policy. OpenClaw does not invoke `claude -p`. If you want
     the most predictable server-side setup, use an Anthropic API key instead.
 
   </Accordion>
@@ -560,10 +561,12 @@ and troubleshooting see the main [FAQ](/help/faq).
     Yes.
 
     Anthropic staff told us this usage is allowed again, so OpenClaw treats
-    Claude CLI reuse and `claude -p` usage as sanctioned for this integration
-    unless Anthropic publishes a new policy.
+    Claude CLI reuse over persistent piped `stream-json` as sanctioned for this
+    integration unless Anthropic publishes a new policy.
 
-    Anthropic setup-token is still available as a supported OpenClaw token path, but OpenClaw now prefers Claude CLI reuse and `claude -p` when available.
+    Anthropic setup-token is still available as a supported OpenClaw token path,
+    but OpenClaw now prefers Claude CLI reuse through a persistent child process
+    when available. It does not pass `-p` or `--print`.
     For production or multi-user workloads, Anthropic API key auth is still the
     safer, more predictable choice. If you want other subscription-style hosted
     options in OpenClaw, see [OpenAI](/providers/openai), [Qwen / Model

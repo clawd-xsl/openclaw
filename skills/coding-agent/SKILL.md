@@ -40,7 +40,7 @@ Use for background feature builds, PR reviews, large refactors, and issue-to-PR 
 
 - Always launch with `background:true`.
 - Codex and OpenCode: use `pty:true`.
-- Claude Code: no PTY; use `claude --permission-mode bypassPermissions --print`.
+- Claude Code: no PTY; pipe the prompt over stdin and never pass `-p` or `--print`.
 - Capture a real notification route before spawning.
 - Worker must send completion/failure via `openclaw message send`.
 - Do not rely on heartbeat, system events, or notify-on-exit.
@@ -93,7 +93,7 @@ bash pty:true background:true workdir:/path/repo command:"codex exec - < \"$PROM
 Claude Code:
 
 ```bash
-bash background:true workdir:/path/repo command:"claude --permission-mode bypassPermissions --print < \"$PROMPT\""
+bash background:true workdir:/path/repo command:"claude --permission-mode bypassPermissions < \"$PROMPT\""
 ```
 
 OpenCode:

@@ -976,6 +976,52 @@ describe("runCliAgent spawn path", () => {
     }
   });
 
+  it.each(["claude", "/opt/claude/bin/claude", "C:\\tools\\claude.cmd"])(
+    "strips print mode at the final spawn boundary for %s",
+    async (command) => {
+      supervisorSpawnMock.mockResolvedValueOnce(
+        createManagedRun({
+          reason: "exit",
+          exitCode: 0,
+          exitSignal: null,
+          durationMs: 50,
+          stdout: "ok",
+          stderr: "",
+          timedOut: false,
+          noOutputTimedOut: false,
+        }),
+      );
+
+      await executePreparedCliRun(
+        buildPreparedCliRunContext({
+          provider: "codex-cli",
+          model: "test-model",
+          runId: `run-no-claude-print-${command}`,
+          backend: {
+            command,
+            args: [
+              "-p",
+              "-p=true",
+              "-pfoo",
+              "--print",
+              "--print=false",
+              "--permission-mode",
+              "default",
+            ],
+          },
+        }),
+      );
+
+      const input = mockCallArg(supervisorSpawnMock) as { argv?: string[] };
+      expect(input.argv?.[0]).toBe(command);
+      expect(input.argv).not.toContain("-p");
+      expect(input.argv?.some((arg) => arg.startsWith("-p") && !arg.startsWith("--"))).toBe(false);
+      expect(input.argv).not.toContain("--print");
+      expect(input.argv?.some((arg) => arg.startsWith("--print="))).toBe(false);
+      expect(input.argv).toContain("--permission-mode");
+    },
+  );
+
   it("returns process diagnostics with byte counts and bounded output hashes", async () => {
     supervisorSpawnMock.mockResolvedValueOnce(
       createManagedRun({
@@ -1387,6 +1433,8 @@ describe("runCliAgent spawn path", () => {
       expect(spawnInput.argv).toContain("--output-format");
       expect(spawnInput.argv).toContain("stream-json");
       expect(spawnInput.argv).toContain("--replay-user-messages");
+      expect(spawnInput.argv).not.toContain("-p");
+      expect(spawnInput.argv).not.toContain("--print");
       expect(spawnInput.argv).not.toContain("--session-id");
       expect(spawnInput.argv).toContain("/tmp/mcp-one.json");
       expect(
@@ -2329,28 +2377,35 @@ describe("runCliAgent spawn path", () => {
     expect(args).not.toContain("current prompt");
   });
 
-  it("adds Claude stream-json output format when building live session argv", () => {
-    const backend: PreparedCliRunContext["preparedBackend"]["backend"] = {
-      command: "claude",
-      args: ["-p"],
-      output: "jsonl",
-      input: "stdin",
-      sessionArg: "--session-id",
-      systemPromptArg: "--append-system-prompt",
-      systemPromptFileArg: "--append-system-prompt-file",
-    };
+  it.each(["-p", "-p=true", "-pfoo", "--print", "--print=true"])(
+    "adds Claude stream-json format and strips print mode from live argv (%s)",
+    (printArg) => {
+      const backend: PreparedCliRunContext["preparedBackend"]["backend"] = {
+        command: "claude",
+        args: [printArg, "--verbose"],
+        output: "jsonl",
+        input: "stdin",
+        sessionArg: "--session-id",
+        systemPromptArg: "--append-system-prompt",
+        systemPromptFileArg: "--append-system-prompt-file",
+      };
 
-    const args = buildClaudeLiveArgs({
-      args: ["-p"],
-      backend,
-      systemPrompt: "current prompt",
-      useResume: false,
-    });
+      const args = buildClaudeLiveArgs({
+        args: [printArg, "--verbose"],
+        backend,
+        systemPrompt: "current prompt",
+        useResume: false,
+      });
 
-    expect(requireArgAfter(args, "--input-format")).toBe("stream-json");
-    expect(requireArgAfter(args, "--output-format")).toBe("stream-json");
-    expect(requireArgAfter(args, "--permission-prompt-tool")).toBe("stdio");
-  });
+      expect(args).not.toContain("-p");
+      expect(args).not.toContain("--print");
+      expect(args.some((arg) => arg.startsWith("--print="))).toBe(false);
+      expect(args).toContain("--verbose");
+      expect(requireArgAfter(args, "--input-format")).toBe("stream-json");
+      expect(requireArgAfter(args, "--output-format")).toBe("stream-json");
+      expect(requireArgAfter(args, "--permission-prompt-tool")).toBe("stdio");
+    },
+  );
 
   it("answers Claude live control_request can_use_tool with allow when exec policy is full/no-ask", async () => {
     let stdoutListener: ((chunk: string) => void) | undefined;

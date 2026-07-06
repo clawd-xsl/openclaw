@@ -229,8 +229,8 @@ Notes:
 - For `openai`, OpenAI API keys and ChatGPT/OAuth token material are
   different auth shapes. Use `paste-api-key` for `sk-...` OpenAI API keys and
   `paste-token` only for token auth material.
-- Anthropic note: Anthropic staff told us OpenClaw-style Claude CLI usage is allowed again, so OpenClaw treats Claude CLI reuse and `claude -p` usage as sanctioned for this integration unless Anthropic publishes a new policy.
-- Anthropic `setup-token` / `paste-token` remain available as a supported OpenClaw token path, but OpenClaw now prefers Claude CLI reuse and `claude -p` when available.
+- Anthropic note: Anthropic staff told us OpenClaw-style Claude CLI usage is allowed again, so OpenClaw treats Claude CLI reuse over persistent piped `stream-json` as sanctioned for this integration unless Anthropic publishes a new policy. OpenClaw does not pass `-p` or `--print`.
+- Anthropic `setup-token` / `paste-token` remain available as a supported OpenClaw token path, but OpenClaw now prefers Claude CLI reuse through a persistent child process when available.
 
 ## Related
 

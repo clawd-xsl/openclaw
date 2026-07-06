@@ -138,6 +138,8 @@ const CLAUDE_RESUME_SHORT_ARG = "-r";
 const CLAUDE_CONTINUE_ARG = "--continue";
 const CLAUDE_CONTINUE_SHORT_ARG = "-c";
 const CLAUDE_FORK_SESSION_ARG = "--fork-session";
+const CLAUDE_PRINT_SHORT_ARG = "-p";
+const CLAUDE_PRINT_ARG = "--print";
 const CLAUDE_ISOLATED_SETTING_SOURCES = "";
 const CLAUDE_DISABLE_CLAUDE_MDS_ENV = "CLAUDE_CODE_DISABLE_CLAUDE_MDS";
 const CLAUDE_DISABLE_SLASH_COMMANDS_ARG = "--disable-slash-commands";
@@ -150,6 +152,15 @@ const CLAUDE_OPENCLAW_ALLOWED_TOOLS_VALUE = "mcp__openclaw__*";
 const CLAUDE_DENY_MCP_TOOLS_VALUE = "mcp__*";
 
 type ClaudeCliEffort = "low" | "medium" | "high" | "xhigh" | "max";
+
+function stripClaudePrintArgs(args: readonly string[]): string[] {
+  return args.filter(
+    (arg) =>
+      !(arg.startsWith(CLAUDE_PRINT_SHORT_ARG) && !arg.startsWith("--")) &&
+      arg !== CLAUDE_PRINT_ARG &&
+      !arg.startsWith(`${CLAUDE_PRINT_ARG}=`),
+  );
+}
 
 /** Explicit thinking opt-out for Claude CLI routes unsupported by Claude Code. */
 export const CLAUDE_CLI_OFF_THINKING_PROFILE = {
@@ -555,16 +566,20 @@ function resolveClaudeCliSideQuestionExecutionArgs(baseArgs: readonly string[]):
 export function resolveClaudeCliExecutionArgs(
   context: CliBackendResolveExecutionArgsContext,
 ): string[] {
+  // Piped stdio selects Claude's headless stream protocol without requiring
+  // print mode. Keep every managed invocation, including side questions, off
+  // the explicit -p/--print path even when legacy overrides still include it.
+  const baseArgs = stripClaudePrintArgs(context.baseArgs);
   const thinkingLevel = normalizeOptionalLowercaseString(context.thinkingLevel);
   const sonnet5 = isClaudeCliSonnet5ModelId(context.modelId);
   const thinkingEnabled = sonnet5 && thinkingLevel ? thinkingLevel !== "off" : undefined;
   const args =
     typeof context.fastMode === "boolean" || thinkingEnabled !== undefined
-      ? (normalizeClaudeSettingsArgs([...context.baseArgs], {
+      ? (normalizeClaudeSettingsArgs(baseArgs, {
           fastMode: context.fastMode,
           thinkingEnabled,
-        }) ?? [...context.baseArgs])
-      : [...context.baseArgs];
+        }) ?? baseArgs)
+      : baseArgs;
   if (context.executionMode === "side-question") {
     return resolveClaudeCliSideQuestionExecutionArgs(args);
   }

@@ -49,10 +49,9 @@ into a target-owned seam or reimplemented against the current architecture.
 ### Persistent Claude Code is a latency-critical backend
 
 The custom contract is a long-lived background Claude Code child process using
-streaming JSON over stdin/stdout. It is not the Anthropic SDK and it is not a
-new `claude -p` process for every turn. The Claude executable still receives
-its non-interactive flag as part of the stream-json protocol, but process
-ownership spans turns.
+streaming JSON over stdin/stdout. It is not the Anthropic SDK and it does not
+invoke `claude -p` or `claude --print`. Piped stdio selects the headless
+stream-json protocol, and process ownership spans turns.
 
 The target release had a nominal `claude-stdio` live-session implementation,
 but captured MCP turns closed that process in the attempt finalizer. Therefore

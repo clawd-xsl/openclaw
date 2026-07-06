@@ -121,7 +121,12 @@ Official provider plugins publish their own model catalog rows. These providers 
   `claude-cli/claude-opus-4-7` refs still work for compatibility.
 
 <Note>
-Anthropic staff told us OpenClaw-style Claude CLI usage is allowed again, so OpenClaw treats Claude CLI reuse and `claude -p` usage as sanctioned for this integration unless Anthropic publishes a new policy. Anthropic setup-token remains available as a supported OpenClaw token path, but OpenClaw now prefers Claude CLI reuse and `claude -p` when available.
+Anthropic staff told us OpenClaw-style Claude CLI usage is allowed again, so
+OpenClaw treats Claude CLI reuse with piped `stream-json` as sanctioned for this
+integration unless Anthropic publishes a new policy. Anthropic setup-token
+remains available as a supported OpenClaw token path, but OpenClaw now prefers
+Claude CLI reuse through a persistent child process when available. OpenClaw
+does not pass `-p` or `--print` to that child.
 </Note>
 
 ```json5

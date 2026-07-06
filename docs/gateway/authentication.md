@@ -61,9 +61,10 @@ See [Help](/help) for details on env inheritance (`env.shellEnv`,
 
 Anthropic setup-token auth is still available in OpenClaw as a supported token
 path. Anthropic staff has since told us that OpenClaw-style Claude CLI usage is
-allowed again, so OpenClaw treats Claude CLI reuse and `claude -p` usage as
-sanctioned for this integration unless Anthropic publishes a new policy. When
-Claude CLI reuse is available on the host, that is now the preferred path.
+allowed again, so OpenClaw treats Claude CLI reuse over persistent piped
+`stream-json` as sanctioned for this integration unless Anthropic publishes a
+new policy. OpenClaw does not pass `-p` or `--print`. When Claude CLI reuse is
+available on the host, that is now the preferred path.
 
 For long-lived gateway hosts, an Anthropic API key is still the most predictable
 setup. If you want to reuse an existing Claude login on the same host, use the
@@ -148,8 +149,9 @@ Optional ops scripts (systemd/Termux) are documented here:
 The Anthropic `claude-cli` backend is supported again.
 
 - Anthropic staff told us this OpenClaw integration path is allowed again.
-- OpenClaw therefore treats Claude CLI reuse and `claude -p` usage as sanctioned
-  for Anthropic-backed runs unless Anthropic publishes a new policy.
+- OpenClaw therefore treats Claude CLI reuse over persistent piped `stream-json`
+  as sanctioned for Anthropic-backed runs unless Anthropic publishes a new
+  policy. OpenClaw does not pass `-p` or `--print`.
 - Anthropic API keys remain the most predictable choice for long-lived gateway
   hosts and explicit server-side billing control.
 

@@ -70,6 +70,7 @@ import {
   runClaudeLiveSessionTurn,
   shouldUseClaudeLiveSession,
 } from "./claude-live-session.js";
+import { stripClaudePrintModeArgsForCommand } from "./claude-print-args.js";
 import { prepareClaudeCliSkillsPlugin } from "./claude-skills-plugin.js";
 import { attachCliMessagingDeliveryEvidence } from "./delivery-evidence.js";
 import {
@@ -579,18 +580,21 @@ export async function executePreparedCliRun(
           useResume,
           baseArgs: baseArgsWithSkills,
         }) ?? baseArgsWithSkills;
-      const args = buildCliArgs({
-        backend,
-        baseArgs: Array.from(executionBaseArgs),
-        modelId: context.normalizedModel,
-        sessionId: resolvedSessionId,
-        systemPrompt: systemPromptArg,
-        systemPromptFilePath: systemPromptFile?.filePath,
-        imagePaths,
-        promptArg: argsPrompt,
-        useResume,
-        sendSystemPromptOnResume: resendSystemPromptForSoftResume,
-      });
+      const args = stripClaudePrintModeArgsForCommand(
+        backend.command,
+        buildCliArgs({
+          backend,
+          baseArgs: Array.from(executionBaseArgs),
+          modelId: context.normalizedModel,
+          sessionId: resolvedSessionId,
+          systemPrompt: systemPromptArg,
+          systemPromptFilePath: systemPromptFile?.filePath,
+          imagePaths,
+          promptArg: argsPrompt,
+          useResume,
+          sendSystemPromptOnResume: resendSystemPromptForSoftResume,
+        }),
+      );
       const cliTurnStartedAt = Date.now();
       const restoreSkillEnv = params.skillsSnapshot
         ? applySkillEnvOverridesFromSnapshot({
@@ -1279,7 +1283,7 @@ export async function executePreparedCliRun(
                 const stallNotice = [
                   `CLI agent (${params.provider}) produced no output for ${Math.round(noOutputTimeoutMs / 1000)}s and was terminated.`,
                   "It may have been waiting for interactive input or an approval prompt.",
-                  "For Claude Code, prefer --permission-mode bypassPermissions --print.",
+                  "For Claude Code, verify the managed claude-stdio stream-json transport and effective permission policy.",
                 ].join(" ");
                 const eventRouting = resolveEventSessionRoutingPolicy({
                   cfg: params.config,

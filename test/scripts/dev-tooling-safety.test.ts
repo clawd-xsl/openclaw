@@ -191,9 +191,7 @@ describe("script-specific dev tooling hardening", () => {
       "--channel requires a value",
     );
     for (const flag of ["--channel", "--token", "--timeout-ms", "--state-dir"]) {
-      expect(() => discordSmokeTesting.parseArgs([flag, "-h"])).toThrow(
-        `${flag} requires a value`,
-      );
+      expect(() => discordSmokeTesting.parseArgs([flag, "-h"])).toThrow(`${flag} requires a value`);
     }
   });
 
@@ -680,6 +678,18 @@ describe("script-specific dev tooling hardening", () => {
         "https://api.anthropic.com",
       ),
     ).toThrow(/refusing non-origin proxy request URL/u);
+  });
+
+  it("builds Claude prompt probe input for piped stream-json stdin", () => {
+    const input = promptProbeTesting.buildClaudeStreamJsonUserInput("probe");
+
+    expect(input.endsWith("\n")).toBe(true);
+    expect(JSON.parse(input)).toEqual({
+      type: "user",
+      session_id: "",
+      parent_tool_use_id: null,
+      message: { role: "user", content: "probe" },
+    });
   });
 
   it("bounds Anthropic capture proxy request bodies", async () => {

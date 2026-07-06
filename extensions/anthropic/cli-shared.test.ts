@@ -317,6 +317,21 @@ describe("Claude CLI catalog", () => {
 });
 
 describe("resolveClaudeCliExecutionArgs", () => {
+  it.each(["-p", "-p=true", "-pfoo", "--print", "--print=true"])(
+    "strips explicit Claude print mode from managed executions (%s)",
+    (printArg) => {
+      expect(
+        resolveClaudeCliExecutionArgs({
+          workspaceDir: "/tmp",
+          provider: "claude-cli",
+          modelId: "claude-opus-4-7",
+          useResume: false,
+          baseArgs: [printArg, "--verbose"],
+        }),
+      ).toEqual(["--verbose"]);
+    },
+  );
+
   it("omits effort args when thinking is off", () => {
     expect(
       resolveClaudeCliExecutionArgs({
@@ -327,7 +342,7 @@ describe("resolveClaudeCliExecutionArgs", () => {
         useResume: false,
         baseArgs: ["-p", "--output-format", "stream-json"],
       }),
-    ).toEqual(["-p", "--output-format", "stream-json"]);
+    ).toEqual(["--output-format", "stream-json"]);
   });
 
   it("explicitly disables Sonnet 5 thinking and removes stale effort args", () => {
@@ -340,7 +355,7 @@ describe("resolveClaudeCliExecutionArgs", () => {
         useResume: false,
         baseArgs: ["-p", "--effort", "xhigh"],
       }),
-    ).toEqual(["-p", "--settings", '{"disableAllHooks":true,"alwaysThinkingEnabled":false}']);
+    ).toEqual(["--settings", '{"disableAllHooks":true,"alwaysThinkingEnabled":false}']);
   });
 
   it("maps Sonnet 5 adaptive mode to its native high default", () => {
@@ -354,7 +369,6 @@ describe("resolveClaudeCliExecutionArgs", () => {
         baseArgs: ["-p"],
       }),
     ).toEqual([
-      "-p",
       "--settings",
       '{"disableAllHooks":true,"alwaysThinkingEnabled":true}',
       "--effort",
@@ -372,7 +386,7 @@ describe("resolveClaudeCliExecutionArgs", () => {
         useResume: false,
         baseArgs: ["-p"],
       }),
-    ).toEqual(["-p", "--effort", "low"]);
+    ).toEqual(["--effort", "low"]);
     expect(
       resolveClaudeCliExecutionArgs({
         workspaceDir: "/tmp",
@@ -382,7 +396,7 @@ describe("resolveClaudeCliExecutionArgs", () => {
         useResume: false,
         baseArgs: ["-p"],
       }),
-    ).toEqual(["-p", "--effort", "medium"]);
+    ).toEqual(["--effort", "medium"]);
     expect(
       resolveClaudeCliExecutionArgs({
         workspaceDir: "/tmp",
@@ -392,7 +406,7 @@ describe("resolveClaudeCliExecutionArgs", () => {
         useResume: true,
         baseArgs: ["-p", "--resume", "{sessionId}"],
       }),
-    ).toEqual(["-p", "--resume", "{sessionId}", "--effort", "xhigh"]);
+    ).toEqual(["--resume", "{sessionId}", "--effort", "xhigh"]);
   });
 
   it("replaces static effort args when a session thinking level is active", () => {
@@ -405,7 +419,7 @@ describe("resolveClaudeCliExecutionArgs", () => {
         useResume: false,
         baseArgs: ["-p", "--effort", "low", "--effort=high"],
       }),
-    ).toEqual(["-p", "--effort", "max"]);
+    ).toEqual(["--effort", "max"]);
   });
 
   it("maps the effective OpenClaw fast mode into Claude settings", () => {
@@ -418,7 +432,7 @@ describe("resolveClaudeCliExecutionArgs", () => {
         useResume: false,
         baseArgs: ["-p", "--settings", '{"disableAllHooks":true}'],
       }),
-    ).toEqual(["-p", "--settings", '{"disableAllHooks":true,"fastMode":true}']);
+    ).toEqual(["--settings", '{"disableAllHooks":true,"fastMode":true}']);
     expect(
       resolveClaudeCliExecutionArgs({
         workspaceDir: "/tmp",
@@ -428,7 +442,7 @@ describe("resolveClaudeCliExecutionArgs", () => {
         useResume: true,
         baseArgs: ["-p", '--settings={"disableAllHooks":true,"fastMode":true}'],
       }),
-    ).toEqual(["-p", '--settings={"disableAllHooks":true,"fastMode":false}']);
+    ).toEqual(['--settings={"disableAllHooks":true,"fastMode":false}']);
   });
 
   it("forces isolated no-tool one-shot args for side-question execution", () => {
@@ -469,7 +483,6 @@ describe("resolveClaudeCliExecutionArgs", () => {
         ],
       }),
     ).toEqual([
-      "-p",
       "--output-format",
       "stream-json",
       "--safe-mode",

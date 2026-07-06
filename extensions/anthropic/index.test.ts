@@ -88,9 +88,14 @@ describe("anthropic provider replay hooks", () => {
     expect(backend.nativeToolMode).toBe("always-on");
     expectFields(backend.config, {
       command: "claude",
+      liveSession: "claude-stdio",
       modelArg: "--model",
       sessionArg: "--session-id",
     });
+    expect(backend.config.args).not.toContain("-p");
+    expect(backend.config.args).not.toContain("--print");
+    expect(backend.config.resumeArgs).not.toContain("-p");
+    expect(backend.config.resumeArgs).not.toContain("--print");
   });
 
   it("owns native reasoning output mode for Claude transports", async () => {

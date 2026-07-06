@@ -76,9 +76,9 @@ classification when their plugins are not installed.
 The latency-critical backend remains `claude-cli` with
 `liveSession: "claude-stdio"`: a target-owned background Claude Code process
 accepts stream-json turns over stdin and emits stream-json over stdout. This is
-not the Anthropic SDK and it is not a fresh `claude -p` process per prompt. The
-Claude executable can still receive its non-interactive protocol flag, but
-OpenClaw process ownership spans successful turns.
+not the Anthropic SDK and it does not invoke `claude -p` or `claude --print`.
+Piped stdio selects the headless protocol, and OpenClaw process ownership spans
+successful turns.
 
 The implemented lifecycle has the following invariants:
 

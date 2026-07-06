@@ -36,10 +36,10 @@ OpenClaw features that can generate provider usage or paid API calls.
   derive input tokens from `stats.input_tokens - stats.cached` when needed.
 
 Anthropic note: Anthropic staff told us OpenClaw-style Claude CLI usage is
-allowed again, so OpenClaw treats Claude CLI reuse and `claude -p` usage as
-sanctioned for this integration unless Anthropic publishes a new policy.
-Anthropic still does not expose a per-message dollar estimate that OpenClaw can
-show in `/usage full`.
+allowed again, so OpenClaw treats Claude CLI reuse over persistent piped
+`stream-json` as sanctioned for this integration unless Anthropic publishes a
+new policy. OpenClaw does not pass `-p` or `--print`. Anthropic still does not
+expose a per-message dollar estimate that OpenClaw can show in `/usage full`.
 
 **CLI usage windows (provider quotas)**
 

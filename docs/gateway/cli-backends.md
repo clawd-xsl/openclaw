@@ -190,12 +190,12 @@ backend with `agents.defaults.models["anthropic/<model>"].agentRuntime.id =
 <Note>
 The bundled Anthropic `claude-cli` backend is supported again. Anthropic staff
 told us OpenClaw-style Claude CLI usage is allowed again, so OpenClaw treats
-Claude Code's `-p` programmatic mode as sanctioned for this integration unless
-Anthropic publishes a new policy. OpenClaw launches that mode as a persistent
-`stream-json` child per OpenClaw session and sends warm follow-up turns over
-stdin; it does not spawn a separate one-shot process for every turn. That
-transport detail does not change Anthropic's classification of the invocation
-as Claude Code programmatic usage.
+Claude Code programmatic usage as sanctioned for this integration unless
+Anthropic publishes a new policy. OpenClaw does not pass `-p` or `--print`.
+It launches a persistent `stream-json` child with piped stdin and stdout per
+OpenClaw session and sends warm follow-up turns over stdin; it does not spawn a
+separate one-shot process for every turn. That transport detail does not change
+Anthropic's classification of the invocation as Claude Code programmatic usage.
 </Note>
 
 The bundled Anthropic `claude-cli` backend disables Claude slash commands for
@@ -382,7 +382,7 @@ longer registers a bundled `codex-cli` backend.
 The bundled Anthropic plugin registers a default for `claude-cli`:
 
 - `command: "claude"`
-- `args: ["-p","--output-format","stream-json","--include-partial-messages","--verbose", ...]`
+- `args: ["--output-format","stream-json","--include-partial-messages","--verbose", ...]`
 - `output: "jsonl"`
 - `input: "stdin"`
 - `modelArg: "--model"`

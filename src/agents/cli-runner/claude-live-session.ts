@@ -42,6 +42,7 @@ import {
 import { classifyFailoverReason } from "../embedded-agent-helpers.js";
 import { FailoverError, resolveFailoverStatus } from "../failover-error.js";
 import { prepareCliBundleMcpCaptureAttempt } from "./bundle-mcp.js";
+import { isClaudePrintModeArg } from "./claude-print-args.js";
 import { buildClaudeOwnerKey } from "./helpers.js";
 import { cliBackendLog, formatCliBackendOutputDigest } from "./log.js";
 import type { PreparedCliRunContext } from "./types.js";
@@ -243,6 +244,12 @@ function stripLiveProcessArgs(
   const stripped: string[] = [];
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i] ?? "";
+    // A piped Claude stream-json process is already headless. Never leak the
+    // one-shot print selector into the persistent child, including from a
+    // legacy custom backend override.
+    if (isClaudePrintModeArg(arg)) {
+      continue;
+    }
     if (liveProcessFlags.has(arg)) {
       i += 1;
       continue;

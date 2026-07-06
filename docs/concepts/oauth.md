@@ -90,9 +90,10 @@ agent when it needs an independent account.
 <Warning>
 Anthropic's public Claude Code docs say direct Claude Code use stays within
 Claude subscription limits, and Anthropic staff told us OpenClaw-style Claude
-CLI usage is allowed again. OpenClaw therefore treats Claude CLI reuse and
-`claude -p` usage as sanctioned for this integration unless Anthropic
-publishes a new policy.
+CLI usage is allowed again. OpenClaw therefore treats Claude CLI reuse over its
+persistent piped `stream-json` transport as sanctioned for this integration
+unless Anthropic publishes a new policy. OpenClaw does not pass `-p` or
+`--print`.
 
 For Anthropic's current direct-Claude-Code plan docs, see [Using Claude Code
 with your Pro or Max
@@ -106,7 +107,9 @@ Plan](/providers/qwen), [MiniMax Coding Plan](/providers/minimax),
 and [Z.AI / GLM Coding Plan](/providers/zai).
 </Warning>
 
-OpenClaw also exposes Anthropic setup-token as a supported token-auth path, but it now prefers Claude CLI reuse and `claude -p` when available.
+OpenClaw also exposes Anthropic setup-token as a supported token-auth path, but
+it now prefers Claude CLI reuse through a persistent child process when
+available.
 
 ## Anthropic Claude CLI migration
 

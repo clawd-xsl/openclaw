@@ -76,7 +76,16 @@ const GATEWAY_LOG_TAIL_BYTES = 256 * 1024;
 const SETUP_TOKEN_RAW = process.env.OPENCLAW_LIVE_SETUP_TOKEN?.trim() ?? "";
 const SETUP_TOKEN_VALUE = process.env.OPENCLAW_LIVE_SETUP_TOKEN_VALUE?.trim() ?? "";
 const SETUP_TOKEN_PROFILE = process.env.OPENCLAW_LIVE_SETUP_TOKEN_PROFILE?.trim() ?? "";
-const DIRECT_CLAUDE_ARGS = ["-p", "--append-system-prompt"];
+const DIRECT_CLAUDE_ARGS = [
+  "--input-format",
+  "stream-json",
+  "--output-format",
+  "stream-json",
+  "--include-partial-messages",
+  "--verbose",
+  "--replay-user-messages",
+  "--append-system-prompt",
+];
 
 type CaptureSummary = {
   url?: string;
@@ -147,6 +156,15 @@ function summarizeText(text: string, max = 120): string {
     return normalized;
   }
   return `${normalized.slice(0, max - 1)}…`;
+}
+
+function buildClaudeStreamJsonUserInput(content: string): string {
+  return `${JSON.stringify({
+    type: "user",
+    session_id: "",
+    parent_tool_use_id: null,
+    message: { role: "user", content },
+  })}\n`;
 }
 
 function summarizeCapture(
@@ -466,7 +484,7 @@ async function runDirectPrompt(prompt: string): Promise<PromptResult> {
   try {
     const stdout: string[] = [];
     const stderr: string[] = [];
-    const child = spawn(CLAUDE_BIN, [...DIRECT_CLAUDE_ARGS, prompt, USER_PROMPT], {
+    const child = spawn(CLAUDE_BIN, [...DIRECT_CLAUDE_ARGS, prompt], {
       cwd: process.cwd(),
       env: {
         ...process.env,
@@ -475,10 +493,12 @@ async function runDirectPrompt(prompt: string): Promise<PromptResult> {
         ANTHROPIC_API_KEY_OLD: "",
       },
       detached: process.platform !== "win32",
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
     });
     child.stdout.on("data", (chunk) => stdout.push(String(chunk)));
     child.stderr.on("data", (chunk) => stderr.push(String(chunk)));
+    child.stdin.on("error", (error) => stderr.push(`stdin: ${String(error)}`));
+    child.stdin.end(buildClaudeStreamJsonUserInput(USER_PROMPT));
     const exitPromise = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
       (resolve, reject) => {
         child.once("error", reject);
@@ -956,6 +976,7 @@ async function main() {
 }
 
 export const testing = {
+  buildClaudeStreamJsonUserInput,
   cleanupPromptProbeTmpDir,
   installGatewayPromptParentSignalHandlers,
   matchesExtraUsage400,

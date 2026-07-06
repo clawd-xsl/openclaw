@@ -12,10 +12,11 @@ Anthropic builds the **Claude** model family. OpenClaw supports two auth routes:
 
 <Warning>
 OpenClaw's Claude CLI backend runs the installed Claude Code CLI in
-non-interactive `-p` programmatic mode. It keeps one `stream-json` child alive
-per OpenClaw session and sends warm follow-up turns over stdin instead of
-starting a new one-shot process for every turn. Anthropic still classifies the
-invocation as Claude Agent SDK/programmatic usage. Anthropic's June 15, 2026
+headless programmatic mode without passing `-p` or `--print`. Piped stdin and
+stdout carry the `stream-json` protocol. OpenClaw keeps one child alive per
+session and sends warm follow-up turns over stdin instead of starting a new
+one-shot process for every turn. Anthropic still classifies the invocation as
+Claude Agent SDK/programmatic usage. Anthropic's June 15, 2026
 support update paused the announced Agent SDK billing change. For now,
 Anthropic says Claude Agent SDK, `claude -p`, and third-party app usage still
 draw from a subscription's usage limits. The previously announced monthly
@@ -143,12 +144,12 @@ billing behavior:
     provider/model selection as `anthropic/*` and put the execution backend in
     provider/model runtime policy.
 
-    ### Billing and `claude -p`
+    ### Billing and programmatic use
 
-    OpenClaw uses Claude Code's non-interactive `-p` programmatic mode for
-    Claude CLI runs. The child remains alive for warm `stream-json` follow-up
-    turns, but that process lifetime does not change Anthropic's billing
-    classification:
+    OpenClaw uses Claude Code's piped `stream-json` protocol without passing
+    `-p` or `--print`. The child remains alive for warm follow-up turns, but
+    omitting those flags and keeping the process alive does not change
+    Anthropic's billing classification:
 
     - Anthropic's June 15, 2026 support update paused the previously announced
       separate Agent SDK credit plan.
