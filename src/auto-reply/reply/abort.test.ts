@@ -4,7 +4,9 @@ import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SubagentRunRecord } from "../../agents/subagent-registry.js";
 import type { OpenClawConfig } from "../../config/config.js";
+import { resolveStorePath } from "../../config/sessions/paths.js";
 import type { SessionAbortTargetResult } from "../../config/sessions/session-accessor.js";
+import { loadSessionStore } from "../../config/sessions/store.js";
 import { createSuiteTempRootTracker } from "../../test-helpers/temp-dir.js";
 import {
   testing as abortTesting,
@@ -126,6 +128,10 @@ describe("abort detection", () => {
       await writeSessionStore(storePath, params.sessionIdsByKey, params.nowMs);
     }
     return { root, storePath, cfg };
+  }
+
+  function readAbortSessionStore(configuredStorePath: string) {
+    return loadSessionStore(resolveStorePath(configuredStorePath), { skipCache: true });
   }
 
   async function runStopCommand(params: {
@@ -1071,7 +1077,7 @@ describe("abort detection", () => {
       sessionKey: acpSessionKey,
       reason: "fast-abort",
     });
-    const store = JSON.parse(await fs.readFile(storePath, "utf8")) as Record<
+    const store = readAbortSessionStore(storePath) as Record<
       string,
       {
         abortCutoffMessageSid?: string;
@@ -1101,7 +1107,7 @@ describe("abort detection", () => {
     });
 
     expect(result.handled).toBe(true);
-    const store = JSON.parse(await fs.readFile(storePath, "utf8")) as Record<string, unknown>;
+    const store = readAbortSessionStore(storePath) as Record<string, unknown>;
     const entry = store[sessionKey] as {
       abortedLastRun?: boolean;
       abortCutoffMessageSid?: string;
@@ -1129,7 +1135,7 @@ describe("abort detection", () => {
     });
 
     expect(result.handled).toBe(true);
-    const store = JSON.parse(await fs.readFile(storePath, "utf8")) as Record<string, unknown>;
+    const store = readAbortSessionStore(storePath) as Record<string, unknown>;
     const entry = store[sessionKey] as {
       abortedLastRun?: boolean;
       abortCutoffMessageSid?: string;
@@ -1159,7 +1165,7 @@ describe("abort detection", () => {
     });
 
     expect(result.handled).toBe(true);
-    const store = JSON.parse(await fs.readFile(storePath, "utf8")) as Record<string, unknown>;
+    const store = readAbortSessionStore(storePath) as Record<string, unknown>;
     const entry = store[targetSessionKey] as {
       abortedLastRun?: boolean;
       abortCutoffMessageSid?: string;

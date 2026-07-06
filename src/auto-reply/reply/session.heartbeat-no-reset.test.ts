@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
+import { resolveStorePath } from "../../config/sessions/paths.js";
 import { loadSessionStore, saveSessionStore } from "../../config/sessions/store.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { MsgContext } from "../templating.js";
@@ -199,7 +200,9 @@ describe("initSessionState - heartbeat should not trigger session reset", () => 
     expect(heartbeatResult.sessionId).toBe("daily-session-id");
     expect(heartbeatResult.sessionEntry.lastInteractionAt).toBe(staleTime);
 
-    const persistedAfterHeartbeat = loadSessionStore(storePath);
+    const persistedAfterHeartbeat = loadSessionStore(resolveStorePath(storePath), {
+      skipCache: true,
+    });
     expect(expectPersistedSession(persistedAfterHeartbeat).lastInteractionAt).toBe(staleTime);
 
     const userResult = await initSessionState({
@@ -286,7 +289,9 @@ describe("initSessionState - heartbeat should not trigger session reset", () => 
     expect(heartbeatResult.isNewSession).toBe(false);
     expect(heartbeatResult.sessionId).toBe("legacy-idle-session");
 
-    const persistedAfterHeartbeat = loadSessionStore(storePath);
+    const persistedAfterHeartbeat = loadSessionStore(resolveStorePath(storePath), {
+      skipCache: true,
+    });
     expect(expectPersistedSession(persistedAfterHeartbeat).lastInteractionAt).toBeUndefined();
 
     const userResult = await initSessionState({

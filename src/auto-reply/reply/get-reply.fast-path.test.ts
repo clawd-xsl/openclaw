@@ -6,6 +6,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { testing as cliBackendsTesting } from "../../agents/cli-backends.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { getSessionEntry } from "../../config/sessions.js";
+import { resolveStorePath } from "../../config/sessions/paths.js";
 import {
   readSessionStoreForTest,
   writeSessionStoreForTestAsync,
@@ -111,8 +112,12 @@ async function seedFastPathSessionStore(
   await writeSessionStoreForTestAsync(storePath, entries);
 }
 
-function readFastPathSessionEntry(storePath: string, sessionKey: string): Record<string, unknown> {
-  return readSessionStoreForTest<Record<string, unknown>>(storePath)[sessionKey] ?? {};
+function readFastPathSessionEntry(
+  configuredStorePath: string,
+  sessionKey: string,
+): Record<string, unknown> {
+  const backendStorePath = resolveStorePath(configuredStorePath);
+  return readSessionStoreForTest<Record<string, unknown>>(backendStorePath)[sessionKey] ?? {};
 }
 
 describe("getReplyFromConfig fast test bootstrap", () => {
@@ -637,9 +642,12 @@ describe("getReplyFromConfig fast test bootstrap", () => {
     expect(onSessionMetadataChanges.mock.invocationCallOrder[0]).toBeLessThan(
       vi.mocked(runPreparedReplyMock).mock.invocationCallOrder[0],
     );
-    expect(getSessionEntry({ storePath, sessionKey: targetSessionKey })?.goal?.objective).toBe(
-      "/status",
-    );
+    expect(
+      getSessionEntry({
+        storePath: resolveStorePath(storePath),
+        sessionKey: targetSessionKey,
+      })?.goal?.objective,
+    ).toBe("/status");
     const preparedReplyParams = requirePreparedReplyParams();
     expect(preparedReplyParams.command.commandBodyNormalized).toBe(continuationPrompt);
     expect(preparedReplyParams.sessionCtx.BodyForAgent).toBe(continuationPrompt);
