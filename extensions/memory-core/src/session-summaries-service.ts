@@ -126,17 +126,23 @@ export class SessionSummaryService {
     this.validateGenerationPolicy = deps.validateGenerationPolicy;
   }
 
-  async enqueue(input: SessionSummaryEnqueueInput): Promise<void> {
+  async enqueue(
+    input: SessionSummaryEnqueueInput,
+    options: { force?: boolean } = {},
+  ): Promise<void> {
     const config = this.getConfig();
     if (this.stopped || !config.enabled) {
       return;
     }
     const key = buildSessionSummaryStoreKey(input.agentId, input.sessionId);
     this.cancelledKeys.delete(key);
-    const result = await this.repository.enqueue({
-      ...input,
-      generationConfigFingerprint: buildGenerationConfigFingerprint(config),
-    });
+    const result = await this.repository.enqueue(
+      {
+        ...input,
+        generationConfigFingerprint: buildGenerationConfigFingerprint(config),
+      },
+      options,
+    );
     if (result.shouldProcess) {
       this.schedule(result.key);
     }

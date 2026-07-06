@@ -72,7 +72,7 @@
     "summaries.model": {
       "label": "Session Summary Model",
       "placeholder": "anthropic/claude-sonnet-4-6",
-      "help": "Optional provider/model override. When omitted, the target agent's configured model is used. Model overrides require plugins.entries.memory-core.llm.allowModelOverride; non-default agents also require allowAgentIdOverride."
+      "help": "Preferred provider/model for session summaries (default: anthropic/claude-sonnet-4-6). The host uses it when plugins.entries.memory-core.llm.allowModelOverride is true; otherwise generation uses the target agent's configured model. Non-default agents also require allowAgentIdOverride."
     }
   },
   "configSchema": {

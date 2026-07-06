@@ -1,8 +1,11 @@
 // Memory Core plugin module registers session-summary hooks, tool, and RPC.
+import fs from "node:fs";
+import path from "node:path";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import {
   resolveDefaultAgentId,
   resolveSessionAgentId,
+  resolveSessionTranscriptsDirForAgent,
   type OpenClawConfig,
 } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
@@ -10,8 +13,11 @@ import type {
   OpenKeyedStoreOptions,
   PluginStateKeyedStore,
 } from "openclaw/plugin-sdk/plugin-state-runtime";
+import { normalizeAgentId } from "openclaw/plugin-sdk/routing";
+import { listSessionEntries } from "openclaw/plugin-sdk/session-store-runtime";
 import { readBoundedSessionTranscriptEvents } from "openclaw/plugin-sdk/session-transcript-runtime";
 import {
+  DEFAULT_SESSION_SUMMARIES_CONFIG,
   resolveSessionSummariesConfig,
   type SessionSummariesConfig,
 } from "./session-summaries-config.js";
@@ -29,10 +35,11 @@ import {
   estimateSessionSummaryTokens,
   extractSessionSummaryMessages,
   redactSessionSummarySecrets,
-  truncateSessionSummaryText,
 } from "./session-summaries-transcript.js";
 
-const SESSION_SUMMARY_AUTO_INJECT_MAX_TOKENS = 1_200;
+const SESSION_SUMMARY_AUTO_INJECT_MAX_TOKENS = 2_000;
+const SESSION_SUMMARY_AUTO_INJECT_MAX_CHARS = 8_000;
+const SESSION_SUMMARY_AUTO_INJECT_MAX_LINEAGE = 20;
 const SESSION_SUMMARY_TAIL_MAX_BYTES = 512 * 1024;
 const SESSION_SUMMARY_TAIL_MAX_EVENTS = 200;
 const SESSION_SUMMARY_TAIL_MAX_MESSAGES = 12;
@@ -47,11 +54,110 @@ export type RegisterSessionSummariesOptions = {
   now?: () => number;
   predecessorIndexStore?: PluginStateKeyedStore<SessionSummaryPredecessorIndexRecord>;
   readBoundedTranscriptEvents?: ReadBoundedTranscriptEvents;
+  resolveBackfillCandidates?: typeof resolveBackfillCandidates;
   summaryStore?: PluginStateKeyedStore<SessionSummaryRecord>;
 };
 
 class SessionSummaryRpcInputError extends Error {
   override name = "SessionSummaryRpcInputError";
+}
+
+export type SessionSummaryBackfillCandidate = {
+  sessionId: string;
+  sessionKey: string;
+  sessionFile: string;
+  nextSessionId?: string;
+  endedAt: number;
+};
+
+const SESSION_ID_FROM_FILE_RE =
+  /^([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})(?:\b|-)/iu;
+
+function readBoolean(params: Record<string, unknown>, key: string): boolean {
+  const value = params[key];
+  if (value === undefined) {
+    return false;
+  }
+  if (typeof value !== "boolean") {
+    throw new SessionSummaryRpcInputError(`${key} must be a boolean`);
+  }
+  return value;
+}
+
+function resolveBackfillCandidates(params: {
+  agentId: string;
+  cfg: OpenClawConfig;
+  requestedSessionId?: string;
+}): SessionSummaryBackfillCandidate[] {
+  const sessionsDir = resolveSessionTranscriptsDirForAgent(params.agentId);
+  const resolvedSessionsDir = path.resolve(sessionsDir);
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(sessionsDir, { withFileTypes: true });
+  } catch (error) {
+    throw new SessionSummaryRpcInputError(
+      `sessions directory is unavailable for ${params.agentId}: ${formatErrorMessage(error)}`,
+    );
+  }
+
+  const sessionRows = listSessionEntries({
+    agentId: params.agentId,
+    storePath: params.cfg.session?.store,
+  });
+  const sessionKeyById = new Map<string, string>();
+  const nextSessionIdById = new Map<string, string>();
+  for (const row of sessionRows) {
+    const lineage = [...(row.entry.usageFamilySessionIds ?? []), row.entry.sessionId].filter(
+      (sessionId, index, all) => Boolean(sessionId) && all.indexOf(sessionId) === index,
+    );
+    for (const sessionId of lineage) {
+      sessionKeyById.set(sessionId, row.sessionKey);
+    }
+    for (let index = 0; index < lineage.length - 1; index += 1) {
+      const current = lineage[index];
+      const next = lineage[index + 1];
+      if (current && next) {
+        nextSessionIdById.set(current, next);
+      }
+    }
+  }
+
+  const newestBySessionId = new Map<string, SessionSummaryBackfillCandidate>();
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.includes(".jsonl")) {
+      continue;
+    }
+    const sessionId = entry.name.match(SESSION_ID_FROM_FILE_RE)?.[1];
+    if (!sessionId || (params.requestedSessionId && sessionId !== params.requestedSessionId)) {
+      continue;
+    }
+    const sessionFile = path.resolve(resolvedSessionsDir, entry.name);
+    if (!sessionFile.startsWith(`${resolvedSessionsDir}${path.sep}`)) {
+      continue;
+    }
+    let endedAt = 0;
+    try {
+      endedAt = fs.statSync(sessionFile).mtimeMs;
+    } catch {
+      continue;
+    }
+    const candidate: SessionSummaryBackfillCandidate = {
+      sessionId,
+      sessionKey: sessionKeyById.get(sessionId) ?? `agent:${params.agentId}:${sessionId}`,
+      sessionFile,
+      ...(nextSessionIdById.get(sessionId)
+        ? { nextSessionId: nextSessionIdById.get(sessionId) }
+        : {}),
+      endedAt,
+    };
+    const current = newestBySessionId.get(sessionId);
+    if (!current || candidate.endedAt > current.endedAt) {
+      newestBySessionId.set(sessionId, candidate);
+    }
+  }
+  return [...newestBySessionId.values()].toSorted(
+    (left, right) => left.endedAt - right.endedAt || left.sessionId.localeCompare(right.sessionId),
+  );
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -81,15 +187,25 @@ function createSessionSummaryComplete(
   return async (params) => {
     const cfg = readCurrentConfig(api);
     const defaultAgentId = resolveDefaultAgentId(cfg);
+    const llmPolicy = cfg.plugins?.entries?.["memory-core"]?.llm;
     assertSessionSummaryGenerationPolicy({
       agentId: params.agentId ?? defaultAgentId,
       cfg,
       model: params.model,
     });
-    if (params.agentId && params.agentId !== defaultAgentId) {
-      return await api.runtime.llm.complete(params);
-    }
-    const { agentId: _defaultAgentId, ...defaultScopedParams } = params;
+    const { agentId: requestedAgentId, model: requestedModel, ...baseParams } = params;
+    const defaultScopedParams = {
+      ...baseParams,
+      ...(requestedAgentId && requestedAgentId !== defaultAgentId
+        ? { agentId: requestedAgentId }
+        : {}),
+      // The fixed Sonnet default is the desired local behavior, but the host's
+      // plugin LLM boundary still requires explicit model-override trust. Fall
+      // back to the target agent model when that safe seam is not enabled.
+      ...(requestedModel && llmPolicy?.allowModelOverride === true
+        ? { model: requestedModel }
+        : {}),
+    };
     return await api.runtime.llm.complete(defaultScopedParams);
   };
 }
@@ -100,7 +216,11 @@ function assertSessionSummaryGenerationPolicy(params: {
   model?: string;
 }): void {
   const llmPolicy = params.cfg.plugins?.entries?.["memory-core"]?.llm;
-  if (params.model && llmPolicy?.allowModelOverride !== true) {
+  if (
+    params.model &&
+    params.model !== DEFAULT_SESSION_SUMMARIES_CONFIG.model &&
+    llmPolicy?.allowModelOverride !== true
+  ) {
     throw new SessionSummaryPolicyError(
       "memory-core session summary model overrides require plugins.entries.memory-core.llm.allowModelOverride=true",
     );
@@ -124,6 +244,15 @@ function readOptionalString(params: Record<string, unknown>, key: string): strin
     throw new SessionSummaryRpcInputError(`${key} must be a non-empty string`);
   }
   return value.trim();
+}
+
+function readAgentId(params: Record<string, unknown>, cfg: OpenClawConfig): string {
+  const requested = readOptionalString(params, "agentId") ?? resolveDefaultAgentId(cfg);
+  const normalized = normalizeAgentId(requested);
+  if (requested.toLowerCase() !== normalized) {
+    throw new SessionSummaryRpcInputError("agentId must be a path-safe OpenClaw agent id");
+  }
+  return normalized;
 }
 
 function readListLimit(params: Record<string, unknown>): number {
@@ -154,50 +283,61 @@ function readQuery(params: Record<string, unknown>): string | undefined {
   return query;
 }
 
-function buildAutoInjectContext(params: {
-  endedAt: number;
-  sessionId: string;
-  summary: string;
-}): string {
-  const emptyPayload = JSON.stringify({
-    kind: "previous_session_summary",
-    sessionId: params.sessionId,
-    endedAt: new Date(params.endedAt).toISOString(),
-    summary: "",
-  });
-  const remainingTokens = Math.max(
-    128,
-    SESSION_SUMMARY_AUTO_INJECT_MAX_TOKENS -
-      estimateSessionSummaryTokens(SESSION_SUMMARY_CONTEXT_PREFIX) -
-      estimateSessionSummaryTokens(emptyPayload) -
-      32,
-  );
-  const render = (summary: string) =>
+function buildAutoInjectContext(
+  summaries: Array<{ endedAt: number; sessionId: string; summary: string }>,
+): string {
+  type InjectedSummary = {
+    sessionId: string;
+    endedAt: string;
+    summary: string;
+  };
+  const render = (items: InjectedSummary[]) =>
     `${SESSION_SUMMARY_CONTEXT_PREFIX}\n${JSON.stringify({
-      kind: "previous_session_summary",
-      sessionId: params.sessionId,
-      endedAt: new Date(params.endedAt).toISOString(),
-      summary,
+      kind: "previous_session_summary_chain",
+      newestFirst: true,
+      summaries: items,
     })}`;
-  const boundedSummary = truncateSessionSummaryText(params.summary, remainingTokens);
-  const initial = render(boundedSummary);
-  if (estimateSessionSummaryTokens(initial) <= SESSION_SUMMARY_AUTO_INJECT_MAX_TOKENS) {
-    return initial;
-  }
-  let low = 0;
-  let high = boundedSummary.length;
-  let best = "";
-  while (low <= high) {
-    const midpoint = Math.floor((low + high) / 2);
-    const candidate = boundedSummary.slice(0, midpoint).trimEnd();
-    if (estimateSessionSummaryTokens(render(candidate)) <= SESSION_SUMMARY_AUTO_INJECT_MAX_TOKENS) {
-      best = candidate;
-      low = midpoint + 1;
-    } else {
-      high = midpoint - 1;
+  const fits = (value: string) =>
+    value.length <= SESSION_SUMMARY_AUTO_INJECT_MAX_CHARS &&
+    estimateSessionSummaryTokens(value) <= SESSION_SUMMARY_AUTO_INJECT_MAX_TOKENS;
+  const selected: InjectedSummary[] = [];
+  for (const source of summaries.slice(0, SESSION_SUMMARY_AUTO_INJECT_MAX_LINEAGE)) {
+    const item = {
+      sessionId: source.sessionId,
+      endedAt: new Date(source.endedAt).toISOString(),
+      summary: source.summary,
+    };
+    if (fits(render([...selected, item]))) {
+      selected.push(item);
+      continue;
     }
+
+    if (selected.length > 0) {
+      break;
+    }
+
+    // Preserve every later item in full. Only an oversized newest summary is
+    // truncated to the hard bound; a non-fitting older item ends traversal.
+    let low = 0;
+    let high = source.summary.length;
+    let best = "";
+    while (low <= high) {
+      const midpoint = Math.floor((low + high) / 2);
+      const prefix = source.summary.slice(0, midpoint).trimEnd();
+      const candidate = midpoint < source.summary.length && prefix ? `${prefix}…` : prefix;
+      if (fits(render([...selected, { ...item, summary: candidate }]))) {
+        best = candidate;
+        low = midpoint + 1;
+      } else {
+        high = midpoint - 1;
+      }
+    }
+    if (best) {
+      selected.push({ ...item, summary: best });
+    }
+    break;
   }
-  return render(best);
+  return render(selected);
 }
 
 function buildAutoInjectTailContext(params: {
@@ -260,6 +400,7 @@ export function registerSessionSummaries(
   const now = options.now ?? Date.now;
   const readBoundedTranscriptEvents =
     options.readBoundedTranscriptEvents ?? readBoundedSessionTranscriptEvents;
+  const resolveBackfill = options.resolveBackfillCandidates ?? resolveBackfillCandidates;
   const repository = new SessionSummaryRepository({
     now,
     openStore: () =>
@@ -383,17 +524,30 @@ export function registerSessionSummaries(
     ) {
       return undefined;
     }
-    if (predecessor.status === "complete") {
-      if (predecessor.summary?.trim()) {
-        return {
-          prependContext: buildAutoInjectContext({
-            endedAt: predecessor.endedAt,
-            sessionId: predecessor.sessionId,
-            summary: predecessor.summary,
-          }),
-        };
+    const chain = await repository.findPredecessorChain({
+      agentId,
+      currentSessionId,
+      lookbackDays: summaryConfig.lookbackDays,
+      limit: SESSION_SUMMARY_AUTO_INJECT_MAX_LINEAGE,
+    });
+    const injectable: Array<{ endedAt: number; sessionId: string; summary: string }> = [];
+    for (const record of chain) {
+      if (record.sessionKey !== currentSessionKey) {
+        break;
       }
-      return undefined;
+      if (record.status !== "complete" || !record.summary?.trim()) {
+        continue;
+      }
+      injectable.push({
+        endedAt: record.endedAt,
+        sessionId: record.sessionId,
+        summary: record.summary,
+      });
+    }
+    if (injectable.length > 0) {
+      return {
+        prependContext: buildAutoInjectContext(injectable),
+      };
     }
     if (predecessor.status !== "pending" && predecessor.status !== "processing") {
       return undefined;
@@ -455,7 +609,7 @@ export function registerSessionSummaries(
         const request = asRecord(params) ?? Object.create(null);
         const cfg = readCurrentConfig(api);
         const summaryConfig = resolveCurrentSummaryConfig(api, cfg);
-        const agentId = readOptionalString(request, "agentId") ?? resolveDefaultAgentId(cfg);
+        const agentId = readAgentId(request, cfg);
         const cursor = readOptionalString(request, "cursor");
         const query = readQuery(request);
         const result = await repository.list({
@@ -481,6 +635,97 @@ export function registerSessionSummaries(
       }
     },
     { scope: "operator.read" },
+  );
+
+  api.registerGatewayMethod(
+    "memory.summaries.generate",
+    async ({ params, respond }) => {
+      try {
+        const request = asRecord(params) ?? Object.create(null);
+        const cfg = readCurrentConfig(api);
+        const agentId = readAgentId(request, cfg);
+        const sessionId = readOptionalString(request, "sessionId");
+        const all = readBoolean(request, "all");
+        const force = readBoolean(request, "force");
+        const dryRun = readBoolean(request, "dryRun");
+        if ((!sessionId && !all) || (sessionId && all)) {
+          throw new SessionSummaryRpcInputError("provide exactly one of sessionId or all=true");
+        }
+        const summaryConfig = resolveCurrentSummaryConfig(api, cfg);
+        if (!summaryConfig.enabled) {
+          throw new SessionSummaryRpcInputError("memory-core session summaries are disabled");
+        }
+        assertSessionSummaryGenerationPolicy({ agentId, cfg, model: summaryConfig.model });
+
+        const candidates = resolveBackfill({
+          agentId,
+          cfg,
+          ...(sessionId ? { requestedSessionId: sessionId } : {}),
+        });
+        if (sessionId && candidates.length === 0) {
+          throw new SessionSummaryRpcInputError(`no session transcript found for ${sessionId}`);
+        }
+        const existing = new Map(
+          (await repository.readAllRecords())
+            .filter((record) => record.agentId === agentId)
+            .map((record) => [record.sessionId, record] as const),
+        );
+        const planned = candidates.filter(
+          (candidate) => force || !existing.has(candidate.sessionId),
+        );
+        if (!dryRun) {
+          for (const candidate of planned) {
+            await service.enqueue(
+              {
+                agentId,
+                sessionId: candidate.sessionId,
+                sessionKey: candidate.sessionKey,
+                endedAt: candidate.endedAt,
+                messageCount: 0,
+                sessionFile: candidate.sessionFile,
+                transcriptArchived: true,
+                ...(candidate.nextSessionId ? { nextSessionId: candidate.nextSessionId } : {}),
+              },
+              { force },
+            );
+          }
+          await service.waitForIdle();
+        }
+        const finalRecords = dryRun
+          ? existing
+          : new Map(
+              (await repository.readAllRecords())
+                .filter((record) => record.agentId === agentId)
+                .map((record) => [record.sessionId, record] as const),
+            );
+        respond(true, {
+          agentId,
+          evaluated: candidates.length,
+          planned: planned.length,
+          skippedExisting: candidates.length - planned.length,
+          dryRun,
+          force,
+          items: candidates.map((candidate) => ({
+            sessionId: candidate.sessionId,
+            sessionKey: candidate.sessionKey,
+            action: !force && existing.has(candidate.sessionId) ? "skip_existing" : "generate",
+            status: finalRecords.get(candidate.sessionId)?.status ?? null,
+            error: finalRecords.get(candidate.sessionId)?.lastError ?? null,
+          })),
+        });
+      } catch (error) {
+        const message = formatErrorMessage(error);
+        const invalidRequest = error instanceof SessionSummaryRpcInputError;
+        if (!invalidRequest) {
+          api.logger.warn(`memory-core: session summary generation RPC failed: ${message}`);
+        }
+        respond(false, undefined, {
+          code: invalidRequest ? "invalid_request" : "internal_error",
+          message: invalidRequest ? message : "failed to generate session summaries",
+        });
+      }
+    },
+    { scope: "operator.write" },
   );
 
   api.registerService({

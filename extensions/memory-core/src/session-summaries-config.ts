@@ -20,6 +20,7 @@ export const DEFAULT_SESSION_SUMMARIES_CONFIG: SessionSummariesConfig = {
   // Preserve the custom branch's continuity behavior while keeping every model
   // call and prompt injection bounded. Operators can still opt out explicitly.
   enabled: true,
+  model: "anthropic/claude-sonnet-4-6",
   autoInject: true,
   lookbackDays: 30,
   maxPromptTokens: 16_000,
@@ -69,7 +70,7 @@ export function resolveSessionSummariesConfig(params?: {
 }): SessionSummariesConfig {
   const pluginConfig = params?.pluginConfig ?? resolveOwnedPluginConfig(params?.cfg);
   const summaries = asRecord(pluginConfig?.summaries);
-  const model = readModel(summaries?.model);
+  const model = readModel(summaries?.model) ?? DEFAULT_SESSION_SUMMARIES_CONFIG.model;
 
   return {
     enabled:

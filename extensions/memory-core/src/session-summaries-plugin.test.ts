@@ -116,8 +116,12 @@ function registerTestSessionSummaries(params: {
   readBoundedTranscriptEvents?: NonNullable<
     RegisterSessionSummariesOptions["readBoundedTranscriptEvents"]
   >;
+  resolveBackfillCandidates?: NonNullable<
+    RegisterSessionSummariesOptions["resolveBackfillCandidates"]
+  >;
 }) {
   const hooks = new Map<string, unknown>();
+  const gatewayHandlers = new Map<string, GatewayHandler>();
   const summaryStore = createMemoryStore<SessionSummaryRecord>();
   const predecessorIndexStore = createMemoryStore<SessionSummaryPredecessorIndexRecord>();
   const complete =
@@ -146,6 +150,9 @@ function registerTestSessionSummaries(params: {
     on(name, handler) {
       hooks.set(name, handler);
     },
+    registerGatewayMethod(method, handler) {
+      gatewayHandlers.set(method, handler as GatewayHandler);
+    },
     registerService(service) {
       registeredService = service;
     },
@@ -153,10 +160,14 @@ function registerTestSessionSummaries(params: {
   const service = registerSessionSummaries(api, {
     predecessorIndexStore,
     readBoundedTranscriptEvents,
+    ...(params.resolveBackfillCandidates
+      ? { resolveBackfillCandidates: params.resolveBackfillCandidates }
+      : {}),
     summaryStore,
   });
   return {
     complete,
+    gatewayHandlers,
     hooks,
     predecessorIndexStore,
     readBoundedTranscriptEvents,
@@ -167,7 +178,7 @@ function registerTestSessionSummaries(params: {
 }
 
 describe("session summaries plugin registration", () => {
-  it("injects only a visible direct predecessor and exposes scoped tool/RPC reads", async () => {
+  it("injects only a visible bounded predecessor lineage and exposes scoped tool/RPC reads", async () => {
     const cfg = {
       agents: { list: [{ id: "main", default: true }] },
       plugins: {
@@ -271,12 +282,67 @@ describe("session summaries plugin registration", () => {
       });
     }
 
+    async function seedFailed(params: {
+      sessionId: string;
+      sessionKey: string;
+      nextSessionId: string;
+      endedAt: number;
+    }) {
+      const enqueued = await service.repository.enqueue({
+        agentId: "main",
+        sessionId: params.sessionId,
+        sessionKey: params.sessionKey,
+        nextSessionId: params.nextSessionId,
+        endedAt: params.endedAt,
+        messageCount: 3,
+      });
+      const claimed = await service.repository.claim(enqueued.key);
+      if (!claimed) {
+        throw new Error("expected failed summary claim");
+      }
+      await service.repository.markFailed(
+        enqueued.key,
+        "generation failed",
+        params.endedAt,
+        claimed.revision,
+        { retryable: false },
+      );
+    }
+
     const now = Date.now();
+    await seed({
+      sessionId: "older-two",
+      sessionKey: "agent:main:main",
+      nextSessionId: "pending-gap",
+      summary: "Relationship context: the user prefers direct progress updates.",
+      endedAt: now - 4,
+    });
+    await service.repository.enqueue({
+      agentId: "main",
+      sessionId: "pending-gap",
+      sessionKey: "agent:main:main",
+      nextSessionId: "failed-gap",
+      endedAt: now - 3,
+      messageCount: 3,
+    });
+    await seedFailed({
+      sessionId: "failed-gap",
+      sessionKey: "agent:main:main",
+      nextSessionId: "older-one",
+      endedAt: now - 2,
+    });
+    await seed({
+      sessionId: "older-one",
+      sessionKey: "agent:main:main",
+      nextSessionId: "previous",
+      summary: "Earlier decision: keep the streaming backend persistent.",
+      endedAt: now - 1,
+    });
     await seed({
       sessionId: "previous",
       sessionKey: "agent:main:main",
       nextSessionId: "current",
-      summary: `Migration reached 95%. ${"bounded detail ".repeat(500)}`,
+      summary: `Migration reached 95%. ${"bounded detail ".repeat(100)}`,
       endedAt: now,
     });
     await seed({
@@ -344,11 +410,72 @@ describe("session summaries plugin registration", () => {
     );
     expect(injection?.prependContext).toContain("previous_session_summary");
     expect(injection?.prependContext).toContain("Migration reached 95%");
+    expect(injection?.prependContext).toContain("streaming backend persistent");
+    expect(injection?.prependContext).toContain("direct progress updates");
     expect(injection?.prependContext).not.toContain("This must not be injected");
     expect(estimateSessionSummaryTokens(injection?.prependContext ?? "")).toBeLessThanOrEqual(
-      1_200,
+      2_000,
     );
+    expect(injection?.prependContext?.length).toBeLessThanOrEqual(8_000);
     expect(entriesSpy).not.toHaveBeenCalled();
+
+    await seed({
+      sessionId: "huge-older",
+      sessionKey: "agent:main:main",
+      nextSessionId: "huge-newest",
+      summary: "OLDER_LINEAGE_MUST_STOP_AT_BOUNDARY",
+      endedAt: now + 2,
+    });
+    await seed({
+      sessionId: "huge-newest",
+      sessionKey: "agent:main:main",
+      nextSessionId: "huge-current",
+      summary: `NEWEST_BOUNDARY ${"detail ".repeat(4_000)}`,
+      endedAt: now + 3,
+    });
+    const boundaryInjection = await beforePromptBuild(
+      { prompt: "continue", messages: [] },
+      { agentId: "main", sessionId: "huge-current", sessionKey: "agent:main:main" },
+    );
+    expect(boundaryInjection?.prependContext).toContain("NEWEST_BOUNDARY");
+    expect(boundaryInjection?.prependContext).not.toContain("OLDER_LINEAGE_MUST_STOP_AT_BOUNDARY");
+    expect(boundaryInjection?.prependContext?.length).toBeLessThanOrEqual(8_000);
+    expect(
+      estimateSessionSummaryTokens(boundaryInjection?.prependContext ?? ""),
+    ).toBeLessThanOrEqual(2_000);
+
+    await seed({
+      sessionId: "post-boundary-oldest",
+      sessionKey: "agent:main:main",
+      nextSessionId: "post-boundary-large",
+      summary: "POST_BOUNDARY_OLDEST_MUST_NOT_APPEAR",
+      endedAt: now + 4,
+    });
+    await seed({
+      sessionId: "post-boundary-large",
+      sessionKey: "agent:main:main",
+      nextSessionId: "small-newest",
+      summary: `OLDER_TOO_LARGE_MUST_NOT_BE_PARTIAL ${"detail ".repeat(4_000)}`,
+      endedAt: now + 5,
+    });
+    await seed({
+      sessionId: "small-newest",
+      sessionKey: "agent:main:main",
+      nextSessionId: "small-current",
+      summary: "SMALL_NEWEST_FULL",
+      endedAt: now + 6,
+    });
+    const olderBoundaryInjection = await beforePromptBuild(
+      { prompt: "continue", messages: [] },
+      { agentId: "main", sessionId: "small-current", sessionKey: "agent:main:main" },
+    );
+    expect(olderBoundaryInjection?.prependContext).toContain("SMALL_NEWEST_FULL");
+    expect(olderBoundaryInjection?.prependContext).not.toContain(
+      "OLDER_TOO_LARGE_MUST_NOT_BE_PARTIAL",
+    );
+    expect(olderBoundaryInjection?.prependContext).not.toContain(
+      "POST_BOUNDARY_OLDEST_MUST_NOT_APPEAR",
+    );
 
     const registeredTool = toolFactory?.({
       agentId: "main",
@@ -391,7 +518,10 @@ describe("session summaries plugin registration", () => {
     expect(storedDetails?.summaries?.map((item) => item.sessionId)).toEqual(["previous"]);
 
     const respond = vi.fn();
-    await gatewayHandler?.({ params: { agentId: "main", limit: 2 }, respond });
+    await gatewayHandler?.({
+      params: { agentId: "main", limit: 2, query: "This must not be injected" },
+      respond,
+    });
     expect(respond).toHaveBeenCalledWith(
       true,
       expect.objectContaining({
@@ -401,7 +531,7 @@ describe("session summaries plugin registration", () => {
       }),
     );
     const rpcPayload = respond.mock.calls[0]?.[1] as { items?: unknown[] } | undefined;
-    expect(rpcPayload?.items).toHaveLength(2);
+    expect(rpcPayload?.items).toHaveLength(1);
 
     respond.mockClear();
     await gatewayHandler?.({
@@ -608,7 +738,7 @@ describe("session summaries plugin registration", () => {
     },
   );
 
-  it("filters non-terminal session reasons and strips the default agent id from runtime LLM calls", async () => {
+  it("filters non-terminal reasons and uses the target-agent fallback without LLM override trust", async () => {
     const cfg = {
       agents: { list: [{ id: "main", default: true }] },
       plugins: {
@@ -650,8 +780,173 @@ describe("session summaries plugin registration", () => {
 
     expect(complete).toHaveBeenCalledTimes(1);
     expect(complete.mock.calls[0]?.[0]).not.toHaveProperty("agentId");
+    expect(complete.mock.calls[0]?.[0]).not.toHaveProperty("model");
     expect(typeof harness.registeredService()?.stop).toBe("function");
     await harness.registeredService()?.stop?.({} as never);
+  });
+
+  it("passes the fixed Sonnet summary model through the trusted LLM override seam", async () => {
+    const cfg = {
+      agents: { list: [{ id: "main", default: true }] },
+      plugins: {
+        entries: {
+          "memory-core": {
+            llm: { allowModelOverride: true },
+            config: {
+              summaries: {
+                enabled: true,
+                autoInject: false,
+                lookbackDays: 30,
+                maxPromptTokens: 4_000,
+                minMessages: 2,
+              },
+            },
+          },
+        },
+      },
+    } satisfies OpenClawConfig;
+    const complete = vi.fn(
+      async (_params: Parameters<OpenClawPluginApi["runtime"]["llm"]["complete"]>[0]) =>
+        createCompletionResult("Fixed-model summary"),
+    );
+    const harness = registerTestSessionSummaries({ cfg, complete });
+    const sessionEnd = harness.hooks.get("session_end") as SessionEndHook;
+
+    await sessionEnd(
+      { sessionId: "fixed-model", messageCount: 2, reason: "reset" },
+      { agentId: "main", sessionId: "fixed-model", sessionKey: "agent:main:main" },
+    );
+    await harness.service.waitForIdle();
+
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(complete.mock.calls[0]?.[0]).toMatchObject({
+      model: "anthropic/claude-sonnet-4-6",
+    });
+  });
+
+  it("generates one or all historical summaries with dry-run, skip, and force semantics", async () => {
+    const cfg = {
+      agents: { list: [{ id: "main", default: true }] },
+      plugins: {
+        entries: {
+          "memory-core": {
+            llm: { allowModelOverride: true },
+            config: {
+              summaries: {
+                enabled: true,
+                autoInject: false,
+                lookbackDays: 30,
+                maxPromptTokens: 4_000,
+                minMessages: 2,
+              },
+            },
+          },
+        },
+      },
+    } satisfies OpenClawConfig;
+    const candidates = [
+      {
+        sessionId: "11111111-1111-4111-8111-111111111111",
+        sessionKey: "agent:main:main",
+        sessionFile: "/private/session-one.jsonl",
+        nextSessionId: "22222222-2222-4222-8222-222222222222",
+        endedAt: 100,
+      },
+      {
+        sessionId: "22222222-2222-4222-8222-222222222222",
+        sessionKey: "agent:main:main",
+        sessionFile: "/private/session-two.jsonl",
+        endedAt: 200,
+      },
+    ];
+    const resolveBackfillCandidates = vi.fn(
+      (params: { agentId: string; requestedSessionId?: string }) =>
+        candidates.filter(
+          (candidate) =>
+            !params.requestedSessionId || candidate.sessionId === params.requestedSessionId,
+        ),
+    );
+    const complete = vi.fn(
+      async (_params: Parameters<OpenClawPluginApi["runtime"]["llm"]["complete"]>[0]) =>
+        createCompletionResult("Generated historical summary"),
+    );
+    const harness = registerTestSessionSummaries({
+      cfg,
+      complete,
+      resolveBackfillCandidates,
+    });
+    const generate = harness.gatewayHandlers.get("memory.summaries.generate");
+    if (!generate) {
+      throw new Error("expected memory.summaries.generate gateway method");
+    }
+    const firstSessionId = candidates[0].sessionId;
+    const respond = vi.fn();
+
+    await generate({ params: {}, respond });
+    expect(respond).toHaveBeenLastCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({ code: "invalid_request" }),
+    );
+
+    respond.mockClear();
+    await generate({ params: { sessionId: firstSessionId, dryRun: true }, respond });
+    expect(respond).toHaveBeenLastCalledWith(
+      true,
+      expect.objectContaining({ evaluated: 1, planned: 1, dryRun: true }),
+    );
+    expect(complete).not.toHaveBeenCalled();
+
+    respond.mockClear();
+    await generate({ params: { sessionId: firstSessionId }, respond });
+    expect(respond).toHaveBeenLastCalledWith(
+      true,
+      expect.objectContaining({ evaluated: 1, planned: 1, dryRun: false }),
+    );
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(complete.mock.calls[0]?.[0]).toMatchObject({
+      model: "anthropic/claude-sonnet-4-6",
+    });
+    const generatedPayload = respond.mock.calls[0]?.[1] as {
+      items?: Array<Record<string, unknown>>;
+    };
+    expect(generatedPayload.items?.[0]).not.toHaveProperty("sessionFile");
+
+    respond.mockClear();
+    await generate({ params: { sessionId: firstSessionId }, respond });
+    expect(respond).toHaveBeenLastCalledWith(
+      true,
+      expect.objectContaining({ planned: 0, skippedExisting: 1 }),
+    );
+    expect(complete).toHaveBeenCalledTimes(1);
+
+    respond.mockClear();
+    await generate({ params: { sessionId: firstSessionId, force: true }, respond });
+    expect(respond).toHaveBeenLastCalledWith(
+      true,
+      expect.objectContaining({ planned: 1, force: true }),
+    );
+    expect(complete).toHaveBeenCalledTimes(2);
+
+    respond.mockClear();
+    await generate({ params: { all: true, agentId: "MAIN" }, respond });
+    expect(respond).toHaveBeenLastCalledWith(
+      true,
+      expect.objectContaining({ agentId: "main", evaluated: 2, planned: 1 }),
+    );
+    expect(complete).toHaveBeenCalledTimes(3);
+    expect(resolveBackfillCandidates).toHaveBeenLastCalledWith({
+      agentId: "main",
+      cfg,
+    });
+
+    respond.mockClear();
+    await generate({ params: { all: true, agentId: "../escape" }, respond });
+    expect(respond).toHaveBeenLastCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({ code: "invalid_request" }),
+    );
   });
 
   it("requires explicit trust for non-default agents and model overrides", async () => {

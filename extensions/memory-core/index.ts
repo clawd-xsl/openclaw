@@ -225,6 +225,11 @@ export default definePluginEntry({
             description: "Search, inspect, and reindex memory files",
             hasSubcommands: true,
           },
+          {
+            name: "summary",
+            description: "Generate historical session summaries",
+            hasSubcommands: true,
+          },
         ],
       },
     );

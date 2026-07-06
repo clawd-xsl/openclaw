@@ -152,4 +152,62 @@ describe("SessionSummaryRepository legacy import", () => {
       }),
     ).resolves.toMatchObject({ sessionId: "old-session" });
   });
+
+  it("walks only the bounded explicit predecessor lineage", async () => {
+    const { repository } = createRepository();
+    await repository.importLegacyComplete({
+      ...legacyInput(),
+      sessionId: "oldest",
+      nextSessionId: "middle",
+      endedAt: 1_000,
+      summary: "oldest summary",
+    });
+    await repository.importLegacyComplete({
+      ...legacyInput(),
+      sessionId: "middle",
+      nextSessionId: "newest",
+      endedAt: 2_000,
+      summary: "middle summary",
+    });
+    await repository.importLegacyComplete({
+      ...legacyInput(),
+      sessionId: "newest",
+      nextSessionId: "current",
+      endedAt: 3_000,
+      summary: "newest summary",
+    });
+
+    await expect(
+      repository.findPredecessorChain({
+        agentId: "main",
+        currentSessionId: "current",
+        lookbackDays: 365_000,
+        limit: 2,
+      }),
+    ).resolves.toMatchObject([{ sessionId: "newest" }, { sessionId: "middle" }]);
+  });
+
+  it("caps explicit predecessor traversal at twenty records", async () => {
+    const { repository } = createRepository();
+    for (let index = 0; index < 25; index += 1) {
+      await repository.importLegacyComplete({
+        ...legacyInput(),
+        sessionId: `session-${index}`,
+        nextSessionId: `session-${index + 1}`,
+        endedAt: 1_000 + index,
+        summary: `summary ${index}`,
+      });
+    }
+
+    const chain = await repository.findPredecessorChain({
+      agentId: "main",
+      currentSessionId: "session-25",
+      lookbackDays: 365_000,
+      limit: 100,
+    });
+
+    expect(chain).toHaveLength(20);
+    expect(chain[0]?.sessionId).toBe("session-24");
+    expect(chain.at(-1)?.sessionId).toBe("session-5");
+  });
 });

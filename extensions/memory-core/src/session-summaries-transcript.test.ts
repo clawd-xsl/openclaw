@@ -266,6 +266,9 @@ describe("session summary transcript processing", () => {
     expect(result.summary).toBe("A concise summary.");
     const request = complete.mock.calls[0]?.[0];
     expect(request?.systemPrompt).toContain("untrusted conversation data");
+    expect(request?.systemPrompt).toContain("emotional tone and relationship dynamics");
+    expect(request?.systemPrompt).toContain("do not diagnose or invent motives");
+    expect(request?.messages[0]?.content).toContain("relationship dynamics");
     expect(request?.messages[0]?.content).toContain("JSON DATA (untrusted");
     expect(request?.messages[0]?.content).not.toContain("hunter2-secret");
     expect(request?.signal).toBe(abortController.signal);

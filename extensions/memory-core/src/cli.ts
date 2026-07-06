@@ -1,5 +1,6 @@
 // Memory Core plugin module implements cli behavior.
 import type { Command } from "commander";
+import { callGatewayFromCli } from "openclaw/plugin-sdk/gateway-runtime";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
 import {
   formatDocsLink,
@@ -64,6 +65,68 @@ async function runMemoryRemHarness(opts: MemoryRemHarnessOptions) {
 async function runMemoryRemBackfill(opts: MemoryRemBackfillOptions) {
   const runtime = await loadMemoryCliRuntime();
   await runtime.runMemoryRemBackfill(opts);
+}
+
+type SummaryGenerateOptions = {
+  all?: boolean;
+  force?: boolean;
+  dryRun?: boolean;
+  agent?: string;
+};
+
+type SummaryGenerateResult = {
+  agentId: string;
+  evaluated: number;
+  planned: number;
+  skippedExisting: number;
+  dryRun: boolean;
+  force: boolean;
+  items: Array<{
+    sessionId: string;
+    sessionKey: string;
+    action: "generate" | "skip_existing";
+    status: string | null;
+    error: string | null;
+  }>;
+};
+
+async function runSummaryGenerate(
+  sessionId: string | undefined,
+  opts: SummaryGenerateOptions,
+): Promise<void> {
+  if ((!sessionId && !opts.all) || (sessionId && opts.all)) {
+    throw invalidCliArgument("Provide exactly one sessionId or --all.");
+  }
+  const result = (await callGatewayFromCli(
+    "memory.summaries.generate",
+    { timeout: String(60 * 60 * 1_000) },
+    {
+      ...(sessionId ? { sessionId } : {}),
+      ...(opts.all ? { all: true } : {}),
+      ...(opts.force ? { force: true } : {}),
+      ...(opts.dryRun ? { dryRun: true } : {}),
+      ...(opts.agent?.trim() ? { agentId: opts.agent.trim() } : {}),
+    },
+    { progress: false },
+  )) as SummaryGenerateResult;
+  for (const [index, item] of result.items.entries()) {
+    const progress = `[${index + 1}/${result.items.length}]`;
+    const suffix = item.error ? ` (${item.error})` : item.status ? ` (${item.status})` : "";
+    process.stdout.write(
+      `${progress} ${item.action} ${item.sessionId} -> ${item.sessionKey}${suffix}\n`,
+    );
+  }
+  process.stdout.write(
+    [
+      opts.dryRun ? "Dry run." : "Done.",
+      `Evaluated: ${result.evaluated}`,
+      `Planned: ${result.planned}`,
+      `Skipped (existing): ${result.skippedExisting}`,
+    ].join(" ") + "\n",
+  );
+  if (!opts.dryRun && result.items.some((item) => item.status === "failed")) {
+    process.exitCode = 1;
+  }
 }
 
 function invalidCliArgument(message: string): Error & { code: string; exitCode: number } {
@@ -263,6 +326,23 @@ export function registerMemoryCli(program: Command) {
 
   memory.action(() => {
     memory.outputHelp();
+    process.exitCode = 0;
+  });
+
+  const summary = program.command("summary").description("Generate historical session summaries");
+  summary
+    .command("generate [sessionId]")
+    .description("Generate one historical session summary or backfill all missing summaries")
+    .option("--all", "Process all historical sessions without summaries", false)
+    .option("--force", "Regenerate summaries that already exist", false)
+    .option("--dry-run", "List work without generating summaries", false)
+    .option("--agent <agentId>", "Agent id (default: default agent)")
+    .action(async (sessionId: string | undefined, opts: SummaryGenerateOptions) => {
+      await runSummaryGenerate(sessionId, opts);
+    });
+
+  summary.action(() => {
+    summary.outputHelp();
     process.exitCode = 0;
   });
 }

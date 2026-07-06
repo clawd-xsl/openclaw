@@ -5,7 +5,7 @@ import type {
   PluginStateEntry,
 } from "openclaw/plugin-sdk/plugin-state-runtime";
 
-export const SESSION_SUMMARY_PROMPT_VERSION = 1;
+export const SESSION_SUMMARY_PROMPT_VERSION = 2;
 export const SESSION_SUMMARY_VERSION = 1;
 export const SESSION_SUMMARY_LIST_HARD_LIMIT = 100;
 export const SESSION_SUMMARY_TOOL_HARD_LIMIT = 20;
@@ -500,7 +500,10 @@ export class SessionSummaryRepository {
     });
   }
 
-  async enqueue(input: SessionSummaryEnqueueInput): Promise<{
+  async enqueue(
+    input: SessionSummaryEnqueueInput,
+    options: { force?: boolean } = {},
+  ): Promise<{
     key: string;
     record: SessionSummaryRecord;
     shouldProcess: boolean;
@@ -566,7 +569,10 @@ export class SessionSummaryRepository {
       const configChanged = current.generationConfigFingerprint !== generationConfigFingerprint;
       const contentGrew = messageCount > current.messageCount;
       const invalidate =
-        versionChanged || configChanged || (contentGrew && current.status !== "pending");
+        options.force === true ||
+        versionChanged ||
+        configChanged ||
+        (contentGrew && current.status !== "pending");
       const status = invalidate ? "pending" : current.status;
       const failedRetryDue =
         status === "failed" &&
@@ -978,5 +984,32 @@ export class SessionSummaryRepository {
       return undefined;
     }
     return record;
+  }
+
+  /** Follow the explicit next-session index without scanning unrelated summaries. */
+  async findPredecessorChain(params: {
+    agentId: string;
+    currentSessionId: string;
+    lookbackDays: number;
+    limit: number;
+  }): Promise<SessionSummaryRecord[]> {
+    const limit = Math.max(1, Math.min(20, Math.floor(params.limit)));
+    const chain: SessionSummaryRecord[] = [];
+    const seen = new Set<string>([normalizeString(params.currentSessionId)]);
+    let currentSessionId = params.currentSessionId;
+    for (let index = 0; index < limit; index += 1) {
+      const predecessor = await this.findDirectPredecessor({
+        agentId: params.agentId,
+        currentSessionId,
+        lookbackDays: params.lookbackDays,
+      });
+      if (!predecessor || seen.has(predecessor.sessionId)) {
+        break;
+      }
+      chain.push(predecessor);
+      seen.add(predecessor.sessionId);
+      currentSessionId = predecessor.sessionId;
+    }
+    return chain;
   }
 }

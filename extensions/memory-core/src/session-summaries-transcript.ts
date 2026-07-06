@@ -19,6 +19,8 @@ const SUMMARY_SYSTEM_PROMPT = [
   "Do not reproduce credentials, authentication tokens, private keys, or other secrets.",
   "Preserve the conversation's dominant language.",
   "Focus on topics, decisions, user preferences, completed work, unresolved work, and concrete details needed to continue.",
+  "Preserve emotional tone and relationship dynamics that matter for continuity: trust, frustration, rapport, boundaries, conflict, repair, and preferred interaction style.",
+  "Describe only dynamics grounded in the transcript; distinguish direct statements from cautious observations and do not diagnose or invent motives.",
   "Output only the requested summary, without a preamble.",
 ].join("\n");
 
@@ -370,8 +372,8 @@ async function completeSummary(params: {
 }): Promise<{ model: string; text: string }> {
   const task =
     params.phase === "map"
-      ? "Summarize this bounded transcript segment. Capture concrete facts and unresolved work for a later synthesis."
-      : "Write one compact continuity summary of this completed session. Capture topics, decisions, user preferences, completed work, unresolved work, and specific details needed for the next session.";
+      ? "Summarize this bounded transcript segment. Capture concrete facts, unresolved work, and grounded emotional or relationship shifts for a later synthesis."
+      : "Write one compact continuity summary of this completed session. Capture topics, decisions, user preferences, completed work, unresolved work, specific details, emotional tone, and relationship dynamics needed for the next session.";
   const messages = params.messages.map((message) => ({
     ...message,
     text: redactSessionSummarySecrets(normalizeText(message.text)),

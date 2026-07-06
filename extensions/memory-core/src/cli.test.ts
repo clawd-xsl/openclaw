@@ -23,6 +23,7 @@ import {
 const getMemorySearchManager = vi.hoisted(() => vi.fn());
 const getRuntimeConfig = vi.hoisted(() => vi.fn(() => ({})));
 const resolveDefaultAgentId = vi.hoisted(() => vi.fn(() => "main"));
+const callGatewayFromCli = vi.hoisted(() => vi.fn());
 const resolveCommandSecretRefsViaGateway = vi.hoisted(() =>
   vi.fn(async ({ config }: { config: unknown }) => ({
     resolvedConfig: config,
@@ -70,6 +71,8 @@ vi.mock("./cli.host.runtime.js", async () => {
   };
 });
 
+vi.mock("openclaw/plugin-sdk/gateway-runtime", () => ({ callGatewayFromCli }));
+
 let registerMemoryCli: typeof import("./cli.js").registerMemoryCli;
 let defaultRuntime: typeof import("openclaw/plugin-sdk/memory-core-host-runtime-cli").defaultRuntime;
 let isVerbose: typeof import("openclaw/plugin-sdk/memory-core-host-runtime-cli").isVerbose;
@@ -93,6 +96,7 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
+  callGatewayFromCli.mockReset();
   getMemorySearchManager.mockReset();
   getRuntimeConfig.mockReset().mockReturnValue({});
   resolveDefaultAgentId.mockReset().mockReturnValue("main");
@@ -222,6 +226,59 @@ describe("memory cli", () => {
     registerMemoryCli(program);
     await program.parseAsync(["memory", ...args], { from: "user" });
   }
+
+  async function runRootCli(args: string[]) {
+    const program = new Command();
+    program.name("test");
+    registerMemoryCli(program);
+    await program.parseAsync(args, { from: "user" });
+  }
+
+  it("forwards summary generate selection and backfill flags to the gateway", async () => {
+    callGatewayFromCli.mockResolvedValueOnce({
+      agentId: "research",
+      evaluated: 1,
+      planned: 1,
+      skippedExisting: 0,
+      dryRun: true,
+      force: true,
+      items: [
+        {
+          sessionId: "11111111-1111-4111-8111-111111111111",
+          sessionKey: "agent:research:main",
+          action: "generate",
+          status: null,
+          error: null,
+        },
+      ],
+    });
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    await runRootCli([
+      "summary",
+      "generate",
+      "--all",
+      "--force",
+      "--dry-run",
+      "--agent",
+      "research",
+    ]);
+
+    expect(callGatewayFromCli).toHaveBeenCalledWith(
+      "memory.summaries.generate",
+      { timeout: String(60 * 60 * 1_000) },
+      { all: true, force: true, dryRun: true, agentId: "research" },
+      { progress: false },
+    );
+    expect(write.mock.calls.flat().join("")).toContain("Dry run.");
+  });
+
+  it("rejects ambiguous summary generate selection before gateway access", async () => {
+    await expect(
+      runRootCli(["summary", "generate", "11111111-1111-4111-8111-111111111111", "--all"]),
+    ).rejects.toThrow("Provide exactly one sessionId or --all");
+    expect(callGatewayFromCli).not.toHaveBeenCalled();
+  });
 
   it("rejects invalid memory search numeric options before running the command", async () => {
     const program = new Command();
