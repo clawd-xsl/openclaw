@@ -640,14 +640,14 @@ When gateway-start QMD initialization is enabled, OpenClaw starts QMD only for e
 Durable session summaries are configured under
 `plugins.entries.memory-core.config.summaries`.
 
-| Key               | Type      | Default       | Description                                                                                                     |
-| ----------------- | --------- | ------------- | --------------------------------------------------------------------------------------------------------------- |
-| `enabled`         | `boolean` | `true`        | Generate and auto-inject summaries for eligible completed sessions; existing records remain readable when false |
-| `autoInject`      | `boolean` | `true`        | Inject the direct predecessor summary as bounded untrusted continuity context                                   |
-| `lookbackDays`    | `number`  | `30`          | Recall, retry-recovery, and predecessor lookup window (`1..3650`); not a physical TTL                           |
-| `maxPromptTokens` | `number`  | `16000`       | Maximum estimated prompt tokens for each map or reduce model call (`1024..65536`)                               |
-| `minMessages`     | `number`  | `3`           | Minimum extracted user and assistant messages before model generation (`1..1000`)                               |
-| `model`           | `string`  | default model | Optional non-empty provider/model override, up to 256 characters                                                |
+| Key               | Type      | Default                       | Description                                                                                                     |
+| ----------------- | --------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `enabled`         | `boolean` | `true`                        | Generate and auto-inject summaries for eligible completed sessions; existing records remain readable when false |
+| `autoInject`      | `boolean` | `true`                        | Inject bounded, untrusted continuity from the direct-predecessor lineage                                        |
+| `lookbackDays`    | `number`  | `30`                          | Recall, retry-recovery, and predecessor lookup window (`1..3650`); not a physical TTL                           |
+| `maxPromptTokens` | `number`  | `16000`                       | Maximum estimated prompt tokens for each map or reduce model call (`1024..65536`)                               |
+| `minMessages`     | `number`  | `3`                           | Minimum extracted user and assistant messages before model generation (`1..1000`)                               |
+| `model`           | `string`  | `anthropic/claude-sonnet-4-6` | Preferred full provider/model reference, up to 256 characters                                                   |
 
 ```json5
 {
@@ -669,11 +669,70 @@ Durable session summaries are configured under
 }
 ```
 
-An explicit `summaries.model` requires
-`plugins.entries.memory-core.llm.allowModelOverride: true`. Summary generation
-for a non-default agent also requires
-`plugins.entries.memory-core.llm.allowAgentIdOverride: true`. See
-[Memory Core plugin](/plugins/reference/memory-core#durable-session-summaries)
+### Automatic continuity injection
+
+For a replacement session, Memory Core follows the explicit predecessor index
+through at most 20 ancestors with the same session key. It considers the direct
+predecessor first and then walks backward, so injected summaries are ordered
+newest first. Pending, processing, failed, or empty summary records are skipped
+without hiding older completed ancestors. This path does not scan unrelated
+recent sessions.
+
+The combined injected payload is capped at 2,000 estimated tokens and 8,000
+characters. Completed summaries are kept whole whenever possible. If the newest
+candidate alone exceeds either limit, that first candidate can be truncated to
+fit. After one summary has been accepted, an older candidate that would exceed
+the limit ends the walk and is not partially injected.
+
+If no completed summary can be injected and the direct predecessor is still
+pending or processing, Memory Core can use a small sanitized transcript tail as
+temporary continuity. A failed summary never falls back to raw transcript
+content.
+
+### Summary model and prompt
+
+The preferred summary model is the full reference
+`anthropic/claude-sonnet-4-6`. Memory Core forwards this default only when
+`plugins.entries.memory-core.llm.allowModelOverride: true`; otherwise the host
+uses the target agent's configured model. A different configured
+`summaries.model` requires the same trust gate and is rejected without it.
+Summary generation for a non-default agent also requires
+`plugins.entries.memory-core.llm.allowAgentIdOverride: true`. Use a complete
+`provider/model` reference for overrides. Memory Core does not infer a trusted
+model override from bare model identifiers in the ended transcript; the stored
+record instead captures the fully resolved provider/model returned by the host.
+
+The summary prompt preserves concrete decisions, preferences, unresolved work,
+the conversation's dominant language, and emotional or relationship dynamics
+that matter for continuity. It requires those observations to stay grounded in
+the transcript, distinguish direct statements from cautious observations, and
+avoid diagnoses or invented motives.
+
+### Historical backfill
+
+Generate one session summary or backfill historical transcripts with the plugin
+CLI:
+
+```bash
+openclaw summary generate <sessionId>
+openclaw summary generate --all --dry-run
+openclaw summary generate --all
+```
+
+Provide exactly one session ID or `--all`. Existing completed summaries are
+skipped by default; add `--force` to regenerate them. `--dry-run` reports the
+eligible work without generating summaries, and `--agent <agentId>` scopes the
+operation to one agent.
+
+### Claude CLI structured rollover
+
+Claude CLI context-pressure rollover is separate from durable Memory Core
+session summaries. It stores a provider-scoped continuity overlay for the next
+Claude CLI child and uses that overlay only when reseeding the same OpenClaw
+session. It is not a `session_summaries` record, does not appear in the
+Memory Core RPC or Control UI, and is not controlled by `summaries` settings.
+
+See [Memory Core plugin](/plugins/reference/memory-core#durable-session-summaries)
 for lifecycle, recovery, and visibility behavior.
 
 ---

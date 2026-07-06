@@ -52,11 +52,21 @@ keeping secrets out of conversations. Large transcripts use bounded map and
 reduce model calls. Pending or retryable work is stored in plugin state and
 recovered after restart. Each stored summary is capped at 8 KiB.
 
-When the replacement session is the direct successor on the same session key,
-memory-core prepends its completed predecessor summary as bounded, untrusted
-context. If generation is still pending, it can temporarily use a small bounded
-transcript tail. It does not inject an unrelated recent-session history dump.
-Set `autoInject: false` to keep stored summaries available through the tool and
+When the replacement session is a direct successor, memory-core follows the
+explicit predecessor index through at most 20 ancestors with the same session
+key. It injects completed summaries newest first and skips pending, processing,
+failed, or empty records without letting a gap hide older completed ancestors.
+It does not scan unrelated recent sessions.
+
+The combined untrusted continuity payload is capped at 2,000 estimated tokens
+and 8,000 characters. Summaries stay whole unless the newest candidate alone is
+too large, in which case only that first candidate can be truncated to fit. If
+an older candidate would exceed the remaining budget after one summary has been
+accepted, injection stops without partially including that candidate. When no
+completed summary can be injected and the direct predecessor is pending or
+processing, memory-core can temporarily use a small sanitized transcript tail.
+A failed summary never falls back to raw transcript content. Set
+`autoInject: false` to keep stored summaries available through the tool and
 Control UI without adding them to prompts.
 
 ```json5
@@ -79,11 +89,24 @@ Control UI without adding them to prompts.
 }
 ```
 
-By default, summary generation uses the ended session's agent and configured
-model. An explicit `summaries.model` requires
-`plugins.entries.memory-core.llm.allowModelOverride: true`. Generating for an
-agent other than the configured default agent also requires
-`plugins.entries.memory-core.llm.allowAgentIdOverride: true`.
+The preferred summary model is the full reference
+`anthropic/claude-sonnet-4-6`. Memory Core forwards this default only when
+`plugins.entries.memory-core.llm.allowModelOverride: true`; otherwise the host
+uses the target agent's configured model. A different configured
+`summaries.model` requires the same trust gate and is rejected without it.
+Generating for an agent other than the configured default agent also requires
+`plugins.entries.memory-core.llm.allowAgentIdOverride: true`. Use a complete
+`provider/model` reference for overrides. Memory Core does not infer a trusted
+model override from a bare model identifier in the ended transcript; the stored
+summary records the fully resolved provider/model returned by the host.
+
+The summary prompt preserves concrete topics, decisions, preferences, completed
+and unresolved work, and the conversation's dominant language. It also
+preserves emotional tone and relationship dynamics that matter for continuity,
+including trust, frustration, rapport, boundaries, conflict, repair, and the
+user's preferred interaction style. These observations must be grounded in the
+transcript, distinguish direct statements from cautious observations, and avoid
+diagnoses or invented motives.
 
 The `session_summaries` tool applies the normal session-history visibility and
 agent-to-agent policy before returning results. Search is literal, responses
@@ -95,10 +118,6 @@ precedence. Operators can inspect the same durable records through the
 operator RPC shares filtering and pagination code with the tool but does not
 impersonate a requester session.
 
-Automatic continuity injection uses a completed direct-predecessor summary or,
-while generation is pending or processing, a bounded predecessor tail. A failed
-summary never falls back to injecting the raw transcript tail.
-
 Setting `summaries.enabled: false` stops new generation and prompt injection.
 It does not erase existing records: the tool, RPC, and Control UI can still
 read stored summaries subject to their respective authorization checks.
@@ -106,6 +125,31 @@ read stored summaries subject to their respective authorization checks.
 physical TTL. The namespace retains at most 4096 live records, and the shared
 plugin-state store evicts the oldest live rows when the namespace grows past
 that bound.
+
+### Historical summary backfill
+
+The plugin CLI can generate a summary for one historical session or backfill
+all eligible transcripts:
+
+```bash
+openclaw summary generate <sessionId>
+openclaw summary generate --all --dry-run
+openclaw summary generate --all
+```
+
+Provide exactly one session ID or `--all`. Existing completed summaries are
+skipped by default; add `--force` to regenerate them. `--dry-run` reports the
+eligible work without generating summaries, and `--agent <agentId>` scopes the
+operation to one agent.
+
+### Claude CLI structured rollover
+
+Claude CLI context-pressure rollover is a separate continuity mechanism. It
+stores a provider-scoped overlay for the next Claude CLI child and uses it only
+to reseed that backend within the same OpenClaw session. The overlay is not a
+durable Memory Core session summary, does not appear in the
+`session_summaries` tool, RPC, or Control UI, and is not controlled by
+`summaries` settings.
 
 ## Completed-session memory flush
 
