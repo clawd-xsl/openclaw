@@ -1,11 +1,7 @@
 // Covers heartbeat ack truncation limits.
 import { describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
-import {
-  readSessionEntry,
-  resolveStorePath,
-  updateSessionStoreEntry,
-} from "../config/sessions.js";
+import { readSessionEntry, resolveStorePath, updateSessionStoreEntry } from "../config/sessions.js";
 import { runHeartbeatOnce, type HeartbeatDeps } from "./heartbeat-runner.js";
 import { installHeartbeatRunnerTestRuntime } from "./heartbeat-runner.test-harness.js";
 import {
@@ -382,7 +378,8 @@ describe("runHeartbeatOnce ack handling", () => {
         await updateSessionStoreEntry({
           storePath: resolvedStorePath,
           sessionKey,
-          update: () => ({ updatedAt: bumpedUpdatedAt }),
+          update: (entry) => ({ ...entry, updatedAt: bumpedUpdatedAt }),
+          replaceEntry: true,
           skipMaintenance: true,
           requireWriteSuccess: true,
         });

@@ -65,7 +65,8 @@ describe("runHeartbeatOnce clears stuck pendingFinalDelivery state once delivery
     await updateSessionStoreEntry({
       storePath: resolveStorePath(configuredStorePath),
       sessionKey,
-      update: () => patch,
+      update: (entry) => ({ ...entry, ...patch }),
+      replaceEntry: true,
       skipMaintenance: true,
       requireWriteSuccess: true,
     });
