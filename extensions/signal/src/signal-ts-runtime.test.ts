@@ -326,6 +326,59 @@ describe("signal-ts runtime monitor", () => {
     expect(mocks.connectCount).toBe(0);
   });
 
+  it("keeps the signal-ts send deadline when a caller abort signal is present", async () => {
+    const { withSignalTsClient } = await import("./signal-ts-client.js");
+    const callerAbort = new AbortController();
+
+    const observedSignal = await withSignalTsClient(
+      {
+        accountInfo: createSignalTsAccountInfo(),
+        abortSignal: callerAbort.signal,
+        timeoutMs: 10,
+      },
+      async ({ abortSignal }) => {
+        await new Promise<void>((resolve, reject) => {
+          const safetyTimer = setTimeout(
+            () => reject(new Error("combined signal-ts deadline did not abort")),
+            500,
+          );
+          abortSignal.addEventListener(
+            "abort",
+            () => {
+              clearTimeout(safetyTimer);
+              resolve();
+            },
+            { once: true },
+          );
+        });
+        return abortSignal;
+      },
+    );
+
+    expect(observedSignal).not.toBe(callerAbort.signal);
+    expect(observedSignal.aborted).toBe(true);
+    expect(observedSignal.reason).toMatchObject({ name: "TimeoutError" });
+    expect(callerAbort.signal.aborted).toBe(false);
+  });
+
+  it("preserves the caller abort reason in the combined signal-ts deadline", async () => {
+    const { withSignalTsClient } = await import("./signal-ts-client.js");
+    const callerAbort = new AbortController();
+    const superseded = new Error("superseded");
+    callerAbort.abort(superseded);
+
+    const observedReason = await withSignalTsClient(
+      {
+        accountInfo: createSignalTsAccountInfo(),
+        abortSignal: callerAbort.signal,
+        timeoutMs: 1_000,
+      },
+      async ({ abortSignal }) => abortSignal.reason,
+    );
+
+    expect(observedReason).toBe(superseded);
+  });
+
   it("downloads Signal CDN attachments through the signal-ts trusted fetch", async () => {
     const { fetchSignalTsAttachment } = await import("./signal-ts-runtime.js");
     mocks.signalAttachmentFetch.mockResolvedValueOnce(new Response("encrypted"));

@@ -167,8 +167,10 @@ export async function withSignalTsClient<T>(
   },
   run: (context: SignalTsClientContext & { abortSignal: AbortSignal }) => Promise<T>,
 ): Promise<T> {
-  const abortSignal =
-    params.abortSignal ?? AbortSignal.timeout(params.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  const timeoutSignal = AbortSignal.timeout(params.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  const abortSignal = params.abortSignal
+    ? AbortSignal.any([params.abortSignal, timeoutSignal])
+    : timeoutSignal;
   const activeClient = activeSignalTsClients.get(resolveSignalTsStatePath(params.accountInfo));
   if (activeClient) {
     return await run({ ...activeClient, abortSignal });
