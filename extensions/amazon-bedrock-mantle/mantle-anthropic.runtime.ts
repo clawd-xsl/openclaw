@@ -4,7 +4,13 @@
  */
 import Anthropic from "@anthropic-ai/sdk";
 import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
-import { stream, type Model, type SimpleStreamOptions } from "openclaw/plugin-sdk/llm";
+import {
+  stream,
+  type Model,
+  type SimpleStreamOptions,
+  type ThinkingLevel,
+} from "openclaw/plugin-sdk/llm";
+import { defaultsClaudeAdaptiveThinking } from "openclaw/plugin-sdk/provider-model-shared";
 
 const MANTLE_ANTHROPIC_BETA = "fine-grained-tool-streaming-2025-05-14";
 type AnthropicOptions = ConstructorParameters<typeof Anthropic>[0];
@@ -23,8 +29,16 @@ export function resolveMantleAnthropicBaseUrl(baseUrl: string): string {
   return `${trimmed}/anthropic`;
 }
 
-function requiresDefaultSampling(modelId: string): boolean {
-  return modelId.includes("claude-opus-4-7");
+function isClaudeOpus47Model(model: Model): boolean {
+  return model.id.includes("claude-opus-4-7");
+}
+
+function usesMandatoryAdaptiveThinking(model: Model): boolean {
+  return defaultsClaudeAdaptiveThinking(model);
+}
+
+function omitsCustomTemperature(model: Model): boolean {
+  return isClaudeOpus47Model(model) || usesMandatoryAdaptiveThinking(model);
 }
 
 function isClaudeMythosPreviewModel(model: Model): boolean {
@@ -43,11 +57,18 @@ function isClaudeMythosPreviewModel(model: Model): boolean {
 function resolveMantleReasoning(
   model: Model,
   options: SimpleStreamOptions | undefined,
-): NonNullable<SimpleStreamOptions["reasoning"]> | undefined {
-  if (requiresDefaultSampling(model.id)) {
+): ThinkingLevel | undefined {
+  if (isClaudeOpus47Model(model)) {
     return undefined;
   }
+  if (usesMandatoryAdaptiveThinking(model)) {
+    const reasoning = options?.reasoning ?? "high";
+    return reasoning === "off" || reasoning === "minimal" ? "low" : reasoning;
+  }
   const reasoning = options?.reasoning ?? (isClaudeMythosPreviewModel(model) ? "high" : undefined);
+  if (reasoning === "off") {
+    return undefined;
+  }
   if (!isClaudeMythosPreviewModel(model)) {
     return reasoning;
   }
@@ -75,7 +96,7 @@ function buildMantleAnthropicBaseOptions(
   apiKey: string,
 ) {
   return {
-    temperature: requiresDefaultSampling(model.id) ? undefined : options?.temperature,
+    temperature: omitsCustomTemperature(model) ? undefined : options?.temperature,
     maxTokens: options?.maxTokens || Math.min(model.maxTokens, 32_000),
     signal: options?.signal,
     apiKey,
@@ -90,7 +111,7 @@ function buildMantleAnthropicBaseOptions(
 function adjustMaxTokensForThinking(
   baseMaxTokens: number,
   modelMaxTokens: number,
-  reasoningLevel: NonNullable<SimpleStreamOptions["reasoning"]>,
+  reasoningLevel: ThinkingLevel,
   customBudgets?: SimpleStreamOptions["thinkingBudgets"],
 ): { maxTokens: number; thinkingBudget: number } {
   const defaultBudgets = {
@@ -145,6 +166,15 @@ export function createMantleAnthropicStreamFn(deps?: {
         ...base,
         client: streamClient,
         thinkingEnabled: false,
+      });
+    }
+
+    if (usesMandatoryAdaptiveThinking(model)) {
+      return streamFn(model as Model<"anthropic-messages">, context, {
+        ...base,
+        client: streamClient,
+        thinkingEnabled: true,
+        effort: reasoning,
       });
     }
 

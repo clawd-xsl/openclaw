@@ -315,6 +315,10 @@ describeLive("gateway live (cli backend)", () => {
       const modelSwitchTarget = enableCliModelSwitchProbe
         ? modelSelection.configModelSwitchTarget
         : undefined;
+      const providerDefaults = backendResolved?.config;
+      if (providerId === "claude-cli") {
+        expect(providerDefaults?.liveSession).toBe("claude-stdio");
+      }
       logCliBackendLiveStep("model-selected", {
         providerId,
         modelKey,
@@ -323,8 +327,8 @@ describeLive("gateway live (cli backend)", () => {
         enableCliMcpProbe,
         enableCliModelSwitchProbe,
         modelSwitchTarget,
+        liveSession: providerDefaults?.liveSession,
       });
-      const providerDefaults = backendResolved?.config;
 
       const cliCommand = process.env.OPENCLAW_LIVE_CLI_BACKEND_COMMAND ?? providerDefaults?.command;
       if (!cliCommand) {
@@ -440,6 +444,7 @@ describeLive("gateway live (cli backend)", () => {
           : {}),
         agents: {
           ...cfg.agents,
+          list: [{ id: "dev", default: true }],
           defaults: {
             ...cfg.agents?.defaults,
             ...(bootstrapWorkspace ? { workspace: bootstrapWorkspace.workspaceRootDir } : {}),

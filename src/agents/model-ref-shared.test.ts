@@ -34,6 +34,8 @@ describe("normalizeStaticProviderModelId", () => {
     // Shipped aliases must work before plugin metadata is loaded so catalog and
     // config parsing can normalize common refs during startup.
     expect(normalizeStaticProviderModelId("anthropic", "sonnet-4.6")).toBe("claude-sonnet-4-6");
+    expect(normalizeStaticProviderModelId("anthropic", "sonnet")).toBe("claude-sonnet-5");
+    expect(normalizeStaticProviderModelId("anthropic", "sonnet-5")).toBe("claude-sonnet-5");
     expect(normalizeStaticProviderModelId("vercel-ai-gateway", "sonnet-4.6")).toBe(
       "anthropic/claude-sonnet-4-6",
     );

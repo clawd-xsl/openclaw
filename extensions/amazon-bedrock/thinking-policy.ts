@@ -7,6 +7,7 @@ import type {
   ProviderThinkingProfile,
 } from "openclaw/plugin-sdk/plugin-entry";
 import {
+  defaultsClaudeAdaptiveThinking,
   resolveClaudeFable5ModelIdentity,
   resolveClaudeModelIdentity,
 } from "openclaw/plugin-sdk/provider-model-shared";
@@ -49,6 +50,10 @@ function isMythosPreviewBedrockModelRef(modelRef: string): boolean {
   );
 }
 
+function isSonnet5BedrockModelRef(modelId: string, params?: Record<string, unknown>): boolean {
+  return defaultsClaudeAdaptiveThinking({ id: modelId, params });
+}
+
 /** Return whether a Bedrock Claude ref needs latest adaptive-thinking request shaping. */
 export function isLatestAdaptiveBedrockModelRef(
   modelId: string,
@@ -58,6 +63,7 @@ export function isLatestAdaptiveBedrockModelRef(
   const canonicalModelId = resolveClaudeModelIdentity(modelRef);
   return (
     resolveClaudeFable5ModelIdentity(modelRef) !== undefined ||
+    isSonnet5BedrockModelRef(modelId, params) ||
     [modelId, canonicalModelId].some(
       (candidate) =>
         isOpus47OrNewerBedrockModelRef(candidate) || isMythosPreviewBedrockModelRef(candidate),
@@ -73,6 +79,9 @@ export function supportsBedrockNativeMaxEffort(
   if (resolveClaudeFable5ModelIdentity({ id: modelId, params })) {
     return true;
   }
+  if (isSonnet5BedrockModelRef(modelId, params)) {
+    return true;
+  }
   const canonicalModelId = resolveClaudeModelIdentity({ id: modelId, params });
   return [modelId, canonicalModelId].some(
     (modelRef) => isOpus46BedrockModelRef(modelRef) || isOpus47OrNewerBedrockModelRef(modelRef),
@@ -85,7 +94,7 @@ export function resolveBedrockNativeThinkingLevelMap(
   params?: Record<string, unknown>,
 ): ProviderRuntimeModel["thinkingLevelMap"] | undefined {
   const modelRef = { id: modelId, params };
-  if (resolveClaudeFable5ModelIdentity(modelRef)) {
+  if (resolveClaudeFable5ModelIdentity(modelRef) || isSonnet5BedrockModelRef(modelId, params)) {
     return { off: "low", minimal: "low", xhigh: "xhigh", max: "max" };
   }
   if (!supportsBedrockNativeMaxEffort(modelId, params)) {
@@ -106,7 +115,10 @@ export function resolveBedrockClaudeThinkingProfile(
   const trimmed = modelId.trim();
   const canonicalModelId = resolveClaudeModelIdentity({ id: trimmed, params });
   const modelRefs = [trimmed, canonicalModelId];
-  if (resolveClaudeFable5ModelIdentity({ id: trimmed, params })) {
+  if (
+    resolveClaudeFable5ModelIdentity({ id: trimmed, params }) ||
+    isSonnet5BedrockModelRef(trimmed, params)
+  ) {
     return {
       levels: [...BASE_CLAUDE_THINKING_LEVELS, { id: "xhigh" }, { id: "adaptive" }, { id: "max" }],
       defaultLevel: "high",

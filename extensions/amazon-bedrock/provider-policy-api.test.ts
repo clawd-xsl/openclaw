@@ -67,9 +67,34 @@ describe("amazon-bedrock provider-policy-api", () => {
     ).toEqual(["off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max"]);
   });
 
+  it("keeps Bedrock Claude Sonnet 5 adaptive by default with native xhigh and max", () => {
+    const profile = resolveThinkingProfile({
+      provider: "amazon-bedrock",
+      modelId: "amazon-bedrock/global.anthropic.claude-sonnet-5",
+    });
+
+    expect(profile?.levels.map((level) => level.id)).toEqual([
+      "off",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "adaptive",
+      "max",
+    ]);
+    expect(profile?.defaultLevel).toBe("high");
+    expect(profile?.preserveWhenCatalogReasoningFalse).toBe(true);
+  });
+
   it.each([
     {
       canonicalModelId: "claude-fable-5",
+      defaultLevel: "high",
+      preservesCatalogOptOut: true,
+    },
+    {
+      canonicalModelId: "claude-sonnet-5",
       defaultLevel: "high",
       preservesCatalogOptOut: true,
     },

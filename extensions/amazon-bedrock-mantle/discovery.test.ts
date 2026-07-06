@@ -461,7 +461,7 @@ describe("bedrock mantle discovery", () => {
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
-        data: [{ id: "anthropic.claude-sonnet-4-6", object: "model" }],
+        data: [{ id: "anthropic.claude-sonnet-5", object: "model" }],
       }),
     });
 
@@ -482,6 +482,18 @@ describe("bedrock mantle discovery", () => {
     expect(opus?.api).toBe("anthropic-messages");
     expect(opus?.reasoning).toBe(false);
     expect(opus).not.toHaveProperty("baseUrl");
+    const sonnet = provider?.models?.find((model) => model.id === "anthropic.claude-sonnet-5");
+    expect(
+      provider?.models?.filter((model) => model.id === "anthropic.claude-sonnet-5"),
+    ).toHaveLength(1);
+    expect(sonnet).toMatchObject({
+      api: "anthropic-messages",
+      reasoning: true,
+      params: { canonicalModelId: "claude-sonnet-5" },
+      thinkingLevelMap: { off: "low", minimal: "low", xhigh: "xhigh", max: "max" },
+      contextWindow: 1_000_000,
+      maxTokens: 128_000,
+    });
     const mythos = provider?.models?.find(
       (model) => model.id === "anthropic.claude-mythos-preview",
     );

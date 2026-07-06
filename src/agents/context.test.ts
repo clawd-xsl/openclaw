@@ -11,6 +11,7 @@ import {
 import {
   ANTHROPIC_CONTEXT_1M_TOKENS,
   ANTHROPIC_FABLE_CONTEXT_TOKENS,
+  ANTHROPIC_SONNET_5_CONTEXT_TOKENS,
   ANTHROPIC_VERTEX_CONTEXT_1M_TOKENS,
   applyConfiguredContextWindows,
   applyDiscoveredContextWindows,
@@ -86,12 +87,14 @@ describe("applyDiscoveredContextWindows", () => {
       models: [
         { id: "claude-cli/claude-opus-4.8-20260514", contextWindow: 200_000 },
         { id: "claude-cli/claude-opus-4.7-20260219", contextWindow: 200_000 },
+        { id: "claude-cli/claude-sonnet-5", contextWindow: 200_000 },
         { id: "claude-cli/claude-sonnet-4-6", contextWindow: 200_000 },
       ],
     });
 
     expect(cache.get("claude-cli/claude-opus-4.8-20260514")).toBe(ANTHROPIC_CONTEXT_1M_TOKENS);
     expect(cache.get("claude-cli/claude-opus-4.7-20260219")).toBe(ANTHROPIC_CONTEXT_1M_TOKENS);
+    expect(cache.get("claude-cli/claude-sonnet-5")).toBe(ANTHROPIC_SONNET_5_CONTEXT_TOKENS);
     expect(cache.get("claude-cli/claude-sonnet-4-6")).toBe(ANTHROPIC_CONTEXT_1M_TOKENS);
   });
 
@@ -418,6 +421,9 @@ describe("resolveContextTokensForModel", () => {
   it.each([
     ["anthropic", "claude-fable-5", ANTHROPIC_FABLE_CONTEXT_TOKENS],
     ["anthropic-vertex", "claude-fable-5", ANTHROPIC_FABLE_CONTEXT_TOKENS],
+    ["anthropic", "claude-sonnet-5", ANTHROPIC_SONNET_5_CONTEXT_TOKENS],
+    ["anthropic-vertex", "claude-sonnet-5", ANTHROPIC_SONNET_5_CONTEXT_TOKENS],
+    ["claude-cli", "claude-sonnet-5", ANTHROPIC_SONNET_5_CONTEXT_TOKENS],
     ["anthropic", "claude-sonnet-4-6", ANTHROPIC_CONTEXT_1M_TOKENS],
     ["anthropic-vertex", "claude-sonnet-4-6", ANTHROPIC_VERTEX_CONTEXT_1M_TOKENS],
   ])(
@@ -437,6 +443,9 @@ describe("resolveContextTokensForModel", () => {
   it.each([
     ["anthropic", "claude-fable-5"],
     ["anthropic-vertex", "claude-fable-5"],
+    ["anthropic", "claude-sonnet-5"],
+    ["anthropic-vertex", "claude-sonnet-5"],
+    ["claude-cli", "claude-sonnet-5"],
     ["anthropic", "claude-sonnet-4-6"],
     ["anthropic-vertex", "claude-sonnet-4-6"],
   ])("honors an authored %s window for fixed model %s", (provider, modelId) => {
@@ -530,6 +539,9 @@ describe("resolveContextTokensForModel", () => {
   it.each([
     ["anthropic", "claude-fable-5", ANTHROPIC_FABLE_CONTEXT_TOKENS],
     ["anthropic-vertex", "claude-fable-5", ANTHROPIC_FABLE_CONTEXT_TOKENS],
+    ["anthropic", "claude-sonnet-5", ANTHROPIC_SONNET_5_CONTEXT_TOKENS],
+    ["anthropic-vertex", "claude-sonnet-5", ANTHROPIC_SONNET_5_CONTEXT_TOKENS],
+    ["claude-cli", "claude-sonnet-5", ANTHROPIC_SONNET_5_CONTEXT_TOKENS],
     ["anthropic", "claude-sonnet-4-6", ANTHROPIC_CONTEXT_1M_TOKENS],
     ["anthropic-vertex", "claude-sonnet-4-6", ANTHROPIC_VERTEX_CONTEXT_1M_TOKENS],
   ])(
@@ -641,6 +653,17 @@ describe("resolveContextTokensForModel", () => {
     });
 
     expect(result).toBe(200_000);
+  });
+
+  it("does not classify longer Sonnet version prefixes as Sonnet 5", () => {
+    expect(
+      resolveContextTokensForModel({
+        provider: "anthropic",
+        model: "claude-sonnet-50",
+        fallbackContextTokens: 200_000,
+        allowAsyncLoad: false,
+      }),
+    ).toBe(200_000);
   });
 
   it("returns 1M context for claude opus 4.7 variants without context1m", () => {

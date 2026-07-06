@@ -5,6 +5,7 @@ import { SYSTEM_PROMPT_CACHE_BOUNDARY } from "../../agents/system-prompt-cache-b
 import type { AssistantMessage, Model } from "../types.js";
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
 import {
+  buildGoogleSimpleThinking,
   buildGoogleGenerateContentParams,
   consumeGoogleGenerateContentStream,
 } from "./google-shared.js";
@@ -26,6 +27,12 @@ const model: Model<"google-generative-ai"> = {
   contextWindow: 128_000,
   maxTokens: 8_192,
 };
+
+describe("buildGoogleSimpleThinking", () => {
+  it("keeps explicit off disabled instead of clamping it to high", () => {
+    expect(buildGoogleSimpleThinking(model, { reasoning: "off" })).toEqual({ enabled: false });
+  });
+});
 
 function createOutput(): AssistantMessage {
   return {

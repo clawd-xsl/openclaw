@@ -7,16 +7,19 @@ import {
   CLAUDE_CLI_BACKEND_ID,
   CLAUDE_CLI_DEFAULT_ALLOWLIST_REFS,
   CLAUDE_CLI_FABLE_MODEL_ID,
+  CLAUDE_CLI_SONNET_5_MODEL_ID,
 } from "./cli-constants.js";
 
 // Claude CLI auth is subscription-backed, so catalog rows only need picker metadata.
 const CLAUDE_CLI_DEFAULT_CONTEXT_WINDOW = 200_000;
 const CLAUDE_CLI_LONG_CONTEXT_WINDOW = 1_048_576;
 const CLAUDE_CLI_FABLE_CONTEXT_WINDOW = 1_000_000;
+const CLAUDE_CLI_SONNET_5_CONTEXT_WINDOW = 1_000_000;
 
 const CLAUDE_CLI_MODEL_LABELS: Record<string, string> = {
   [CLAUDE_CLI_FABLE_MODEL_ID]: "Claude Fable 5 (Claude CLI)",
   [`${CLAUDE_CLI_FABLE_MODEL_ID}[1m]`]: "Claude Fable 5 1M (Claude CLI)",
+  [CLAUDE_CLI_SONNET_5_MODEL_ID]: "Claude Sonnet 5 (Claude CLI)",
   "claude-opus-4-8": "Claude Opus 4.8 (Claude CLI)",
   "claude-opus-4-8[1m]": "Claude Opus 4.8 1M (Claude CLI)",
   "claude-opus-4-7": "Claude Opus 4.7 (Claude CLI)",
@@ -27,6 +30,7 @@ const CLAUDE_CLI_MODEL_LABELS: Record<string, string> = {
 function resolveClaudeCliImageMediaInput(id: string): ModelCatalogEntry["mediaInput"] {
   const maxSidePx =
     id.startsWith(CLAUDE_CLI_FABLE_MODEL_ID) ||
+    id === CLAUDE_CLI_SONNET_5_MODEL_ID ||
     id.startsWith("claude-opus-4-8") ||
     id === "claude-opus-4-7"
       ? 2576
@@ -62,9 +66,11 @@ export function buildClaudeCliCatalogEntries(): ModelCatalogEntry[] {
   return extractClaudeCliModelIds().map((id) => {
     const contextWindow = id.startsWith(CLAUDE_CLI_FABLE_MODEL_ID)
       ? CLAUDE_CLI_FABLE_CONTEXT_WINDOW
-      : id.startsWith("claude-opus-4-8") || id === "claude-opus-4-6"
-        ? CLAUDE_CLI_LONG_CONTEXT_WINDOW
-        : CLAUDE_CLI_DEFAULT_CONTEXT_WINDOW;
+      : id === CLAUDE_CLI_SONNET_5_MODEL_ID
+        ? CLAUDE_CLI_SONNET_5_CONTEXT_WINDOW
+        : id.startsWith("claude-opus-4-8") || id === "claude-opus-4-6"
+          ? CLAUDE_CLI_LONG_CONTEXT_WINDOW
+          : CLAUDE_CLI_DEFAULT_CONTEXT_WINDOW;
     return {
       id,
       name: CLAUDE_CLI_MODEL_LABELS[id] ?? `${id} (Claude CLI)`,

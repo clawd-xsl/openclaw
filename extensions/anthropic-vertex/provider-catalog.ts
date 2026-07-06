@@ -7,13 +7,16 @@ import type {
   ModelDefinitionConfig,
   ModelProviderConfig,
 } from "openclaw/plugin-sdk/provider-model-shared";
-import { resolveClaudeFable5ModelIdentity } from "openclaw/plugin-sdk/provider-model-shared";
+import {
+  defaultsClaudeAdaptiveThinking,
+  resolveClaudeFable5ModelIdentity,
+} from "openclaw/plugin-sdk/provider-model-shared";
 import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { resolveAnthropicVertexRegion } from "./region.js";
 /** Default Anthropic Vertex model used for implicit provider catalogs. */
 export const ANTHROPIC_VERTEX_DEFAULT_MODEL_ID = "claude-sonnet-4-6";
 const ANTHROPIC_VERTEX_DEFAULT_CONTEXT_WINDOW = 1_000_000;
-const ANTHROPIC_VERTEX_FABLE_MAX_TOKENS = 128_000;
+const ANTHROPIC_VERTEX_LATEST_MAX_TOKENS = 128_000;
 const GCP_VERTEX_CREDENTIALS_MARKER = "gcp-vertex-credentials";
 
 function buildAnthropicVertexModel(params: {
@@ -45,7 +48,7 @@ function buildAnthropicVertexCatalog(): ModelDefinitionConfig[] {
       reasoning: true,
       input: ["text", "image"],
       cost: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
-      maxTokens: ANTHROPIC_VERTEX_FABLE_MAX_TOKENS,
+      maxTokens: ANTHROPIC_VERTEX_LATEST_MAX_TOKENS,
       thinkingLevelMap: { off: "low", minimal: "low", xhigh: "xhigh", max: "max" },
     }),
     buildAnthropicVertexModel({
@@ -67,6 +70,15 @@ function buildAnthropicVertexCatalog(): ModelDefinitionConfig[] {
       thinkingLevelMap: { xhigh: null, max: "max" },
     }),
     buildAnthropicVertexModel({
+      id: "claude-sonnet-5",
+      name: "Claude Sonnet 5",
+      reasoning: true,
+      input: ["text", "image"],
+      cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+      maxTokens: ANTHROPIC_VERTEX_LATEST_MAX_TOKENS,
+      thinkingLevelMap: { xhigh: "xhigh", max: "max" },
+    }),
+    buildAnthropicVertexModel({
       id: ANTHROPIC_VERTEX_DEFAULT_MODEL_ID,
       name: "Claude Sonnet 4.6",
       reasoning: true,
@@ -78,34 +90,42 @@ function buildAnthropicVertexCatalog(): ModelDefinitionConfig[] {
   ];
 }
 
-/** Restore required Fable metadata after explicit catalog models replace the implicit row. */
+/** Restore required latest-model metadata after explicit catalog models replace implicit rows. */
 export function normalizeAnthropicVertexResolvedModel(
   modelId: string,
   model: ProviderRuntimeModel,
 ): ProviderRuntimeModel | undefined {
-  if (!resolveClaudeFable5ModelIdentity({ id: modelId, params: model.params })) {
+  const modelRef = { id: modelId, params: model.params };
+  const fable5 = resolveClaudeFable5ModelIdentity(modelRef) !== undefined;
+  const sonnet5 = defaultsClaudeAdaptiveThinking(modelRef);
+  if (!fable5 && !sonnet5) {
     return undefined;
   }
   const input: ProviderRuntimeModel["input"] = model.input.includes("image")
     ? model.input
     : [...model.input, "image"];
-  const thinkingLevelMap = {
-    off: "low",
-    minimal: "low",
+  const requiredThinkingLevelMap = {
+    ...(fable5 ? { off: "low" as const, minimal: "low" as const } : {}),
     xhigh: "xhigh",
     max: "max",
+  } as const;
+  const thinkingLevelMap = {
+    ...requiredThinkingLevelMap,
     ...model.thinkingLevelMap,
   };
+  const currentEfforts = model.thinkingLevelMap as
+    | Record<string, string | null | undefined>
+    | undefined;
+  const hasRequiredThinkingMap = Object.entries(requiredThinkingLevelMap).every(
+    ([level, effort]) => currentEfforts?.[level] === effort,
+  );
   if (
     model.reasoning &&
     input === model.input &&
     model.contextWindow === ANTHROPIC_VERTEX_DEFAULT_CONTEXT_WINDOW &&
     model.contextTokens === ANTHROPIC_VERTEX_DEFAULT_CONTEXT_WINDOW &&
-    (model.maxTokens ?? 0) >= ANTHROPIC_VERTEX_FABLE_MAX_TOKENS &&
-    model.thinkingLevelMap?.off === "low" &&
-    model.thinkingLevelMap.minimal === "low" &&
-    model.thinkingLevelMap.xhigh === "xhigh" &&
-    model.thinkingLevelMap.max === "max"
+    model.maxTokens === ANTHROPIC_VERTEX_LATEST_MAX_TOKENS &&
+    hasRequiredThinkingMap
   ) {
     return undefined;
   }
@@ -115,7 +135,7 @@ export function normalizeAnthropicVertexResolvedModel(
     input,
     contextWindow: ANTHROPIC_VERTEX_DEFAULT_CONTEXT_WINDOW,
     contextTokens: ANTHROPIC_VERTEX_DEFAULT_CONTEXT_WINDOW,
-    maxTokens: Math.max(model.maxTokens ?? 0, ANTHROPIC_VERTEX_FABLE_MAX_TOKENS),
+    maxTokens: ANTHROPIC_VERTEX_LATEST_MAX_TOKENS,
     thinkingLevelMap,
   };
 }

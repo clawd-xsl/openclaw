@@ -49,6 +49,18 @@ describe("provider model id policy normalization", () => {
     ).toBe("claude-haiku-4-5");
   });
 
+  it("normalizes current Anthropic Sonnet aliases without plugin metadata", () => {
+    expect(normalizeStaticProviderModelIdWithPolicies("anthropic", "sonnet")).toBe(
+      "claude-sonnet-5",
+    );
+    expect(normalizeStaticProviderModelIdWithPolicies("anthropic", "sonnet-5")).toBe(
+      "claude-sonnet-5",
+    );
+    expect(normalizeStaticProviderModelIdWithPolicies("anthropic", "sonnet-4.6")).toBe(
+      "claude-sonnet-4-6",
+    );
+  });
+
   it("normalizes provider-prefixed native catalog refs without stripping catalog prefixes", () => {
     expect(normalizeStaticProviderModelIdWithPolicies("google", "google/gemini-2.0-flash")).toBe(
       "google/gemini-2.0-flash",

@@ -32,6 +32,7 @@ import {
   usesFoundryBearerAuth,
 } from "../shared/anthropic-auth-headers.js";
 import {
+  defaultsClaudeAdaptiveThinking,
   resolveClaudeNativeThinkingLevelMap,
   requiresClaudeAdaptiveThinking,
   supportsClaudeAdaptiveThinking,
@@ -167,9 +168,10 @@ const EMPTY_ANTHROPIC_MESSAGES_FALLBACK_TEXT = ".";
 function normalizeAnthropicToolChoice(
   model: AnthropicTransportModel,
   toolChoice: NonNullable<AnthropicTransportOptions["toolChoice"]>,
+  thinkingEnabled: boolean,
 ): AnthropicProjectedToolChoice {
   if (
-    requiresClaudeAdaptiveThinking(model) &&
+    (requiresClaudeAdaptiveThinking(model) || thinkingEnabled) &&
     (toolChoice === "any" || (typeof toolChoice === "object" && toolChoice.type === "tool"))
   ) {
     return { type: "auto" as const };
@@ -1029,7 +1031,11 @@ function buildAnthropicParams(
     params.metadata = { user_id: options.metadata.user_id };
   }
   if (options?.toolChoice) {
-    const normalizedToolChoice = normalizeAnthropicToolChoice(model, options.toolChoice);
+    const normalizedToolChoice = normalizeAnthropicToolChoice(
+      model,
+      options.toolChoice,
+      options.thinkingEnabled === true,
+    );
     const projectedToolChoice = toolProjection
       ? reconcileAnthropicToolChoice(normalizedToolChoice, toolProjection)
       : normalizedToolChoice;
@@ -1074,10 +1080,17 @@ function resolveAnthropicTransportOptions(
     thinkingBudgets: options?.thinkingBudgets,
     reasoning: options?.reasoning,
   };
-  if (!options?.reasoning) {
-    resolved.thinkingEnabled = requiresClaudeAdaptiveThinking(model);
+  if (!options?.reasoning || options.reasoning === "off") {
+    resolved.thinkingEnabled =
+      requiresClaudeAdaptiveThinking(model) ||
+      (options?.reasoning === undefined && defaultsClaudeAdaptiveThinking(model));
     if (resolved.thinkingEnabled) {
-      resolved.effort = "high";
+      resolved.effort =
+        options?.reasoning === "off"
+          ? (mapThinkingLevelToEffort(options.reasoning, model) as NonNullable<
+              AnthropicOptions["effort"]
+            >)
+          : "high";
     }
     return resolved;
   }

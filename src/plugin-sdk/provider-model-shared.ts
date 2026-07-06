@@ -27,6 +27,7 @@ export type {
   ModelProviderDeclarationConfig as ModelProviderConfig,
 } from "../config/types.models.js";
 export {
+  defaultsClaudeAdaptiveThinking,
   resolveClaudeFable5ModelIdentity,
   resolveClaudeModelIdentity,
   resolveClaudeNativeThinkingLevelMap,

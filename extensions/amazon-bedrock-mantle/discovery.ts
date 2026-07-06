@@ -405,6 +405,18 @@ export async function resolveImplicitMantleProvider(params: {
       maxTokens: 128_000,
     },
     {
+      id: "anthropic.claude-sonnet-5",
+      name: "Claude Sonnet 5",
+      api: "anthropic-messages" as const,
+      reasoning: true,
+      params: { canonicalModelId: "claude-sonnet-5" },
+      thinkingLevelMap: { off: "low", minimal: "low", xhigh: "xhigh", max: "max" },
+      input: ["text", "image"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 1_000_000,
+      maxTokens: 128_000,
+    },
+    {
       id: "anthropic.claude-mythos-preview",
       name: "Claude Mythos Preview",
       api: "anthropic-messages" as const,
@@ -416,7 +428,12 @@ export async function resolveImplicitMantleProvider(params: {
       maxTokens: 128_000,
     },
   ];
-  const allModels = [...models, ...claudeModels];
+  // Replace the generic /v1 row so Sonnet 5 has one canonical entry with its
+  // Anthropic transport and mandatory adaptive-thinking contract.
+  const allModels = [
+    ...models.filter((model) => model.id !== "anthropic.claude-sonnet-5"),
+    ...claudeModels,
+  ];
 
   return {
     baseUrl: `${mantleEndpoint(region)}/v1`,

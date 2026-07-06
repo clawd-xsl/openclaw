@@ -66,6 +66,7 @@ const ANTHROPIC_OPUS_47_MODEL_ID = "claude-opus-4-7";
 const ANTHROPIC_OPUS_47_DOT_MODEL_ID = "claude-opus-4.7";
 const ANTHROPIC_GA_1M_CONTEXT_TOKENS = 1_048_576;
 const ANTHROPIC_FABLE_CONTEXT_TOKENS = 1_000_000;
+const ANTHROPIC_SONNET_5_CONTEXT_TOKENS = 1_000_000;
 const ANTHROPIC_MODERN_MAX_OUTPUT_TOKENS = 128_000;
 const ANTHROPIC_OPUS_46_MODEL_ID = "claude-opus-4-6";
 const ANTHROPIC_OPUS_46_DOT_MODEL_ID = "claude-opus-4.6";
@@ -291,7 +292,7 @@ function buildAnthropicForwardCompatModel(
       ? { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 }
       : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: resolveAnthropicFixedContextWindow(trimmedModelId) ?? 200_000,
-    maxTokens: isAnthropic128kOutputModel(trimmedModelId)
+    maxTokens: isAnthropic128kOutputModel(trimmedModelId, provider)
       ? ANTHROPIC_MODERN_MAX_OUTPUT_TOKENS
       : 64_000,
     ...(supportsClaudeNativeXhighEffort({ id: trimmedModelId })
@@ -350,21 +351,50 @@ function isAnthropicFable5Model(modelId: string): boolean {
   return resolveClaudeFable5ModelIdentity({ id: modelId }) !== undefined;
 }
 
+function isAnthropicSonnet5Model(modelId: string): boolean {
+  return /(?:^|-)claude-sonnet-5(?=$|[^a-z0-9])/.test(resolveClaudeModelIdentity({ id: modelId }));
+}
+
 function resolveAnthropicFixedContextWindow(modelId: string): number | undefined {
   if (isAnthropicFable5Model(modelId)) {
     return ANTHROPIC_FABLE_CONTEXT_TOKENS;
   }
+  if (isAnthropicSonnet5Model(modelId)) {
+    return ANTHROPIC_SONNET_5_CONTEXT_TOKENS;
+  }
   return isAnthropicGa1MModel(modelId) ? ANTHROPIC_GA_1M_CONTEXT_TOKENS : undefined;
 }
 
-function isAnthropic128kOutputModel(modelId: string): boolean {
+function isAnthropic128kOutputModel(modelId: string, provider: string): boolean {
   if (isAnthropicFable5Model(modelId)) {
     return true;
   }
-  return /^claude-opus-4-8(?=$|[^a-z0-9])/.test(resolveClaudeModelIdentity({ id: modelId }));
+  const identity = resolveClaudeModelIdentity({ id: modelId });
+  if (/^claude-opus-4-8(?=$|[^a-z0-9])/.test(identity)) {
+    return true;
+  }
+  return (
+    isAnthropicSonnet5Model(identity) && normalizeLowercaseStringOrEmpty(provider) === PROVIDER_ID
+  );
 }
 
-function isAnthropicOpus47OrNewerModel(modelId: string): boolean {
+function resolveAnthropicModernMaxOutputTokens(
+  modelId: string,
+  provider: string,
+): number | undefined {
+  if (isAnthropic128kOutputModel(modelId, provider)) {
+    return ANTHROPIC_MODERN_MAX_OUTPUT_TOKENS;
+  }
+  if (
+    isAnthropicSonnet5Model(modelId) &&
+    normalizeLowercaseStringOrEmpty(provider) === CLAUDE_CLI_BACKEND_ID
+  ) {
+    return 64_000;
+  }
+  return undefined;
+}
+
+function isAnthropicNativeXhighModel(modelId: string): boolean {
   return supportsClaudeNativeXhighEffort({ id: modelId }) && !isAnthropicFable5Model(modelId);
 }
 
@@ -428,7 +458,9 @@ function applyAnthropicFixedContextWindow(params: {
   if (hasConfiguredModelContextOverride(params.config, params.provider, params.modelId)) {
     return undefined;
   }
-  const exactContextWindow = isAnthropicFable5Model(params.contractModelId);
+  const exactContextWindow =
+    isAnthropicFable5Model(params.contractModelId) ||
+    isAnthropicSonnet5Model(params.contractModelId);
   const nextContextWindow = exactContextWindow
     ? fixedContextWindow
     : Math.max(params.model.contextWindow ?? 0, fixedContextWindow);
@@ -451,18 +483,25 @@ function applyAnthropicFixedContextWindow(params: {
 }
 
 function applyAnthropicModernMaxTokens(params: {
+  provider: string;
   modelId: string;
   model: ProviderRuntimeModel;
 }): ProviderRuntimeModel | undefined {
-  if (!isAnthropic128kOutputModel(params.modelId)) {
+  const maxTokens = resolveAnthropicModernMaxOutputTokens(params.modelId, params.provider);
+  if (maxTokens === undefined) {
     return undefined;
   }
-  if ((params.model.maxTokens ?? 0) >= ANTHROPIC_MODERN_MAX_OUTPUT_TOKENS) {
+  const exactMaxTokens = isAnthropicSonnet5Model(params.modelId);
+  if (
+    exactMaxTokens
+      ? params.model.maxTokens === maxTokens
+      : (params.model.maxTokens ?? 0) >= maxTokens
+  ) {
     return undefined;
   }
   return {
     ...params.model,
-    maxTokens: ANTHROPIC_MODERN_MAX_OUTPUT_TOKENS,
+    maxTokens,
   };
 }
 
@@ -471,7 +510,7 @@ function applyAnthropicThinkingLevelMap(params: {
   model: ProviderRuntimeModel;
 }): ProviderRuntimeModel | undefined {
   const fable5 = isAnthropicFable5Model(params.modelId);
-  const nativeXhigh = fable5 || isAnthropicOpus47OrNewerModel(params.modelId);
+  const nativeXhigh = fable5 || isAnthropicNativeXhighModel(params.modelId);
   if (!supportsAnthropicNativeMaxEffort(params.modelId)) {
     return undefined;
   }
@@ -516,7 +555,7 @@ function resolveAnthropicImageMediaInput(modelId: string, modelName?: string) {
   }
   const refs = [modelId, modelName].filter((value): value is string => typeof value === "string");
   const largeImageModel = refs.some(
-    (ref) => isAnthropicFable5Model(ref) || isAnthropicOpus47OrNewerModel(ref),
+    (ref) => isAnthropicFable5Model(ref) || isAnthropicNativeXhighModel(ref),
   );
   return {
     image: {
@@ -581,6 +620,7 @@ function normalizeAnthropicResolvedModel(
     : imageCapableModel;
   const outputModel =
     applyAnthropicModernMaxTokens({
+      provider: ctx.provider,
       modelId: contractModelId,
       model: mediaInputModel,
     }) ?? mediaInputModel;

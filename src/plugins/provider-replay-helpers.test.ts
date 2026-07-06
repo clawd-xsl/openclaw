@@ -136,6 +136,8 @@ describe("provider replay helpers", () => {
       "claude-opus-4-6",
       "claude-sonnet-4-5-20250929",
       "claude-sonnet-4-6",
+      "claude-sonnet-5",
+      "global.anthropic.claude-sonnet-5",
       "claude-haiku-4-5-20251001",
     ]) {
       const policy = buildAnthropicReplayPolicyForModel(modelId);
@@ -147,6 +149,7 @@ describe("provider replay helpers", () => {
       const policy = buildAnthropicReplayPolicyForModel(modelId);
       expect(policy.dropThinkingBlocks).toBe(true);
     }
+    expect(buildAnthropicReplayPolicyForModel("claude-sonnet-50").dropThinkingBlocks).toBe(true);
   });
 
   it("builds native Anthropic replay policy with selective tool-call id preservation", () => {

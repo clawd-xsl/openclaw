@@ -19,6 +19,7 @@ import type {
   ModelProviderConfig,
 } from "openclaw/plugin-sdk/provider-model-shared";
 import {
+  defaultsClaudeAdaptiveThinking,
   resolveClaudeFable5ModelIdentity,
   resolveClaudeModelIdentity,
   supportsClaudeAdaptiveThinking,
@@ -60,6 +61,7 @@ const DEFAULT_MAX_TOKENS = 4096;
 const KNOWN_CONTEXT_WINDOWS: Record<string, number> = {
   // Anthropic Claude
   "anthropic.claude-fable-5": 1_000_000,
+  "anthropic.claude-sonnet-5": 1_000_000,
   "anthropic.claude-3-7-sonnet-20250219-v1:0": 200_000,
   "anthropic.claude-opus-4-8": 1_000_000,
   "anthropic.claude-opus-4-7": 1_000_000,
@@ -171,7 +173,10 @@ function resolveKnownThinkingLevelMap(
 }
 
 function resolveKnownMaxTokens(modelId: string): number | undefined {
-  return resolveClaudeFable5ModelIdentity({ id: modelId }) ? 128_000 : undefined;
+  return resolveClaudeFable5ModelIdentity({ id: modelId }) ||
+    defaultsClaudeAdaptiveThinking({ id: modelId })
+    ? 128_000
+    : undefined;
 }
 
 const DEFAULT_COST = {

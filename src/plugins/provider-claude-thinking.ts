@@ -3,6 +3,7 @@
 // `plugin-sdk/provider-model-shared`.
 import {
   CLAUDE_FABLE_5_THINKING_PROFILE,
+  defaultsClaudeAdaptiveThinking,
   resolveClaudeFable5ModelIdentity,
   resolveClaudeModelIdentity,
   supportsClaudeAdaptiveThinking,
@@ -24,7 +25,10 @@ export function isClaudeAdaptiveThinkingDefaultModelId(
   modelId: string,
 ): boolean {
   const ref = { id: modelId };
-  return supportsClaudeAdaptiveThinking(ref) && !supportsClaudeNativeXhighEffort(ref);
+  return (
+    defaultsClaudeAdaptiveThinking(ref) ||
+    (supportsClaudeAdaptiveThinking(ref) && !supportsClaudeNativeXhighEffort(ref))
+  );
 }
 
 /** @deprecated Anthropic provider-owned model helper; do not use from third-party plugins. */
@@ -39,20 +43,22 @@ export function resolveClaudeThinkingProfile(
   if (resolveClaudeFable5ModelIdentity(ref)) {
     return CLAUDE_FABLE_5_THINKING_PROFILE;
   }
+  if (isClaudeAdaptiveThinkingDefaultModelId(canonicalModelId)) {
+    const nativeXhigh = supportsClaudeNativeXhighEffort(ref);
+    return {
+      levels: [
+        ...BASE_CLAUDE_THINKING_LEVELS,
+        ...(nativeXhigh ? [{ id: "xhigh" as const }] : []),
+        { id: "adaptive" },
+        ...(nativeXhigh || options?.includeNativeMax ? [{ id: "max" as const }] : []),
+      ],
+      defaultLevel: "adaptive",
+    };
+  }
   if (supportsClaudeNativeXhighEffort(ref)) {
     return {
       levels: [...BASE_CLAUDE_THINKING_LEVELS, { id: "xhigh" }, { id: "adaptive" }, { id: "max" }],
       defaultLevel: "off",
-    };
-  }
-  if (isClaudeAdaptiveThinkingDefaultModelId(canonicalModelId)) {
-    return {
-      levels: [
-        ...BASE_CLAUDE_THINKING_LEVELS,
-        { id: "adaptive" },
-        ...(options?.includeNativeMax ? [{ id: "max" as const }] : []),
-      ],
-      defaultLevel: "adaptive",
     };
   }
   return { levels: BASE_CLAUDE_THINKING_LEVELS };

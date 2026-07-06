@@ -163,6 +163,18 @@ describe("normalizeClaudeSettingsArgs", () => {
       }),
     ).toEqual(["-p", "--settings", '{"theme":"dark","fastMode":true,"disableAllHooks":true}']);
   });
+
+  it("controls Claude thinking through isolated inline settings", () => {
+    expect(
+      normalizeClaudeSettingsArgs(["-p", "--settings", '{"theme":"dark"}'], {
+        thinkingEnabled: false,
+      }),
+    ).toEqual([
+      "-p",
+      "--settings",
+      '{"theme":"dark","disableAllHooks":true,"alwaysThinkingEnabled":false}',
+    ]);
+  });
 });
 
 describe("Claude CLI model aliases", () => {
@@ -185,6 +197,9 @@ describe("Claude CLI model aliases", () => {
     expect(aliases?.["claude-opus-4-7"]).toBe("claude-opus-4-7");
     expect(aliases?.["claude-opus-4-6"]).toBe("claude-opus-4-6[1m]");
     expect(aliases?.["claude-opus-4-6[1m]"]).toBe("claude-opus-4-6[1m]");
+    expect(aliases?.sonnet).toBe("claude-sonnet-5");
+    expect(aliases?.["sonnet-5"]).toBe("claude-sonnet-5");
+    expect(aliases?.["claude-sonnet-5"]).toBe("claude-sonnet-5");
   });
 });
 
@@ -217,6 +232,31 @@ describe("prepareClaudeCliExecution", () => {
         modelId: "claude-opus-4-6",
       }),
     ).toBeUndefined();
+  });
+
+  it.each(["sonnet", "sonnet-5", "claude-sonnet-5"])(
+    "keeps Claude Code's native Sonnet 5 compaction margin for %s",
+    (modelId) => {
+      expect(
+        prepareClaudeCliExecution({
+          workspaceDir: "/tmp",
+          provider: "claude-cli",
+          modelId,
+          contextTokens: 1_000_000,
+        }),
+      ).toBeUndefined();
+    },
+  );
+
+  it("applies an explicitly lower OpenClaw context cap to Sonnet 5", () => {
+    expect(
+      prepareClaudeCliExecution({
+        workspaceDir: "/tmp",
+        provider: "claude-cli",
+        modelId: "claude-sonnet-5",
+        contextTokens: 222_000,
+      }),
+    ).toEqual({ env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: "222000" } });
   });
 });
 
@@ -261,6 +301,19 @@ describe("Claude CLI catalog", () => {
       contextTokens: 1_048_576,
     });
   });
+
+  it("advertises Claude Sonnet 5 with its verified Claude Code context", () => {
+    const sonnet5 = buildClaudeCliCatalogEntries().find((entry) => entry.id === "claude-sonnet-5");
+
+    expect(sonnet5).toMatchObject({
+      name: "Claude Sonnet 5 (Claude CLI)",
+      contextWindow: 1_000_000,
+      contextTokens: 1_000_000,
+      mediaInput: {
+        image: { maxSidePx: 2576, preferredSidePx: 2576, tokenMode: "provider" },
+      },
+    });
+  });
 });
 
 describe("resolveClaudeCliExecutionArgs", () => {
@@ -275,6 +328,38 @@ describe("resolveClaudeCliExecutionArgs", () => {
         baseArgs: ["-p", "--output-format", "stream-json"],
       }),
     ).toEqual(["-p", "--output-format", "stream-json"]);
+  });
+
+  it("explicitly disables Sonnet 5 thinking and removes stale effort args", () => {
+    expect(
+      resolveClaudeCliExecutionArgs({
+        workspaceDir: "/tmp",
+        provider: "claude-cli",
+        modelId: "claude-sonnet-5",
+        thinkingLevel: "off",
+        useResume: false,
+        baseArgs: ["-p", "--effort", "xhigh"],
+      }),
+    ).toEqual(["-p", "--settings", '{"disableAllHooks":true,"alwaysThinkingEnabled":false}']);
+  });
+
+  it("maps Sonnet 5 adaptive mode to its native high default", () => {
+    expect(
+      resolveClaudeCliExecutionArgs({
+        workspaceDir: "/tmp",
+        provider: "claude-cli",
+        modelId: "sonnet",
+        thinkingLevel: "adaptive",
+        useResume: false,
+        baseArgs: ["-p"],
+      }),
+    ).toEqual([
+      "-p",
+      "--settings",
+      '{"disableAllHooks":true,"alwaysThinkingEnabled":true}',
+      "--effort",
+      "high",
+    ]);
   });
 
   it("maps OpenClaw thinking levels to Claude effort args", () => {
@@ -590,10 +675,15 @@ describe("normalizeClaudeBackendConfig", () => {
     expect(backend.config.clearEnv).toContain("CLAUDE_CODE_USE_BEDROCK");
     expect(backend.config.clearEnv).toContain("CLAUDE_CODE_OAUTH_TOKEN");
     expect(backend.config.clearEnv).toContain("CLAUDE_CODE_AUTO_COMPACT_WINDOW");
+    expect(backend.config.clearEnv).toContain("CLAUDE_CODE_DISABLE_1M_CONTEXT");
+    expect(backend.config.clearEnv).toContain("CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING");
+    expect(backend.config.clearEnv).toContain("CLAUDE_CODE_DISABLE_THINKING");
+    expect(backend.config.clearEnv).toContain("CLAUDE_CODE_EFFORT_LEVEL");
     expect(backend.config.clearEnv).toContain("CLAUDE_CODE_PLUGIN_CACHE_DIR");
     expect(backend.config.clearEnv).toContain("CLAUDE_CODE_PLUGIN_SEED_DIR");
     expect(backend.config.clearEnv).toContain("CLAUDE_CODE_REMOTE");
     expect(backend.config.clearEnv).toContain("CLAUDE_CODE_USE_COWORK_PLUGINS");
+    expect(backend.config.clearEnv).toContain("MAX_THINKING_TOKENS");
     expect(backend.config.clearEnv).toContain("OTEL_METRICS_EXPORTER");
     expect(backend.config.clearEnv).toContain("OTEL_EXPORTER_OTLP_PROTOCOL");
     expect(backend.config.clearEnv).toContain("OTEL_SDK_DISABLED");

@@ -784,6 +784,53 @@ describe("Anthropic provider", () => {
     expect(capturedPayload).not.toHaveProperty("temperature");
   });
 
+  it("uses Sonnet 5 default adaptive thinking at high effort", async () => {
+    let capturedPayload: unknown;
+    const stream = streamSimpleAnthropic(
+      makeAnthropicModel({ id: "claude-sonnet-5", name: "Claude Sonnet 5" }),
+      { messages: [{ role: "user", content: "hello", timestamp: 0 }] },
+      {
+        apiKey: "sk-ant-provider",
+        temperature: 0.2,
+        onPayload: (payload) => {
+          capturedPayload = payload;
+        },
+      },
+    );
+
+    await stream.result();
+
+    expect(capturedPayload).toMatchObject({
+      thinking: { type: "adaptive", display: "summarized" },
+      output_config: { effort: "high" },
+    });
+    expect(capturedPayload).not.toHaveProperty("temperature");
+  });
+
+  it("allows Sonnet 5 thinking to be explicitly disabled", async () => {
+    let capturedPayload: unknown;
+    const stream = streamSimpleAnthropic(
+      makeAnthropicModel({ id: "claude-sonnet-5", name: "Claude Sonnet 5" }),
+      { messages: [{ role: "user", content: "hello", timestamp: 0 }] },
+      {
+        apiKey: "sk-ant-provider",
+        reasoning: "off",
+        temperature: 0.2,
+        onPayload: (payload) => {
+          capturedPayload = payload;
+        },
+      },
+    );
+
+    await stream.result();
+
+    expect(capturedPayload).toMatchObject({
+      thinking: { type: "disabled" },
+    });
+    expect(capturedPayload).not.toHaveProperty("output_config");
+    expect(capturedPayload).not.toHaveProperty("temperature");
+  });
+
   it("preserves native max effort for Claude Mythos Preview", async () => {
     let capturedPayload: unknown;
     const stream = streamSimpleAnthropic(

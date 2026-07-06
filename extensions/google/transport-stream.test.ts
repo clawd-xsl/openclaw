@@ -2043,6 +2043,20 @@ describe("google transport stream", () => {
     expect(generationConfig).not.toHaveProperty("thinkingConfig");
   });
 
+  it("treats explicit off as disabled thinking for direct Gemini payloads", () => {
+    const params = buildGoogleGenerativeAiParams(
+      buildGeminiModel(),
+      {
+        messages: [{ role: "user", content: "hello", timestamp: 0 }],
+      } as never,
+      {
+        reasoning: "off",
+      },
+    );
+
+    expect(params.generationConfig ?? {}).not.toHaveProperty("thinkingConfig");
+  });
+
   it("forwards configured stop sequences to the Gemini generationConfig", () => {
     const params = buildGoogleGenerativeAiParams(
       buildGeminiModel(),

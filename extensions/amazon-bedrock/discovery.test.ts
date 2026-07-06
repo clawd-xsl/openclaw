@@ -359,6 +359,58 @@ describe("bedrock discovery", () => {
     );
   });
 
+  it("applies Sonnet 5 limits and mandatory adaptive metadata to foundation and profiles", async () => {
+    sendMock
+      .mockResolvedValueOnce({
+        modelSummaries: [
+          {
+            modelId: "anthropic.claude-sonnet-5",
+            modelName: "Claude Sonnet 5",
+            providerName: "anthropic",
+            inputModalities: ["TEXT", "IMAGE"],
+            outputModalities: ["TEXT"],
+            responseStreamingSupported: true,
+            modelLifecycle: { status: "ACTIVE" },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        inferenceProfileSummaries: [
+          {
+            inferenceProfileId: "us.anthropic.claude-sonnet-5",
+            inferenceProfileName: "US Claude Sonnet 5",
+            status: "ACTIVE",
+            type: "SYSTEM_DEFINED",
+            models: [
+              {
+                modelArn: "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-5",
+              },
+            ],
+          },
+        ],
+      });
+
+    const models = await discoverBedrockModels({ region: "us-east-1", clientFactory });
+    const expected = {
+      reasoning: true,
+      contextWindow: 1_000_000,
+      maxTokens: 128_000,
+      thinkingLevelMap: { off: "low", minimal: "low", xhigh: "xhigh", max: "max" },
+    };
+
+    expectModelFields(
+      models.find((model) => model.id === "anthropic.claude-sonnet-5"),
+      expected,
+    );
+    expectModelFields(
+      models.find((model) => model.id === "us.anthropic.claude-sonnet-5"),
+      {
+        ...expected,
+        params: { canonicalModelId: "claude-sonnet-5" },
+      },
+    );
+  });
+
   it("caches results when refreshInterval is enabled", async () => {
     mockSingleActiveSummary();
 

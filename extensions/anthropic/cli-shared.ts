@@ -11,7 +11,11 @@ import type {
   CliBackendResolveExecutionArgsContext,
 } from "openclaw/plugin-sdk/cli-backend";
 import { normalizeOptionalLowercaseString } from "openclaw/plugin-sdk/string-coerce-runtime";
-import { CLAUDE_CLI_BACKEND_ID } from "./cli-constants.js";
+import {
+  CLAUDE_CLI_BACKEND_ID,
+  CLAUDE_CLI_MODEL_ALIASES,
+  CLAUDE_CLI_SONNET_5_MODEL_ID,
+} from "./cli-constants.js";
 export {
   CLAUDE_CLI_BACKEND_ID,
   CLAUDE_CLI_DEFAULT_ALLOWLIST_REFS,
@@ -19,6 +23,7 @@ export {
   CLAUDE_CLI_FABLE_MODEL_ID,
   CLAUDE_CLI_MODEL_ALIASES,
   CLAUDE_CLI_SESSION_ID_FIELDS,
+  CLAUDE_CLI_SONNET_5_MODEL_ID,
 } from "./cli-constants.js";
 
 // Claude Code honors provider-routing, auth, and config-root env before
@@ -38,7 +43,11 @@ export const CLAUDE_CLI_CLEAR_ENV = [
   "CLAUDE_CONFIG_DIR",
   "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR",
   "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
+  "CLAUDE_CODE_DISABLE_1M_CONTEXT",
+  "CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING",
+  "CLAUDE_CODE_DISABLE_THINKING",
   "CLAUDE_CODE_ENTRYPOINT",
+  "CLAUDE_CODE_EFFORT_LEVEL",
   "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
   "CLAUDE_CODE_OAUTH_SCOPES",
   "CLAUDE_CODE_OAUTH_TOKEN",
@@ -50,6 +59,7 @@ export const CLAUDE_CLI_CLEAR_ENV = [
   "CLAUDE_CODE_USE_BEDROCK",
   "CLAUDE_CODE_USE_FOUNDRY",
   "CLAUDE_CODE_USE_VERTEX",
+  "MAX_THINKING_TOKENS",
   "OTEL_EXPORTER_OTLP_ENDPOINT",
   "OTEL_EXPORTER_OTLP_HEADERS",
   "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
@@ -71,12 +81,25 @@ export const CLAUDE_CLI_CLEAR_ENV = [
 const CLAUDE_AUTO_COMPACT_MIN_TOKENS = 100_000;
 const CLAUDE_AUTO_COMPACT_MAX_TOKENS = 1_000_000;
 
+function isClaudeCliSonnet5ModelId(modelId: string): boolean {
+  const normalized = normalizeOptionalLowercaseString(modelId) ?? "";
+  return (CLAUDE_CLI_MODEL_ALIASES[normalized] ?? normalized) === CLAUDE_CLI_SONNET_5_MODEL_ID;
+}
+
 /** Apply OpenClaw's effective context cap to Claude Code's native compactor. */
 export function prepareClaudeCliExecution(
   context: CliBackendPrepareExecutionContext,
 ): CliBackendPreparedExecution | undefined {
   const contextTokens = context.contextTokens;
   if (typeof contextTokens !== "number" || !Number.isFinite(contextTokens) || contextTokens <= 0) {
+    return undefined;
+  }
+  // Claude Code owns Sonnet 5's native ~967k compaction threshold. Overriding
+  // it with the full 1M window would leave no safety margin for compaction.
+  if (
+    isClaudeCliSonnet5ModelId(context.modelId) &&
+    contextTokens >= CLAUDE_AUTO_COMPACT_MAX_TOKENS
+  ) {
     return undefined;
   }
   const autoCompactTokens = Math.floor(
@@ -330,10 +353,16 @@ export function normalizeClaudeSettingSourcesArgs(args?: string[]): string[] | u
   return normalized;
 }
 
-function normalizeClaudeSettingsValue(value: string | undefined, fastMode?: boolean): string {
+function normalizeClaudeSettingsValue(
+  value: string | undefined,
+  options?: { fastMode?: boolean; thinkingEnabled?: boolean },
+): string {
   const enforced = {
     disableAllHooks: true,
-    ...(typeof fastMode === "boolean" ? { fastMode } : {}),
+    ...(typeof options?.fastMode === "boolean" ? { fastMode: options.fastMode } : {}),
+    ...(typeof options?.thinkingEnabled === "boolean"
+      ? { alwaysThinkingEnabled: options.thinkingEnabled }
+      : {}),
   };
   if (!value?.trim()) {
     return JSON.stringify(enforced);
@@ -352,7 +381,7 @@ function normalizeClaudeSettingsValue(value: string | undefined, fastMode?: bool
 /** Disable settings-defined hooks while retaining unrelated inline settings. */
 export function normalizeClaudeSettingsArgs(
   args?: string[],
-  options?: { fastMode?: boolean },
+  options?: { fastMode?: boolean; thinkingEnabled?: boolean },
 ): string[] | undefined {
   if (!args) {
     return args;
@@ -368,7 +397,7 @@ export function normalizeClaudeSettingsArgs(
         CLAUDE_SETTINGS_ARG,
         normalizeClaudeSettingsValue(
           typeof maybeValue === "string" && !maybeValue.startsWith("-") ? maybeValue : undefined,
-          options?.fastMode,
+          options,
         ),
       );
       if (typeof maybeValue === "string" && !maybeValue.startsWith("-")) {
@@ -381,7 +410,7 @@ export function normalizeClaudeSettingsArgs(
       normalized.push(
         `${CLAUDE_SETTINGS_ARG}=${normalizeClaudeSettingsValue(
           arg.slice(`${CLAUDE_SETTINGS_ARG}=`.length),
-          options?.fastMode,
+          options,
         )}`,
       );
       continue;
@@ -389,10 +418,7 @@ export function normalizeClaudeSettingsArgs(
     normalized.push(arg);
   }
   if (!hasSettings) {
-    normalized.push(
-      CLAUDE_SETTINGS_ARG,
-      normalizeClaudeSettingsValue(undefined, options?.fastMode),
-    );
+    normalized.push(CLAUDE_SETTINGS_ARG, normalizeClaudeSettingsValue(undefined, options));
   }
   return normalized;
 }
@@ -529,16 +555,26 @@ function resolveClaudeCliSideQuestionExecutionArgs(baseArgs: readonly string[]):
 export function resolveClaudeCliExecutionArgs(
   context: CliBackendResolveExecutionArgsContext,
 ): string[] {
+  const thinkingLevel = normalizeOptionalLowercaseString(context.thinkingLevel);
+  const sonnet5 = isClaudeCliSonnet5ModelId(context.modelId);
+  const thinkingEnabled = sonnet5 && thinkingLevel ? thinkingLevel !== "off" : undefined;
   const args =
-    typeof context.fastMode === "boolean"
-      ? (normalizeClaudeSettingsArgs([...context.baseArgs], { fastMode: context.fastMode }) ?? [
-          ...context.baseArgs,
-        ])
+    typeof context.fastMode === "boolean" || thinkingEnabled !== undefined
+      ? (normalizeClaudeSettingsArgs([...context.baseArgs], {
+          fastMode: context.fastMode,
+          thinkingEnabled,
+        }) ?? [...context.baseArgs])
       : [...context.baseArgs];
   if (context.executionMode === "side-question") {
     return resolveClaudeCliSideQuestionExecutionArgs(args);
   }
-  const effort = mapClaudeCliThinkingLevelToEffort(context.thinkingLevel);
+  if (thinkingLevel === "off") {
+    return stripClaudeEffortArgs(args);
+  }
+  const effort =
+    sonnet5 && thinkingLevel === "adaptive"
+      ? "high"
+      : mapClaudeCliThinkingLevelToEffort(context.thinkingLevel);
   if (!effort) {
     return args;
   }

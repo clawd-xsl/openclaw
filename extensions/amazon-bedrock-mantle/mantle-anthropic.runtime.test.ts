@@ -113,6 +113,81 @@ describe("createMantleAnthropicStreamFn", () => {
     expect(streamOptions.thinkingEnabled).toBe(false);
   });
 
+  it("treats explicit off as disabled thinking", () => {
+    const model = createTestModel({ id: "anthropic.claude-sonnet-4-6" });
+    const deps = createTestDeps();
+    deps.stream.mockReturnValue({ kind: "anthropic-stream" } as never);
+
+    void createMantleAnthropicStreamFn(deps)(
+      model,
+      { messages: [] },
+      {
+        apiKey: "bedrock-bearer-token",
+        reasoning: "off",
+      },
+    );
+
+    expect(firstStreamOptions(deps).thinkingEnabled).toBe(false);
+  });
+
+  it("defaults Sonnet 5 to native adaptive high effort without custom temperature", () => {
+    const model = createTestModel({
+      id: "anthropic.claude-sonnet-5",
+      name: "Claude Sonnet 5",
+      reasoning: true,
+      params: { canonicalModelId: "claude-sonnet-5" },
+    });
+    const deps = createTestDeps();
+    deps.stream.mockReturnValue({ kind: "anthropic-stream" } as never);
+
+    void createMantleAnthropicStreamFn(deps)(
+      model,
+      { messages: [] },
+      {
+        apiKey: "bedrock-bearer-token",
+        temperature: 0.2,
+        maxTokens: 128_000,
+      },
+    );
+
+    const streamOptions = firstStreamOptions(deps);
+    expect(streamOptions.temperature).toBeUndefined();
+    expect(streamOptions.maxTokens).toBe(128_000);
+    expect(streamOptions.thinkingEnabled).toBe(true);
+    expect(streamOptions.effort).toBe("high");
+    expect(streamOptions).not.toHaveProperty("thinkingBudgetTokens");
+  });
+
+  it.each([
+    ["off", "low"],
+    ["minimal", "low"],
+    ["xhigh", "xhigh"],
+    ["max", "max"],
+  ] as const)("maps Sonnet 5 %s reasoning to native %s effort", (reasoning, effort) => {
+    const model = createTestModel({
+      id: "anthropic.claude-sonnet-5",
+      name: "Claude Sonnet 5",
+      reasoning: true,
+      params: { canonicalModelId: "claude-sonnet-5" },
+    });
+    const deps = createTestDeps();
+    deps.stream.mockReturnValue({ kind: "anthropic-stream" } as never);
+
+    void createMantleAnthropicStreamFn(deps)(
+      model,
+      { messages: [] },
+      {
+        apiKey: "bedrock-bearer-token",
+        reasoning,
+      },
+    );
+
+    const streamOptions = firstStreamOptions(deps);
+    expect(streamOptions.thinkingEnabled).toBe(true);
+    expect(streamOptions.effort).toBe(effort);
+    expect(streamOptions).not.toHaveProperty("thinkingBudgetTokens");
+  });
+
   it("defaults Mythos Preview to adaptive high effort", () => {
     const model = createTestModel({
       id: "anthropic.claude-mythos-preview",
@@ -166,10 +241,14 @@ describe("createMantleAnthropicStreamFn", () => {
     const deps = createTestDeps();
     deps.stream.mockReturnValue({ kind: "anthropic-stream" } as never);
 
-    void createMantleAnthropicStreamFn(deps)(model, { messages: [] }, {
-      apiKey: "bedrock-bearer-token",
-      reasoning: "minimal",
-    });
+    void createMantleAnthropicStreamFn(deps)(
+      model,
+      { messages: [] },
+      {
+        apiKey: "bedrock-bearer-token",
+        reasoning: "minimal",
+      },
+    );
 
     const streamOptions = firstStreamOptions(deps);
     expect(streamOptions.thinkingEnabled).toBe(true);

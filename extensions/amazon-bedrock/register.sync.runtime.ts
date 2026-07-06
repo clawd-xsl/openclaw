@@ -12,6 +12,7 @@ import type {
 } from "openclaw/plugin-sdk/plugin-entry";
 import {
   ANTHROPIC_BY_MODEL_REPLAY_HOOKS,
+  defaultsClaudeAdaptiveThinking,
   normalizeProviderId,
   resolveClaudeFable5ModelIdentity,
   resolveClaudeModelIdentity,
@@ -56,7 +57,8 @@ function normalizeBedrockResolvedModel({ modelId, model }: ProviderNormalizeReso
   }
   const reasoning =
     model.reasoning ||
-    resolveClaudeFable5ModelIdentity({ id: modelId, params: model.params }) !== undefined;
+    resolveClaudeFable5ModelIdentity({ id: modelId, params: model.params }) !== undefined ||
+    defaultsClaudeAdaptiveThinking({ id: modelId, params: model.params });
   const current = model.thinkingLevelMap;
   const currentEfforts = current as Record<string, string | null | undefined> | undefined;
   if (
@@ -280,7 +282,11 @@ async function resolveAppProfileTraits(
     const traits = {
       cacheEligible:
         models.length > 0 && modelArns.every((modelArn) => resolvedModelSupportsCaching(modelArn)),
-      omitTemperature: modelArns.some(isOpus47OrNewerBedrockModelRef),
+      omitTemperature: modelArns.some(
+        (modelArn) =>
+          isOpus47OrNewerBedrockModelRef(modelArn) ||
+          defaultsClaudeAdaptiveThinking({ id: modelArn }),
+      ),
     };
     appProfileTraitsCache.set(modelId, traits);
     return traits;
@@ -289,7 +295,8 @@ async function resolveAppProfileTraits(
     // return the heuristic fallback but allow retry on the next request.
     return {
       cacheEligible: isAnthropicBedrockModel(modelId),
-      omitTemperature: isOpus47OrNewerBedrockModelRef(modelId),
+      omitTemperature:
+        isOpus47OrNewerBedrockModelRef(modelId) || defaultsClaudeAdaptiveThinking({ id: modelId }),
     };
   }
 }
@@ -433,7 +440,8 @@ export function registerAmazonBedrockPlugin(api: OpenClawPluginApi): void {
     const omitsTemperature =
       isOpus47OrNewerBedrockModelRef(modelRef.id) ||
       isOpus47OrNewerBedrockModelRef(canonicalModelId) ||
-      resolveClaudeFable5ModelIdentity(modelRef) !== undefined;
+      resolveClaudeFable5ModelIdentity(modelRef) !== undefined ||
+      defaultsClaudeAdaptiveThinking(modelRef);
     if (!omitsTemperature || !("temperature" in options)) {
       return options;
     }
@@ -544,6 +552,7 @@ export function registerAmazonBedrockPlugin(api: OpenClawPluginApi): void {
       const currentGuardrail = currentPluginConfig?.guardrail;
       const modelRef = { id: modelId, params: model?.params };
       const fable5 = resolveClaudeFable5ModelIdentity(modelRef) !== undefined;
+      const sonnet5 = defaultsClaudeAdaptiveThinking(modelRef);
       const canonicalModelId = resolveClaudeModelIdentity(modelRef);
       const opus47OrNewer =
         isOpus47OrNewerBedrockModelRef(modelId) || isOpus47OrNewerBedrockModelRef(canonicalModelId);
@@ -564,8 +573,11 @@ export function registerAmazonBedrockPlugin(api: OpenClawPluginApi): void {
         api.logger.warn(message),
       );
       if (serviceTier && wrapped) {
-        if (fable5 && serviceTier !== "default") {
-          api.logger.warn(`ignoring unsupported Fable 5 Bedrock service tier: ${serviceTier}`);
+        if ((fable5 || sonnet5) && serviceTier !== "default") {
+          const modelLabel = fable5 ? "Fable 5" : "Sonnet 5";
+          api.logger.warn(
+            `ignoring unsupported ${modelLabel} Bedrock service tier: ${serviceTier}`,
+          );
         } else {
           wrapped = createBedrockServiceTierWrapper(wrapped, serviceTier);
         }

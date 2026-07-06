@@ -53,6 +53,7 @@ import {
   type ToolResultMessage,
 } from "openclaw/plugin-sdk/llm";
 import {
+  defaultsClaudeAdaptiveThinking,
   resolveClaudeFable5ModelIdentity,
   resolveClaudeModelIdentity,
   supportsClaudeAdaptiveThinking,
@@ -81,7 +82,7 @@ function readBedrockStopDetails(fields: DocumentType | undefined): unknown {
   return record.stop_details ?? record.stopDetails;
 }
 
-function normalizeFableToolChoice(
+function normalizeClaudeThinkingToolChoice(
   toolChoice: BedrockOptions["toolChoice"],
 ): BedrockOptions["toolChoice"] {
   if (toolChoice === "any" || (typeof toolChoice === "object" && toolChoice?.type === "tool")) {
@@ -216,10 +217,16 @@ export const streamBedrock: StreamFunction<"bedrock-converse-stream", BedrockOpt
       const additionalModelRequestFields = buildAdditionalModelRequestFields(model, options);
       const thinking = (additionalModelRequestFields as Record<string, unknown> | undefined)
         ?.thinking;
+      const thinkingType =
+        thinking !== null && typeof thinking === "object"
+          ? (thinking as { type?: unknown }).type
+          : undefined;
       const sendsAdaptiveThinking =
-        thinking !== null &&
-        typeof thinking === "object" &&
-        (thinking as { type?: unknown }).type === "adaptive";
+        thinkingType === "adaptive" ||
+        (thinkingType === undefined && defaultsClaudeAdaptiveThinking(model));
+      const sendsEnabledThinking = sendsAdaptiveThinking || thinkingType === "enabled";
+      const suppressesSamplingParams =
+        sendsAdaptiveThinking || defaultsClaudeAdaptiveThinking(model);
       let commandInput = {
         modelId: model.id,
         messages: convertMessages(context, model, cacheRetention),
@@ -227,11 +234,13 @@ export const streamBedrock: StreamFunction<"bedrock-converse-stream", BedrockOpt
         inferenceConfig: {
           ...(options.maxTokens !== undefined && { maxTokens: options.maxTokens }),
           ...(options.temperature !== undefined &&
-            !sendsAdaptiveThinking && { temperature: options.temperature }),
+            !suppressesSamplingParams && { temperature: options.temperature }),
         },
         toolConfig: convertToolConfig(
           context.tools,
-          fable5 ? normalizeFableToolChoice(options.toolChoice) : options.toolChoice,
+          sendsEnabledThinking
+            ? normalizeClaudeThinkingToolChoice(options.toolChoice)
+            : options.toolChoice,
         ),
         additionalModelRequestFields,
         ...(fable5 ? { additionalModelResponseFieldPaths: ["/stop_details"] } : {}),
@@ -376,8 +385,19 @@ function resolveSimpleBedrockOptions(
     return {
       ...base,
       maxTokens: resolveAdaptiveBedrockMaxTokens(model, base.maxTokens),
-      reasoning: options?.reasoning ?? "high",
+      reasoning: options?.reasoning === "off" ? "low" : (options?.reasoning ?? "high"),
       thinkingBudgets: options?.thinkingBudgets,
+    } satisfies BedrockOptions;
+  }
+  if (options?.reasoning === "off") {
+    const requiresAdaptiveThinking =
+      isAnthropicClaudeModel(model) && requiresMandatoryAdaptiveThinking(model);
+    return {
+      ...base,
+      ...(requiresAdaptiveThinking
+        ? { maxTokens: resolveAdaptiveBedrockMaxTokens(model, base.maxTokens) }
+        : {}),
+      reasoning: requiresAdaptiveThinking ? "low" : undefined,
     } satisfies BedrockOptions;
   }
   if (!options?.reasoning) {
@@ -581,7 +601,7 @@ function resolveClaudeProfileNameModelId(modelName?: string): string | undefined
   if (!normalized.includes("claude")) {
     return undefined;
   }
-  const family = /(?:fable-5|mythos-preview|opus-4-(?:6|7|8)|sonnet-4-6)(?:$|-)/.exec(
+  const family = /(?:fable-5|mythos-preview|opus-4-(?:6|7|8)|sonnet-(?:4-6|5))(?:$|-)/.exec(
     normalized,
   )?.[0];
   return family ? `claude-${family.replace(/-$/, "")}` : undefined;
@@ -610,6 +630,9 @@ function supportsAdaptiveThinking(model: Model<"bedrock-converse-stream">): bool
 function requiresMandatoryAdaptiveThinking(model: Model<"bedrock-converse-stream">): boolean {
   const profileModelId = resolveClaudeProfileNameModelId(model.name);
   return (
+    usesClaudeFable5BedrockContract(model) ||
+    defaultsClaudeAdaptiveThinking(model) ||
+    defaultsClaudeAdaptiveThinking({ id: profileModelId }) ||
     isClaudeMythosPreviewModelId(resolveClaudeModelIdentity(model)) ||
     isClaudeMythosPreviewModelId(profileModelId)
   );
@@ -1037,6 +1060,14 @@ function buildAdditionalModelRequestFields(
   model: Model<"bedrock-converse-stream">,
   options: BedrockOptions,
 ): DocumentType | undefined {
+  if (options.reasoning === "off") {
+    return isAnthropicClaudeModel(model) && requiresMandatoryAdaptiveThinking(model)
+      ? ({
+          thinking: { type: "adaptive" },
+          output_config: { effort: "low" },
+        } as DocumentType)
+      : undefined;
+  }
   if (
     !options.reasoning ||
     (!model.reasoning &&

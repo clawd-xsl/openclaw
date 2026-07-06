@@ -2926,6 +2926,43 @@ describe("anthropic transport stream", () => {
     expect(result.responseModel).toBe("claude-fable-5");
   });
 
+  it("uses Sonnet 5 default adaptive thinking at high effort", async () => {
+    await runTransportStream(
+      makeAnthropicTransportModel({ id: "claude-sonnet-5", name: "Claude Sonnet 5" }),
+      { messages: [{ role: "user", content: "Think." }] } as AnthropicStreamContext,
+      {
+        apiKey: "sk-ant-api",
+        temperature: 0.2,
+        toolChoice: "any",
+      } as AnthropicStreamOptions,
+    );
+
+    const payload = latestAnthropicRequest().payload;
+    expect(payload.thinking).toEqual({ type: "adaptive", display: "summarized" });
+    expect(payload.output_config).toEqual({ effort: "high" });
+    expect(payload.tool_choice).toEqual({ type: "auto" });
+    expect(payload).not.toHaveProperty("temperature");
+  });
+
+  it("allows Sonnet 5 transport thinking to be explicitly disabled", async () => {
+    await runTransportStream(
+      makeAnthropicTransportModel({ id: "claude-sonnet-5", name: "Claude Sonnet 5" }),
+      { messages: [{ role: "user", content: "Answer directly." }] } as AnthropicStreamContext,
+      {
+        apiKey: "sk-ant-api",
+        reasoning: "off",
+        temperature: 0.2,
+        toolChoice: "any",
+      } as AnthropicStreamOptions,
+    );
+
+    const payload = latestAnthropicRequest().payload;
+    expect(payload.thinking).toEqual({ type: "disabled" });
+    expect(payload.tool_choice).toEqual({ type: "any" });
+    expect(payload).not.toHaveProperty("output_config");
+    expect(payload).not.toHaveProperty("temperature");
+  });
+
   it("uses adaptive thinking for canonical Claude Mythos Preview transport aliases", async () => {
     const model = makeAnthropicTransportModel({
       id: "prod-mythos-preview",

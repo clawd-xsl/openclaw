@@ -47,6 +47,13 @@ describe("Claude model contracts", () => {
     expect(supportsClaudeNativeXhighEffort({ id: "claude-opus-4-8@20260401" })).toBe(true);
   });
 
+  it("recognizes Claude Sonnet 5 capabilities without matching later numeric versions", () => {
+    expect(supportsClaudeAdaptiveThinking({ id: "claude-sonnet-5" })).toBe(true);
+    expect(supportsClaudeNativeMaxEffort({ id: "claude-sonnet-5" })).toBe(true);
+    expect(supportsClaudeNativeXhighEffort({ id: "claude-sonnet-5" })).toBe(true);
+    expect(supportsClaudeAdaptiveThinking({ id: "claude-sonnet-50" })).toBe(false);
+  });
+
   it("does not classify later numeric model versions as supported aliases", () => {
     expect(supportsClaudeAdaptiveThinking({ id: "claude-sonnet-4-60" })).toBe(false);
     expect(supportsClaudeNativeXhighEffort({ id: "claude-opus-4-80" })).toBe(false);
@@ -329,6 +336,12 @@ describe("resolveClaudeThinkingProfile", () => {
     expectFields(profile, {
       defaultLevel: "off",
     });
+    expectLevelIdsInclude(profile, ["xhigh", "adaptive", "max"]);
+  });
+
+  it("defaults Sonnet 5 to adaptive thinking while exposing xhigh and max", () => {
+    const profile = resolveClaudeThinkingProfile("claude-sonnet-5");
+    expectFields(profile, { defaultLevel: "adaptive" });
     expectLevelIdsInclude(profile, ["xhigh", "adaptive", "max"]);
   });
 

@@ -334,6 +334,53 @@ describe("amazon-bedrock provider plugin", () => {
     expect(restricted?.thinkingLevelMap).toEqual({ xhigh: null, max: null });
   });
 
+  it("normalizes Sonnet 5 rows as mandatory adaptive with native effort metadata", async () => {
+    const provider = await registerSingleProviderPlugin(amazonBedrockPlugin);
+    const normalized = provider.normalizeResolvedModel?.({
+      provider: "amazon-bedrock",
+      modelId: "us.anthropic.claude-sonnet-5",
+      model: {
+        id: "us.anthropic.claude-sonnet-5",
+        name: "Claude Sonnet 5",
+        provider: "amazon-bedrock",
+        api: "bedrock-converse-stream",
+        baseUrl: "https://bedrock-runtime.us-east-1.amazonaws.com",
+        reasoning: false,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 1_000_000,
+        maxTokens: 128_000,
+      },
+    } as never);
+
+    expect(normalized).toMatchObject({
+      reasoning: true,
+      thinkingLevelMap: { off: "low", minimal: "low", xhigh: "xhigh", max: "max" },
+    });
+  });
+
+  it("does not force optional Opus 4.8 catalog rows to reasoning enabled", async () => {
+    const provider = await registerSingleProviderPlugin(amazonBedrockPlugin);
+    const normalized = provider.normalizeResolvedModel?.({
+      provider: "amazon-bedrock",
+      modelId: "us.anthropic.claude-opus-4-8",
+      model: {
+        id: "us.anthropic.claude-opus-4-8",
+        name: "Claude Opus 4.8",
+        provider: "amazon-bedrock",
+        api: "bedrock-converse-stream",
+        baseUrl: "https://bedrock-runtime.us-east-1.amazonaws.com",
+        reasoning: false,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 1_000_000,
+        maxTokens: 128_000,
+      },
+    } as never);
+
+    expect(normalized).toMatchObject({ reasoning: false });
+  });
+
   it("mirrors Claude Opus 4.7 thinking levels for Bedrock model refs", async () => {
     const provider = await registerSingleProviderPlugin(amazonBedrockPlugin);
 
@@ -398,6 +445,27 @@ describe("amazon-bedrock provider plugin", () => {
     }
   });
 
+  it("keeps Claude Sonnet 5 always adaptive with high default effort", async () => {
+    const provider = await registerSingleProviderPlugin(amazonBedrockPlugin);
+
+    for (const modelId of [
+      "anthropic.claude-sonnet-5",
+      "us.anthropic.claude-sonnet-5",
+      "global.anthropic.claude-sonnet-5",
+    ]) {
+      expectThinkingProfile(
+        provider.resolveThinkingProfile?.({
+          provider: "amazon-bedrock",
+          modelId,
+        } as never),
+        {
+          levelIds: ["off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max"],
+          defaultLevel: "high",
+        },
+      );
+    }
+  });
+
   it("keeps Fable thinking policy for opaque deployment aliases", async () => {
     const provider = await registerSingleProviderPlugin(amazonBedrockPlugin);
 
@@ -418,6 +486,11 @@ describe("amazon-bedrock provider plugin", () => {
     expect(supportsBedrockPromptCaching("us.anthropic.claude-fable-5")).toBe(true);
   });
 
+  it("recognizes direct Sonnet 5 model refs as prompt-cache eligible", () => {
+    expect(supportsBedrockPromptCaching("us.anthropic.claude-sonnet-5")).toBe(true);
+    expect(supportsBedrockPromptCaching("us.anthropic.claude-sonnet-50")).toBe(false);
+  });
+
   it("owns Anthropic-style replay policy for Claude Bedrock models", async () => {
     const provider = await registerSingleProviderPlugin(amazonBedrockPlugin);
 
@@ -436,6 +509,13 @@ describe("amazon-bedrock provider plugin", () => {
       validateAnthropicTurns: true,
       allowSyntheticToolResults: true,
     });
+    expect(
+      provider.buildReplayPolicy?.({
+        provider: "amazon-bedrock",
+        modelApi: "bedrock-converse-stream",
+        modelId: "global.anthropic.claude-sonnet-5",
+      } as never),
+    ).not.toHaveProperty("dropThinkingBlocks");
   });
 
   it("disables prompt caching for non-Anthropic Bedrock models", async () => {
@@ -565,6 +645,31 @@ describe("amazon-bedrock provider plugin", () => {
       { messages: [] } as never,
       { temperature: 0.2, maxTokens: 10 },
     ) as Record<string, unknown> | undefined;
+
+    expectWrappedResultFields(result, { maxTokens: 10 });
+    expect(result).not.toHaveProperty("temperature");
+    expect(result).not.toHaveProperty("cacheRetention", "none");
+  });
+
+  it("omits temperature for Bedrock Sonnet 5 deployment aliases", async () => {
+    const provider = await registerSingleProviderPlugin(amazonBedrockPlugin);
+    const model = {
+      api: "bedrock-converse-stream",
+      provider: "amazon-bedrock",
+      id: "production-sonnet",
+      params: { canonicalModelId: "claude-sonnet-5" },
+    };
+    const wrapped = provider.wrapStreamFn?.({
+      provider: "amazon-bedrock",
+      modelId: model.id,
+      model,
+      streamFn: spyStreamFn,
+    } as never);
+
+    const result = wrapped?.(model as never, { messages: [] } as never, {
+      temperature: 0.2,
+      maxTokens: 10,
+    }) as Record<string, unknown> | undefined;
 
     expectWrappedResultFields(result, { maxTokens: 10 });
     expect(result).not.toHaveProperty("temperature");
@@ -1148,6 +1253,32 @@ describe("amazon-bedrock provider plugin", () => {
         { serviceTier: "default" },
       );
       expectPayloadServiceTier(result, "default");
+    });
+
+    it("keeps only the standard service tier for Sonnet 5", async () => {
+      const provider = await registerWithConfig(undefined);
+      const model = {
+        api: "bedrock-converse-stream",
+        provider: "amazon-bedrock",
+        id: "us.anthropic.claude-sonnet-5",
+      } as never;
+      const unsupported = await callWrappedStream(
+        provider,
+        "us.anthropic.claude-sonnet-5",
+        model,
+        runtimePluginConfig(undefined),
+        { serviceTier: "priority" },
+      );
+      expect(unsupported).not.toHaveProperty("capturedPayload");
+
+      const standard = await callWrappedStream(
+        provider,
+        "us.anthropic.claude-sonnet-5",
+        model,
+        runtimePluginConfig(undefined),
+        { serviceTier: "default" },
+      );
+      expectPayloadServiceTier(standard, "default");
     });
 
     it("does not overwrite caller-provided serviceTier in payload", async () => {

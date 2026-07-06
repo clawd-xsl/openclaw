@@ -12,6 +12,7 @@ import {
   type ProviderStreamOptions,
 } from "openclaw/plugin-sdk/llm";
 import {
+  defaultsClaudeAdaptiveThinking,
   resolveClaudeFable5ModelIdentity,
   resolveClaudeModelIdentity,
   supportsClaudeAdaptiveThinking,
@@ -150,13 +151,20 @@ export function createAnthropicVertexStreamFn(
     const contractModelId = resolveClaudeModelIdentity(model);
     const fable5 = isClaudeFable5Model(contractModelId);
     const mandatoryAdaptiveThinking = fable5 || isClaudeMythos5Model(contractModelId);
+    const adaptiveThinkingByDefault = defaultsClaudeAdaptiveThinking({ id: contractModelId });
+    const requestedReasoning = options?.reasoning;
     const reasoning =
-      (options?.reasoning as ModelThinkingLevel | undefined) ??
-      (mandatoryAdaptiveThinking ? "high" : undefined);
+      requestedReasoning === "off" && mandatoryAdaptiveThinking
+        ? "low"
+        : (requestedReasoning ??
+          (mandatoryAdaptiveThinking || adaptiveThinkingByDefault ? "high" : undefined));
     const adaptiveThinking =
-      mandatoryAdaptiveThinking || Boolean(reasoning && supportsAdaptiveThinking(contractModelId));
+      reasoning !== "off" &&
+      (mandatoryAdaptiveThinking ||
+        Boolean(reasoning && supportsAdaptiveThinking(contractModelId)));
     const temperature =
       adaptiveThinking ||
+      adaptiveThinkingByDefault ||
       isClaudeOpus47OrNewerModel(contractModelId) ||
       isClaudeMythos5Model(contractModelId)
         ? undefined
@@ -177,7 +185,7 @@ export function createAnthropicVertexStreamFn(
       metadata: options?.metadata,
     };
 
-    if (reasoning) {
+    if (reasoning && reasoning !== "off") {
       if (supportsAdaptiveThinking(contractModelId)) {
         opts.thinkingEnabled = true;
         opts.effort = mapAnthropicAdaptiveEffort(

@@ -56,6 +56,16 @@ describe("anthropic Claude model refs", () => {
     expect(resolveKnownAnthropicModelRef("anthropic/claude-sonnet-4-7")).toBe(
       "anthropic/claude-sonnet-4-7",
     );
+    expect(resolveKnownAnthropicModelRef("anthropic/claude-sonnet-5")).toBe(
+      "anthropic/claude-sonnet-5",
+    );
+    expect(resolveKnownAnthropicModelRef("anthropic/sonnet")).toBe("anthropic/claude-sonnet-5");
+    expect(resolveKnownAnthropicModelRef("anthropic/sonnet@anthropic:work")).toBe(
+      "anthropic/claude-sonnet-5@anthropic:work",
+    );
+    expect(resolveKnownAnthropicModelRef("anthropic/claude-sonnet-4-6")).toBe(
+      "anthropic/claude-sonnet-4-6",
+    );
     expect(resolveKnownAnthropicModelRef("anthropic/claude-haiku-4-5")).toBe(
       "anthropic/claude-haiku-4-5",
     );
@@ -167,6 +177,7 @@ describe("anthropic cli migration", () => {
               agentRuntime: { id: "claude-cli" },
             },
             "anthropic/claude-fable-5[1m]": { agentRuntime: { id: "claude-cli" } },
+            "anthropic/claude-sonnet-5": { agentRuntime: { id: "claude-cli" } },
             "anthropic/claude-opus-4-7": {
               alias: "Opus",
               agentRuntime: { id: "claude-cli" },
@@ -269,6 +280,7 @@ describe("anthropic cli migration", () => {
               agentRuntime: { id: "claude-cli" },
             },
             "anthropic/claude-fable-5[1m]": { agentRuntime: { id: "claude-cli" } },
+            "anthropic/claude-sonnet-5": { agentRuntime: { id: "claude-cli" } },
             "anthropic/claude-opus-4-8": { agentRuntime: { id: "claude-cli" } },
             "anthropic/claude-opus-4-8[1m]": { agentRuntime: { id: "claude-cli" } },
             "anthropic/claude-opus-4-7": { agentRuntime: { id: "claude-cli" } },
@@ -319,6 +331,7 @@ describe("anthropic cli migration", () => {
               agentRuntime: { id: "claude-cli" },
             },
             "anthropic/claude-fable-5[1m]": { agentRuntime: { id: "claude-cli" } },
+            "anthropic/claude-sonnet-5": { agentRuntime: { id: "claude-cli" } },
             "anthropic/claude-opus-4-8": { agentRuntime: { id: "claude-cli" } },
             "anthropic/claude-opus-4-8[1m]": { agentRuntime: { id: "claude-cli" } },
             "anthropic/claude-opus-4-7": { agentRuntime: { id: "claude-cli" } },

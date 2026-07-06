@@ -798,6 +798,8 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
             output: "jsonl",
             input: "stdin",
             sessionMode: "existing",
+            modelArg: "--model",
+            modelAliases: { sonnet: "claude-sonnet-5" },
           },
         },
       ],
@@ -811,7 +813,7 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
         workspaceDir: dir,
         prompt: "latest ask",
         provider: "claude-cli",
-        model: "claude-opus-4-6",
+        model: "sonnet",
         timeoutMs: 1_000,
         runId: "run-test-cli-context-window",
         config: {
@@ -826,15 +828,16 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
       expect(prepareExecution).toHaveBeenCalledWith(
         expect.objectContaining({
           provider: "claude-cli",
-          modelId: "claude-opus-4-6",
+          modelId: "sonnet",
           contextTokens: 222_000,
         }),
       );
       expect(context.contextWindowInfo).toMatchObject({
         tokens: 222_000,
-        referenceTokens: 1_048_576,
+        referenceTokens: 1_000_000,
         source: "agentContextTokens",
       });
+      expect(context.normalizedModel).toBe("claude-sonnet-5");
       expect(context.preparedBackend.env).toMatchObject({
         TEST_CLI_CONTEXT_TOKENS: "222000",
       });

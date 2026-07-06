@@ -25,6 +25,7 @@ import {
   usesFoundryBearerAuth,
 } from "../../shared/anthropic-auth-headers.js";
 import {
+  defaultsClaudeAdaptiveThinking,
   resolveClaudeNativeThinkingLevelMap,
   requiresClaudeAdaptiveThinking,
   supportsClaudeAdaptiveThinking,
@@ -46,7 +47,6 @@ import type {
   Context,
   Message,
   Model,
-  ModelThinkingLevel,
   SimpleStreamOptions,
   StopReason,
   StreamFunction,
@@ -797,9 +797,10 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 function normalizeAnthropicToolChoice(
   model: Model<"anthropic-messages">,
   toolChoice: NonNullable<AnthropicOptions["toolChoice"]>,
+  thinkingEnabled: boolean,
 ): AnthropicProjectedToolChoice {
   if (
-    requiresClaudeAdaptiveThinking(model) &&
+    (requiresClaudeAdaptiveThinking(model) || thinkingEnabled) &&
     (toolChoice === "any" || (typeof toolChoice === "object" && toolChoice.type === "tool"))
   ) {
     return { type: "auto" as const };
@@ -826,7 +827,7 @@ function mapThinkingLevelToEffort(
   model: Model<"anthropic-messages">,
   level: SimpleStreamOptions["reasoning"],
 ): AnthropicEffort {
-  const requestedLevel = level as ModelThinkingLevel | undefined;
+  const requestedLevel = level;
   const hasCanonicalAlias = typeof model.params?.canonicalModelId === "string";
   const thinkingLevelMap = resolveClaudeNativeThinkingLevelMap(model);
   const clampModel = {
@@ -871,12 +872,21 @@ export const streamSimpleAnthropic: StreamFunction<"anthropic-messages", SimpleS
   }
 
   const base = buildBaseOptions(model, options, apiKey);
-  if (!options?.reasoning) {
-    const mandatoryAdaptiveThinking = requiresClaudeAdaptiveThinking(model);
+  if (!options?.reasoning || options.reasoning === "off") {
+    const adaptiveThinkingEnabled =
+      requiresClaudeAdaptiveThinking(model) ||
+      (options?.reasoning === undefined && defaultsClaudeAdaptiveThinking(model));
     return streamAnthropic(model, context, {
       ...base,
-      thinkingEnabled: mandatoryAdaptiveThinking,
-      ...(mandatoryAdaptiveThinking ? { effort: "high" as const } : {}),
+      thinkingEnabled: adaptiveThinkingEnabled,
+      ...(adaptiveThinkingEnabled
+        ? {
+            effort:
+              options?.reasoning === "off"
+                ? mapThinkingLevelToEffort(model, options.reasoning)
+                : ("high" as const),
+          }
+        : {}),
     } satisfies AnthropicOptions);
   }
 
@@ -1153,7 +1163,11 @@ function buildParams(
   }
 
   if (options?.toolChoice) {
-    const normalizedToolChoice = normalizeAnthropicToolChoice(model, options.toolChoice);
+    const normalizedToolChoice = normalizeAnthropicToolChoice(
+      model,
+      options.toolChoice,
+      options.thinkingEnabled === true,
+    );
     const projectedToolChoice = toolProjection
       ? reconcileAnthropicToolChoice(normalizedToolChoice, toolProjection)
       : normalizedToolChoice;

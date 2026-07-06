@@ -2,7 +2,8 @@
  * Stream option extensions and prompt-cache policy for Amazon Bedrock models.
  * Provider registration and runtime streaming share these contracts.
  */
-import type { StreamOptions, ThinkingBudgets, ThinkingLevel } from "openclaw/plugin-sdk/llm";
+import type { ModelThinkingLevel, StreamOptions, ThinkingBudgets } from "openclaw/plugin-sdk/llm";
+import { defaultsClaudeAdaptiveThinking } from "openclaw/plugin-sdk/provider-model-shared";
 
 /** How Bedrock thinking output should be displayed to users. */
 export type BedrockThinkingDisplay = "summarized" | "omitted";
@@ -12,7 +13,7 @@ export interface BedrockOptions extends StreamOptions {
   region?: string;
   profile?: string;
   toolChoice?: "auto" | "any" | "none" | { type: "tool"; name: string };
-  reasoning?: ThinkingLevel;
+  reasoning?: ModelThinkingLevel;
   thinkingBudgets?: ThinkingBudgets;
   interleavedThinking?: boolean;
   thinkingDisplay?: BedrockThinkingDisplay;
@@ -42,6 +43,9 @@ export function supportsBedrockPromptCaching(modelId: string, modelName?: string
     return true;
   }
   if (candidates.some((s) => s.includes("claude-fable-5"))) {
+    return true;
+  }
+  if (candidates.some((candidate) => defaultsClaudeAdaptiveThinking({ id: candidate }))) {
     return true;
   }
   if (candidates.some((s) => s.includes("claude-3-7-sonnet"))) {

@@ -1,11 +1,12 @@
 import {
+  defaultsClaudeAdaptiveThinking,
   resolveClaudeFable5ModelIdentity,
   type Model,
   type SimpleStreamOptions,
 } from "../../llm-core/src/index.js";
 import type { ThinkingLevel } from "./types.js";
 
-type EnabledThinkingLevel = NonNullable<SimpleStreamOptions["reasoning"]>;
+type EnabledThinkingLevel = Exclude<NonNullable<SimpleStreamOptions["reasoning"]>, "off">;
 
 const ENABLED_THINKING_LEVELS = new Set<EnabledThinkingLevel>([
   "minimal",
@@ -27,10 +28,14 @@ export function resolveAgentReasoningOption(
   if (thinkingLevel !== "off") {
     return thinkingLevel;
   }
+  if (model.api === "anthropic-messages" && defaultsClaudeAdaptiveThinking(model)) {
+    return "off";
+  }
   const offFallback =
     model.thinkingLevelMap?.off ??
     ((model.api === "anthropic-messages" || model.api === "bedrock-converse-stream") &&
-    resolveClaudeFable5ModelIdentity(model)
+    (resolveClaudeFable5ModelIdentity(model) ||
+      (model.api === "bedrock-converse-stream" && defaultsClaudeAdaptiveThinking(model)))
       ? "low"
       : undefined);
   return isEnabledThinkingLevel(offFallback) ? offFallback : undefined;

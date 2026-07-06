@@ -81,6 +81,7 @@ describe("anthropic-vertex provider plugin", () => {
       "claude-fable-5",
       "claude-opus-4-8",
       "claude-opus-4-6",
+      "claude-sonnet-5",
       "claude-sonnet-4-6",
     ]);
     expect(result.provider.models[0]?.thinkingLevelMap).toEqual({
@@ -90,7 +91,11 @@ describe("anthropic-vertex provider plugin", () => {
       max: "max",
     });
     expect(result.provider.models[2]?.thinkingLevelMap).toEqual({ xhigh: null, max: "max" });
-    expect(result.provider.models[3]?.thinkingLevelMap).toEqual({ xhigh: null, max: "max" });
+    expect(result.provider.models[3]?.thinkingLevelMap).toEqual({
+      xhigh: "xhigh",
+      max: "max",
+    });
+    expect(result.provider.models[4]?.thinkingLevelMap).toEqual({ xhigh: null, max: "max" });
   });
 
   it("owns Anthropic-style replay policy", async () => {
@@ -119,6 +124,13 @@ describe("anthropic-vertex provider plugin", () => {
         modelId: "claude-fable-5",
       } as never),
     ).not.toHaveProperty("dropThinkingBlocks");
+    expect(
+      provider.buildReplayPolicy?.({
+        provider: "anthropic-vertex",
+        modelApi: "anthropic-messages",
+        modelId: "claude-sonnet-5",
+      } as never),
+    ).not.toHaveProperty("dropThinkingBlocks");
   });
 
   it("owns Anthropic-style thinking policy", async () => {
@@ -145,6 +157,22 @@ describe("anthropic-vertex provider plugin", () => {
       params: { canonicalModelId: "claude-fable-5" },
     } as never);
     expect(aliasProfile?.defaultLevel).toBe("high");
+
+    const sonnet5Profile = provider.resolveThinkingProfile?.({
+      provider: "anthropic-vertex",
+      modelId: "claude-sonnet-5",
+    } as never);
+    expect(sonnet5Profile?.defaultLevel).toBe("adaptive");
+    expect(sonnet5Profile?.levels.map((level) => level.id)).toEqual([
+      "off",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "adaptive",
+      "max",
+    ]);
   });
 
   it("restores Fable metadata for explicit Vertex catalog rows", async () => {
@@ -206,6 +234,38 @@ describe("anthropic-vertex provider plugin", () => {
       maxTokens: 128_000,
       thinkingLevelMap: { off: "low", minimal: "low", xhigh: "xhigh", max: null },
     });
+  });
+
+  it("restores exact Sonnet 5 limits and native effort metadata for Vertex aliases", async () => {
+    const provider = await registerSingleProviderPlugin(anthropicVertexPlugin);
+    const normalized = provider.normalizeResolvedModel?.({
+      provider: "anthropic-vertex",
+      modelId: "production-sonnet",
+      model: {
+        id: "production-sonnet",
+        name: "Production Sonnet",
+        api: "anthropic-messages",
+        provider: "anthropic-vertex",
+        baseUrl: "https://aiplatform.googleapis.com",
+        reasoning: false,
+        input: ["text"],
+        cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+        contextWindow: 2_000_000,
+        maxTokens: 256_000,
+        params: { canonicalModelId: "claude-sonnet-5" },
+        thinkingLevelMap: { max: null },
+      },
+    } as never);
+
+    expect(normalized).toMatchObject({
+      reasoning: true,
+      input: ["text", "image"],
+      contextWindow: 1_000_000,
+      contextTokens: 1_000_000,
+      maxTokens: 128_000,
+      thinkingLevelMap: { xhigh: "xhigh", max: null },
+    });
+    expect(normalized?.thinkingLevelMap).not.toHaveProperty("off");
   });
 
   it("resolves synthetic auth when ADC is available", async () => {

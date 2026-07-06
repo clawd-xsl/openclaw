@@ -50,4 +50,30 @@ describe("resolveAgentReasoningOption", () => {
       ).toBe("low");
     },
   );
+
+  it("preserves explicit off for Claude Sonnet 5's default-adaptive contract", () => {
+    expect(
+      resolveAgentReasoningOption(
+        makeModel(undefined, {
+          id: "prod-sonnet",
+          params: { canonicalModelId: "claude-sonnet-5" },
+        }),
+        "off",
+      ),
+    ).toBe("off");
+  });
+
+  it("maps explicit off to low for Bedrock Claude Sonnet 5", () => {
+    expect(
+      resolveAgentReasoningOption(
+        makeModel(undefined, {
+          id: "prod-sonnet",
+          api: "bedrock-converse-stream",
+          provider: "amazon-bedrock",
+          params: { canonicalModelId: "claude-sonnet-5" },
+        }),
+        "off",
+      ),
+    ).toBe("low");
+  });
 });

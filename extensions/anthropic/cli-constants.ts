@@ -6,6 +6,8 @@
 export const CLAUDE_CLI_BACKEND_ID = "claude-cli";
 /** Canonical model id for Claude Fable 5 when routed through Claude Code. */
 export const CLAUDE_CLI_FABLE_MODEL_ID = "claude-fable-5";
+/** Canonical model id for Claude Sonnet 5 when routed through Claude Code. */
+export const CLAUDE_CLI_SONNET_5_MODEL_ID = "claude-sonnet-5";
 /** Default Claude CLI model ref for agent defaults and live tests. */
 export const CLAUDE_CLI_DEFAULT_MODEL_REF = `${CLAUDE_CLI_BACKEND_ID}/claude-opus-4-8`;
 /** Default Claude CLI models allowed when setup seeds the model allowlist. */
@@ -13,6 +15,7 @@ export const CLAUDE_CLI_DEFAULT_ALLOWLIST_REFS = [
   CLAUDE_CLI_DEFAULT_MODEL_REF,
   `${CLAUDE_CLI_BACKEND_ID}/${CLAUDE_CLI_FABLE_MODEL_ID}`,
   `${CLAUDE_CLI_BACKEND_ID}/${CLAUDE_CLI_FABLE_MODEL_ID}[1m]`,
+  `${CLAUDE_CLI_BACKEND_ID}/${CLAUDE_CLI_SONNET_5_MODEL_ID}`,
   `${CLAUDE_CLI_BACKEND_ID}/claude-opus-4-8[1m]`,
   `${CLAUDE_CLI_BACKEND_ID}/claude-opus-4-7`,
   `${CLAUDE_CLI_BACKEND_ID}/claude-sonnet-4-6`,
@@ -39,7 +42,9 @@ export const CLAUDE_CLI_MODEL_ALIASES: Record<string, string> = {
   "claude-opus-4-7": "claude-opus-4-7",
   "claude-opus-4-6": "claude-opus-4-6[1m]",
   "claude-opus-4-6[1m]": "claude-opus-4-6[1m]",
-  sonnet: "sonnet",
+  sonnet: CLAUDE_CLI_SONNET_5_MODEL_ID,
+  "sonnet-5": CLAUDE_CLI_SONNET_5_MODEL_ID,
+  [CLAUDE_CLI_SONNET_5_MODEL_ID]: CLAUDE_CLI_SONNET_5_MODEL_ID,
   "sonnet-4.6": "claude-sonnet-4-6",
   "claude-sonnet-4-6": "claude-sonnet-4-6",
   haiku: "haiku",

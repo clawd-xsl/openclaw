@@ -1,3 +1,4 @@
+import { resolveClaudeSonnet5ModelIdentity } from "@openclaw/llm-core";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
@@ -43,6 +44,7 @@ const ANTHROPIC_GA_1M_MODEL_PREFIXES = [
 export const ANTHROPIC_CONTEXT_1M_TOKENS = 1_048_576;
 export const ANTHROPIC_VERTEX_CONTEXT_1M_TOKENS = 1_000_000;
 export const ANTHROPIC_FABLE_CONTEXT_TOKENS = 1_000_000;
+export const ANTHROPIC_SONNET_5_CONTEXT_TOKENS = 1_000_000;
 
 type ConfiguredContextTokens = {
   value: number;
@@ -155,6 +157,9 @@ export function resolveAnthropicFixedContextWindow(
   }
   if (provider !== "anthropic" && provider !== "anthropic-vertex" && provider !== "claude-cli") {
     return undefined;
+  }
+  if (resolveClaudeSonnet5ModelIdentity({ id: modelId })) {
+    return ANTHROPIC_SONNET_5_CONTEXT_TOKENS;
   }
   if (!ANTHROPIC_GA_1M_MODEL_PREFIXES.some((prefix) => modelId.startsWith(prefix))) {
     return undefined;

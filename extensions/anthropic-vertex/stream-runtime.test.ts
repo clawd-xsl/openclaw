@@ -268,6 +268,36 @@ describe("createAnthropicVertexStreamFn", () => {
     expect(streamTransportOptions(streamAnthropicMock)).not.toHaveProperty("temperature");
   });
 
+  it("uses Sonnet 5's default adaptive Vertex contract", () => {
+    const { deps, streamAnthropicMock } = createStreamDeps();
+    const streamFn = createAnthropicVertexStreamFn("vertex-project", "us-east5", undefined, deps);
+    const model = makeModel({ id: "claude-sonnet-5", maxTokens: 128000 });
+
+    void streamFn(model, { messages: [] }, { temperature: 0.7 });
+
+    expect(streamTransportOptions(streamAnthropicMock)).toMatchObject({
+      thinkingEnabled: true,
+      effort: "high",
+      maxTokens: 128000,
+    });
+    expect(streamTransportOptions(streamAnthropicMock)).not.toHaveProperty("temperature");
+  });
+
+  it("disables Sonnet 5 thinking explicitly on Vertex", () => {
+    const { deps, streamAnthropicMock } = createStreamDeps();
+    const streamFn = createAnthropicVertexStreamFn("vertex-project", "us-east5", undefined, deps);
+    const model = makeModel({ id: "claude-sonnet-5", maxTokens: 128000 });
+
+    void streamFn(model, { messages: [] }, { reasoning: "off", temperature: 0.7 });
+
+    expect(streamTransportOptions(streamAnthropicMock)).toMatchObject({
+      thinkingEnabled: false,
+      maxTokens: 128000,
+    });
+    expect(streamTransportOptions(streamAnthropicMock)).not.toHaveProperty("effort");
+    expect(streamTransportOptions(streamAnthropicMock)).not.toHaveProperty("temperature");
+  });
+
   it("uses canonical Claude policy for Vertex deployment aliases", () => {
     const { deps, streamAnthropicMock } = createStreamDeps();
     const streamFn = createAnthropicVertexStreamFn("vertex-project", "us-east5", undefined, deps);

@@ -505,6 +505,114 @@ describe("Bedrock Fable contract", () => {
 });
 
 describe("Bedrock canonical Claude aliases", () => {
+  it("honors Sonnet 5 default adaptive constraints when thinking is omitted", async () => {
+    const send = vi.spyOn(BedrockRuntimeClient.prototype, "send").mockResolvedValue({
+      $metadata: { httpStatusCode: 200 },
+      stream: streamEvents([
+        { messageStart: { role: ConversationRole.ASSISTANT } },
+        { messageStop: { stopReason: "end_turn" } },
+      ]),
+    } as never);
+    const model = bedrockModel({
+      id: "production-sonnet",
+      name: "Production Sonnet",
+      reasoning: true,
+      params: { canonicalModelId: "claude-sonnet-5" },
+    });
+
+    await streamBedrock(
+      model,
+      {
+        messages: [{ role: "user", content: "Reply briefly.", timestamp: 0 }],
+        tools: [{ name: "lookup", description: "Lookup", parameters: { type: "object" } }],
+      } as never,
+      { temperature: 0.2, toolChoice: "any" },
+    ).result();
+
+    const command = send.mock.calls[0]?.[0] as { input?: Record<string, unknown> };
+    expect(command.input?.inferenceConfig).toEqual({});
+    expect(command.input?.toolConfig).toMatchObject({ toolChoice: { auto: {} } });
+    expect(command.input?.additionalModelRequestFields).toBeUndefined();
+  });
+
+  it("clamps Sonnet 5 thinking off to low and normalizes forced tools", async () => {
+    const send = vi.spyOn(BedrockRuntimeClient.prototype, "send").mockResolvedValue({
+      $metadata: { httpStatusCode: 200 },
+      stream: streamEvents([
+        { messageStart: { role: ConversationRole.ASSISTANT } },
+        { messageStop: { stopReason: "end_turn" } },
+      ]),
+    } as never);
+    const model = bedrockModel({
+      id: "production-sonnet",
+      name: "Production Sonnet",
+      reasoning: true,
+      params: { canonicalModelId: "claude-sonnet-5" },
+    });
+
+    await streamBedrock(
+      model,
+      {
+        messages: [{ role: "user", content: "Reply briefly.", timestamp: 0 }],
+        tools: [{ name: "lookup", description: "Lookup", parameters: { type: "object" } }],
+      } as never,
+      { reasoning: "off", temperature: 0.2, toolChoice: "any" },
+    ).result();
+
+    const command = send.mock.calls[0]?.[0] as { input?: Record<string, unknown> };
+    expect(command.input?.inferenceConfig).toEqual({});
+    expect(command.input?.toolConfig).toMatchObject({ toolChoice: { auto: {} } });
+    expect(command.input?.additionalModelRequestFields).toEqual({
+      thinking: { type: "adaptive" },
+      output_config: { effort: "low" },
+    });
+  });
+
+  it("keeps adaptive thinking at low when Sonnet 5 reasoning is explicitly off", async () => {
+    const send = vi.spyOn(BedrockRuntimeClient.prototype, "send").mockResolvedValue({
+      $metadata: { httpStatusCode: 200 },
+      stream: streamEvents([
+        { messageStart: { role: ConversationRole.ASSISTANT } },
+        { messageStop: { stopReason: "end_turn" } },
+      ]),
+    } as never);
+    const model = bedrockModel({
+      id: "production-sonnet",
+      name: "Production Sonnet",
+      reasoning: true,
+      params: { canonicalModelId: "claude-sonnet-5" },
+    });
+
+    await streamSimpleBedrock(
+      model,
+      { messages: [{ role: "user", content: "Reply briefly.", timestamp: 0 }] } as never,
+      { reasoning: "off" },
+    ).result();
+
+    const command = send.mock.calls[0]?.[0] as { input?: Record<string, unknown> };
+    expect(command.input?.additionalModelRequestFields).toEqual({
+      thinking: { type: "adaptive", display: "summarized" },
+      output_config: { effort: "low" },
+    });
+  });
+
+  it("recognizes Sonnet 5 from an opaque profile's descriptive name", () => {
+    const model = bedrockModel({
+      id: "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/profile-abc",
+      name: "US Claude Sonnet 5",
+      reasoning: false,
+      contextWindow: 1_000_000,
+      maxTokens: 128_000,
+    });
+    const options = testing.resolveSimpleBedrockOptions(model, { reasoning: "off" });
+
+    expect(options.reasoning).toBe("low");
+    expect(testing.buildAdditionalModelRequestFields(model, options)).toMatchObject({
+      thinking: { type: "adaptive" },
+      output_config: { effort: "low" },
+    });
+  });
+
   it.each([
     {
       canonicalModelId: "claude-opus-4-8",

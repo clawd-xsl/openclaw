@@ -139,6 +139,8 @@ export function normalizeBuiltInProviderModelId(provider: string, model: string)
       "opus-4.8": "claude-opus-4-8",
       opus: "claude-opus-4-8",
       "opus-4.6": "claude-opus-4-6",
+      sonnet: "claude-sonnet-5",
+      "sonnet-5": "claude-sonnet-5",
       "sonnet-4.6": "claude-sonnet-4-6",
     };
     const anthropicPrefix = "anthropic/";
