@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearSessionStoreCacheForTest,
   loadSessionStore,
+  resolveStorePath,
   type SessionEntry,
 } from "../config/sessions.js";
 import {
@@ -197,7 +198,7 @@ describe("main-session-restart-recovery", () => {
       sessionKeys: ["agent:main:issue-82433"],
     });
 
-    const store = loadSessionStore(storePath);
+    const store = loadSessionStore(resolveStorePath(storePath, { agentId: "main" }));
     expect(result).toEqual({ marked: 1, skipped: 0 });
     expect(store["agent:main:issue-82433"]?.abortedLastRun).toBe(true);
 
@@ -573,7 +574,7 @@ describe("main-session-restart-recovery", () => {
     });
 
     const defaultStore = loadSessionStore(defaultStorePath(defaultSessionsDir));
-    const customStore = loadSessionStore(storePath);
+    const customStore = loadSessionStore(resolveStorePath(storePath, { agentId: "main" }));
     expect(result).toEqual({ marked: 1, skipped: 0 });
     expect(defaultStore["agent:main:issue-82433"]?.abortedLastRun).toBeUndefined();
     expect(customStore["agent:main:issue-82433"]?.abortedLastRun).toBe(true);
@@ -603,7 +604,7 @@ describe("main-session-restart-recovery", () => {
       sessionIds: ["custom-session-id-only"],
     });
 
-    const store = loadSessionStore(storePath);
+    const store = loadSessionStore(resolveStorePath(storePath, { agentId: "main" }));
     expect(result).toEqual({ marked: 1, skipped: 0 });
     expect(store["agent:main:custom-by-id"]?.abortedLastRun).toBe(true);
   });
@@ -1286,7 +1287,9 @@ describe("main-session-restart-recovery", () => {
     expect(result.skipped).toBeLessThanOrEqual(2);
     expect(callGateway).toHaveBeenCalledOnce();
     const defaultStore = readSessionStoreForTest(defaultStorePath(defaultSessionsDir));
-    const customStore = readSessionStoreForTest(customStorePath);
+    const customStore = readSessionStoreForTest(
+      resolveStorePath(customStorePath, { agentId: "main" }),
+    );
     expect(defaultStore["agent:main:main"]?.abortedLastRun).toBe(true);
     expect(customStore["agent:main:main"]?.abortedLastRun).toBe(false);
   });

@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createReplyOperation } from "../../auto-reply/reply/reply-run-registry.js";
+import { loadSessionStore, resolveStorePath } from "../../config/sessions.js";
 import {
   claimAgentRunContext,
   getAgentEventLifecycleGeneration,
@@ -2253,7 +2254,9 @@ describe("runEmbeddedAgent overflow compaction trigger routing", () => {
       expect(result.meta.error).toBeUndefined();
       expect(result.meta.agentMeta?.compactionTokensAfter).toBeUndefined();
       expect(result.meta.agentMeta?.contextBudgetStatus).toBeUndefined();
-      const stored = JSON.parse(await fs.readFile(storePath, "utf8"))["test-key"];
+      const stored = loadSessionStore(resolveStorePath(storePath), { skipCache: true })[
+        "test-key"
+      ];
       expect(stored.totalTokens).toBe(0);
       expect(stored.totalTokensFresh).toBe(true);
       expect(stored.inputTokens).toBeUndefined();

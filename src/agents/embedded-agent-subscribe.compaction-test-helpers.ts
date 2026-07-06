@@ -3,6 +3,8 @@
  */
 import fs from "node:fs/promises";
 import path from "node:path";
+import { resolveStorePath } from "../config/sessions/paths.js";
+import { loadSessionStore } from "../config/sessions/store.js";
 
 export async function seedSessionStore(params: {
   storePath: string;
@@ -29,10 +31,11 @@ export async function seedSessionStore(params: {
 }
 
 export async function readCompactionCount(storePath: string, sessionKey: string): Promise<number> {
-  const store = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
-    string,
-    { compactionCount?: number }
-  >;
+  const backendStorePath = resolveStorePath(storePath);
+  const store = loadSessionStore(backendStorePath, {
+    hydrateSkillPromptRefs: false,
+    skipCache: true,
+  });
   return store[sessionKey]?.compactionCount ?? 0;
 }
 

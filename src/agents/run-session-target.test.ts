@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { resolveStorePath } from "../config/sessions/paths.js";
 import { loadSessionStore } from "../config/sessions/store.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveAgentRunSessionTarget } from "./run-session-target.js";
@@ -34,7 +35,8 @@ describe("agent run session target", () => {
       sessionKey,
     });
     expect(path.dirname(target.sessionFile)).toBe(path.dirname(storePath));
-    expect(loadSessionStore(storePath, { skipCache: true })[sessionKey]?.sessionFile).toBe(
+    const backendStorePath = resolveStorePath(storePath, { agentId: "helper" });
+    expect(loadSessionStore(backendStorePath, { skipCache: true })[sessionKey]?.sessionFile).toBe(
       target.sessionFile,
     );
   });
@@ -50,10 +52,11 @@ describe("agent run session target", () => {
     });
 
     const helperStorePath = path.join(tempDir, "agents", "helper", "sessions.json");
+    const helperBackendStorePath = resolveStorePath(storeRoot, { agentId: "helper" });
     expect(target.agentId).toBe("helper");
     expect(path.dirname(target.sessionFile)).toBe(path.dirname(helperStorePath));
-    expect(loadSessionStore(helperStorePath, { skipCache: true })[sessionKey]?.sessionFile).toBe(
-      target.sessionFile,
-    );
+    expect(
+      loadSessionStore(helperBackendStorePath, { skipCache: true })[sessionKey]?.sessionFile,
+    ).toBe(target.sessionFile);
   });
 });

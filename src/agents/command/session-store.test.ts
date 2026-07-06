@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { loadSessionStore } from "../../config/sessions.js";
+import { resolveStorePath } from "../../config/sessions/paths.js";
 import type { EmbeddedAgentRunResult } from "../embedded-agent.js";
 import {
   clearCliSessionInStore,
@@ -828,7 +829,9 @@ describe("updateSessionStoreAfterAgentRun", () => {
         authEpoch: "auth-epoch-1",
       });
 
-      const persisted = loadSessionStore(storePath, { skipCache: true })[first.sessionKey!];
+      const persisted = loadSessionStore(resolveStorePath(storePath), { skipCache: true })[
+        first.sessionKey!
+      ];
       expect(persisted?.cliSessionBindings?.["claude-cli"]).toEqual({
         sessionId: "claude-cli-session-1",
         authEpoch: "auth-epoch-1",

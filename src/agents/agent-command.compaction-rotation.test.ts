@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadSessionStore, saveSessionStore, type SessionEntry } from "../config/sessions.js";
+import { resolveStorePath } from "../config/sessions/paths.js";
 import { CURRENT_SESSION_VERSION } from "../config/sessions/version.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { runAgentAttempt } from "./command/attempt-execution.runtime.js";
@@ -237,11 +238,11 @@ async function readSessionMessages(sessionFile: string) {
 }
 
 function requireStorePath(): string {
-  const storePath = state.cfg?.session?.store;
-  if (!storePath) {
+  const configuredStorePath = state.cfg?.session?.store;
+  if (!configuredStorePath) {
     throw new Error("missing test session store path");
   }
-  return storePath;
+  return resolveStorePath(configuredStorePath, { agentId: "main" });
 }
 
 describe("agentCommand compaction transcript rotation", () => {

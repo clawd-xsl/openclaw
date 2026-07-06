@@ -4,12 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type {
-  SessionAccessScope,
-  SessionEntryPatchContext,
-  SessionEntryPatchOptions,
-} from "../config/sessions/session-accessor.js";
-import type { SessionEntry } from "../config/sessions/types.js";
+import { resolveStorePath } from "../config/sessions/paths.js";
+import { loadSessionStore } from "../config/sessions/store.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { CallGatewayOptions } from "../gateway/call.js";
 import {
@@ -121,40 +117,12 @@ vi.mock("./run-wait.js", () => {
 function setSubagentControlDepsForTest(
   overrides: Parameters<typeof testing.setDepsForTest>[0] = {},
 ) {
-  // Tests use real JSON store mutation to catch persisted cleanup/kill state,
-  // while swapping process-owned queues and embedded-run aborts for fakes.
+  // Keep the production session accessor so persistence follows the configured
+  // SQLite backend while process-owned queues and embedded-run aborts use fakes.
   testing.setDepsForTest({
     abortEmbeddedAgentRun: () => false,
     isEmbeddedAgentRunActive: () => false,
     clearSessionQueues: () => ({ followupCleared: 0, laneCleared: 0, keys: [] }),
-    patchSessionEntry: async (
-      scope: SessionAccessScope,
-      patcher: (
-        entry: SessionEntry,
-        context: SessionEntryPatchContext,
-      ) => Promise<Partial<SessionEntry> | null> | Partial<SessionEntry> | null,
-      options: SessionEntryPatchOptions = {},
-    ) => {
-      if (!scope.storePath) {
-        return null;
-      }
-      const store = JSON.parse(fs.readFileSync(scope.storePath, "utf-8")) as Record<
-        string,
-        SessionEntry
-      >;
-      const entry = store[scope.sessionKey];
-      if (!entry) {
-        return null;
-      }
-      const patch = await patcher(entry, { existingEntry: { ...entry } });
-      if (!patch) {
-        return entry;
-      }
-      const next = options.replaceEntry ? (patch as SessionEntry) : { ...entry, ...patch };
-      store[scope.sessionKey] = next;
-      fs.writeFileSync(scope.storePath, JSON.stringify(store, null, 2), "utf-8");
-      return next;
-    },
     ...overrides,
   });
 }
@@ -593,6 +561,10 @@ describe("killSubagentRunAdmin", () => {
     expect(result.runId).toBe("run-worker");
     expect(result.sessionKey).toBe(childSessionKey);
     expect(getSubagentRunByChildSessionKey(childSessionKey)?.endedAt).toBeTypeOf("number");
+    expect(
+      loadSessionStore(resolveStorePath(storePath), { skipCache: true })[childSessionKey]
+        ?.abortedLastRun,
+    ).toBe(true);
   });
 
   it("returns found=false when the session key is not tracked as a subagent run", async () => {
@@ -637,10 +609,7 @@ describe("killSubagentRunAdmin", () => {
     expect(result.found).toBe(true);
     expect(result.killed).toBe(false);
     expect(getSubagentRunByChildSessionKey(childSessionKey)?.endedAt).toBeUndefined();
-    const persisted = JSON.parse(fs.readFileSync(storePath, "utf-8")) as Record<
-      string,
-      { abortedLastRun?: boolean }
-    >;
+    const persisted = loadSessionStore(resolveStorePath(storePath), { skipCache: true });
     expect(persisted[childSessionKey]?.abortedLastRun).toBeUndefined();
   });
 
