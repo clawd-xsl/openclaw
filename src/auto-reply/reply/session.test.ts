@@ -242,6 +242,12 @@ async function makeStorePath(prefix: string): Promise<string> {
 const createStorePath = makeStorePath;
 const TEST_NATIVE_MODEL_PROFILE_ID = "openai:secondary@example.test";
 
+function readConfiguredSessionStoreForTest<T extends object = SessionEntry>(
+  configuredStorePath: string,
+): Record<string, T> {
+  return readSessionStoreForTest<T>(resolveStorePath(configuredStorePath));
+}
+
 function requireString(value: string | undefined, label: string): string {
   if (!value) {
     throw new Error(`expected ${label}`);
@@ -820,7 +826,7 @@ describe("initSessionState thread forking", () => {
     const parentEntry = tokenCountCall.parentEntry as SessionEntry | undefined;
     expect(parentEntry?.sessionId).toBe(parentSessionId);
     expect(parentEntry?.totalTokensFresh).toBe(false);
-    expect(tokenCountCall.storePath).toBe(storePath);
+    expect(tokenCountCall.storePath).toBe(resolveStorePath(storePath));
     expect(result.sessionEntry.forkedFromParent).toBe(true);
     expect(result.sessionEntry.sessionId).not.toBe(parentSessionId);
     expect(result.sessionEntry.sessionFile).not.toBe(parentSessionFile);
@@ -1003,16 +1009,13 @@ describe("initSessionState RawBody", () => {
     expect(result.sessionEntry.contextTokens).toBeUndefined();
     expect(result.sessionEntry.contextBudgetStatus).toBeUndefined();
 
-    const store = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
-      string,
-      {
-        skillsSnapshot?: unknown;
-        totalTokens?: number;
-        totalTokensFresh?: boolean;
-        contextTokens?: number;
-        contextBudgetStatus?: unknown;
-      }
-    >;
+    const store = readConfiguredSessionStoreForTest<{
+      skillsSnapshot?: unknown;
+      totalTokens?: number;
+      totalTokensFresh?: boolean;
+      contextTokens?: number;
+      contextBudgetStatus?: unknown;
+    }>(storePath);
     expect(store[sessionKey]?.skillsSnapshot).toBeUndefined();
     expect(store[sessionKey]?.totalTokens).toBe(0);
     expect(store[sessionKey]?.totalTokensFresh).toBe(true);
@@ -1119,10 +1122,11 @@ describe("initSessionState RawBody", () => {
     expect(result.sessionEntry.modelOverride).toBe("m2.7");
     expect(result.sessionEntry.modelOverrideSource).toBe("user");
 
-    const store = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
-      string,
-      { providerOverride?: string; modelOverride?: string; modelOverrideSource?: string }
-    >;
+    const store = readConfiguredSessionStoreForTest<{
+      providerOverride?: string;
+      modelOverride?: string;
+      modelOverrideSource?: string;
+    }>(storePath);
     expect(store[sessionKey]?.modelOverride).toBe("m2.7");
     expect(store[sessionKey]?.modelOverrideSource).toBe("user");
   });
@@ -1183,16 +1187,13 @@ describe("initSessionState RawBody", () => {
     expect(result.sessionEntry.reasoningLevel).toBe("low");
     expect(result.sessionEntry.ttsAuto).toBe("always");
 
-    const store = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
-      string,
-      {
-        thinkingLevel?: string;
-        verboseLevel?: string;
-        traceLevel?: string;
-        reasoningLevel?: string;
-        ttsAuto?: string;
-      }
-    >;
+    const store = readConfiguredSessionStoreForTest<{
+      thinkingLevel?: string;
+      verboseLevel?: string;
+      traceLevel?: string;
+      reasoningLevel?: string;
+      ttsAuto?: string;
+    }>(storePath);
     expect(store[sessionKey]?.thinkingLevel).toBe("medium");
     expect(store[sessionKey]?.verboseLevel).toBe("on");
     expect(store[sessionKey]?.traceLevel).toBe("high");
@@ -2126,10 +2127,7 @@ describe("initSessionState reset policy", () => {
     expect(result.isNewSession).toBe(false);
     expect(result.sessionId).toBe(existingSessionId);
 
-    const persisted = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
-      string,
-      SessionEntry
-    >;
+    const persisted = readConfiguredSessionStoreForTest(storePath);
     expect(persisted[sessionKey]?.sessionId).toBe(existingSessionId);
     expect(persisted[sessionKey]?.status).toBe("done");
     expect(persisted[sessionKey]?.startedAt).toBe(Date.now() - 10_000);
@@ -2224,10 +2222,7 @@ describe("initSessionState reset policy", () => {
     });
 
     expect(result.isNewSession).toBe(scenario.expectNewSession);
-    const persisted = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
-      string,
-      SessionEntry
-    >;
+    const persisted = readConfiguredSessionStoreForTest(storePath);
     const entry = persisted[scenario.sessionKey];
     if (scenario.expectNewSession) {
       expect(result.sessionId).not.toBe(existingSessionId);
@@ -2290,7 +2285,7 @@ describe("initSessionState reset policy", () => {
     expect(result.abortedLastRun).toBe(false);
     expect(result.sessionEntry.abortedLastRun).toBeUndefined();
 
-    const persisted = readSessionStoreForTest(storePath);
+    const persisted = readConfiguredSessionStoreForTest(storePath);
     expect(persisted[sessionKey]?.sessionId).toBe(existingSessionId);
     expect(persisted[sessionKey]?.status).toBeUndefined();
     expect(persisted[sessionKey]?.startedAt).toBeUndefined();
@@ -3070,7 +3065,6 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
   });
 
   it("preserves usage family metadata across /new and /reset", async () => {
-    const storePath = await createStorePath("openclaw-reset-usage-family-");
     const sessionKey = "agent:main:telegram:dm:user-usage-family";
     const existingSessionId = "existing-session-usage-family";
     const cases = [
@@ -3085,6 +3079,9 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
     ] as const;
 
     for (const testCase of cases) {
+      const storePath = await createStorePath(
+        `openclaw-reset-usage-family-${testCase.body.slice(1)}-`,
+      );
       await seedSessionStoreWithOverrides({
         storePath,
         sessionKey,
@@ -3122,7 +3119,7 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
         result.sessionId,
       ]);
 
-      const stored = JSON.parse(await fs.readFile(storePath, "utf-8"));
+      const stored = readConfiguredSessionStoreForTest(storePath);
       expect(stored[sessionKey].usageFamilyKey, testCase.name).toBe("family:user-usage-family");
       expect(stored[sessionKey].usageFamilySessionIds, testCase.name).toEqual([
         "ancestor-session",
@@ -3226,7 +3223,7 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
       expect(result.sessionEntry.memoryFlushLastFailedAt).toBeUndefined();
       expect(result.sessionEntry.memoryFlushLastFailureError).toBeUndefined();
 
-      const stored = JSON.parse(await fs.readFile(storePath, "utf-8"));
+      const stored = readConfiguredSessionStoreForTest(storePath);
       expect(stored[sessionKey].cliSessionIds).toBeUndefined();
       expect(stored[sessionKey].cliSessionBindings).toBeUndefined();
       expect(stored[sessionKey].claudeCliSessionId).toBeUndefined();
@@ -3504,10 +3501,7 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
       // Unrelated behavior overrides still carry across the reset.
       expect(result.sessionEntry.verboseLevel, testCase.name).toBe(runtimeModelCache.verboseLevel);
 
-      const stored = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
-        string,
-        SessionEntry
-      >;
+      const stored = readConfiguredSessionStoreForTest(storePath);
       expect(stored[sessionKey].modelProvider, testCase.name).toBeUndefined();
       expect(stored[sessionKey].model, testCase.name).toBeUndefined();
       expect(stored[sessionKey].cacheRead, testCase.name).toBeUndefined();
@@ -5262,10 +5256,7 @@ describe("initSessionState dmScope delivery migration", () => {
     });
 
     expect(result.sessionKey).toBe("agent:main:telegram:direct:6101296751");
-    const persisted = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
-      string,
-      SessionEntry
-    >;
+    const persisted = readConfiguredSessionStoreForTest(storePath);
     expect(persisted["agent:main:main"]?.sessionId).toBe("legacy-main");
     expect(persisted["agent:main:main"]?.route).toBeUndefined();
     expect(persisted["agent:main:main"]?.deliveryContext).toBeUndefined();
@@ -5308,10 +5299,7 @@ describe("initSessionState dmScope delivery migration", () => {
       commandAuthorized: true,
     });
 
-    const persisted = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
-      string,
-      SessionEntry
-    >;
+    const persisted = readConfiguredSessionStoreForTest(storePath);
     expect(persisted["agent:main:main"]?.deliveryContext).toEqual({
       channel: "telegram",
       to: "1111",
@@ -5386,10 +5374,7 @@ describe("initSessionState internal channel routing preservation", () => {
       accountId: "default",
     });
 
-    const persisted = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
-      string,
-      SessionEntry
-    >;
+    const persisted = readConfiguredSessionStoreForTest(storePath);
     expect(persisted[sessionKey]?.lastThreadId).toBeUndefined();
     expect(persisted[sessionKey]?.deliveryContext).toEqual({
       channel: "mattermost",
