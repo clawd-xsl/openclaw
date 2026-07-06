@@ -11,7 +11,12 @@ import {
   validatePluginsUiDescriptorsParams,
   validateSessionsPluginPatchParams,
 } from "../../../packages/gateway-protocol/src/index.js";
-import { loadSessionStore, updateSessionStore, type SessionEntry } from "../../config/sessions.js";
+import {
+  loadSessionStore,
+  resolveStorePath,
+  updateSessionStore,
+  type SessionEntry,
+} from "../../config/sessions.js";
 import { APPROVALS_SCOPE, READ_SCOPE, WRITE_SCOPE } from "../../gateway/operator-scopes.js";
 import { pluginHostHookHandlers } from "../../gateway/server-methods/plugin-host-hooks.js";
 import { buildGatewaySessionRow } from "../../gateway/session-utils.js";
@@ -106,8 +111,9 @@ async function withHostHookState(
   }),
 ): Promise<void> {
   const stateDir = await fs.mkdtemp(path.join(resolvePreferredOpenClawTmpDir(), prefix));
-  const storePath = path.join(stateDir, "sessions.json");
-  const tempConfig = createTempConfig(storePath);
+  const configuredStorePath = path.join(stateDir, "sessions.json");
+  const storePath = resolveStorePath(configuredStorePath);
+  const tempConfig = createTempConfig(configuredStorePath);
   try {
     await withEnvAsync({ OPENCLAW_STATE_DIR: stateDir }, async () => {
       await withTempConfig({
