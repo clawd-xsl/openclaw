@@ -13,6 +13,7 @@ import type {
 } from "openclaw/plugin-sdk/runtime-doctor";
 import {
   clearSessionStoreCacheForTest,
+  resolveStorePath,
   upsertSessionEntry,
 } from "openclaw/plugin-sdk/session-store-runtime";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -266,6 +267,14 @@ describe("msteams doctor state migration", () => {
     const agentStoreTemplate = path.join(stateDir, "agents", "{agentId}", "sessions");
     const mainStorePath = path.join(stateDir, "agents", "main", "sessions");
     const workStorePath = path.join(stateDir, "agents", "work", "sessions");
+    const mainCanonicalStorePath = resolveStorePath(agentStoreTemplate, {
+      agentId: "main",
+      env,
+    });
+    const workCanonicalStorePath = resolveStorePath(agentStoreTemplate, {
+      agentId: "work",
+      env,
+    });
     const encodedSessionKey = "msteams:user1";
     const encodedSourcePath = path.join(
       mainStorePath,
@@ -340,17 +349,20 @@ describe("msteams doctor state migration", () => {
       maxEntries: 10_000,
     });
     await expect(
-      store.lookup(learningStoreKey(mainStorePath, encodedSessionKey)),
+      store.lookup(learningStoreKey(mainCanonicalStorePath, encodedSessionKey)),
     ).resolves.toMatchObject({
       sessionKey: encodedSessionKey,
       learnings: ["Be concise", "Use examples", "New runtime note"],
     });
     await expect(
-      store.lookup(learningStoreKey(workStorePath, sanitizedSessionKey)),
+      store.lookup(learningStoreKey(workCanonicalStorePath, sanitizedSessionKey)),
     ).resolves.toMatchObject({
       sessionKey: sanitizedSessionKey,
       learnings: ["Prefer cards for channel feedback"],
     });
+    await expect(
+      store.lookup(learningStoreKey(workStorePath, sanitizedSessionKey)),
+    ).resolves.toBeUndefined();
   });
 
   it("imports feedback learnings beside the default SQLite session store", async () => {

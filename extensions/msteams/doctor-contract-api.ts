@@ -53,6 +53,13 @@ type FeedbackLearningEntry = {
   updatedAt: number;
 };
 
+type LegacyLearningStoreCandidate = {
+  /** Path whose directory layout contains the legacy sidecars. */
+  scanPath: string;
+  /** Current runtime store path used to scope the plugin-state key. */
+  canonicalStorePath: string;
+};
+
 const LEARNINGS_NAMESPACE = "feedback-learnings";
 const MAX_LEARNING_ENTRIES = 10_000;
 const MSTEAMS_PLUGIN_ID = "Microsoft Teams";
@@ -107,16 +114,16 @@ async function resolveLegacyLearningSidecarDir(storePath: string): Promise<{
 
 async function listKnownSessionKeys(params: {
   sidecarDir: string;
-  storePath: string;
-  storePathIsDirectory: boolean;
+  candidate: LegacyLearningStoreCandidate;
+  scanPathIsDirectory: boolean;
 }): Promise<string[]> {
   const keys = new Set<string>();
-  const storeExtension = path.extname(params.storePath).toLowerCase();
-  const isSqliteStore = storeExtension === ".sqlite" || storeExtension === ".db";
-  if (!params.storePathIsDirectory && isSqliteStore) {
+  const canonicalExtension = path.extname(params.candidate.canonicalStorePath).toLowerCase();
+  const canonicalIsSqliteStore = canonicalExtension === ".sqlite" || canonicalExtension === ".db";
+  if (canonicalIsSqliteStore) {
     try {
       for (const { sessionKey } of inspectSessionStoreEntriesReadOnly({
-        storePath: params.storePath,
+        storePath: params.candidate.canonicalStorePath,
       })) {
         if (sessionKey.trim()) {
           keys.add(sessionKey);
@@ -128,9 +135,9 @@ async function listKnownSessionKeys(params: {
   }
   const candidates = [
     ...new Set(
-      params.storePathIsDirectory || isSqliteStore
+      params.scanPathIsDirectory || canonicalIsSqliteStore
         ? [path.join(params.sidecarDir, "sessions.json")]
-        : [params.storePath, path.join(params.sidecarDir, "sessions.json")],
+        : [params.candidate.scanPath, path.join(params.sidecarDir, "sessions.json")],
     ),
   ];
   for (const candidate of candidates) {
@@ -180,31 +187,36 @@ function listAgentIds(config: { agents?: { list?: Array<{ id?: unknown }> } }): 
 async function listCandidateStorePaths(params: {
   config: Parameters<PluginDoctorStateMigration["migrateLegacyState"]>[0]["config"];
   env: NodeJS.ProcessEnv;
-}): Promise<string[]> {
-  const paths = new Set<string>();
-  paths.add(resolveStorePath(params.config.session?.store, { env: params.env }));
+}): Promise<LegacyLearningStoreCandidate[]> {
+  const canonicalPaths = new Set<string>();
+  canonicalPaths.add(resolveStorePath(params.config.session?.store, { env: params.env }));
   for (const agentId of listAgentIds(params.config)) {
-    paths.add(resolveStorePath(params.config.session?.store, { agentId, env: params.env }));
+    canonicalPaths.add(
+      resolveStorePath(params.config.session?.store, { agentId, env: params.env }),
+    );
   }
-  await Promise.all(
-    [...paths].map(async (storePath) => {
-      if (!storePath.endsWith(".sqlite")) {
-        return;
+  const candidates = new Map<string, LegacyLearningStoreCandidate>();
+  const addCandidate = (candidate: LegacyLearningStoreCandidate) => {
+    candidates.set(`${candidate.scanPath}\0${candidate.canonicalStorePath}`, candidate);
+  };
+  for (const canonicalStorePath of canonicalPaths) {
+    addCandidate({ scanPath: canonicalStorePath, canonicalStorePath });
+    if (!canonicalStorePath.endsWith(".sqlite")) {
+      continue;
+    }
+    const legacyDirectory = canonicalStorePath.slice(0, -".sqlite".length);
+    try {
+      if ((await fs.stat(legacyDirectory)).isDirectory()) {
+        // Database-backed hosts can resolve a legacy directory-shaped store
+        // config to a sibling SQLite file. Scan that existing directory while
+        // keeping the runtime SQLite path as the plugin-state key scope.
+        addCandidate({ scanPath: legacyDirectory, canonicalStorePath });
       }
-      const legacyDirectory = storePath.slice(0, -".sqlite".length);
-      try {
-        if ((await fs.stat(legacyDirectory)).isDirectory()) {
-          // Database-backed hosts can resolve a legacy directory-shaped store
-          // config to a sibling SQLite file. Keep that existing directory in
-          // the migration scan because feedback sidecars lived inside it.
-          paths.add(legacyDirectory);
-        }
-      } catch {
-        // No legacy directory exists for this resolved database path.
-      }
-    }),
-  );
-  return [...paths];
+    } catch {
+      // No legacy directory exists for this resolved database path.
+    }
+  }
+  return [...candidates.values()];
 }
 
 async function fileExists(filePath: string): Promise<boolean> {
@@ -296,12 +308,16 @@ function parseLegacyPollStore(value: unknown): MSTeamsPollStoreData | null {
   return { version: 1, polls };
 }
 
-async function listLegacyLearningFiles(
-  storePath: string,
-): Promise<
-  Array<{ storePath: string; sessionKey: string | null; filePath: string; learnings: string[] }>
+async function listLegacyLearningFiles(candidate: LegacyLearningStoreCandidate): Promise<
+  Array<{
+    scanPath: string;
+    canonicalStorePath: string;
+    sessionKey: string | null;
+    filePath: string;
+    learnings: string[];
+  }>
 > {
-  const layout = await resolveLegacyLearningSidecarDir(storePath);
+  const layout = await resolveLegacyLearningSidecarDir(candidate.scanPath);
   let entries: Dirent[];
   try {
     entries = await fs.readdir(layout.sidecarDir, { withFileTypes: true });
@@ -311,11 +327,12 @@ async function listLegacyLearningFiles(
   const suffix = ".learnings.json";
   const knownSessionKeys = await listKnownSessionKeys({
     sidecarDir: layout.sidecarDir,
-    storePath,
-    storePathIsDirectory: layout.storePathIsDirectory,
+    candidate,
+    scanPathIsDirectory: layout.storePathIsDirectory,
   });
   const files: Array<{
-    storePath: string;
+    scanPath: string;
+    canonicalStorePath: string;
     sessionKey: string | null;
     filePath: string;
     learnings: string[];
@@ -334,7 +351,13 @@ async function listLegacyLearningFiles(
       if (Array.isArray(parsed)) {
         const learnings = parsed.filter((item): item is string => typeof item === "string");
         if (learnings.length > 0) {
-          files.push({ storePath, sessionKey, filePath, learnings: learnings.slice(-10) });
+          files.push({
+            scanPath: candidate.scanPath,
+            canonicalStorePath: candidate.canonicalStorePath,
+            sessionKey,
+            filePath,
+            learnings: learnings.slice(-10),
+          });
         }
       }
     } catch {
@@ -366,15 +389,20 @@ async function archiveLegacySource(params: {
   }
 }
 
-function mergeLearnings(legacy: string[], existing?: FeedbackLearningEntry): string[] {
+function mergeLearnings(
+  legacy: string[],
+  ...existingEntries: Array<FeedbackLearningEntry | undefined>
+): string[] {
   const seen = new Set<string>();
   const merged: string[] = [];
-  for (const learning of [...legacy, ...(existing?.learnings ?? [])]) {
-    if (seen.has(learning)) {
-      continue;
+  for (const source of [legacy, ...existingEntries.map((entry) => entry?.learnings ?? [])]) {
+    for (const learning of source) {
+      if (seen.has(learning)) {
+        continue;
+      }
+      seen.add(learning);
+      merged.push(learning);
     }
-    seen.add(learning);
-    merged.push(learning);
   }
   return merged.slice(-10);
 }
@@ -580,7 +608,7 @@ export const stateMigrations: PluginDoctorStateMigration[] = [
     async detectLegacyState(params) {
       const storePaths = await listCandidateStorePaths(params);
       const files = (
-        await Promise.all(storePaths.map((storePath) => listLegacyLearningFiles(storePath)))
+        await Promise.all(storePaths.map((candidate) => listLegacyLearningFiles(candidate)))
       ).flat();
       if (files.length === 0) {
         return null;
@@ -596,7 +624,7 @@ export const stateMigrations: PluginDoctorStateMigration[] = [
       const warnings: string[] = [];
       const storePaths = await listCandidateStorePaths(params);
       const files = (
-        await Promise.all(storePaths.map((storePath) => listLegacyLearningFiles(storePath)))
+        await Promise.all(storePaths.map((candidate) => listLegacyLearningFiles(candidate)))
       ).flat();
       const store = params.context.openPluginStateKeyedStore<FeedbackLearningEntry>({
         namespace: LEARNINGS_NAMESPACE,
@@ -607,7 +635,7 @@ export const stateMigrations: PluginDoctorStateMigration[] = [
       const importableFiles = files.filter((file) => file.sessionKey);
       const missingKeys = new Set(
         importableFiles
-          .map((file) => learningStoreKey(file.storePath, file.sessionKey ?? ""))
+          .map((file) => learningStoreKey(file.canonicalStorePath, file.sessionKey ?? ""))
           .filter((key) => !existingKeys.has(key)),
       );
       if (missingKeys.size > MAX_LEARNING_ENTRIES - existingKeys.size) {
@@ -624,11 +652,16 @@ export const stateMigrations: PluginDoctorStateMigration[] = [
           );
           continue;
         }
-        const key = learningStoreKey(file.storePath, file.sessionKey);
+        const key = learningStoreKey(file.canonicalStorePath, file.sessionKey);
         const existing = await store.lookup(key);
+        const legacyKey =
+          file.scanPath === file.canonicalStorePath
+            ? undefined
+            : learningStoreKey(file.scanPath, file.sessionKey);
+        const legacyExisting = legacyKey ? await store.lookup(legacyKey) : undefined;
         await store.register(key, {
-          sessionKey: existing?.sessionKey ?? file.sessionKey,
-          learnings: mergeLearnings(file.learnings, existing),
+          sessionKey: existing?.sessionKey ?? legacyExisting?.sessionKey ?? file.sessionKey,
+          learnings: mergeLearnings(file.learnings, legacyExisting, existing),
           updatedAt: Date.now(),
         });
         imported++;
