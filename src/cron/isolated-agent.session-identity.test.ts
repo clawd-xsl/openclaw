@@ -4,7 +4,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as modelThinkingDefault from "../agents/model-thinking-default.js";
-import type { SessionEntry } from "../config/sessions.js";
+import { resolveStorePath } from "../config/sessions/paths.js";
+import { updateSessionStore } from "../config/sessions/store.js";
 import { runCronIsolatedAgentTurn } from "./isolated-agent.js";
 import {
   makeCfg,
@@ -183,10 +184,7 @@ describe("runCronIsolatedAgentTurn session identity", () => {
         },
       });
       updateSessionStoreMock.mockImplementation(async (targetStorePath, update) => {
-        const raw = await fs.readFile(targetStorePath, "utf-8");
-        const store = JSON.parse(raw) as Record<string, SessionEntry>;
-        update(store);
-        await fs.writeFile(targetStorePath, JSON.stringify(store, null, 2), "utf-8");
+        await updateSessionStore(targetStorePath, update);
       });
       const currentBoundJob = normalizeCronJobCreate(
         {
@@ -213,7 +211,7 @@ describe("runCronIsolatedAgentTurn session identity", () => {
       );
 
       const finalPersist = updateSessionStoreMock.mock.calls.at(-1);
-      expect(finalPersist?.[0]).toBe(storePath);
+      expect(finalPersist?.[0]).toBe(resolveStorePath(storePath));
       const persistedStore: Record<string, { [key: string]: unknown }> = {};
       (finalPersist![1] as (store: typeof persistedStore) => void)(persistedStore);
       expect(persistedStore[boundSessionKey]).toEqual(

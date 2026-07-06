@@ -11,6 +11,7 @@ import {
   resolveAgentMainSessionKey,
   resolveMainSessionKey,
   resolveStorePath,
+  saveSessionStore,
 } from "../config/sessions.js";
 import { getActivePluginRegistry, setActivePluginRegistry } from "../plugins/runtime.js";
 import { buildAgentPeerSessionKey } from "../routing/session-key.js";
@@ -955,9 +956,9 @@ describe("runHeartbeatOnce", () => {
 
       await fs.mkdir(sessionsDir, { recursive: true });
       await fs.writeFile(sessionFile, "", "utf-8");
-      await fs.writeFile(
+      await saveSessionStore(
         storePath,
-        JSON.stringify({
+        {
           [sessionKey]: {
             sessionId,
             sessionFile,
@@ -965,7 +966,8 @@ describe("runHeartbeatOnce", () => {
             lastChannel: "whatsapp",
             lastTo: "120363401234567890@g.us",
           },
-        }),
+        },
+        { skipMaintenance: true },
       );
 
       replySpy.mockResolvedValue([{ text: "Final alert" }]);
@@ -1459,9 +1461,9 @@ describe("runHeartbeatOnce", () => {
       const storePath = resolveStorePath(storeTemplate, { agentId });
 
       await fs.mkdir(path.dirname(storePath), { recursive: true });
-      await fs.writeFile(
+      await saveSessionStore(
         storePath,
-        JSON.stringify({
+        {
           [sessionKey]: {
             sessionId: "sid",
             updatedAt: Date.now(),
@@ -1469,7 +1471,8 @@ describe("runHeartbeatOnce", () => {
             lastProvider: "whatsapp",
             lastTo: "120363401234567890@g.us",
           },
-        }),
+        },
+        { skipMaintenance: true },
       );
 
       replySpy.mockResolvedValue({ text: "Hello from heartbeat" });

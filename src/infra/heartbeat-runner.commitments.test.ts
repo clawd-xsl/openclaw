@@ -10,6 +10,7 @@ import {
 } from "../commitments/store.js";
 import type { CommitmentRecord, CommitmentStoreFile } from "../commitments/types.js";
 import type { OpenClawConfig } from "../config/config.js";
+import { readSessionEntry, resolveStorePath } from "../config/sessions.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
 import { getLastHeartbeatEvent, resetHeartbeatEventsForTest } from "./heartbeat-events.js";
 import { resolveHeartbeatRunScope } from "./heartbeat-run-scope.js";
@@ -202,7 +203,7 @@ describe("runHeartbeatOnce commitments", () => {
   }
 
   it("keeps free-form reasons from changing normal heartbeat task priority", async () => {
-    const { result, sendTelegram, sessionStore, store } = await withTempHeartbeatSandbox(
+    const { result, sendTelegram, sessionEntry, store } = await withTempHeartbeatSandbox(
       async ({ tmpDir, storePath, replySpy }) => {
         setTestEnvValue("OPENCLAW_STATE_DIR", tmpDir);
         const sessionKey = "agent:main:telegram:user-155462274";
@@ -275,10 +276,7 @@ describe("runHeartbeatOnce commitments", () => {
         return {
           result: resultResult,
           sendTelegram: sendTelegramResult,
-          sessionStore: JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
-            string,
-            { heartbeatTaskState?: Record<string, number> }
-          >,
+          sessionEntry: readSessionEntry(resolveStorePath(storePath), sessionKey, { exact: true }),
           store: await loadCommitmentStore(),
         };
       },
@@ -286,7 +284,7 @@ describe("runHeartbeatOnce commitments", () => {
 
     expect(result.status).toBe("ran");
     expect(sendTelegram).toHaveBeenCalled();
-    expect(sessionStore["agent:main:telegram:user-155462274"]?.heartbeatTaskState).toEqual({
+    expect(sessionEntry?.heartbeatTaskState).toEqual({
       "deployment-status": nowMs,
     });
     expectCommitmentFields(store.commitments[0], {
@@ -560,11 +558,13 @@ describe("runHeartbeatOnce commitments", () => {
         lastAttemptAtMs: nowMs,
       });
       expect(store.commitments[0]?.sentAtMs).toBeUndefined();
-      const sessionStoreAfterSuppressed = JSON.parse(
-        await fs.readFile(storePath, "utf-8"),
-      ) as Record<string, { lastHeartbeatText?: string; lastHeartbeatSentAt?: number }>;
-      expect(sessionStoreAfterSuppressed[sessionKey]?.lastHeartbeatText).toBeUndefined();
-      expect(sessionStoreAfterSuppressed[sessionKey]?.lastHeartbeatSentAt).toBeUndefined();
+      const sessionEntryAfterSuppressed = readSessionEntry(
+        resolveStorePath(storePath),
+        sessionKey,
+        { exact: true },
+      );
+      expect(sessionEntryAfterSuppressed?.lastHeartbeatText).toBeUndefined();
+      expect(sessionEntryAfterSuppressed?.lastHeartbeatSentAt).toBeUndefined();
       expect(getLastHeartbeatEvent()).toMatchObject({
         status: "skipped",
         reason: "no_visible_payload",
@@ -756,7 +756,7 @@ tasks:
   });
 
   it("keeps commitment-only fan-out isolated from global work and state", async () => {
-    const { pendingEvents, result, sendTelegram, sessionStore, store } =
+    const { pendingEvents, result, sendTelegram, sessionEntry, store } =
       await withTempHeartbeatSandbox(async ({ tmpDir, storePath, replySpy }) => {
         setTestEnvValue("OPENCLAW_STATE_DIR", tmpDir);
         const sessionKey = "agent:main:telegram:user-155462274";
@@ -857,10 +857,7 @@ tasks:
           result: resultLocal,
           sendTelegram: sendTelegramLocal,
           pendingEvents: peekSystemEventEntries(sessionKey),
-          sessionStore: JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
-            string,
-            { heartbeatTaskState?: Record<string, number> }
-          >,
+          sessionEntry: readSessionEntry(resolveStorePath(storePath), sessionKey, { exact: true }),
           store: await loadCommitmentStore(),
         };
       });
@@ -872,10 +869,8 @@ tasks:
       "How did the interview go?",
       expect.any(Object),
     );
-    expect(sessionStore).toMatchObject({
-      "agent:main:telegram:user-155462274": {
-        heartbeatTaskState: { "global-ops-audit": nowMs - 10 * 60_000 },
-      },
+    expect(sessionEntry).toMatchObject({
+      heartbeatTaskState: { "global-ops-audit": nowMs - 10 * 60_000 },
     });
     expect(pendingEvents).toHaveLength(1);
     expect(pendingEvents[0]).toMatchObject({

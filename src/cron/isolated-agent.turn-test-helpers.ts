@@ -1,9 +1,10 @@
 /** Reusable turn-level fixtures for isolated cron agent regression tests. */
 import "./isolated-agent.mocks.js";
-import fs from "node:fs/promises";
 import { expect, vi } from "vitest";
 import { runEmbeddedAgent } from "../agents/embedded-agent.js";
 import type { CliDeps } from "../cli/deps.js";
+import { resolveStorePath } from "../config/sessions/paths.js";
+import { loadSessionStore } from "../config/sessions/store-load.js";
 import { runCronIsolatedAgentTurn } from "./isolated-agent.js";
 import {
   makeCfg,
@@ -60,8 +61,7 @@ export function expectEmbeddedProviderModel(expected: { provider: string; model:
 }
 
 export async function readSessionEntry(storePath: string, key: string) {
-  const raw = await fs.readFile(storePath, "utf-8");
-  const store = JSON.parse(raw) as Record<
+  const store = loadSessionStore(resolveStorePath(storePath), { skipCache: true }) as Record<
     string,
     { sessionId?: string; label?: string; sessionFile?: string }
   >;

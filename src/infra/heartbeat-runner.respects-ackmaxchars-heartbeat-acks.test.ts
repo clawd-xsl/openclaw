@@ -1,7 +1,11 @@
 // Covers heartbeat ack truncation limits.
-import fs from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
+import {
+  readSessionEntry,
+  resolveStorePath,
+  updateSessionStoreEntry,
+} from "../config/sessions.js";
 import { runHeartbeatOnce, type HeartbeatDeps } from "./heartbeat-runner.js";
 import { installHeartbeatRunnerTestRuntime } from "./heartbeat-runner.test-harness.js";
 import {
@@ -372,17 +376,16 @@ describe("runHeartbeatOnce ack handling", () => {
         lastProvider: "whatsapp",
         lastTo: WHATSAPP_GROUP,
       });
+      const resolvedStorePath = resolveStorePath(storePath);
 
       replySpy.mockImplementationOnce(async () => {
-        const raw = await fs.readFile(storePath, "utf-8");
-        const parsed = JSON.parse(raw) as Record<string, { updatedAt?: number } | undefined>;
-        if (parsed[sessionKey]) {
-          parsed[sessionKey] = {
-            ...parsed[sessionKey],
-            updatedAt: bumpedUpdatedAt,
-          };
-        }
-        await fs.writeFile(storePath, JSON.stringify(parsed, null, 2));
+        await updateSessionStoreEntry({
+          storePath: resolvedStorePath,
+          sessionKey,
+          update: () => ({ updatedAt: bumpedUpdatedAt }),
+          skipMaintenance: true,
+          requireWriteSuccess: true,
+        });
         return { text: "" };
       });
 
@@ -394,11 +397,9 @@ describe("runHeartbeatOnce ack handling", () => {
         },
       });
 
-      const finalStore = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
-        string,
-        { updatedAt?: number } | undefined
-      >;
-      expect(finalStore[sessionKey]?.updatedAt).toBe(bumpedUpdatedAt);
+      expect(readSessionEntry(resolvedStorePath, sessionKey, { exact: true })?.updatedAt).toBe(
+        bumpedUpdatedAt,
+      );
     });
   });
 

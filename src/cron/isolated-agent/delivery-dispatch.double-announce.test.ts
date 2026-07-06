@@ -140,6 +140,7 @@ vi.mock("./subagent-followup.runtime.js", () => ({
 import { retireSessionMcpRuntime } from "../../agents/agent-bundle-mcp-tools.js";
 // Import after mocks
 import { countActiveDescendantRuns } from "../../agents/subagent-registry-read.js";
+import { resolveStorePath } from "../../config/sessions/paths.js";
 import { appendAssistantMessageToSessionTranscript } from "../../config/sessions/transcript.runtime.js";
 import { callGateway } from "../../gateway/call.runtime.js";
 import { deliverOutboundPayloads } from "../../infra/outbound/deliver.js";
@@ -2032,7 +2033,7 @@ describe("dispatchCronDelivery — double-announce guard", () => {
       agentId: "main",
       text: "REPRO_TOKEN_K7M3X9",
       mediaUrls: undefined,
-      storePath: expect.stringContaining("cron-mirror-sessions.json"),
+      storePath: resolveStorePath("cron-mirror-sessions.json", { agentId: "main" }),
       idempotencyKey: expect.stringContaining("test-job"),
       config: params.cfgWithAgentDefaults,
     });
@@ -2097,7 +2098,7 @@ describe("dispatchCronDelivery — double-announce guard", () => {
       agentId: "main",
       text: "custom-session report",
       mediaUrls: undefined,
-      storePath: expect.stringContaining("cron-custom-session-mirror.json"),
+      storePath: resolveStorePath("cron-custom-session-mirror.json", { agentId: "main" }),
       idempotencyKey: expect.stringContaining("test-job"),
       config: params.cfgWithAgentDefaults,
     });

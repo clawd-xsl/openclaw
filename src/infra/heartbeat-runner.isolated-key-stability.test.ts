@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as replyModule from "../auto-reply/reply.js";
 import type { OpenClawConfig } from "../config/config.js";
-import { resolveMainSessionKey } from "../config/sessions.js";
+import { readSessionEntry, resolveMainSessionKey, resolveStorePath } from "../config/sessions.js";
 import { runHeartbeatOnce } from "./heartbeat-runner.js";
 import { seedSessionStore, withTempHeartbeatSandbox } from "./heartbeat-runner.test-utils.js";
 import {
@@ -186,14 +186,14 @@ describe("runHeartbeatOnce – isolated session key stability (#59493)", () => {
       // A deeply accumulated key converges to "<base>:heartbeat" in one call.
       expect(ctx?.SessionKey).toBe(`${baseSessionKey}:heartbeat`);
 
-      const store = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
-        string,
-        { heartbeatIsolatedBaseSessionKey?: string }
-      >;
-      expect(store[deeplyAccumulatedKey]).toBeUndefined();
-      expect(store[`${baseSessionKey}:heartbeat`]?.heartbeatIsolatedBaseSessionKey).toBe(
-        baseSessionKey,
-      );
+      const resolvedStorePath = resolveStorePath(storePath);
+      expect(
+        readSessionEntry(resolvedStorePath, deeplyAccumulatedKey, { exact: true }),
+      ).toBeUndefined();
+      expect(
+        readSessionEntry(resolvedStorePath, `${baseSessionKey}:heartbeat`, { exact: true })
+          ?.heartbeatIsolatedBaseSessionKey,
+      ).toBe(baseSessionKey);
     });
   });
 
@@ -448,8 +448,9 @@ describe("runHeartbeatOnce – isolated session key stability (#59493)", () => {
       expect(result).toEqual({ status: "skipped", reason: "no-tasks-due" });
       expect(replySpy).not.toHaveBeenCalled();
 
-      const store = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<string, unknown>;
-      expect(store[isolatedSessionKey]).toBeUndefined();
+      expect(
+        readSessionEntry(resolveStorePath(storePath), isolatedSessionKey, { exact: true }),
+      ).toBeUndefined();
     });
   });
 

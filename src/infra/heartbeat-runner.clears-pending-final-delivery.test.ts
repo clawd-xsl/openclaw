@@ -1,6 +1,11 @@
-import fs from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
+import {
+  readSessionEntry,
+  resolveStorePath,
+  type SessionEntry,
+  updateSessionStoreEntry,
+} from "../config/sessions.js";
 import { runHeartbeatOnce, type HeartbeatDeps } from "./heartbeat-runner.js";
 import { installHeartbeatRunnerTestRuntime } from "./heartbeat-runner.test-harness.js";
 import {
@@ -11,7 +16,7 @@ import {
 
 installHeartbeatRunnerTestRuntime();
 
-type StoredEntry = Record<string, unknown> | undefined;
+type StoredEntry = SessionEntry | undefined;
 
 describe("runHeartbeatOnce clears stuck pendingFinalDelivery state once delivery is satisfied", () => {
   const TELEGRAM_GROUP = "-1001234567890";
@@ -53,18 +58,21 @@ describe("runHeartbeatOnce clears stuck pendingFinalDelivery state once delivery
   // patch in lastHeartbeat* and the three unexposed pending fields so each test can
   // prove all eight recovery fields get cleared.
   async function patchEntry(
-    storePath: string,
+    configuredStorePath: string,
     sessionKey: string,
-    patch: Record<string, unknown>,
+    patch: Partial<SessionEntry>,
   ): Promise<void> {
-    const store = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<string, StoredEntry>;
-    store[sessionKey] = { ...store[sessionKey], ...patch };
-    await fs.writeFile(storePath, JSON.stringify(store));
+    await updateSessionStoreEntry({
+      storePath: resolveStorePath(configuredStorePath),
+      sessionKey,
+      update: () => patch,
+      skipMaintenance: true,
+      requireWriteSuccess: true,
+    });
   }
 
-  async function readEntry(storePath: string, sessionKey: string): Promise<StoredEntry> {
-    const store = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<string, StoredEntry>;
-    return store[sessionKey];
+  async function readEntry(configuredStorePath: string, sessionKey: string): Promise<StoredEntry> {
+    return readSessionEntry(resolveStorePath(configuredStorePath), sessionKey, { exact: true });
   }
 
   function expectPendingFinalDeliveryCleared(entry: StoredEntry): void {

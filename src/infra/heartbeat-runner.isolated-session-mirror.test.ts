@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
-import { resolveMainSessionKey } from "../config/sessions.js";
+import { readSessionEntry, resolveMainSessionKey, resolveStorePath } from "../config/sessions.js";
 import { runHeartbeatOnce } from "./heartbeat-runner.js";
 import { installHeartbeatRunnerTestRuntime } from "./heartbeat-runner.test-harness.js";
 import { seedSessionStore, withTempHeartbeatSandbox } from "./heartbeat-runner.test-utils.js";
@@ -106,25 +106,21 @@ describe("runHeartbeatOnce - isolated heartbeat outbound session mirror", () => 
         },
       });
 
-      const store = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
-        string,
-        {
-          heartbeatTaskState?: Record<string, number>;
-          lastHeartbeatText?: string;
-          lastHeartbeatSentAt?: number;
-          heartbeatIsolatedBaseSessionKey?: string;
-        }
-      >;
-      expect(store[baseSessionKey]).toMatchObject({
+      const resolvedStorePath = resolveStorePath(storePath);
+      const baseEntry = readSessionEntry(resolvedStorePath, baseSessionKey, { exact: true });
+      const isolatedEntry = readSessionEntry(resolvedStorePath, isolatedSessionKey, {
+        exact: true,
+      });
+      expect(baseEntry).toMatchObject({
         heartbeatTaskState: { "check-in": nowMs },
         lastHeartbeatText: "Status needs attention.",
         lastHeartbeatSentAt: nowMs,
       });
-      expect(store[isolatedSessionKey]).toMatchObject({
+      expect(isolatedEntry).toMatchObject({
         heartbeatIsolatedBaseSessionKey: baseSessionKey,
       });
-      expect(store[isolatedSessionKey]?.heartbeatTaskState).toBeUndefined();
-      expect(store[isolatedSessionKey]?.lastHeartbeatText).toBeUndefined();
+      expect(isolatedEntry?.heartbeatTaskState).toBeUndefined();
+      expect(isolatedEntry?.lastHeartbeatText).toBeUndefined();
     });
   });
 
