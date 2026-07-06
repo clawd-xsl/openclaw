@@ -783,9 +783,13 @@ describe("state migrations", () => {
       session: { store: configuredStorePath },
       agents: { list: [{ id: "main", default: true }] },
     } as OpenClawConfig;
+    const resolvedConfiguredStorePath = sessionStore.resolveStorePath(configuredStorePath, {
+      agentId: "main",
+      env,
+    });
     const realStatSync = fsSync.statSync.bind(fsSync);
     const statSpy = vi.spyOn(fsSync, "statSync").mockImplementation((candidate) => {
-      if (path.resolve(candidate.toString()) === configuredStorePath) {
+      if (path.resolve(candidate.toString()) === resolvedConfiguredStorePath) {
         throw Object.assign(new Error("inaccessible store"), { code: "EACCES" });
       }
       return realStatSync(candidate);
@@ -956,7 +960,9 @@ describe("state migrations", () => {
     expect(fsSync.statSync(configuredStorePath).ino).toBe(fsSync.statSync(targetStorePath).ino);
     expect(result.warnings).toEqual(
       expect.arrayContaining([
-        expect.stringContaining(`aliased store ${configuredStorePath}`),
+        expect.stringContaining(
+          `aliased store ${sessionStore.resolveStorePath(configuredStorePath, { agentId: "worker-1", env })}`,
+        ),
         expect.stringContaining("Deferred ACP metadata migration"),
       ]),
     );
@@ -978,7 +984,7 @@ describe("state migrations", () => {
       {
         "voice:15550001111": { sessionId: "outside-voice", updatedAt: 10 },
       },
-      { requireWriteSuccess: true },
+      { requireWriteSuccess: true, skipMaintenance: true },
     );
     sessionStore.clearSessionStoreCacheForTest();
     await fs.mkdir(path.dirname(resolvedBackendPath), { recursive: true });
@@ -1027,7 +1033,7 @@ describe("state migrations", () => {
           },
         },
       },
-      { requireWriteSuccess: true },
+      { requireWriteSuccess: true, skipMaintenance: true },
     );
     sessionStore.clearSessionStoreCacheForTest();
     await fs.symlink(outsideBackendPath, resolvedBackendPath);

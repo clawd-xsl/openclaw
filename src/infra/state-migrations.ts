@@ -6007,12 +6007,7 @@ function resolveStorePathFromTemplate(
   agentId: string,
   env?: NodeJS.ProcessEnv,
 ): string {
-  const expand = (s: string) =>
-    s.startsWith("~") ? expandHomePrefix(s, { env: env ?? process.env, homedir: os.homedir }) : s;
-  if (template.includes("{agentId}")) {
-    return path.resolve(expand(template.replaceAll("{agentId}", agentId)));
-  }
-  return path.resolve(expand(template));
+  return resolveStorePath(template, { agentId, env: env ?? process.env });
 }
 
 type SessionStorePathRelationship = "same" | "different" | "unknown";
