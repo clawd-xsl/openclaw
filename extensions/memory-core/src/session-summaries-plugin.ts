@@ -135,7 +135,7 @@ function resolveBackfillCandidates(params: {
     if (!sessionFile.startsWith(`${resolvedSessionsDir}${path.sep}`)) {
       continue;
     }
-    let endedAt = 0;
+    let endedAt: number;
     try {
       endedAt = fs.statSync(sessionFile).mtimeMs;
     } catch {
