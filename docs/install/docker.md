@@ -375,13 +375,25 @@ docker compose -f docker-compose.yml -f docker-compose.extra.yml run --rm \
   openclaw-cli models list --provider anthropic
 ```
 
-After that, you can use the bundled `claude-cli` backend:
+Keep the model ref canonical and bind Sonnet 5 to the bundled `claude-cli`
+runtime:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.extra.yml run --rm \
+  openclaw-cli config set agents.defaults.model.primary anthropic/claude-sonnet-5
+docker compose -f docker-compose.yml -f docker-compose.extra.yml run --rm \
+  openclaw-cli config set agents.defaults.models \
+  '{"anthropic/claude-sonnet-5":{"agentRuntime":{"id":"claude-cli"}}}' \
+  --strict-json --merge
+```
+
+Then run the agent with that canonical model ref:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.extra.yml run --rm \
   openclaw-cli agent \
   --agent main \
-  --model claude-cli/claude-sonnet-4-6 \
+  --model anthropic/claude-sonnet-5 \
   --message "Say hello from Docker Claude CLI"
 ```
 

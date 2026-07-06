@@ -89,11 +89,11 @@ Keep hosted models configured even when running local; use `models.mode: "merge"
   agents: {
     defaults: {
       model: {
-        primary: "anthropic/claude-sonnet-4-6",
+        primary: "anthropic/claude-sonnet-5",
         fallbacks: ["lmstudio/my-local-model", "anthropic/claude-opus-4-6"],
       },
       models: {
-        "anthropic/claude-sonnet-4-6": { alias: "Sonnet" },
+        "anthropic/claude-sonnet-5": { alias: "Sonnet" },
         "lmstudio/my-local-model": { alias: "Local" },
         "anthropic/claude-opus-4-6": { alias: "Opus" },
       },

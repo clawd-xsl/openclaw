@@ -20,7 +20,7 @@ This is designed as a **safety net** rather than a primary path. Use it when you
 want "always works" text responses without relying on external APIs.
 
 If you want a full harness runtime with ACP session controls, background tasks,
-thread/conversation binding, and persistent external coding sessions, use
+and thread/conversation binding, use
 [ACP Agents](/tools/acp-agents) instead. CLI backends are not ACP.
 
 <Tip>
@@ -31,11 +31,28 @@ thread/conversation binding, and persistent external coding sessions, use
 
 ## Beginner-friendly quick start
 
-You can use Claude Code CLI **without any config** (the bundled Anthropic plugin
-registers a default backend):
+The bundled Anthropic plugin registers the `claude-cli` backend. Keep the model
+identity canonical and select Claude CLI as model-scoped runtime policy:
+
+```json5
+{
+  agents: {
+    defaults: {
+      model: { primary: "anthropic/claude-sonnet-5" },
+      models: {
+        "anthropic/claude-sonnet-5": {
+          agentRuntime: { id: "claude-cli" },
+        },
+      },
+    },
+  },
+}
+```
+
+Then run a turn with the canonical model ref:
 
 ```bash
-openclaw agent --agent main --message "hi" --model claude-cli/claude-sonnet-4-6
+openclaw agent --agent main --message "hi" --model anthropic/claude-sonnet-5
 ```
 
 `main` is the default agent id when no explicit agent list is configured. If
@@ -58,12 +75,14 @@ command path:
 }
 ```
 
-That's it. No keys, no extra auth config needed beyond the CLI itself.
+No API key is needed beyond the Claude Code login itself. Legacy refs such as
+`claude-cli/claude-sonnet-5` remain supported for compatibility, but new config
+should use `anthropic/claude-sonnet-5` plus `agentRuntime.id: "claude-cli"`.
 
 If you use a bundled CLI backend as the **primary message provider** on a
 gateway host, OpenClaw now auto-loads the owning bundled plugin when your config
-explicitly references that backend in a model ref or under
-`agents.defaults.cliBackends`.
+explicitly references that backend in model-scoped `agentRuntime` policy, a
+legacy backend-prefixed model ref, or `agents.defaults.cliBackends`.
 
 ## Using it as a fallback
 
@@ -74,12 +93,15 @@ Add a CLI backend to your fallback list so it only runs when primary models fail
   agents: {
     defaults: {
       model: {
-        primary: "anthropic/claude-opus-4-6",
-        fallbacks: ["claude-cli/claude-sonnet-4-6"],
+        primary: "anthropic/claude-opus-4-8",
+        fallbacks: ["anthropic/claude-sonnet-5"],
       },
       models: {
-        "anthropic/claude-opus-4-6": { alias: "Opus" },
-        "claude-cli/claude-sonnet-4-6": {},
+        "anthropic/claude-opus-4-8": { alias: "Opus" },
+        "anthropic/claude-sonnet-5": {
+          alias: "Sonnet",
+          agentRuntime: { id: "claude-cli" },
+        },
       },
     },
   },
@@ -94,18 +116,22 @@ Notes:
 
 ## Configuration overview
 
-All CLI backends live under:
+User overrides for CLI backends live under:
 
 ```
 agents.defaults.cliBackends
 ```
 
-Each entry is keyed by a **provider id** (e.g. `claude-cli`, `my-cli`).
-The provider id becomes the left side of your model ref:
+Each entry is keyed by a **backend id** (e.g. `claude-cli`, `my-cli`). Generic
+CLI backends can use that id as the left side of a model ref:
 
 ```
-<provider>/<model>
+<backend>/<model>
 ```
+
+For Claude Code, prefer the canonical `anthropic/<model>` ref and select the
+backend with `agents.defaults.models["anthropic/<model>"].agentRuntime.id =
+"claude-cli"`. The `claude-cli/<model>` form is a compatibility shorthand.
 
 ### Example configuration
 
@@ -149,7 +175,8 @@ The provider id becomes the left side of your model ref:
 
 ## How it works
 
-1. **Selects a backend** based on the provider prefix (`claude-cli/...`).
+1. **Selects a backend** from model-scoped `agentRuntime` policy. Legacy
+   `claude-cli/...` refs still select the same backend.
 2. **Builds a system prompt** using the same OpenClaw prompt + workspace context.
 3. **Executes the CLI** with a session id (if supported) so history stays consistent.
    The bundled `claude-cli` backend keeps a Claude stdio process alive per
@@ -163,8 +190,12 @@ The provider id becomes the left side of your model ref:
 <Note>
 The bundled Anthropic `claude-cli` backend is supported again. Anthropic staff
 told us OpenClaw-style Claude CLI usage is allowed again, so OpenClaw treats
-`claude -p` usage as sanctioned for this integration unless Anthropic publishes
-a new policy.
+Claude Code's `-p` programmatic mode as sanctioned for this integration unless
+Anthropic publishes a new policy. OpenClaw launches that mode as a persistent
+`stream-json` child per OpenClaw session and sends warm follow-up turns over
+stdin; it does not spawn a separate one-shot process for every turn. That
+transport detail does not change Anthropic's classification of the invocation
+as Claude Code programmatic usage.
 </Note>
 
 The bundled Anthropic `claude-cli` backend disables Claude slash commands for
@@ -204,9 +235,11 @@ fingerprint, so a process created under stale policy is not silently reused.
 
 The bundled Anthropic `claude-cli` backend also maps OpenClaw `/think` levels
 to Claude Code's native `--effort` flag for non-off levels. `minimal` and
-`low` map to `low`, `adaptive` and `medium` map to `medium`, and `high`,
-`xhigh`, and `max` map directly. Other CLI backends need their owning plugin to
-declare an equivalent argv mapper before `/think` can affect the spawned CLI.
+`low` map to `low`; `medium`, `high`, `xhigh`, and `max` map directly. Sonnet 5
+maps `adaptive` to its native `high` default. `/think off` uses Claude Code's
+isolated settings overlay to disable thinking explicitly. Other CLI backends
+need their owning plugin to declare an equivalent mapper before `/think` can
+affect the spawned CLI.
 
 OpenClaw `/fast` state is also forwarded to managed Claude CLI runs through
 Claude Code's isolated `--settings` overlay. Explicit `on` and `off` values are
@@ -222,6 +255,11 @@ claude auth login
 claude auth status --text
 openclaw models auth login --provider anthropic --method cli --set-default
 ```
+
+Claude Sonnet 5 requires Claude Code 2.1.197 or later. OpenClaw pins both
+`sonnet` and `sonnet-5` to `claude-sonnet-5` inside managed Claude CLI runs;
+the OpenClaw config and command-line model ref should remain
+`anthropic/claude-sonnet-5`.
 
 Docker installs need Claude Code installed and logged in inside the persisted
 container home, not only on the host. See
@@ -250,6 +288,11 @@ binary is not already on `PATH`.
   ids are verified against an existing readable project transcript before
   resume, so phantom bindings are cleared with `reason=transcript-missing`
   instead of silently starting a fresh Claude CLI session under `--resume`.
+- Sonnet 5 uses its native 1,000,000-token context window. At that full window,
+  OpenClaw leaves Claude Code's approximately 967K native auto-compaction
+  threshold intact. An explicitly lower OpenClaw context cap is forwarded as
+  Claude Code's auto-compaction window, clamped to a 100,000-token floor. The
+  Claude CLI catalog reports a 64,000-token maximum output for Sonnet 5.
 - Claude live sessions keep bounded JSONL output guards. Defaults allow up to
   8 MiB and 20,000 raw JSONL lines per turn. Tool-heavy Claude turns can raise
   them per backend with
@@ -293,8 +336,8 @@ for `claude-cli` runs.
 - Tool blocks are coalesced to compact `(tool call: name)` and
   `(tool result: …)` hints to keep the prompt budget honest. The summary is
   labeled `(truncated)` if it overflows.
-- Same-provider `claude-cli` to `claude-cli` fallbacks rely on Claude's own
-  `--resume` and skip the prelude.
+- Fallbacks between two Anthropic models routed through `claude-cli` rely on
+  Claude's own `--resume` and skip the prelude.
 - The seed reuses the existing Claude session-file path validation, so
   arbitrary paths cannot be read.
 

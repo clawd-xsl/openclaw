@@ -808,10 +808,12 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H2: Quick setup (beginner)
   - H2: What it is
   - H2: Config writes
+  - H2: Quoted replies and stickers
   - H2: The number model (important)
   - H2: Setup path A: link existing Signal account (QR)
   - H2: Setup path B: register dedicated bot number (SMS, Linux)
   - H2: External daemon mode (httpUrl)
+  - H2: Direct signal-ts backend (advanced)
   - H2: Container mode (bbernhard/signal-cli-rest-api)
   - H2: Access control (DMs + groups)
   - H2: How it works (behavior)
@@ -2457,11 +2459,13 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H2: Action-sensitive memories
   - H2: Inferred commitments
   - H2: Memory tools
+  - H2: Session continuity summaries
   - H2: Memory Wiki companion plugin
   - H2: Memory search
   - H2: Memory backends
   - H2: Knowledge wiki layer
   - H2: Automatic memory flush
+  - H3: Completed-session memory flush
   - H2: Dreaming
   - H2: Grounded backfill and live promotion
   - H2: CLI
@@ -3031,6 +3035,7 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H2: Configuration overview
   - H3: Example configuration
   - H2: How it works
+  - H3: Claude tool and prompt isolation
   - H2: Sessions
   - H2: Fallback prelude from claude-cli sessions
   - H2: Images (pass-through)
@@ -6281,6 +6286,13 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H1: Memory Core plugin
   - H2: Distribution
   - H2: Surface
+  - H2: Memory Core capabilities
+  - H3: Agent tools
+  - H2: Durable session summaries
+  - H3: Historical summary backfill
+  - H3: Claude CLI structured rollover
+  - H2: Completed-session memory flush
+  - H2: Legacy summary migration
 
 ## plugins/reference/memory-lancedb.md
 
@@ -7200,7 +7212,7 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
 - Route: /providers/anthropic
 - Headings:
   - H2: Getting started
-  - H2: Thinking defaults (Claude Fable 5, 4.8, and 4.6)
+  - H2: Thinking defaults (Claude Fable 5, Sonnet 5, 4.8, and 4.6)
   - H2: Prompt caching
   - H2: Advanced configuration
   - H2: Troubleshooting
@@ -8194,6 +8206,13 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H2: Index storage
   - H2: QMD backend config
   - H3: Full QMD example
+  - H2: Session summaries
+  - H3: Automatic continuity injection
+  - H3: Summary model and prompt
+  - H3: Historical backfill
+  - H3: Claude CLI structured rollover
+  - H2: CLI pressure-flush cadence
+  - H2: Completed-session memory flush
   - H2: Dreaming
   - H3: User settings
   - H3: Example

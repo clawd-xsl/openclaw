@@ -213,9 +213,26 @@ override only `cacheRetention` and inherit other model defaults unchanged.
 
 ### Anthropic 1M context
 
-OpenClaw sizes GA-capable Claude 4.x models such as Opus 4.8, Opus 4.7, Opus 4.6, and
-Sonnet 4.6 with Anthropic's 1M context window. You do not need
-`params.context1m: true` for those models.
+Claude Sonnet 5 always uses a 1,000,000-token context window and has no separate
+`[1m]` variant. OpenClaw also sizes GA-capable Claude 4.x models such as Opus
+4.8, Opus 4.7, Opus 4.6, and Sonnet 4.6 with Anthropic's 1M context window. You
+do not need `params.context1m: true` for those models.
+
+Sonnet 5 uses a newer tokenizer that can report roughly 30% more tokens for the
+same text than Sonnet 4.6. Re-measure budgets that were tuned tightly for Sonnet
+4.6. Accounting depends on the selected runtime:
+
+- **Direct Anthropic API:** `anthropic/claude-sonnet-5` uses usage returned by
+  Anthropic for the API response. The model catalog allows up to 128,000 output
+  tokens on this route.
+- **Claude CLI:** the same canonical model ref with model-scoped
+  `agentRuntime.id: "claude-cli"` uses usage emitted by Claude Code's
+  `stream-json` result and leaves transcript compaction to Claude Code. The CLI
+  catalog reports a 64,000-token maximum output. Legacy
+  `claude-cli/claude-sonnet-5` refs use this same path.
+
+OpenClaw does not apply a fixed Sonnet 4.6-to-5 multiplier to either route's
+reported usage or to local fallback estimates.
 
 ```yaml
 agents:

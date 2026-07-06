@@ -139,11 +139,11 @@ candidate contains redacted secret placeholders such as `***`.
       agents: {
         defaults: {
           model: {
-            primary: "anthropic/claude-sonnet-4-6",
+            primary: "anthropic/claude-sonnet-5",
             fallbacks: ["openai/gpt-5.4"],
           },
           models: {
-            "anthropic/claude-sonnet-4-6": { alias: "Sonnet" },
+            "anthropic/claude-sonnet-5": { alias: "Sonnet" },
             "openai/gpt-5.4": { alias: "GPT" },
           },
         },

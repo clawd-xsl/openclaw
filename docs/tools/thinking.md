@@ -13,9 +13,9 @@ title: "Thinking levels"
   - low → "think hard"
   - medium → "think harder"
   - high → "ultrathink" (max budget)
-  - xhigh → "ultrathink+" (GPT-5.2+ and Codex models, plus Anthropic Claude Opus 4.7+ effort)
-  - adaptive → provider-managed adaptive thinking (supported for Claude 4.6 on Anthropic/Bedrock, Anthropic Claude Opus 4.7+, and Google Gemini dynamic thinking)
-  - max → provider max reasoning (Anthropic Claude Opus 4.7+; Ollama maps this to its highest native `think` effort)
+  - xhigh → "ultrathink+" (GPT-5.2+ and Codex models, plus Anthropic Claude Opus 4.7+ and Sonnet 5 effort)
+  - adaptive → provider-managed adaptive thinking (supported for Claude 4.6 on Anthropic/Bedrock, Anthropic Claude Opus 4.7+, Claude Sonnet 5, and Google Gemini dynamic thinking)
+  - max → provider max reasoning (Anthropic Claude Opus 4.7+, Claude Sonnet 5; Ollama maps this to its highest native `think` effort)
   - `x-high`, `x_high`, `extra-high`, `extra high`, and `extra_high` map to `xhigh`.
   - `highest` maps to `high`.
 - Provider notes:
@@ -23,6 +23,7 @@ title: "Thinking levels"
   - `adaptive`, `xhigh`, and `max` are only advertised for provider/model profiles that support them. Typed directives for unsupported levels are rejected with that model's valid options.
   - Existing stored unsupported levels are remapped by provider profile rank. `adaptive` falls back to `medium` on non-adaptive models, while `xhigh` and `max` fall back to the largest supported non-off level for the selected model.
   - Anthropic Claude 4.6 models default to `adaptive` when no explicit thinking level is set.
+  - Anthropic Claude Sonnet 5 defaults to adaptive thinking at `high` effort; `xhigh` and `max` use their native effort values. `/think off` explicitly disables thinking on direct Anthropic, Anthropic Vertex, and Claude CLI routes. Amazon Bedrock and Bedrock Mantle keep Sonnet 5 adaptive thinking enabled and normalize `off` to `low` effort.
   - Anthropic Claude Opus 4.8 and Opus 4.7 keep thinking off unless you explicitly set a thinking level. Opus 4.8's provider-owned effort default is `high` after adaptive thinking is enabled.
   - Anthropic Claude Opus 4.7+ maps `/think xhigh` to adaptive thinking plus `output_config.effort: "xhigh"`, because `/think` is a thinking directive and `xhigh` is the Opus effort setting.
   - Anthropic Claude Opus 4.7+ also exposes `/think max`; it maps to the same provider-owned max effort path.
@@ -56,7 +57,7 @@ title: "Thinking levels"
 ## Application by agent
 
 - **Embedded OpenClaw**: the resolved level is passed to the in-process OpenClaw agent runtime.
-- **Claude CLI backend**: non-off levels are passed to Claude Code as `--effort` when using `claude-cli`; see [CLI backends](/gateway/cli-backends).
+- **Claude CLI backend**: non-off levels are passed to Claude Code as `--effort` when using `claude-cli`; Sonnet 5 `adaptive` maps to `high`, while `off` is enforced through the isolated Claude settings overlay. See [CLI backends](/gateway/cli-backends).
 
 ## Fast mode (/fast)
 
@@ -73,7 +74,13 @@ title: "Thinking levels"
 - For `openai/*`, fast mode maps to OpenAI priority processing by sending `service_tier=priority` on supported Responses requests.
 - For Codex-backed `openai/*` / `openai-codex/*` models, fast mode sends the same `service_tier=priority` flag on Codex Responses. Native Codex app-server turns receive the tier only on `turn/start` or thread start/resume, so `auto` cannot retier one already-running app-server turn; it applies to the next model turn OpenClaw starts.
 - For direct public `anthropic/*` requests, including OAuth-authenticated traffic sent to `api.anthropic.com`, fast mode maps to Anthropic service tiers: `/fast on` sets `service_tier=auto`, `/fast off` sets `service_tier=standard_only`.
-- For `claude-cli/*`, OpenClaw resolves the effective boolean for each CLI invocation and writes it to Claude Code's isolated `--settings` overlay as `fastMode`. `auto` uses the same elapsed cutoff described above. Because the final settings argv is part of the live-session fingerprint, changing the effective value restarts a process that would otherwise retain stale fast-mode policy.
+- For models routed through `agentRuntime.id: "claude-cli"` (and legacy
+  `claude-cli/*` refs), OpenClaw resolves the effective boolean for each CLI
+  invocation and writes it to Claude Code's isolated `--settings` overlay as
+  `fastMode`. `auto` uses the same elapsed cutoff described above. Because the
+  final settings argv is part of the live-session fingerprint, changing the
+  effective value restarts a process that would otherwise retain stale
+  fast-mode policy.
 - For `minimax/*` on the Anthropic-compatible path, `/fast on` (or `params.fastMode: true`) rewrites `MiniMax-M2.7` to `MiniMax-M2.7-highspeed`.
 - Explicit Anthropic `serviceTier` / `service_tier` model params override the fast-mode default when both are set. OpenClaw still skips Anthropic service-tier injection for non-Anthropic proxy base URLs.
 - `/status` shows `Fast` when fast mode is enabled and `Fast:auto` when the configured mode is auto.

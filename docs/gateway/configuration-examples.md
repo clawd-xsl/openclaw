@@ -29,7 +29,7 @@ Save to `~/.openclaw/openclaw.json` and you can DM the bot from that number.
   agents: {
     defaults: {
       workspace: "~/.openclaw/workspace",
-      model: { primary: "anthropic/claude-sonnet-4-6" },
+      model: { primary: "anthropic/claude-sonnet-5" },
     },
     list: [
       {
@@ -238,7 +238,7 @@ Save to `~/.openclaw/openclaw.json` and you can DM the bot from that number.
       workspace: "~/.openclaw/workspace",
       userTimezone: "America/Chicago",
       model: {
-        primary: "anthropic/claude-sonnet-4-6",
+        primary: "anthropic/claude-sonnet-5",
         fallbacks: ["anthropic/claude-opus-4-6", "openai/gpt-5.4"],
       },
       imageModel: {
@@ -246,7 +246,7 @@ Save to `~/.openclaw/openclaw.json` and you can DM the bot from that number.
       },
       models: {
         "anthropic/claude-opus-4-6": { alias: "opus" },
-        "anthropic/claude-sonnet-4-6": { alias: "sonnet" },
+        "anthropic/claude-sonnet-5": { alias: "sonnet" },
         "openai/gpt-5.4": { alias: "gpt" },
       },
       skills: ["github", "weather"], // inherited by agents that omit list[].skills
@@ -274,7 +274,7 @@ Save to `~/.openclaw/openclaw.json` and you can DM the bot from that number.
       maxConcurrent: 3,
       heartbeat: {
         every: "30m",
-        model: "anthropic/claude-sonnet-4-6",
+        model: "anthropic/claude-sonnet-5",
         target: "last",
         directPolicy: "allow", // allow (default) | block
         to: "+15555550123",

@@ -1,23 +1,32 @@
 ---
-summary: "Signal support via signal-cli (native daemon or bbernhard container), setup paths, and number model"
+summary: "Signal support through signal-cli or an optional direct signal-ts transport"
 read_when:
   - Setting up Signal support
   - Debugging Signal send/receive
 title: "Signal"
 ---
 
-Status: external CLI integration. Gateway talks to `signal-cli` over HTTP — either native daemon (JSON-RPC + SSE) or bbernhard/signal-cli-rest-api container (REST + WebSocket).
+Status: the recommended setup uses `signal-cli` over HTTP, either as a native
+daemon (JSON-RPC + SSE) or through the bbernhard/signal-cli-rest-api container
+(REST + WebSocket). Advanced deployments can instead use the direct
+`@openclaw/signal-ts` transport when the host environment provides that
+package and durable linked-device state.
 
 ## Prerequisites
 
 - OpenClaw installed on your server (Linux flow below tested on Ubuntu 24).
 - One of:
   - `signal-cli` available on the host (native mode), **or**
-  - `bbernhard/signal-cli-rest-api` Docker container (container mode).
+  - `bbernhard/signal-cli-rest-api` Docker container (container mode), **or**
+  - a host-resolvable `@openclaw/signal-ts` package plus pre-provisioned
+    linked-device state (direct mode).
 - A phone number that can receive one verification SMS (for SMS registration path).
 - Browser access for Signal captcha (`signalcaptchas.org`) during registration.
 
 ## Quick setup (beginner)
+
+This recommended path uses `signal-cli`. Direct `signal-ts` deployments start
+from [Direct signal-ts backend](/channels/signal#direct-signal-ts-backend-advanced).
 
 1. Use a **separate Signal number** for the bot (recommended).
 2. Install the OpenClaw plugin:
@@ -51,18 +60,21 @@ Minimal config:
 
 Field reference:
 
-| Field         | Description                                                                                           |
-| ------------- | ----------------------------------------------------------------------------------------------------- |
-| `account`     | Bot phone number in E.164 format (`+15551234567`)                                                     |
-| `cliPath`     | Path to `signal-cli` (`signal-cli` if on `PATH`)                                                      |
-| `configPath`  | signal-cli config dir passed as `--config`                                                            |
-| `dmPolicy`    | DM access policy (`pairing` recommended)                                                              |
-| `allowFrom`   | Phone numbers or `uuid:<id>` values allowed to DM                                                     |
-| `replyToMode` | Native quoted replies: `off` (default), `first`, `all`, or `batched`; account overrides are supported |
+| Field               | Description                                                                                           |
+| ------------------- | ----------------------------------------------------------------------------------------------------- |
+| `account`           | Bot phone number in E.164 format (`+15551234567`)                                                     |
+| `backend`           | Transport: `signal-cli` (default) or `signal-ts`                                                      |
+| `signalTsStatePath` | Durable linked-device state for the direct `signal-ts` transport                                      |
+| `cliPath`           | Path to `signal-cli` (`signal-cli` if on `PATH`)                                                      |
+| `configPath`        | signal-cli config dir passed as `--config`                                                            |
+| `dmPolicy`          | DM access policy (`pairing` recommended)                                                              |
+| `allowFrom`         | Phone numbers or `uuid:<id>` values allowed to DM                                                     |
+| `replyToMode`       | Native quoted replies: `off` (default), `first`, `all`, or `batched`; account overrides are supported |
 
 ## What it is
 
-- Signal channel via `signal-cli` (not embedded libsignal).
+- Signal channel through either the external `signal-cli` service or the
+  optional direct `@openclaw/signal-ts` transport.
 - Deterministic routing: replies always go back to Signal.
 - DMs share the agent's main session; groups are isolated (`agent:<agentId>:signal:group:<groupId>`).
 
@@ -94,15 +106,16 @@ the quote, so chunked delivery does not repeat it.
 Inbound sticker messages are exposed to the agent as bounded text in the form
 `[Signal sticker <packId>:<stickerId>]`; the sticker attachment is not surfaced
 as ordinary inbound image media. The `message` tool can send a sticker already
-installed in signal-cli with
+available in the selected transport's linked-device state with
 `action=sticker channel=signal target=<target> stickerId=<hex-pack-id>:<nonnegative-id>`.
-Native and container transports both support that action. OpenClaw validates
+Native, container, and direct transports support that action. OpenClaw validates
 and bounds the identifier before dispatch; it does not install or upload
 sticker packs.
 
 ## The number model (important)
 
-- The gateway connects to a **Signal device** (the `signal-cli` account).
+- The gateway connects to a **Signal linked device**, represented by either the
+  `signal-cli` account state or the configured `signal-ts` state.
 - If you run the bot on **your personal Signal account**, it will ignore your own messages (loop protection).
 - For "I text the bot and it replies," use a **separate bot number**.
 
@@ -211,6 +224,39 @@ If you want to manage `signal-cli` yourself (slow JVM cold starts, container ini
 
 This skips auto-spawn and the startup wait inside OpenClaw. For slow starts when auto-spawning, set `channels.signal.startupTimeoutMs`.
 
+## Direct signal-ts backend (advanced)
+
+The direct backend talks to Signal without a `signal-cli` daemon or HTTP
+bridge. It is intentionally deployment-owned: the host runtime must be able to
+import `@openclaw/signal-ts`, and OpenClaw does not pin a package source,
+filesystem location, or revision for it.
+
+The backend also requires an existing durable linked-device state file. Account
+registration or linking must provision that state before OpenClaw starts. Then
+select the backend explicitly:
+
+```json5
+{
+  channels: {
+    signal: {
+      enabled: true,
+      account: "+15551234567",
+      backend: "signal-ts",
+      signalTsStatePath: "<SIGNAL_TS_STATE_FILE>",
+      dmPolicy: "pairing",
+    },
+  },
+}
+```
+
+Setting `signalTsStatePath` also selects `signal-ts` when `backend` is omitted.
+Set `backend` explicitly when a deployment includes both transports and you
+want the choice to remain obvious. `apiMode`, `cliPath`, `httpUrl`, and
+`autoStart` apply to the `signal-cli` transport and are not needed here.
+
+Treat the state file as a credential: restrict filesystem access, back it up
+securely, and keep one writer per linked-device state.
+
 ## Container mode (bbernhard/signal-cli-rest-api)
 
 Instead of running `signal-cli` natively, you can use the [bbernhard/signal-cli-rest-api](https://github.com/bbernhard/signal-cli-rest-api) Docker container. This wraps `signal-cli` behind a REST API and WebSocket interface.
@@ -293,6 +339,9 @@ Groups:
 
 - Native mode: `signal-cli` runs as a daemon; the gateway reads events via SSE.
 - Container mode: the gateway sends via REST API and receives via WebSocket.
+- Direct mode: OpenClaw loads host-provided `@openclaw/signal-ts`, opens the
+  configured linked-device state, and sends and receives through its encrypted
+  Signal transport without an HTTP daemon.
 - Inbound messages are normalized into the shared channel envelope.
 - Replies always route back to the same number or group.
 
@@ -300,7 +349,9 @@ Groups:
 
 - Outbound text is chunked to `channels.signal.textChunkLimit` (default 4000).
 - Optional newline chunking: set `channels.signal.chunkMode="newline"` to split on blank lines (paragraph boundaries) before length chunking.
-- Attachments supported (base64 fetched from `signal-cli`).
+- Attachments are supported. The `signal-cli` transport fetches base64 payloads;
+  the direct transport retrieves and decrypts attachments through
+  `@openclaw/signal-ts`.
 - Voice-note attachments use the `signal-cli` filename as a MIME fallback when `contentType` is missing, so audio transcription can still classify AAC voice memos.
 - Default media cap: `channels.signal.mediaMaxMb` (default 8).
 - Use `channels.signal.ignoreAttachments` to skip downloading media.
@@ -308,7 +359,8 @@ Groups:
 
 ## Typing + read receipts
 
-- **Typing indicators**: OpenClaw sends typing signals via `signal-cli sendTyping` and refreshes them while a reply is running.
+- **Typing indicators**: OpenClaw sends typing signals through the selected
+  transport and refreshes them while a reply is running.
 - **Read receipts**: when `channels.signal.sendReadReceipts` is true, OpenClaw forwards read receipts for allowed DMs.
 - Signal-cli does not expose read receipts for groups.
 
@@ -448,12 +500,15 @@ openclaw pairing list signal
 Common failures:
 
 - Daemon reachable but no replies: verify account/daemon settings (`httpUrl`, `account`) and receive mode.
+- Direct backend fails to load: verify that the OpenClaw host can import
+  `@openclaw/signal-ts` and that `signalTsStatePath` points to readable,
+  provisioned linked-device state.
 - DMs ignored: sender is pending pairing approval.
 - Group messages ignored: group sender/mention gating blocks delivery.
 - Config validation errors after edits: run `openclaw doctor --fix`.
 - Signal missing from diagnostics: confirm `channels.signal.enabled: true`.
 
-Extra checks:
+Extra checks for the `signal-cli` backend:
 
 ```bash
 openclaw pairing list signal
@@ -466,6 +521,8 @@ For triage flow: [/channels/troubleshooting](/channels/troubleshooting).
 ## Security notes
 
 - `signal-cli` stores account keys locally (typically `~/.local/share/signal-cli/data/`).
+- The direct backend stores linked-device credentials in
+  `signalTsStatePath`; protect and back up that file as secret state.
 - Back up Signal account state before server migration or rebuild.
 - Keep `channels.signal.dmPolicy: "pairing"` unless you explicitly want broader DM access.
 - SMS verification is only needed for registration or recovery flows, but losing control of the number/account can complicate re-registration.
@@ -477,7 +534,12 @@ Full configuration: [Configuration](/gateway/configuration)
 Provider options:
 
 - `channels.signal.enabled`: enable/disable channel startup.
-- `channels.signal.apiMode`: `auto | native | container` (default: auto). See [Container mode](#container-mode-bbernhardsignal-cli-rest-api).
+- `channels.signal.backend`: `signal-cli | signal-ts` (default: `signal-cli`,
+  unless `signalTsStatePath` is configured).
+- `channels.signal.signalTsStatePath`: durable linked-device state file for the
+  direct `signal-ts` backend.
+- `channels.signal.apiMode`: `auto | native | container` (default: auto) for the
+  `signal-cli` backend. See [Container mode](#container-mode-bbernhardsignal-cli-rest-api).
 - `channels.signal.account`: E.164 for the bot account.
 - `channels.signal.cliPath`: path to `signal-cli`.
 - `channels.signal.configPath`: optional `signal-cli --config` directory.

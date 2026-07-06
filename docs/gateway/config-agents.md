@@ -510,7 +510,7 @@ Time format in system prompt. Default: `auto` (OS preference).
 | Alias               | Model                           |
 | ------------------- | ------------------------------- |
 | `opus`              | `anthropic/claude-opus-4-8`     |
-| `sonnet`            | `anthropic/claude-sonnet-4-6`   |
+| `sonnet`            | `anthropic/claude-sonnet-5`     |
 | `gpt`               | `openai/gpt-5.4`                |
 | `gpt-mini`          | `openai/gpt-5.4-mini`           |
 | `gpt-nano`          | `openai/gpt-5.4-nano`           |
@@ -522,7 +522,7 @@ Your configured aliases always win over defaults.
 
 Z.AI GLM-4.x models automatically enable thinking mode unless you set `--thinking off` or define `agents.defaults.models["zai/<model>"].params.thinking` yourself.
 Z.AI models enable `tool_stream` by default for tool call streaming. Set `agents.defaults.models["zai/<model>"].params.tool_stream` to `false` to disable it.
-Anthropic Claude Opus 4.8 keeps thinking off by default in OpenClaw; when adaptive thinking is explicitly enabled, Anthropic's provider-owned effort default is `high`. Claude 4.6 models default to `adaptive` when no explicit thinking level is set.
+Anthropic Claude Opus 4.8 keeps thinking off by default in OpenClaw; when adaptive thinking is explicitly enabled, Anthropic's provider-owned effort default is `high`. Claude Sonnet 5 and Claude 4.6 models default to `adaptive`; Sonnet 5 uses `high` effort unless another level is selected.
 
 ### `agents.defaults.cliBackends`
 
