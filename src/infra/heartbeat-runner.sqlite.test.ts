@@ -69,7 +69,11 @@ describe("heartbeat SQLite session access", () => {
           upsertSessionEntryInSqlite({
             storePath,
             sessionKey,
-            entry: { sessionId: "heartbeat-session", updatedAt: 5 },
+            entry: {
+              sessionId: "heartbeat-session",
+              updatedAt: 5,
+              lastTo: "concurrent-target",
+            },
           });
           return undefined;
         }),
@@ -83,6 +87,9 @@ describe("heartbeat SQLite session access", () => {
       selectByKey: 3,
       upsert: 2,
     });
-    expect(loadSessionEntry({ storePath, sessionKey })?.updatedAt).toBeGreaterThanOrEqual(10);
+    expect(loadSessionEntry({ storePath, sessionKey })).toMatchObject({
+      lastTo: "concurrent-target",
+      updatedAt: 10,
+    });
   });
 });

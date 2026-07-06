@@ -82,8 +82,8 @@ import { resolveStorePath } from "../config/sessions/paths.js";
 import {
   applySessionEntryLifecycleMutation,
   loadSessionEntry,
+  patchSessionEntry,
   type SessionEntryLifecycleRemoval,
-  updateSessionEntry,
 } from "../config/sessions/session-accessor.js";
 import { loadSessionStore } from "../config/sessions/store-load.js";
 import { updateSessionStore } from "../config/sessions/store.js";
@@ -797,13 +797,13 @@ async function restoreHeartbeatUpdatedAt(params: {
   if (typeof updatedAt !== "number") {
     return;
   }
-  await updateSessionEntry(
+  await patchSessionEntry(
     { storePath, sessionKey },
     (entry) => {
       const nextUpdatedAt = Math.max(entry.updatedAt ?? 0, updatedAt);
-      return entry.updatedAt === nextUpdatedAt ? null : { updatedAt: nextUpdatedAt };
+      return entry.updatedAt === nextUpdatedAt ? null : { ...entry, updatedAt: nextUpdatedAt };
     },
-    { skipMaintenance: true },
+    { replaceEntry: true, skipMaintenance: true },
   );
 }
 
