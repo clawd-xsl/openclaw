@@ -7,6 +7,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { readAcpSessionMetaForEntry } from "../acp/runtime/session-meta.js";
 import type { OpenClawConfig } from "../config/config.js";
 import * as sessionStore from "../config/sessions.js";
+import * as sessionStoreSqlite from "../config/sessions/store-sqlite.js";
 import { resolveChannelAllowFromPath } from "../pairing/pairing-store.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import {
@@ -374,6 +375,24 @@ function createEnv(stateDir: string): NodeJS.ProcessEnv {
   };
 }
 
+function resolveSessionStoreFixturePaths(params: {
+  configuredStorePath?: string;
+  agentId: string;
+  env: NodeJS.ProcessEnv;
+}): {
+  legacyJsonSourcePath: string;
+  resolvedBackendPath: string;
+} {
+  const resolvedBackendPath = sessionStore.resolveStorePath(params.configuredStorePath, {
+    agentId: params.agentId,
+    env: params.env,
+  });
+  return {
+    legacyJsonSourcePath: sessionStoreSqlite.resolveSessionStoreJsonImportPath(resolvedBackendPath),
+    resolvedBackendPath,
+  };
+}
+
 async function createLegacyStateFixture(params?: { includePreKey?: boolean }) {
   const root = await createTempDir();
   const stateDir = path.join(root, ".openclaw");
@@ -474,8 +493,19 @@ describe("state migrations", () => {
   it("runs legacy state migrations and canonicalizes the merged session store", async () => {
     const { root, stateDir, env, cfg } = await createLegacyStateFixture({ includePreKey: true });
     cfg.session = { ...cfg.session, mainKey: "Desk" };
-    const targetStorePath = path.join(stateDir, "agents", "worker-1", "sessions", "sessions.json");
-    const targetStore = JSON.parse(await fs.readFile(targetStorePath, "utf8")) as Record<
+    const configuredStorePath = path.join(
+      stateDir,
+      "agents",
+      "worker-1",
+      "sessions",
+      "sessions.json",
+    );
+    const { legacyJsonSourcePath, resolvedBackendPath } = resolveSessionStoreFixturePaths({
+      configuredStorePath,
+      agentId: "worker-1",
+      env,
+    });
+    const targetStore = JSON.parse(await fs.readFile(legacyJsonSourcePath, "utf8")) as Record<
       string,
       unknown
     >;
@@ -504,8 +534,8 @@ describe("state migrations", () => {
         lastActivityAt: 15,
       },
     };
-    await fs.writeFile(targetStorePath, `${JSON.stringify(targetStore, null, 2)}\n`, "utf8");
-    cfg.session = { ...cfg.session, store: targetStorePath };
+    await fs.writeFile(legacyJsonSourcePath, `${JSON.stringify(targetStore, null, 2)}\n`, "utf8");
+    cfg.session = { ...cfg.session, store: configuredStorePath };
     const legacyStorePath = path.join(stateDir, "sessions", "sessions.json");
     const legacyStore = JSON.parse(await fs.readFile(legacyStorePath, "utf8")) as Record<
       string,
@@ -534,11 +564,14 @@ describe("state migrations", () => {
       now: () => 1234,
     });
     expect(result.warnings).toStrictEqual([
-      `Preserved 1 ambiguous session key(s) while importing legacy sessions into ${targetStorePath}`,
+      `Preserved 1 ambiguous session key(s) while importing legacy sessions into ${resolvedBackendPath}`,
     ]);
     expect(result.changes).toEqual([
+      expect.stringContaining(
+        `Archived imported sessions store → ${legacyJsonSourcePath}.migrated-1234-`,
+      ),
       `Migrated latest direct-chat session → agent:worker-1:desk`,
-      `Merged sessions store → ${path.join(stateDir, "agents", "worker-1", "sessions", "sessions.json")}`,
+      `Merged sessions store → ${resolvedBackendPath}`,
       "Canonicalized 3 legacy session key(s)",
       "Moved trace.jsonl → agents/worker-1/sessions",
       "Rewrote migrated session transcript paths",
@@ -549,12 +582,9 @@ describe("state migrations", () => {
       `Copied ChatApp pairing allowFrom → ${resolveChannelAllowFromPath("chatapp", env, "alpha")}`,
     ]);
 
-    const mergedStore = JSON.parse(
-      await fs.readFile(
-        path.join(stateDir, "agents", "worker-1", "sessions", "sessions.json"),
-        "utf8",
-      ),
-    ) as Record<string, { sessionId: string; sessionFile?: string; acp?: unknown }>;
+    const mergedStore = sessionStore.loadSessionStore(resolvedBackendPath, {
+      skipCache: true,
+    }) as Record<string, { sessionId: string; sessionFile?: string; acp?: unknown }>;
     expect(mergedStore["agent:worker-1:desk"]?.sessionId).toBe("legacy-direct");
     expect(mergedStore["group:mobile-room"]).toBeUndefined();
     expect(mergedStore["group:legacy-room"]).toBeUndefined();
@@ -583,6 +613,7 @@ describe("state migrations", () => {
     ).resolves.toBe("{}\n");
     await expectMissingPath(path.join(stateDir, "sessions", "sessions.json"));
     await expectMissingPath(path.join(stateDir, "sessions", "trace.jsonl"));
+    await expectMissingPath(legacyJsonSourcePath);
 
     await expect(
       fs.readFile(path.join(stateDir, "agents", "worker-1", "agent", "settings.json"), "utf8"),
@@ -622,21 +653,24 @@ describe("state migrations", () => {
       }),
       "utf8",
     );
-    const targetStorePath = path.join(stateDir, "agents", "main", "sessions", "sessions.json");
+    const configuredStorePath = path.join(stateDir, "agents", "main", "sessions", "sessions.json");
+    const { legacyJsonSourcePath, resolvedBackendPath } = resolveSessionStoreFixturePaths({
+      configuredStorePath,
+      agentId: "main",
+      env,
+    });
     const cfg = {
-      session: { mainKey: "work", store: targetStorePath },
+      session: { mainKey: "work", store: configuredStorePath },
       agents: { list: [{ id: "main", default: true }] },
     } as OpenClawConfig;
     const detected = await detectLegacyStateMigrations({ cfg, env, homedir: () => root });
 
     await runLegacyStateMigrations({ detected, config: cfg, now: () => 1234 });
 
-    const store = JSON.parse(await fs.readFile(targetStorePath, "utf8")) as Record<
-      string,
-      { sessionId: string }
-    >;
+    const store = sessionStore.loadSessionStore(resolvedBackendPath, { skipCache: true });
     expect(store["agent:archive:work"]?.sessionId).toBe("archive-session");
     expect(store["agent:archive:main"]).toBeUndefined();
+    await expectMissingPath(legacyJsonSourcePath);
     await expectMissingPath(legacyStorePath);
   });
 
@@ -692,11 +726,17 @@ describe("state migrations", () => {
     const root = await createTempDir();
     const stateDir = path.join(root, ".openclaw");
     const env = createEnv(stateDir);
-    const outsideStorePath = path.join(root, "outside-sessions.json");
-    await fs.writeFile(outsideStorePath, "{}\n", "utf8");
-    const targetStorePath = path.join(stateDir, "agents", "main", "sessions", "sessions.json");
-    await fs.mkdir(path.dirname(targetStorePath), { recursive: true });
-    await fs.symlink(outsideStorePath, targetStorePath);
+    const configuredStorePath = path.join(stateDir, "agents", "main", "sessions", "sessions.json");
+    const { legacyJsonSourcePath, resolvedBackendPath } = resolveSessionStoreFixturePaths({
+      configuredStorePath,
+      agentId: "main",
+      env,
+    });
+    const outsideBackendPath = path.join(root, "outside-sessions.sqlite");
+    await sessionStore.saveSessionStore(outsideBackendPath, {}, { requireWriteSuccess: true });
+    sessionStore.clearSessionStoreCacheForTest();
+    await fs.mkdir(path.dirname(resolvedBackendPath), { recursive: true });
+    await fs.symlink(outsideBackendPath, resolvedBackendPath);
     const legacyStorePath = path.join(stateDir, "sessions", "sessions.json");
     await fs.mkdir(path.dirname(legacyStorePath), { recursive: true });
     await fs.writeFile(
@@ -707,18 +747,19 @@ describe("state migrations", () => {
       "utf8",
     );
     const cfg = {
-      session: { store: targetStorePath },
+      session: { store: configuredStorePath },
       agents: { list: [{ id: "main", default: true }] },
     } as OpenClawConfig;
     const detected = await detectLegacyStateMigrations({ cfg, env, homedir: () => root });
 
     const result = await runLegacyStateMigrations({ detected, config: cfg, now: () => 1234 });
 
-    expect((await fs.lstat(targetStorePath)).isSymbolicLink()).toBe(true);
-    await expect(fs.readFile(outsideStorePath, "utf8")).resolves.toBe("{}\n");
+    expect((await fs.lstat(resolvedBackendPath)).isSymbolicLink()).toBe(true);
+    expect(sessionStore.loadSessionStore(outsideBackendPath, { skipCache: true })).toEqual({});
+    await expectMissingPath(legacyJsonSourcePath);
     await expect(fs.readFile(legacyStorePath, "utf8")).resolves.toContain("legacy-task");
     expect(result.warnings).toContain(
-      `Deferred legacy session migration in final-component symlink store ${targetStorePath}; configure one canonical session.store path, then rerun openclaw doctor --fix`,
+      `Deferred legacy session migration in final-component symlink store ${resolvedBackendPath}; configure one canonical session.store path, then rerun openclaw doctor --fix`,
     );
   });
 
@@ -774,9 +815,14 @@ describe("state migrations", () => {
     const root = await createTempDir();
     const stateDir = path.join(root, ".openclaw");
     const env = createEnv(stateDir);
-    const targetStorePath = path.join(stateDir, "agents", "main", "sessions", "sessions.json");
-    await fs.mkdir(path.dirname(targetStorePath), { recursive: true });
-    await fs.writeFile(targetStorePath, "{}\n", "utf8");
+    const configuredStorePath = path.join(stateDir, "agents", "main", "sessions", "sessions.json");
+    const { legacyJsonSourcePath, resolvedBackendPath } = resolveSessionStoreFixturePaths({
+      configuredStorePath,
+      agentId: "main",
+      env,
+    });
+    await fs.mkdir(path.dirname(legacyJsonSourcePath), { recursive: true });
+    await fs.writeFile(legacyJsonSourcePath, "{}\n", "utf8");
     const legacyStorePath = path.join(stateDir, "sessions", "sessions.json");
     await fs.mkdir(path.dirname(legacyStorePath), { recursive: true });
     await fs.writeFile(
@@ -785,33 +831,31 @@ describe("state migrations", () => {
       "utf8",
     );
     const cfg = {
-      session: { store: targetStorePath },
+      session: { store: configuredStorePath },
       agents: { list: [{ id: "main", default: true }] },
     } as OpenClawConfig;
     const detected = await detectLegacyStateMigrations({ cfg, env, homedir: () => root });
-    const realSaveSessionStore = sessionStore.saveSessionStore;
-    let sawRequiredWrite = false;
-    const saveSpy = vi
-      .spyOn(sessionStore, "saveSessionStore")
-      .mockImplementation(async (storePath, store, options) => {
-        sawRequiredWrite ||= options?.requireWriteSuccess === true;
-        if (storePath === targetStorePath) {
-          if (options?.requireWriteSuccess) {
-            throw new Error("simulated alias write failure");
-          }
-          return;
+    const realTransformSessionStore = sessionStoreSqlite.transformSessionStoreInSqliteForMigration;
+    let sawBackendWrite = false;
+    const transformSpy = vi
+      .spyOn(sessionStoreSqlite, "transformSessionStoreInSqliteForMigration")
+      .mockImplementation((params) => {
+        if (params.storePath === resolvedBackendPath) {
+          sawBackendWrite = true;
+          throw new Error("simulated SQLite migration write failure");
         }
-        await realSaveSessionStore(storePath, store, options);
+        return realTransformSessionStore(params);
       });
     try {
       await expect(
         runLegacyStateMigrations({ detected, config: cfg, now: () => 1234 }),
-      ).rejects.toThrow("simulated alias write failure");
+      ).rejects.toThrow("simulated SQLite migration write failure");
     } finally {
-      saveSpy.mockRestore();
+      transformSpy.mockRestore();
     }
 
-    expect(sawRequiredWrite).toBe(true);
+    expect(sawBackendWrite).toBe(true);
+    await expect(fs.readFile(legacyJsonSourcePath, "utf8")).resolves.toBe("{}\n");
     await expect(fs.readFile(legacyStorePath, "utf8")).resolves.toContain("legacy");
   });
 
@@ -824,7 +868,12 @@ describe("state migrations", () => {
     const aliasAgentsDir = path.join(root, "agents-alias");
     await fs.symlink(agentsDir, aliasAgentsDir, "dir");
     const configuredStorePath = path.join(aliasAgentsDir, "ops", "sessions", "sessions.json");
-    const targetStorePath = path.join(agentsDir, "ops", "sessions", "sessions.json");
+    const { legacyJsonSourcePath, resolvedBackendPath } = resolveSessionStoreFixturePaths({
+      configuredStorePath,
+      agentId: "ops",
+      env,
+    });
+    const realBackendPath = path.join(agentsDir, "ops", "sessions", "sessions.sqlite");
     const legacyStorePath = path.join(stateDir, "sessions", "sessions.json");
     await fs.mkdir(path.dirname(legacyStorePath), { recursive: true });
     await fs.writeFile(
@@ -849,15 +898,11 @@ describe("state migrations", () => {
 
     await runLegacyStateMigrations({ detected, config: cfg, now: () => 1234 });
 
-    const store = JSON.parse(await fs.readFile(targetStorePath, "utf8")) as Record<
-      string,
-      { sessionId: string }
-    >;
+    const store = sessionStore.loadSessionStore(realBackendPath, { skipCache: true });
     expect(store["agent:main:work"]?.sessionId).toBe("foreign-main");
     expect(store["agent:ops:work"]).toBeUndefined();
-    await expect(fs.readFile(configuredStorePath, "utf8")).resolves.toBe(
-      await fs.readFile(targetStorePath, "utf8"),
-    );
+    expect(sessionStore.loadSessionStore(resolvedBackendPath, { skipCache: true })).toEqual(store);
+    await expectMissingPath(legacyJsonSourcePath);
   });
 
   it("preserves plugin ownership captured before an aliased store rewrite", async () => {
@@ -921,33 +966,37 @@ describe("state migrations", () => {
     const root = await createTempDir();
     const stateDir = path.join(root, ".openclaw");
     const env = createEnv(stateDir);
-    const outsideStorePath = path.join(root, "outside-sessions.json");
-    await fs.writeFile(
-      outsideStorePath,
-      JSON.stringify({
+    const configuredStorePath = path.join(stateDir, "agents", "main", "sessions", "sessions.json");
+    const { legacyJsonSourcePath, resolvedBackendPath } = resolveSessionStoreFixturePaths({
+      configuredStorePath,
+      agentId: "main",
+      env,
+    });
+    const outsideBackendPath = path.join(root, "outside-sessions.sqlite");
+    await sessionStore.saveSessionStore(
+      outsideBackendPath,
+      {
         "voice:15550001111": { sessionId: "outside-voice", updatedAt: 10 },
-      }),
-      "utf8",
+      },
+      { requireWriteSuccess: true },
     );
-    const storePath = path.join(stateDir, "agents", "main", "sessions", "sessions.json");
-    await fs.mkdir(path.dirname(storePath), { recursive: true });
-    await fs.symlink(outsideStorePath, storePath);
+    sessionStore.clearSessionStoreCacheForTest();
+    await fs.mkdir(path.dirname(resolvedBackendPath), { recursive: true });
+    await fs.symlink(outsideBackendPath, resolvedBackendPath);
     const cfg = {
-      session: { store: storePath },
+      session: { store: configuredStorePath },
       agents: { list: [{ id: "main", default: true }] },
     } as OpenClawConfig;
 
     const result = await autoMigrateLegacyState({ cfg, env, homedir: () => root });
 
-    expect((await fs.lstat(storePath)).isSymbolicLink()).toBe(true);
-    const outsideStore = JSON.parse(await fs.readFile(outsideStorePath, "utf8")) as Record<
-      string,
-      { sessionId: string }
-    >;
+    expect((await fs.lstat(resolvedBackendPath)).isSymbolicLink()).toBe(true);
+    const outsideStore = sessionStore.loadSessionStore(outsideBackendPath, { skipCache: true });
     expect(outsideStore["voice:15550001111"]?.sessionId).toBe("outside-voice");
+    await expectMissingPath(legacyJsonSourcePath);
     expect(result.warnings).toEqual([
-      `Deferred session key migration in final-component symlink store ${storePath}; configure one canonical session.store path, then rerun openclaw doctor --fix`,
-      `Deferred legacy session migration in final-component symlink store ${storePath}; configure one canonical session.store path, then rerun openclaw doctor --fix`,
+      `Deferred session key migration in final-component symlink store ${resolvedBackendPath}; configure one canonical session.store path, then rerun openclaw doctor --fix`,
+      `Deferred legacy session migration in final-component symlink store ${resolvedBackendPath}; configure one canonical session.store path, then rerun openclaw doctor --fix`,
     ]);
   });
 
@@ -955,10 +1004,16 @@ describe("state migrations", () => {
     const root = await createTempDir();
     const stateDir = path.join(root, ".openclaw");
     const env = createEnv(stateDir);
-    const outsideStorePath = path.join(root, "outside-sessions.json");
-    await fs.writeFile(
-      outsideStorePath,
-      JSON.stringify({
+    const configuredStorePath = path.join(root, "configured-sessions.json");
+    const { legacyJsonSourcePath, resolvedBackendPath } = resolveSessionStoreFixturePaths({
+      configuredStorePath,
+      agentId: "main",
+      env,
+    });
+    const outsideBackendPath = path.join(root, "outside-sessions.sqlite");
+    await sessionStore.saveSessionStore(
+      outsideBackendPath,
+      {
         "agent:main:task": {
           sessionId: "canonical-acp",
           updatedAt: 10,
@@ -971,11 +1026,11 @@ describe("state migrations", () => {
             lastActivityAt: 10,
           },
         },
-      }),
-      "utf8",
+      },
+      { requireWriteSuccess: true },
     );
-    const configuredStorePath = path.join(root, "configured-sessions.json");
-    await fs.symlink(outsideStorePath, configuredStorePath);
+    sessionStore.clearSessionStoreCacheForTest();
+    await fs.symlink(outsideBackendPath, resolvedBackendPath);
     const cfg = {
       session: { store: configuredStorePath },
       agents: { list: [{ id: "main", default: true }] },
@@ -983,14 +1038,12 @@ describe("state migrations", () => {
 
     const result = await autoMigrateLegacyState({ cfg, env, homedir: () => root });
 
-    expect((await fs.lstat(configuredStorePath)).isSymbolicLink()).toBe(true);
-    const outsideStore = JSON.parse(await fs.readFile(outsideStorePath, "utf8")) as Record<
-      string,
-      { sessionId: string; acp?: unknown }
-    >;
+    expect((await fs.lstat(resolvedBackendPath)).isSymbolicLink()).toBe(true);
+    const outsideStore = sessionStore.loadSessionStore(outsideBackendPath, { skipCache: true });
     expect(outsideStore["agent:main:task"]?.acp).toBeDefined();
+    await expectMissingPath(legacyJsonSourcePath);
     expect(result.warnings).toContain(
-      `Deferred ACP metadata migration in final-component symlink store ${configuredStorePath}; configure one canonical session.store path, then rerun openclaw doctor --fix`,
+      `Deferred ACP metadata migration in final-component symlink store ${resolvedBackendPath}; configure one canonical session.store path, then rerun openclaw doctor --fix`,
     );
     expect(result.changes).not.toContain(
       "Migrated 1 ACP session metadata row → shared SQLite state",
@@ -1103,12 +1156,15 @@ describe("state migrations", () => {
     const stateDir = path.join(root, ".openclaw");
     const env = createEnv(stateDir);
     const storeTemplate = path.join(root, "stores", "{agentId}", "sessions.json");
-    const storePath = templated
-      ? path.join(root, "stores", "voice", "sessions.json")
-      : path.join(stateDir, "agents", "voice", "sessions", "sessions.json");
-    await fs.mkdir(path.dirname(storePath), { recursive: true });
+    const configuredStorePath = templated ? storeTemplate : undefined;
+    const { legacyJsonSourcePath, resolvedBackendPath } = resolveSessionStoreFixturePaths({
+      configuredStorePath,
+      agentId: "voice",
+      env,
+    });
+    await fs.mkdir(path.dirname(legacyJsonSourcePath), { recursive: true });
     await fs.writeFile(
-      storePath,
+      legacyJsonSourcePath,
       JSON.stringify({
         "agent:main:main": {
           sessionId: "foreign-main",
@@ -1126,7 +1182,7 @@ describe("state migrations", () => {
       "utf8",
     );
     const cfg = {
-      session: { scope: "global", ...(templated ? { store: storeTemplate } : {}) },
+      session: { scope: "global", ...(configuredStorePath ? { store: configuredStorePath } : {}) },
       agents: { list: [{ id: templated ? "main" : "voice", default: true }] },
       plugins: {
         entries: {
@@ -1137,13 +1193,11 @@ describe("state migrations", () => {
 
     const result = await autoMigrateLegacyState({ cfg, env, homedir: () => root });
 
-    const migratedStorePath = templated
-      ? storePath
-      : path.join(stateDir, "agents", "voice", "sessions", "sessions.sqlite");
-    const store = sessionStore.loadSessionStore(migratedStorePath, { skipCache: true });
+    const store = sessionStore.loadSessionStore(resolvedBackendPath, { skipCache: true });
     expect(store["agent:main:main"]?.sessionId).toBe("foreign-main");
     expect(store["agent:main:main"]?.acp).toBeDefined();
     expect(store.global).toBeUndefined();
+    await expectMissingPath(legacyJsonSourcePath);
     expect(result.changes).not.toContain(
       "Migrated 1 ACP session metadata row → shared SQLite state",
     );
@@ -1159,7 +1213,11 @@ describe("state migrations", () => {
     const stateDir = path.join(root, ".openclaw");
     const env = createEnv(stateDir);
     const storeTemplate = path.join(root, "stores", "{agentId}", "sessions.json");
-    const storePath = path.join(root, "stores", "voice", "sessions.json");
+    const { legacyJsonSourcePath, resolvedBackendPath } = resolveSessionStoreFixturePaths({
+      configuredStorePath: storeTemplate,
+      agentId: "voice",
+      env,
+    });
     const cases = [
       {
         legacyKey: "agent::matrix:channel:!RoomAbC:example.org",
@@ -1174,9 +1232,9 @@ describe("state migrations", () => {
         runtimeSessionName: "invalid-runtime",
       },
     ];
-    await fs.mkdir(path.dirname(storePath), { recursive: true });
+    await fs.mkdir(path.dirname(legacyJsonSourcePath), { recursive: true });
     await fs.writeFile(
-      storePath,
+      legacyJsonSourcePath,
       JSON.stringify(
         Object.fromEntries(
           cases.map(({ legacyKey, sessionId, runtimeSessionName }) => [
@@ -1210,10 +1268,7 @@ describe("state migrations", () => {
 
     const result = await autoMigrateLegacyState({ cfg, env, homedir: () => root });
 
-    const store = JSON.parse(await fs.readFile(storePath, "utf8")) as Record<
-      string,
-      { sessionId: string; acp?: unknown }
-    >;
+    const store = sessionStore.loadSessionStore(resolvedBackendPath, { skipCache: true });
     for (const { legacyKey, canonicalKey, sessionId, runtimeSessionName } of cases) {
       expect(store[legacyKey]).toBeUndefined();
       expect(store[canonicalKey]).toEqual({ sessionId, updatedAt: 10 });
@@ -1232,6 +1287,7 @@ describe("state migrations", () => {
         }),
       ).toBeUndefined();
     }
+    await expectMissingPath(legacyJsonSourcePath);
     expect(result.changes).toContain("Migrated 2 ACP session metadata rows → shared SQLite state");
     expect(result.warnings).toHaveLength(0);
   });
@@ -1249,10 +1305,14 @@ describe("state migrations", () => {
       "sessions",
       "sessions.json",
     );
-    const storePath = path.join(stateDir, "agents", "main", "sessions", "sessions.json");
-    await fs.mkdir(path.dirname(storePath), { recursive: true });
+    const { legacyJsonSourcePath, resolvedBackendPath } = resolveSessionStoreFixturePaths({
+      configuredStorePath: storeTemplate,
+      agentId: "main",
+      env,
+    });
+    await fs.mkdir(path.dirname(legacyJsonSourcePath), { recursive: true });
     await fs.writeFile(
-      storePath,
+      legacyJsonSourcePath,
       JSON.stringify({
         "voice:15550001111": {
           sessionId: "shared-voice",
@@ -1304,10 +1364,7 @@ describe("state migrations", () => {
 
     const result = await autoMigrateLegacyState({ cfg, env, homedir: () => root });
 
-    const store = JSON.parse(await fs.readFile(storePath, "utf8")) as Record<
-      string,
-      { sessionId: string; acp?: unknown }
-    >;
+    const store = sessionStore.loadSessionStore(resolvedBackendPath, { skipCache: true });
     expect(store["voice:15550001111"]?.sessionId).toBe("shared-voice");
     expect(store["voice:15550001111"]?.acp).toBeDefined();
     expect(store["agent:voice::matrix:channel:!room:example.org"]?.sessionId).toBe(
@@ -1319,6 +1376,7 @@ describe("state migrations", () => {
     expect(store["agent:main:voice:15550001111"]).toBeUndefined();
     expect(store["agent:voice:voice:15550001111"]).toBeUndefined();
     expect(store["agent:main:agent:voice::matrix:channel:!room:example.org"]).toBeUndefined();
+    await expectMissingPath(legacyJsonSourcePath);
     expect(result.changes).not.toContain(
       "Migrated 1 ACP session metadata row → shared SQLite state",
     );
@@ -2541,13 +2599,17 @@ describe("state migrations", () => {
   it("preserves a corrupt target session store instead of overwriting it with legacy-only data", async () => {
     const { root, stateDir, env, cfg } = await createLegacyStateFixture();
 
-    const targetStorePath = path.join(stateDir, "agents", "worker-1", "sessions", "sessions.json");
-    // target sessions.json is corrupt (trailing garbage → JSON5.parse fails) and
-    // holds a target-only key that has no legacy counterpart.
+    const { legacyJsonSourcePath, resolvedBackendPath } = resolveSessionStoreFixturePaths({
+      configuredStorePath: cfg.session?.store,
+      agentId: "worker-1",
+      env,
+    });
+    // The JSON source awaiting import is corrupt (trailing garbage → JSON5.parse fails) and holds
+    // a target-only key that has no legacy counterpart in the resolved SQLite backend.
     const corruptBytes = `${JSON.stringify({
       "agent:worker-1:desk:target-only": { sessionId: "target-only-session", updatedAt: 99 },
     })}\n<<<corrupt trailing garbage>>>`;
-    await fs.writeFile(targetStorePath, corruptBytes, "utf8");
+    await fs.writeFile(legacyJsonSourcePath, corruptBytes, "utf8");
 
     const detected = await detectLegacyStateMigrations({
       cfg,
@@ -2561,7 +2623,7 @@ describe("state migrations", () => {
     });
 
     // The corrupt bytes must survive on disk (parse still fails after migration).
-    const afterRaw = await fs.readFile(targetStorePath, "utf8");
+    const afterRaw = await fs.readFile(legacyJsonSourcePath, "utf8");
     expect(afterRaw).toContain("corrupt trailing garbage");
     expect(afterRaw).toBe(corruptBytes);
 
@@ -2577,6 +2639,7 @@ describe("state migrations", () => {
 
     // The user is warned that the target store was left untouched because it is unreadable.
     expect(result.warnings.some((w) => /unreadable|corrupt/i.test(w))).toBe(true);
+    expect(result.warnings).toContainEqual(expect.stringContaining(resolvedBackendPath));
 
     // Legacy store is NOT deleted or renamed, so a later explicit doctor --fix
     // can retry the migration from the detector's normal legacy path.
@@ -2591,12 +2654,23 @@ describe("state migrations", () => {
   it("archives a corrupt target session store before explicit recovery", async () => {
     const { root, stateDir, env, cfg } = await createLegacyStateFixture();
 
-    const targetStorePath = path.join(stateDir, "agents", "worker-1", "sessions", "sessions.json");
-    cfg.session = { ...cfg.session, store: targetStorePath };
+    const configuredStorePath = path.join(
+      stateDir,
+      "agents",
+      "worker-1",
+      "sessions",
+      "sessions.json",
+    );
+    const { legacyJsonSourcePath, resolvedBackendPath } = resolveSessionStoreFixturePaths({
+      configuredStorePath,
+      agentId: "worker-1",
+      env,
+    });
+    cfg.session = { ...cfg.session, store: configuredStorePath };
     const corruptBytes = `${JSON.stringify({
       "agent:worker-1:desk:target-only": { sessionId: "target-only-session", updatedAt: 99 },
     })}\n<<<corrupt trailing garbage>>>`;
-    await fs.writeFile(targetStorePath, corruptBytes, "utf8");
+    await fs.writeFile(legacyJsonSourcePath, corruptBytes, "utf8");
 
     const detected = await detectLegacyStateMigrations({
       cfg,
@@ -2610,18 +2684,16 @@ describe("state migrations", () => {
       recoverCorruptTargetStore: true,
     });
 
-    const archivedPath = `${targetStorePath}.corrupt-1234`;
+    const archivedPath = `${legacyJsonSourcePath}.corrupt-1234`;
     await expect(fs.readFile(archivedPath, "utf8")).resolves.toBe(corruptBytes);
 
-    const recoveredStore = JSON.parse(await fs.readFile(targetStorePath, "utf8")) as Record<
-      string,
-      { sessionId?: string }
-    >;
+    const recoveredStore = sessionStore.loadSessionStore(resolvedBackendPath, { skipCache: true });
     expect(recoveredStore["agent:worker-1:desk"]?.sessionId).toBe("legacy-direct");
     expect(recoveredStore["agent:worker-1:desk:target-only"]).toBeUndefined();
     expect(result.changes).toContain(`Archived corrupt target sessions store → ${archivedPath}`);
-    expect(result.changes).toContain(`Merged sessions store → ${targetStorePath}`);
+    expect(result.changes).toContain(`Merged sessions store → ${resolvedBackendPath}`);
     expect(result.warnings).toStrictEqual([]);
+    await expectMissingPath(legacyJsonSourcePath);
     await expectMissingPath(path.join(stateDir, "sessions", "sessions.json"));
   });
 });
