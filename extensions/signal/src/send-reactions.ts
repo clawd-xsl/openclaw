@@ -9,6 +9,7 @@ import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coer
 import { resolveSignalAccount, resolveSignalBackend } from "./accounts.js";
 import { signalRpcRequest } from "./client-adapter.js";
 import { resolveSignalRpcContext } from "./rpc-context.js";
+import { loadSignalTsRuntime } from "./signal-ts-runtime-loader.js";
 
 export type SignalReactionOpts = {
   cfg: OpenClawConfig;
@@ -34,13 +35,6 @@ type SignalReactionErrorMessages = {
   missingEmoji: string;
   missingTargetAuthor: string;
 };
-
-let signalTsRuntimePromise: Promise<typeof import("./signal-ts-runtime.js")> | undefined;
-
-async function loadSignalTsRuntime() {
-  signalTsRuntimePromise ??= import("./signal-ts-runtime.js");
-  return await signalTsRuntimePromise;
-}
 
 function normalizeSignalId(raw: string): string {
   const trimmed = raw.trim();

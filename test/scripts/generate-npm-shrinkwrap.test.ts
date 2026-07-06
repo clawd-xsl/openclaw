@@ -32,26 +32,28 @@ describe("generate-npm-shrinkwrap", () => {
   it("keeps direct relative file dependency overrides on the declared selector", () => {
     const packageJson = packageJsonForShrinkwrap(
       {
-        name: "@openclaw/signal",
-        dependencies: { "@openclaw/signal-ts": "file:../../../signal-ts" },
+        name: "@example/plugin",
+        dependencies: { "@example/local-runtime": "file:../../../local-runtime" },
       },
       {
-        "@openclaw/signal-ts@file:../signal-ts": { undici: "8.0.2" },
+        "@example/local-runtime@file:../local-runtime": { undici: "8.0.2" },
       },
     );
 
-    expect(packageJson.overrides).not.toHaveProperty("@openclaw/signal-ts@file:../signal-ts");
+    expect(packageJson.overrides).not.toHaveProperty(
+      "@example/local-runtime@file:../local-runtime",
+    );
     expect(packageJson.overrides).toHaveProperty(
-      ["@openclaw/signal-ts@file:../../../signal-ts", "undici"],
+      ["@example/local-runtime@file:../../../local-runtime", "undici"],
       "8.0.2",
     );
   });
 
   it("creates relative file dependency workspaces beside the package directory", () => {
-    const packageDir = path.join(process.cwd(), "extensions", "signal");
+    const packageDir = path.join(process.cwd(), "extensions", "example-plugin");
     expect(
       resolveShrinkwrapTempParent(packageDir, {
-        dependencies: { "@openclaw/signal-ts": "file:../../../signal-ts" },
+        dependencies: { "@example/local-runtime": "file:../../../local-runtime" },
       }),
     ).toBe(path.dirname(packageDir));
     expect(resolveShrinkwrapTempParent(packageDir, { dependencies: { ws: "8.21.0" } })).not.toBe(

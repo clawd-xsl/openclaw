@@ -1469,9 +1469,6 @@ importers:
 
   extensions/signal:
     dependencies:
-      '@openclaw/signal-ts':
-        specifier: file:../../../signal-ts
-        version: file:../signal-ts
       ws:
         specifier: 8.21.0
         version: 8.21.0
@@ -3189,10 +3186,6 @@ packages:
     peerDependencies:
       undici: '>=8.3.0 <9'
 
-  '@openclaw/signal-ts@file:../signal-ts':
-    resolution: {directory: ../signal-ts, type: directory}
-    engines: {node: '>=22'}
-
   '@opentelemetry/api-logs@0.219.0':
     resolution: {integrity: sha512-FFx7YnaYJlIjqWW/AG/yAZ0L/NEY724PipXXXQLdtZPbLwBGbUMTGL1i/esI56TWfTUXxhLfpgrnWJCG8aUJyg==}
     engines: {node: '>=8.0.0'}
@@ -4002,9 +3995,6 @@ packages:
 
   '@shikijs/vscode-textmate@10.0.2':
     resolution: {integrity: sha512-83yeghZ2xxin3Nj8z1NMd/NCuca+gsYXswywDy5bHvwlWL8tpTQmzGeUuHd9FC3E/SBEMvzJRwWEOz5gGes9Qg==}
-
-  '@signalapp/libsignal-client@0.94.4':
-    resolution: {integrity: sha512-ZkZN3Vy+yK4X+qx13nrW+Ve4ofIvxW9QQ22YS7uL76Cls5y2tcrXWQJc5l8lFVOZ7zctsGHp38ikbcJOMeHwxg==}
 
   '@sigstore/bundle@4.0.0':
     resolution: {integrity: sha512-NwCl5Y0V6Di0NexvkTqdoVfmjTaQwoLM236r89KEojGmq/jMls8S+zb7yOwAPdXvbwfKDlP+lmXgAL4vKSQT+A==}
@@ -7459,10 +7449,6 @@ packages:
     resolution: {integrity: sha512-50QV99kCKH5P/Vs4E2Gzp7BopNV+KzTXqWeaxrfu5IQJBOULRsTIS9seSsOVT8ZnGXzCyx55nYWAi4qJzpZKEQ==}
     engines: {node: ^20.17.0 || >=22.9.0}
 
-  type-fest@4.41.0:
-    resolution: {integrity: sha512-TeTSQ6H5YHvpqVwBRcnLDCBnDOHWYu7IvGbHT6N8AOymcr9PJGjc1GTtiWZTYg0NCgYwvnYWEkVChQAr9bjfwA==}
-    engines: {node: '>=16'}
-
   type-is@2.1.0:
     resolution: {integrity: sha512-faYHw0anBbc/kWF3zFTEnxSFOAGUX9GFbOBthvDdLsIlEoWOFOtS0zgCiQYwIskL9iGXZL3kAXD8OoZ4GmMATA==}
     engines: {node: '>= 18'}
@@ -7508,10 +7494,6 @@ packages:
   undici@7.28.0:
     resolution: {integrity: sha512-cRZYrTDwWznlnRiPjggAGxZXanty6M8RV1ff8Wm4LWXBp7/IG8v5DnOm74DtUBp9OONpK75YlPnIjQqX0dBDtA==}
     engines: {node: '>=20.18.1'}
-
-  undici@8.0.2:
-    resolution: {integrity: sha512-B9MeU5wuFhkFAuNeA19K2GDFcQXZxq33fL0nRy2Aq30wdufZbyyvxW3/ChaeipXVfy/wUweZyzovQGk39+9k2w==}
-    engines: {node: '>=22.19.0'}
 
   undici@8.5.0:
     resolution: {integrity: sha512-xamtWoB1EshgjpmlXd7GGm2VfdDtw1+rD8uhry8pSNW3If6S8E0m2T2+orSKeZXEn/aPJMviCpDBA65WJt8zhg==}
@@ -9243,12 +9225,6 @@ snapshots:
     dependencies:
       undici: 8.5.0
 
-  '@openclaw/signal-ts@file:../signal-ts':
-    dependencies:
-      '@signalapp/libsignal-client': 0.94.4
-      protobufjs: 7.6.3
-      undici: 8.0.2
-
   '@opentelemetry/api-logs@0.219.0':
     dependencies:
       '@opentelemetry/api': 1.9.1
@@ -9892,11 +9868,6 @@ snapshots:
       '@types/hast': 3.0.4
 
   '@shikijs/vscode-textmate@10.0.2': {}
-
-  '@signalapp/libsignal-client@0.94.4':
-    dependencies:
-      node-gyp-build: 4.8.4
-      type-fest: 4.41.0
 
   '@sigstore/bundle@4.0.0':
     dependencies:
@@ -13991,8 +13962,6 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  type-fest@4.41.0: {}
-
   type-is@2.1.0:
     dependencies:
       content-type: 2.0.0
@@ -14025,8 +13994,6 @@ snapshots:
   undici-types@7.24.6: {}
 
   undici@7.28.0: {}
-
-  undici@8.0.2: {}
 
   undici@8.5.0: {}
 

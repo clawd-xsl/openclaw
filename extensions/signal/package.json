@@ -4,13 +4,15 @@
   "description": "OpenClaw Signal channel plugin",
   "type": "module",
   "dependencies": {
-    "@openclaw/signal-ts": "file:../../../signal-ts",
     "ws": "8.21.0"
   },
   "devDependencies": {
     "@openclaw/plugin-sdk": "workspace:*"
   },
   "openclaw": {
+    "hostDependencies": [
+      "@openclaw/signal-ts"
+    ],
     "extensions": [
       "./index.ts"
     ],

@@ -20,11 +20,11 @@ export const signalChannelConfigUiHints = {
   },
   backend: {
     label: "Signal Transport",
-    help: "Use the embedded signal-ts client or the legacy signal-cli daemon. signal-ts is selected automatically when a state path is configured.",
+    help: "Use the host-provided direct signal-ts client or the legacy signal-cli daemon. signal-ts is selected automatically when a state path is configured.",
   },
   signalTsStatePath: {
     label: "Signal State Path",
-    help: "Path to durable linked-device state for the embedded signal-ts client.",
+    help: "Path to durable linked-device state for the host-provided direct signal-ts client.",
   },
   configPath: {
     label: "Signal CLI Config Path",

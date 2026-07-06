@@ -46,6 +46,7 @@ import {
   signalSecurityAdapter,
   signalSetupWizard,
 } from "./shared.js";
+import { loadSignalTsRuntime } from "./signal-ts-runtime-loader.js";
 
 type SignalSendFn = typeof import("./send.runtime.js").sendMessageSignal;
 type SignalProbe = import("./probe.js").SignalProbe;
@@ -55,8 +56,6 @@ const loadSignalMonitorModule = createLazyRuntimeModule(() => import("./monitor.
 const loadSignalProbeModule = createLazyRuntimeModule(() => import("./probe.js"));
 
 const loadSignalSendRuntime = createLazyRuntimeModule(() => import("./send.runtime.js"));
-
-const loadSignalTsRuntime = createLazyRuntimeModule(() => import("./signal-ts-runtime.js"));
 
 const loadSignalApprovalReactionsModule = createLazyRuntimeModule(
   () => import("./approval-reactions.js"),

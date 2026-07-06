@@ -53,14 +53,8 @@ import type {
   SignalReactionTarget,
 } from "./monitor/event-handler.types.js";
 import { sendMessageSignal } from "./send.js";
+import { loadSignalTsRuntime } from "./signal-ts-runtime-loader.js";
 import { runSignalSseLoop } from "./sse-reconnect.js";
-
-let signalTsRuntimePromise: Promise<typeof import("./signal-ts-runtime.js")> | undefined;
-
-async function loadSignalTsRuntime() {
-  signalTsRuntimePromise ??= import("./signal-ts-runtime.js");
-  return await signalTsRuntimePromise;
-}
 
 export type MonitorSignalOpts = {
   runtime?: RuntimeEnv;

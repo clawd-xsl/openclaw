@@ -74,7 +74,7 @@ export function resolveSignalAccount(params: {
 }
 
 /**
- * Preserve signal-cli for existing installations, but prefer the embedded
+ * Preserve signal-cli for existing installations, but prefer the direct
  * transport as soon as a durable signal-ts state file is configured.
  */
 export function resolveSignalBackend(account: ResolvedSignalAccount): SignalBackend {

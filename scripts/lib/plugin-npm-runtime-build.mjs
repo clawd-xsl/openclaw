@@ -42,12 +42,19 @@ function toPackageRuntimeEntry(entry) {
   return `./dist/${normalized.replace(/\.[^.]+$/u, ".js")}`;
 }
 
-function collectExternalDependencyNames(packageJson) {
+/** Collect package-owned and explicitly host-provided runtime package identities. */
+export function collectExternalDependencyNames(packageJson) {
+  const hostDependencies = Array.isArray(packageJson.openclaw?.hostDependencies)
+    ? packageJson.openclaw.hostDependencies
+        .map(normalizePackageEntry)
+        .filter((entry) => entry.length > 0)
+    : [];
   return new Set(
     [
       ...Object.keys(packageJson.dependencies ?? {}),
       ...Object.keys(packageJson.peerDependencies ?? {}),
       ...Object.keys(packageJson.optionalDependencies ?? {}),
+      ...hostDependencies,
     ].filter(Boolean),
   );
 }

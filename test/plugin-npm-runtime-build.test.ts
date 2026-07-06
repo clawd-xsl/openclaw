@@ -2,6 +2,7 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  collectExternalDependencyNames,
   listPublishablePluginPackageDirs,
   resolvePluginNpmRuntimeBuildPlan,
 } from "../scripts/lib/plugin-npm-runtime-build.mjs";
@@ -24,6 +25,20 @@ function expectPluginNpmRuntimeBuildPlan(
 }
 
 describe("plugin npm runtime build planning", () => {
+  it("externalizes Signal's host-provided direct runtime without an install source", () => {
+    const signalPlan = expectPluginNpmRuntimeBuildPlan(
+      resolvePluginNpmRuntimeBuildPlan({
+        repoRoot,
+        packageDir: path.join(repoRoot, "extensions", "signal"),
+      }),
+    );
+
+    expect([...collectExternalDependencyNames(signalPlan.packageJson)]).toContain(
+      "@openclaw/signal-ts",
+    );
+    expect(signalPlan.packageJson.dependencies).not.toHaveProperty("@openclaw/signal-ts");
+  });
+
   it("plans package-local runtime entries for every publishable plugin package", () => {
     const packageDirs = listPublishablePluginPackageDirs({ repoRoot });
     expect(packageDirs.length).toBeGreaterThan(0);

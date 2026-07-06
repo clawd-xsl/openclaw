@@ -87,7 +87,7 @@ describe("signal groups schema", () => {
     });
   });
 
-  it("accepts embedded signal-ts transport state per account", () => {
+  it("accepts direct signal-ts transport state per account", () => {
     expectValidSignalConfig({
       accounts: {
         primary: {
