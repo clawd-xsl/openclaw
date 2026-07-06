@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { resolveDefaultAgentDir } from "../agents/agent-scope.js";
 import { AUTH_PROFILE_FILENAME } from "../agents/auth-profiles/constants.js";
+import { loadSessionStore, resolveStorePath } from "../config/sessions.js";
 import { deleteTestEnvValue } from "../test-utils/env.js";
 import { testing as controlPlaneRateLimitTesting } from "./control-plane-rate-limit.js";
 import {
@@ -1057,10 +1058,9 @@ describe("gateway server sessions", () => {
     expect(patched.ok).toBe(true);
     expect(patched.payload?.key).toBe("agent:ops:work");
 
-    const stored = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
-      string,
-      { thinkingLevel?: string }
-    >;
+    const stored = loadSessionStore(resolveStorePath(storePath, { agentId: "ops" }), {
+      skipCache: true,
+    });
     expect(stored["agent:ops:work"]?.thinkingLevel).toBe("medium");
     expect(stored.main).toBeUndefined();
   });

@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { WebSocket } from "ws";
+import { loadSessionStore, resolveStorePath } from "../config/sessions.js";
 import { emitAgentEvent, registerAgentRunContext } from "../infra/agent-events.js";
 import { extractFirstTextBlock } from "../shared/chat-message-content.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
@@ -42,6 +43,16 @@ describe("gateway server chat", () => {
 
   const removeTempDir = async (dir: string): Promise<void> => {
     await fs.rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  };
+
+  const loadConfiguredSessionStore = (agentId = "main") => {
+    const configuredStorePath = testState.sessionStorePath;
+    if (!configuredStorePath) {
+      throw new Error("session store path was not initialized");
+    }
+    return loadSessionStore(resolveStorePath(configuredStorePath, { agentId }), {
+      skipCache: true,
+    });
   };
 
   const buildNoReplyHistoryFixture = (includeMixedAssistant = false) => [
@@ -271,12 +282,7 @@ describe("gateway server chat", () => {
       expect(res.ok).toBe(true);
       expect(res.payload?.runId).toBe("idem-sessions-send-orion");
 
-      const rawStore = JSON.parse(await fs.readFile(testState.sessionStorePath, "utf-8")) as Record<
-        string,
-        {
-          sessionId?: string;
-        }
-      >;
+      const rawStore = loadConfiguredSessionStore("orion");
       expect(rawStore["agent:orion:main"]?.sessionId).toBeTypeOf("string");
     } finally {
       testState.agentsConfig = undefined;
@@ -1723,16 +1729,7 @@ describe("gateway server chat", () => {
           expect(waitRes.ok).toBe(true);
           expect(waitRes.payload?.status).toBe("ok");
 
-          const sessionStorePath = testState.sessionStorePath;
-          if (!sessionStorePath) {
-            throw new Error("session store path was not initialized");
-          }
-          const raw = await fs.readFile(sessionStorePath, "utf-8");
-          const stored = JSON.parse(raw) as {
-            "agent:main:main"?: {
-              verboseLevel?: string;
-            };
-          };
+          const stored = loadConfiguredSessionStore();
           expect(stored["agent:main:main"]?.verboseLevel).toBeUndefined();
         } finally {
           scopedWs?.close();
@@ -1758,19 +1755,7 @@ describe("gateway server chat", () => {
       expect(waitRes.ok).toBe(true);
       expect(waitRes.payload?.status).toBe("ok");
 
-      const sessionStorePath = testState.sessionStorePath;
-      if (!sessionStorePath) {
-        throw new Error("session store path was not initialized");
-      }
-      const raw = await fs.readFile(sessionStorePath, "utf-8");
-      const stored = JSON.parse(raw) as {
-        "agent:main:main"?: {
-          thinkingLevel?: string;
-        };
-        main?: {
-          thinkingLevel?: string;
-        };
-      };
+      const stored = loadConfiguredSessionStore();
       expect(stored["agent:main:main"]?.thinkingLevel).toBeUndefined();
       expect(stored.main?.thinkingLevel).toBeUndefined();
     });
@@ -1805,16 +1790,7 @@ describe("gateway server chat", () => {
           expect(waitRes.ok).toBe(true);
           expect(waitRes.payload?.status).toBe("ok");
 
-          const sessionStorePath = testState.sessionStorePath;
-          if (!sessionStorePath) {
-            throw new Error("session store path was not initialized");
-          }
-          const raw = await fs.readFile(sessionStorePath, "utf-8");
-          const stored = JSON.parse(raw) as {
-            "agent:main:main"?: {
-              sessionId?: string;
-            };
-          };
+          const stored = loadConfiguredSessionStore();
           expect(stored["agent:main:main"]?.sessionId).toBe("sess-main");
         } finally {
           scopedWs?.close();

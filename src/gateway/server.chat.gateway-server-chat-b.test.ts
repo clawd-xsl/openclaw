@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import type { GetReplyOptions } from "../auto-reply/get-reply-options.types.js";
 import type { InternalGetReplyOptions } from "../auto-reply/reply/get-reply.types.js";
 import { clearConfigCache } from "../config/config.js";
+import { resolveStorePath, updateSessionStore } from "../config/sessions.js";
 import type { AgentModelConfig } from "../config/types.agents-shared.js";
 import { createDeferred } from "../test-utils/deferred.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
@@ -373,7 +374,15 @@ describe("gateway server chat", () => {
         contextTokens: 128_000,
       });
 
-      await writeSessionStore({ entries: {} });
+      const configuredStorePath = testState.sessionStorePath;
+      if (!configuredStorePath) {
+        throw new Error("session store path was not initialized");
+      }
+      await updateSessionStore(resolveStorePath(configuredStorePath), (store) => {
+        for (const key of Object.keys(store)) {
+          delete store[key];
+        }
+      });
       const synthetic = await rpcReq<{
         defaults?: { modelProvider?: string | null; model?: string | null };
         sessionInfo?: {
