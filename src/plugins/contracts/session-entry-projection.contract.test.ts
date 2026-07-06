@@ -6,7 +6,12 @@ import {
   registerTestPlugin,
 } from "openclaw/plugin-sdk/plugin-test-contracts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { loadSessionStore, updateSessionStore, type SessionEntry } from "../../config/sessions.js";
+import {
+  loadSessionStore,
+  resolveStorePath,
+  updateSessionStore,
+  type SessionEntry,
+} from "../../config/sessions.js";
 import { withTempConfig } from "../../gateway/test-temp-config.js";
 import { resolvePreferredOpenClawTmpDir } from "../../infra/tmp-openclaw-dir.js";
 import { withEnvAsync } from "../../test-utils/env.js";
@@ -47,20 +52,22 @@ function extensionNamespace(entry: Record<string, unknown>, pluginId: string, na
 async function withProjectionSessionStore(
   prefix: string,
   run: (fixture: {
-    storePath: string;
+    configuredStorePath: string;
+    backendStorePath: string;
     tempConfig: { session: { store: string } };
   }) => Promise<void>,
 ): Promise<void> {
   const stateDir = await fs.mkdtemp(path.join(resolvePreferredOpenClawTmpDir(), prefix));
-  const storePath = path.join(stateDir, "sessions.json");
-  const tempConfig = { session: { store: storePath } };
+  const configuredStorePath = path.join(stateDir, "sessions.json");
+  const backendStorePath = resolveStorePath(configuredStorePath);
+  const tempConfig = { session: { store: configuredStorePath } };
   try {
     return await withEnvAsync(
       { OPENCLAW_STATE_DIR: stateDir },
       async () =>
         await withTempConfig({
           cfg: tempConfig,
-          run: async () => await run({ storePath, tempConfig }),
+          run: async () => await run({ configuredStorePath, backendStorePath, tempConfig }),
         }),
     );
   } finally {
@@ -105,8 +112,8 @@ describe("plugin session extension SessionEntry projection", () => {
 
     await withProjectionSessionStore(
       "openclaw-host-hooks-slot-",
-      async ({ storePath, tempConfig }) => {
-        await updateSessionStore(storePath, (store) => {
+      async ({ backendStorePath, tempConfig }) => {
+        await updateSessionStore(backendStorePath, (store) => {
           store["agent:main:main"] = {
             sessionId: "session-id",
             updatedAt: Date.now(),
@@ -121,7 +128,7 @@ describe("plugin session extension SessionEntry projection", () => {
           value: { state: "executing", title: "Deploy approval", internal: 7 },
         });
         expect(patchResult.ok).toBe(true);
-        const afterPatch = loadSessionStore(storePath, { skipCache: true });
+        const afterPatch = loadSessionStore(backendStorePath, { skipCache: true });
         expect(
           (afterPatch["agent:main:main"] as unknown as Record<string, unknown>).approvalSnapshot,
         ).toEqual({ state: "executing", title: "Deploy approval" });
@@ -134,7 +141,7 @@ describe("plugin session extension SessionEntry projection", () => {
           unset: true,
         });
         expect(unsetResult.ok).toBe(true);
-        const afterUnset = loadSessionStore(storePath, { skipCache: true });
+        const afterUnset = loadSessionStore(backendStorePath, { skipCache: true });
         expect(
           (afterUnset["agent:main:main"] as unknown as Record<string, unknown>).approvalSnapshot,
         ).toBeUndefined();
@@ -171,8 +178,8 @@ describe("plugin session extension SessionEntry projection", () => {
 
     await withProjectionSessionStore(
       "openclaw-host-hooks-slot-projector-fail-",
-      async ({ storePath, tempConfig }) => {
-        await updateSessionStore(storePath, (store) => {
+      async ({ backendStorePath, tempConfig }) => {
+        await updateSessionStore(backendStorePath, (store) => {
           store["agent:main:main"] = {
             sessionId: "session-id",
             updatedAt: Date.now(),
@@ -191,7 +198,7 @@ describe("plugin session extension SessionEntry projection", () => {
         );
         expect(
           (
-            loadSessionStore(storePath, { skipCache: true })[
+            loadSessionStore(backendStorePath, { skipCache: true })[
               "agent:main:main"
             ] as unknown as Record<string, unknown>
           ).approvalSnapshot,
@@ -207,7 +214,7 @@ describe("plugin session extension SessionEntry projection", () => {
           }),
           "throwing projector patch result",
         );
-        const afterThrow = loadSessionStore(storePath, { skipCache: true })[
+        const afterThrow = loadSessionStore(backendStorePath, { skipCache: true })[
           "agent:main:main"
         ] as unknown as Record<string, unknown>;
         expect(afterThrow.approvalSnapshot).toBeUndefined();
@@ -228,7 +235,7 @@ describe("plugin session extension SessionEntry projection", () => {
         );
         expect(
           (
-            loadSessionStore(storePath, { skipCache: true })[
+            loadSessionStore(backendStorePath, { skipCache: true })[
               "agent:main:main"
             ] as unknown as Record<string, unknown>
           ).approvalSnapshot,
@@ -244,7 +251,7 @@ describe("plugin session extension SessionEntry projection", () => {
           }),
           "promise projector patch result",
         );
-        const afterPromise = loadSessionStore(storePath, { skipCache: true })[
+        const afterPromise = loadSessionStore(backendStorePath, { skipCache: true })[
           "agent:main:main"
         ] as unknown as Record<string, unknown>;
         expect(afterPromise.approvalSnapshot).toBeUndefined();
@@ -416,8 +423,8 @@ describe("plugin session extension SessionEntry projection", () => {
 
     await withProjectionSessionStore(
       "openclaw-host-hooks-slot-cleanup-",
-      async ({ storePath, tempConfig }) => {
-        await updateSessionStore(storePath, (store) => {
+      async ({ backendStorePath, tempConfig }) => {
+        await updateSessionStore(backendStorePath, (store) => {
           store["agent:main:main"] = {
             sessionId: "session-id",
             updatedAt: Date.now(),
@@ -444,7 +451,7 @@ describe("plugin session extension SessionEntry projection", () => {
           "cleanup result",
         );
 
-        const stored = loadSessionStore(storePath, { skipCache: true });
+        const stored = loadSessionStore(backendStorePath, { skipCache: true });
         const entry = stored["agent:main:main"] as unknown as Record<string, unknown>;
         expect(entry.pluginExtensions).toBeUndefined();
         expect(entry.approvalSnapshot).toBeUndefined();
@@ -470,8 +477,8 @@ describe("plugin session extension SessionEntry projection", () => {
 
     await withProjectionSessionStore(
       "openclaw-host-hooks-slot-active-cleanup-",
-      async ({ storePath, tempConfig }) => {
-        await updateSessionStore(storePath, (store) => {
+      async ({ backendStorePath, tempConfig }) => {
+        await updateSessionStore(backendStorePath, (store) => {
           store["agent:main:main"] = {
             sessionId: "session-id",
             updatedAt: Date.now(),
@@ -497,7 +504,7 @@ describe("plugin session extension SessionEntry projection", () => {
           "active cleanup result",
         );
 
-        const stored = loadSessionStore(storePath, { skipCache: true });
+        const stored = loadSessionStore(backendStorePath, { skipCache: true });
         const entry = stored["agent:main:main"] as unknown as Record<string, unknown>;
         expect(entry.pluginExtensions).toBeUndefined();
         expect(entry.approvalSnapshot).toBeUndefined();
@@ -535,8 +542,8 @@ describe("plugin session extension SessionEntry projection", () => {
 
     await withProjectionSessionStore(
       "openclaw-host-hooks-slot-restart-cleanup-",
-      async ({ storePath, tempConfig }) => {
-        await updateSessionStore(storePath, (store) => {
+      async ({ backendStorePath, tempConfig }) => {
+        await updateSessionStore(backendStorePath, (store) => {
           store["agent:main:main"] = {
             sessionId: "session-id",
             updatedAt: Date.now(),
@@ -562,7 +569,7 @@ describe("plugin session extension SessionEntry projection", () => {
           "restart cleanup result",
         );
 
-        const stored = loadSessionStore(storePath, { skipCache: true });
+        const stored = loadSessionStore(backendStorePath, { skipCache: true });
         const entry = stored["agent:main:main"] as unknown as Record<string, unknown>;
         expect(entry.approvalSnapshot).toBeUndefined();
         expect(entry.pluginExtensionSlotKeys).toBeUndefined();
@@ -615,8 +622,8 @@ describe("plugin session extension SessionEntry projection", () => {
 
     await withProjectionSessionStore(
       "openclaw-host-hooks-slot-restart-mixed-",
-      async ({ storePath, tempConfig }) => {
-        await updateSessionStore(storePath, (store) => {
+      async ({ backendStorePath, tempConfig }) => {
+        await updateSessionStore(backendStorePath, (store) => {
           store["agent:main:main"] = {
             sessionId: "session-id",
             updatedAt: Date.now(),
@@ -652,7 +659,7 @@ describe("plugin session extension SessionEntry projection", () => {
           "mixed restart cleanup result",
         );
 
-        const stored = loadSessionStore(storePath, { skipCache: true });
+        const stored = loadSessionStore(backendStorePath, { skipCache: true });
         const entry = stored["agent:main:main"] as unknown as Record<string, unknown>;
         expect(entry.approvalSnapshot).toEqual({ state: "waiting" });
         expect(entry.legacyApprovalSnapshot).toBeUndefined();
@@ -702,8 +709,8 @@ describe("plugin session extension SessionEntry projection", () => {
 
     await withProjectionSessionStore(
       "openclaw-host-hooks-slot-restart-preserve-",
-      async ({ storePath, tempConfig }) => {
-        await updateSessionStore(storePath, (store) => {
+      async ({ backendStorePath, tempConfig }) => {
+        await updateSessionStore(backendStorePath, (store) => {
           store["agent:main:main"] = {
             sessionId: "session-id",
             updatedAt: Date.now(),
@@ -729,7 +736,7 @@ describe("plugin session extension SessionEntry projection", () => {
           "preserved restart cleanup result",
         );
 
-        const stored = loadSessionStore(storePath, { skipCache: true });
+        const stored = loadSessionStore(backendStorePath, { skipCache: true });
         const entry = stored["agent:main:main"] as unknown as Record<string, unknown>;
         expect(entry.approvalSnapshot).toEqual({ state: "waiting" });
         expect(entry.pluginExtensionSlotKeys).toEqual({
@@ -750,8 +757,8 @@ describe("plugin session extension SessionEntry projection", () => {
     setActivePluginRegistry(createEmptyPluginRegistry());
     await withProjectionSessionStore(
       "openclaw-host-hooks-slot-metadata-cleanup-",
-      async ({ storePath, tempConfig }) => {
-        await updateSessionStore(storePath, (store) => {
+      async ({ backendStorePath, tempConfig }) => {
+        await updateSessionStore(backendStorePath, (store) => {
           store["agent:main:main"] = {
             sessionId: "session-id",
             updatedAt: Date.now(),
@@ -778,7 +785,7 @@ describe("plugin session extension SessionEntry projection", () => {
           "metadata cleanup result",
         );
 
-        const stored = loadSessionStore(storePath, { skipCache: true });
+        const stored = loadSessionStore(backendStorePath, { skipCache: true });
         const entry = stored["agent:main:main"] as unknown as Record<string, unknown>;
         expect(entry.approvalSnapshot).toBeUndefined();
         expect(entry.pluginExtensionSlotKeys).toBeUndefined();
@@ -825,8 +832,8 @@ describe("plugin session extension SessionEntry projection", () => {
 
     await withProjectionSessionStore(
       "openclaw-host-hooks-policy-read-",
-      async ({ storePath, tempConfig }) => {
-        await updateSessionStore(storePath, (store) => {
+      async ({ backendStorePath, tempConfig }) => {
+        await updateSessionStore(backendStorePath, (store) => {
           store["agent:main:main"] = {
             sessionId: "session-id",
             updatedAt: Date.now(),
@@ -904,8 +911,8 @@ describe("plugin session extension SessionEntry projection", () => {
 
     await withProjectionSessionStore(
       "openclaw-host-hooks-slot-noop-",
-      async ({ storePath, tempConfig }) => {
-        await updateSessionStore(storePath, (store) => {
+      async ({ backendStorePath, tempConfig }) => {
+        await updateSessionStore(backendStorePath, (store) => {
           store["agent:main:main"] = {
             sessionId: "session-id",
             updatedAt: Date.now(),
@@ -919,7 +926,7 @@ describe("plugin session extension SessionEntry projection", () => {
           value: { state: "executing" },
         });
         expect(result.ok).toBe(true);
-        const stored = loadSessionStore(storePath, { skipCache: true });
+        const stored = loadSessionStore(backendStorePath, { skipCache: true });
         const entry = stored["agent:main:main"] as unknown as Record<string, unknown>;
         expect(entry.approvalSnapshot).toBeUndefined();
       },
