@@ -23,6 +23,7 @@ import {
   filterBootstrapFilesForSession,
   isWorkspaceBootstrapPending,
   loadWorkspaceBootstrapFiles,
+  resetAgentWorkspaceEnsureCacheForTest,
   resolveWorkspaceBootstrapStatus,
   resolveDefaultAgentWorkspaceDir,
   resolveWorkspaceAttestationPaths,
@@ -33,6 +34,7 @@ import {
 let testState: OpenClawTestState | undefined;
 
 beforeEach(async () => {
+  resetAgentWorkspaceEnsureCacheForTest();
   testState = await createOpenClawTestState({
     layout: "state-only",
     prefix: "openclaw-workspace-state-",
@@ -138,6 +140,106 @@ function expectCronAllowedBootstrapNames(files: WorkspaceBootstrapFile[]) {
 }
 
 describe("ensureAgentWorkspace", () => {
+  it("reuses a validated steady-state workspace within the cache TTL", async () => {
+    const tempDir = await makeTempWorkspace("openclaw-workspace-cache-hit-");
+    await writeWorkspaceFile({
+      dir: tempDir,
+      name: DEFAULT_IDENTITY_FILENAME,
+      content: "custom identity\n",
+    });
+    await writeWorkspaceFile({
+      dir: tempDir,
+      name: DEFAULT_USER_FILENAME,
+      content: "custom user\n",
+    });
+    await ensureAgentWorkspace({ dir: tempDir, ensureBootstrapFiles: true });
+    const mkdirSpy = vi.spyOn(fs, "mkdir");
+
+    try {
+      await expect(
+        ensureAgentWorkspace({ dir: tempDir, ensureBootstrapFiles: true }),
+      ).resolves.toMatchObject({ dir: tempDir });
+      expect(mkdirSpy.mock.calls.filter(([target]) => target === tempDir)).toHaveLength(0);
+    } finally {
+      mkdirSpy.mockRestore();
+    }
+  });
+
+  it("coalesces concurrent ensure work for the same cache key", async () => {
+    const tempDir = await makeTempWorkspace("openclaw-workspace-cache-concurrent-");
+    await fs.writeFile(path.join(tempDir, "seed.txt"), "seeded\n");
+    const mkdirSpy = vi.spyOn(fs, "mkdir");
+
+    try {
+      await Promise.all([
+        ensureAgentWorkspace({ dir: tempDir, ensureBootstrapFiles: false }),
+        ensureAgentWorkspace({ dir: tempDir, ensureBootstrapFiles: false }),
+      ]);
+      expect(mkdirSpy.mock.calls.filter(([target]) => target === tempDir)).toHaveLength(1);
+    } finally {
+      mkdirSpy.mockRestore();
+    }
+  });
+
+  it("runs the complete ensure path after the cache TTL expires", async () => {
+    const tempDir = await makeTempWorkspace("openclaw-workspace-cache-ttl-");
+    await fs.writeFile(path.join(tempDir, "seed.txt"), "seeded\n");
+    await ensureAgentWorkspace({ dir: tempDir, ensureBootstrapFiles: false });
+    const now = Date.now();
+    const dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(now + 60_001);
+    const mkdirSpy = vi.spyOn(fs, "mkdir");
+
+    try {
+      await ensureAgentWorkspace({ dir: tempDir, ensureBootstrapFiles: false });
+      expect(mkdirSpy.mock.calls.filter(([target]) => target === tempDir)).toHaveLength(1);
+    } finally {
+      mkdirSpy.mockRestore();
+      dateNowSpy.mockRestore();
+    }
+  });
+
+  it("invalidates a cached workspace after the directory is deleted", async () => {
+    const tempDir = await makeTempWorkspace("openclaw-workspace-cache-deleted-");
+    await fs.writeFile(path.join(tempDir, "seed.txt"), "seeded\n");
+    await ensureAgentWorkspace({ dir: tempDir, ensureBootstrapFiles: false });
+    await fs.rm(tempDir, { recursive: true, force: true });
+
+    await expectWorkspaceVanished(
+      ensureAgentWorkspace({ dir: tempDir, ensureBootstrapFiles: false }),
+    );
+    await expectPathMissing(tempDir);
+  });
+
+  it("invalidates a cached workspace after the directory is replaced", async () => {
+    const tempDir = await makeTempWorkspace("openclaw-workspace-cache-replaced-");
+    await fs.writeFile(path.join(tempDir, "seed.txt"), "seeded\n");
+    await ensureAgentWorkspace({ dir: tempDir, ensureBootstrapFiles: false });
+    await fs.rm(tempDir, { recursive: true, force: true });
+    await fs.mkdir(tempDir, { recursive: true });
+
+    await expectWorkspaceVanished(
+      ensureAgentWorkspace({ dir: tempDir, ensureBootstrapFiles: false }),
+    );
+    await expectPathMissing(path.join(tempDir, DEFAULT_BOOTSTRAP_FILENAME));
+  });
+
+  it("invalidates a cached workspace after a directory entry changes", async () => {
+    const tempDir = await makeTempWorkspace("openclaw-workspace-cache-entry-");
+    await fs.writeFile(path.join(tempDir, "seed.txt"), "seeded\n");
+    await ensureAgentWorkspace({ dir: tempDir, ensureBootstrapFiles: false });
+    await fs.writeFile(path.join(tempDir, "new-entry.txt"), "changed\n");
+    const bumpedTime = new Date(Date.now() + 2_000);
+    await fs.utimes(tempDir, bumpedTime, bumpedTime);
+    const mkdirSpy = vi.spyOn(fs, "mkdir");
+
+    try {
+      await ensureAgentWorkspace({ dir: tempDir, ensureBootstrapFiles: false });
+      expect(mkdirSpy.mock.calls.filter(([target]) => target === tempDir)).toHaveLength(1);
+    } finally {
+      mkdirSpy.mockRestore();
+    }
+  });
+
   it("creates BOOTSTRAP.md and records a seeded marker for brand new workspaces", async () => {
     const tempDir = await makeTempWorkspace("openclaw-workspace-");
 

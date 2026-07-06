@@ -54,6 +54,51 @@ const WORKSPACE_ONBOARDING_PROFILE_FILENAMES = [
 const workspaceTemplateCache = new Map<string, Promise<string>>();
 let gitAvailabilityPromise: Promise<boolean> | null = null;
 const MAX_WORKSPACE_BOOTSTRAP_FILE_BYTES = 2 * 1024 * 1024;
+const WORKSPACE_ENSURE_CACHE_TTL_MS = 60_000;
+const MAX_WORKSPACE_ENSURE_CACHE_ENTRIES = 64;
+
+type EnsureAgentWorkspaceParams = {
+  dir?: string;
+  ensureBootstrapFiles?: boolean;
+  /**
+   * Optional bootstrap filenames to skip writing. Required files such as
+   * AGENTS.md and TOOLS.md are always maintained when bootstrapping is enabled.
+   */
+  skipOptionalBootstrapFiles?: string[];
+};
+
+type EnsureAgentWorkspaceResult = {
+  dir: string;
+  agentsPath?: string;
+  soulPath?: string;
+  toolsPath?: string;
+  identityPath?: string;
+  userPath?: string;
+  heartbeatPath?: string;
+  bootstrapPath?: string;
+  identityPathCreated?: boolean;
+};
+
+type WorkspaceDirectoryIdentity = {
+  dev: bigint;
+  ino: bigint;
+  mtimeNs: bigint;
+  ctimeNs: bigint;
+};
+
+type WorkspaceEnsureCacheEntry = {
+  result: EnsureAgentWorkspaceResult;
+  directoryIdentity: WorkspaceDirectoryIdentity;
+  cachedAtMs: number;
+};
+
+type WorkspaceEnsureOperationResult = {
+  result: EnsureAgentWorkspaceResult;
+  cacheHit: boolean;
+};
+
+const workspaceEnsureCache = new Map<string, WorkspaceEnsureCacheEntry>();
+const workspaceEnsureInflight = new Map<string, Promise<WorkspaceEnsureOperationResult>>();
 
 // File content cache keyed by stable file identity to avoid stale reads.
 const workspaceFileCache = new Map<string, { content: string; identity: string }>();
@@ -814,26 +859,9 @@ async function ensureGitRepo(dir: string, isBrandNewWorkspace: boolean) {
   }
 }
 
-export async function ensureAgentWorkspace(params?: {
-  dir?: string;
-  ensureBootstrapFiles?: boolean;
-  /**
-   * List of optional bootstrap filenames to skip writing.
-   * Applies only to SOUL.md, USER.md, HEARTBEAT.md, IDENTITY.md.
-   * Required workspace setup such as AGENTS.md and TOOLS.md still runs.
-   */
-  skipOptionalBootstrapFiles?: string[];
-}): Promise<{
-  dir: string;
-  agentsPath?: string;
-  soulPath?: string;
-  toolsPath?: string;
-  identityPath?: string;
-  userPath?: string;
-  heartbeatPath?: string;
-  bootstrapPath?: string;
-  identityPathCreated?: boolean;
-}> {
+async function ensureAgentWorkspaceUncached(
+  params?: EnsureAgentWorkspaceParams,
+): Promise<EnsureAgentWorkspaceResult> {
   const rawDir = params?.dir?.trim() ? params.dir.trim() : DEFAULT_AGENT_WORKSPACE_DIR;
   const dir = resolveUserPath(rawDir);
   const [attestationPath, ...legacyAttestationPaths] = resolveWorkspaceAttestationPaths(dir);
@@ -1034,6 +1062,158 @@ export async function ensureAgentWorkspace(params?: {
     bootstrapPath,
     identityPathCreated,
   };
+}
+
+function buildWorkspaceEnsureCacheKey(params: EnsureAgentWorkspaceParams | undefined): string {
+  const rawDir = params?.dir?.trim() ? params.dir.trim() : DEFAULT_AGENT_WORKSPACE_DIR;
+  const skipOptionalBootstrapFiles = [
+    ...new Set(params?.skipOptionalBootstrapFiles ?? []),
+  ].toSorted();
+  return JSON.stringify([
+    resolveUserPath(rawDir),
+    params?.ensureBootstrapFiles === true,
+    skipOptionalBootstrapFiles,
+  ]);
+}
+
+async function readWorkspaceDirectoryIdentity(
+  dir: string,
+): Promise<WorkspaceDirectoryIdentity | undefined> {
+  try {
+    const stat = await fs.stat(dir, { bigint: true });
+    if (!stat.isDirectory()) {
+      return undefined;
+    }
+    return {
+      dev: stat.dev,
+      ino: stat.ino,
+      mtimeNs: stat.mtimeNs,
+      ctimeNs: stat.ctimeNs,
+    };
+  } catch {
+    // Missing, replaced, or temporarily unreadable workspaces must fall back to
+    // the complete attestation-aware ensure path.
+    return undefined;
+  }
+}
+
+function workspaceDirectoryIdentityMatches(
+  left: WorkspaceDirectoryIdentity,
+  right: WorkspaceDirectoryIdentity,
+): boolean {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.mtimeNs === right.mtimeNs &&
+    left.ctimeNs === right.ctimeNs
+  );
+}
+
+function rememberWorkspaceEnsureCacheEntry(
+  cacheKey: string,
+  entry: WorkspaceEnsureCacheEntry,
+): void {
+  workspaceEnsureCache.delete(cacheKey);
+  workspaceEnsureCache.set(cacheKey, entry);
+  while (workspaceEnsureCache.size > MAX_WORKSPACE_ENSURE_CACHE_ENTRIES) {
+    const oldest = workspaceEnsureCache.keys().next();
+    if (oldest.done) {
+      break;
+    }
+    workspaceEnsureCache.delete(oldest.value);
+  }
+}
+
+function markWorkspaceEnsureCacheHit(
+  result: EnsureAgentWorkspaceResult,
+): EnsureAgentWorkspaceResult {
+  return {
+    ...result,
+    ...(result.identityPathCreated === true ? { identityPathCreated: false } : {}),
+  };
+}
+
+async function canCacheWorkspaceEnsureResult(
+  params: EnsureAgentWorkspaceParams | undefined,
+  result: EnsureAgentWorkspaceResult,
+): Promise<boolean> {
+  if (params?.ensureBootstrapFiles !== true) {
+    return true;
+  }
+  try {
+    // Do not cache onboarding-pending workspaces: edits to existing profile
+    // files do not change the parent directory identity, and must be observed
+    // immediately so BOOTSTRAP completion remains responsive.
+    return await isWorkspaceSetupCompleted(result.dir);
+  } catch {
+    return false;
+  }
+}
+
+async function runWorkspaceEnsureOperation(
+  params: EnsureAgentWorkspaceParams | undefined,
+  cacheKey: string,
+): Promise<WorkspaceEnsureOperationResult> {
+  const cached = workspaceEnsureCache.get(cacheKey);
+  if (cached) {
+    const cacheAgeMs = Date.now() - cached.cachedAtMs;
+    if (cacheAgeMs >= 0 && cacheAgeMs < WORKSPACE_ENSURE_CACHE_TTL_MS) {
+      const currentIdentity = await readWorkspaceDirectoryIdentity(cached.result.dir);
+      if (
+        currentIdentity &&
+        workspaceDirectoryIdentityMatches(currentIdentity, cached.directoryIdentity)
+      ) {
+        rememberWorkspaceEnsureCacheEntry(cacheKey, cached);
+        return { result: cached.result, cacheHit: true };
+      }
+    }
+    workspaceEnsureCache.delete(cacheKey);
+  }
+
+  const result = await ensureAgentWorkspaceUncached(params);
+  if (await canCacheWorkspaceEnsureResult(params, result)) {
+    const directoryIdentity = await readWorkspaceDirectoryIdentity(result.dir);
+    if (directoryIdentity) {
+      rememberWorkspaceEnsureCacheEntry(cacheKey, {
+        result: { ...result },
+        directoryIdentity,
+        cachedAtMs: Date.now(),
+      });
+    }
+  }
+  return { result, cacheHit: false };
+}
+
+/**
+ * Ensures an agent workspace while keeping the steady-state reply path bounded.
+ * Cache hits still stat the workspace directory and any identity or entry change
+ * falls back to the full attestation-aware ensure path.
+ */
+export async function ensureAgentWorkspace(
+  params?: EnsureAgentWorkspaceParams,
+): Promise<EnsureAgentWorkspaceResult> {
+  const cacheKey = buildWorkspaceEnsureCacheKey(params);
+  const inflight = workspaceEnsureInflight.get(cacheKey);
+  if (inflight) {
+    return markWorkspaceEnsureCacheHit((await inflight).result);
+  }
+
+  const operation = runWorkspaceEnsureOperation(params, cacheKey);
+  workspaceEnsureInflight.set(cacheKey, operation);
+  try {
+    const outcome = await operation;
+    return outcome.cacheHit ? markWorkspaceEnsureCacheHit(outcome.result) : outcome.result;
+  } finally {
+    if (workspaceEnsureInflight.get(cacheKey) === operation) {
+      workspaceEnsureInflight.delete(cacheKey);
+    }
+  }
+}
+
+/** Clears bounded workspace ensure state between tests. */
+export function resetAgentWorkspaceEnsureCacheForTest(): void {
+  workspaceEnsureCache.clear();
+  workspaceEnsureInflight.clear();
 }
 
 export async function loadWorkspaceBootstrapFiles(dir: string): Promise<WorkspaceBootstrapFile[]> {
