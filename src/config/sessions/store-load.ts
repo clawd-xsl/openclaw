@@ -11,6 +11,7 @@ import {
   normalizeDeliveryContext,
   normalizeSessionDeliveryFields,
 } from "../../utils/delivery-context.shared.js";
+import { parseJsonWithJson5Fallback } from "../../utils/parse-json-compat.js";
 import { getFileStatSnapshot } from "../cache-utils.js";
 import { formatSessionArchiveTimestamp } from "./artifacts.js";
 import { hydrateSessionStoreSkillPromptRefs } from "./skill-prompt-blobs.js";
@@ -137,7 +138,9 @@ function loadJsonSessionStoreForSqliteImport(
   }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw) as unknown;
+    // Hand-edited legacy stores could contain comments or trailing commas;
+    // preserve that compatibility when their configured path now maps to SQLite.
+    parsed = parseJsonWithJson5Fallback(raw);
   } catch (error) {
     throw new Error(`Failed to parse legacy JSON session store ${jsonPath}`, { cause: error });
   }

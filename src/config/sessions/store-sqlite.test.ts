@@ -125,6 +125,32 @@ describe("SQLite session store", () => {
     });
   });
 
+  it("preserves JSON5 compatibility while importing a legacy store", async () => {
+    const dir = await suiteRootTracker.make("json5-import");
+    const jsonPath = path.join(dir, "sessions.json");
+    const storePath = path.join(dir, "sessions.sqlite");
+    const sessionKey = "agent:main:webchat:dm:json5-user";
+    await fs.writeFile(
+      jsonPath,
+      `{
+        // Hand-edited legacy stores historically allowed comments and trailing commas.
+        "${sessionKey}": {
+          "sessionId": "json5-imported",
+          "updatedAt": 7,
+        },
+      }`,
+      "utf8",
+    );
+
+    expect(readSessionEntry(storePath, sessionKey)).toMatchObject({
+      sessionId: "json5-imported",
+      updatedAt: 7,
+    });
+    const names = await fs.readdir(dir);
+    expect(names).not.toContain("sessions.json");
+    expect(names.some((name) => name.startsWith("sessions.json.bak."))).toBe(true);
+  });
+
   it("keeps inbound metadata and route updates row-scoped for existing sessions", async () => {
     const dir = await suiteRootTracker.make("inbound-hot-writes");
     const storePath = path.join(dir, "sessions.sqlite");
