@@ -889,7 +889,7 @@ describe("session-compaction-checkpoints", () => {
   });
 
   test("persist stores codex-style checkpoint metadata and trims old legacy snapshot files", async () => {
-    const { dir, storePath, sessionId, sessionKey, now } = await makeTempSessionStore(
+    const { storePath, sessionId, sessionKey, now } = await makeTempSessionStore(
       "openclaw-checkpoint-trim-",
     );
     const existingCheckpoints = await createLegacyCheckpointFixtures({
@@ -958,7 +958,7 @@ describe("session-compaction-checkpoints", () => {
   });
 
   test("persist skips malformed session rows without synthesizing a session id", async () => {
-    const { storePath, sessionId, sessionKey, now } = await makeTempSessionStore(
+    const { dir, storePath, sessionId, sessionKey, now } = await makeTempSessionStore(
       "openclaw-checkpoint-malformed-row-",
     );
     await writeSessionStore(storePath, sessionKey, {
@@ -982,7 +982,13 @@ describe("session-compaction-checkpoints", () => {
       compactionCheckpoints?: unknown[];
       sessionId?: string;
     }>(storePath);
-    expect(nextStore[MAIN_SESSION_KEY]).toEqual({
+    expect(nextStore[MAIN_SESSION_KEY]).toBeUndefined();
+
+    const preservedLegacySource = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
+      string,
+      { sessionId?: string; updatedAt?: number }
+    >;
+    expect(preservedLegacySource[MAIN_SESSION_KEY]).toEqual({
       sessionId: "",
       updatedAt: now,
     });
