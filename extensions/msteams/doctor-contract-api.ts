@@ -177,15 +177,33 @@ function listAgentIds(config: { agents?: { list?: Array<{ id?: unknown }> } }): 
   return [...ids];
 }
 
-function listCandidateStorePaths(params: {
+async function listCandidateStorePaths(params: {
   config: Parameters<PluginDoctorStateMigration["migrateLegacyState"]>[0]["config"];
   env: NodeJS.ProcessEnv;
-}): string[] {
+}): Promise<string[]> {
   const paths = new Set<string>();
   paths.add(resolveStorePath(params.config.session?.store, { env: params.env }));
   for (const agentId of listAgentIds(params.config)) {
     paths.add(resolveStorePath(params.config.session?.store, { agentId, env: params.env }));
   }
+  await Promise.all(
+    [...paths].map(async (storePath) => {
+      if (!storePath.endsWith(".sqlite")) {
+        return;
+      }
+      const legacyDirectory = storePath.slice(0, -".sqlite".length);
+      try {
+        if ((await fs.stat(legacyDirectory)).isDirectory()) {
+          // Database-backed hosts can resolve a legacy directory-shaped store
+          // config to a sibling SQLite file. Keep that existing directory in
+          // the migration scan because feedback sidecars lived inside it.
+          paths.add(legacyDirectory);
+        }
+      } catch {
+        // No legacy directory exists for this resolved database path.
+      }
+    }),
+  );
   return [...paths];
 }
 
@@ -560,10 +578,9 @@ export const stateMigrations: PluginDoctorStateMigration[] = [
     id: "msteams-feedback-learnings-json-to-plugin-state",
     label: "Microsoft Teams feedback learnings",
     async detectLegacyState(params) {
+      const storePaths = await listCandidateStorePaths(params);
       const files = (
-        await Promise.all(
-          listCandidateStorePaths(params).map((storePath) => listLegacyLearningFiles(storePath)),
-        )
+        await Promise.all(storePaths.map((storePath) => listLegacyLearningFiles(storePath)))
       ).flat();
       if (files.length === 0) {
         return null;
@@ -577,10 +594,9 @@ export const stateMigrations: PluginDoctorStateMigration[] = [
     async migrateLegacyState(params) {
       const changes: string[] = [];
       const warnings: string[] = [];
+      const storePaths = await listCandidateStorePaths(params);
       const files = (
-        await Promise.all(
-          listCandidateStorePaths(params).map((storePath) => listLegacyLearningFiles(storePath)),
-        )
+        await Promise.all(storePaths.map((storePath) => listLegacyLearningFiles(storePath)))
       ).flat();
       const store = params.context.openPluginStateKeyedStore<FeedbackLearningEntry>({
         namespace: LEARNINGS_NAMESPACE,
