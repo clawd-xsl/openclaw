@@ -34,5 +34,22 @@ describe("resolveStorePath", () => {
     const root = path.join(path.parse(process.cwd()).root, "openclaw-configured-store");
 
     expect(resolveStorePath(path.join(root, "sessions.db"))).toBe(path.join(root, "sessions.db"));
+    expect(resolveStorePath(path.join(root, "sessions.sqlite"))).toBe(
+      path.join(root, "sessions.sqlite"),
+    );
+  });
+
+  it("preserves legacy SQLite suffixing for arbitrary configured path stems", () => {
+    const root = path.join(path.parse(process.cwd()).root, "openclaw-configured-store");
+
+    expect(resolveStorePath(path.join(root, "session-state"))).toBe(
+      path.join(root, "session-state.sqlite"),
+    );
+    expect(resolveStorePath(path.join(root, "session-state.custom"))).toBe(
+      path.join(root, "session-state.custom.sqlite"),
+    );
+    expect(resolveStorePath(path.join(root, "session-state.JSON"))).toBe(
+      path.join(root, "session-state.JSON.sqlite"),
+    );
   });
 });

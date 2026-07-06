@@ -332,17 +332,19 @@ export function resolveStorePath(
 
 function resolveConfiguredSessionStorePath(storePath: string): string {
   const resolved = path.resolve(storePath);
-  const normalized = resolved.toLowerCase();
-  // The database-first custom branch historically treated configured JSON paths as
-  // location stems. Preserve that contract so an unchanged config cannot silently
-  // switch from its populated SQLite database to a stale legacy JSON file.
-  if (normalized.endsWith(".hot.json")) {
+  // The database-first custom branch historically treated every configured path
+  // except explicit .sqlite/.db files as a location stem. Preserve that exact
+  // contract so an unchanged config cannot silently orphan its populated database.
+  if (resolved.endsWith(".sqlite") || resolved.endsWith(".db")) {
+    return resolved;
+  }
+  if (resolved.endsWith(".hot.json")) {
     return `${resolved.slice(0, -".hot.json".length)}.sqlite`;
   }
-  if (normalized.endsWith(".json")) {
+  if (resolved.endsWith(".json")) {
     return `${resolved.slice(0, -".json".length)}.sqlite`;
   }
-  return resolved;
+  return `${resolved}.sqlite`;
 }
 
 export function resolveAgentsDirFromSessionStorePath(storePath: string): string | undefined {
