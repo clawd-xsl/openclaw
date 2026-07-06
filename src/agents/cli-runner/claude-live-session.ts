@@ -1513,37 +1513,35 @@ export async function runClaudeLiveSessionTurn(params: {
       }
     }
     if (!session) {
-      let createEntry: ClaudeLiveSessionCreate | undefined;
-      const createSession = createClaudeLiveSession({
-        context: params.context,
-        argv,
-        env: params.env,
-        fingerprint,
-        key,
-        mcpCaptureKey: params.context.mcpDeliveryCapture ? crypto.randomUUID() : undefined,
-        noOutputTimeoutMs: params.noOutputTimeoutMs,
-        supervisor: params.getProcessSupervisor(),
-        cleanup,
-      })
-        .then((createdSession) => {
-          if (createEntry?.retireAfterTurn) {
-            createdSession.retireAfterTurn = true;
-          }
-          return createdSession;
+      const createEntry: ClaudeLiveSessionCreate = {
+        promise: createClaudeLiveSession({
+          context: params.context,
+          argv,
+          env: params.env,
+          fingerprint,
+          key,
+          mcpCaptureKey: params.context.mcpDeliveryCapture ? crypto.randomUUID() : undefined,
+          noOutputTimeoutMs: params.noOutputTimeoutMs,
+          supervisor: params.getProcessSupervisor(),
+          cleanup,
         })
-        .finally(() => {
-          if (liveSessionCreates.get(key) === createEntry) {
-            liveSessionCreates.delete(key);
-          }
-        });
-      createEntry = {
-        promise: createSession,
+          .then((createdSession) => {
+            if (createEntry.retireAfterTurn) {
+              createdSession.retireAfterTurn = true;
+            }
+            return createdSession;
+          })
+          .finally(() => {
+            if (liveSessionCreates.get(key) === createEntry) {
+              liveSessionCreates.delete(key);
+            }
+          }),
         pinnedMainOwnerKey,
         retireAfterTurn: false,
       };
       liveSessionCreates.set(key, createEntry);
       try {
-        session = await createSession;
+        session = await createEntry.promise;
       } catch (error) {
         await cleanup();
         throw error;
