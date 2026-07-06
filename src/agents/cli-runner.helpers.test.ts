@@ -3,13 +3,17 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { MAX_IMAGE_BYTES } from "@openclaw/media-core/constants";
 import type { ImageContent } from "openclaw/plugin-sdk/llm";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createSolidPngBuffer } from "../../test/helpers/image-fixtures.js";
 import { resolvePreferredOpenClawTmpDir } from "../infra/tmp-openclaw-dir.js";
+import { clearPluginCommands, restorePluginCommands } from "../plugins/command-registry-state.js";
 import { escapeRegExp } from "../shared/regexp.js";
 import {
+  buildCliAgentSystemPrompt,
   buildCliArgs,
   buildClaudeOwnerKey,
+  clearSystemPromptCacheForTest,
+  getSystemPromptCacheStatsForTest,
   loadPromptRefImages,
   prepareCliPromptImagePayload,
   resolveCliRunQueueKey,
@@ -20,6 +24,159 @@ import * as promptImageUtils from "./embedded-agent-runner/run/images.js";
 import type { SandboxFsBridge } from "./sandbox/fs-bridge.js";
 import { SYSTEM_PROMPT_CACHE_BOUNDARY } from "./system-prompt-cache-boundary.js";
 import * as toolImages from "./tool-images.js";
+
+function createSystemPromptCacheParams(
+  overrides: Partial<Parameters<typeof buildCliAgentSystemPrompt>[0]> = {},
+): Parameters<typeof buildCliAgentSystemPrompt>[0] {
+  return {
+    workspaceDir: "/workspace",
+    cwd: "/workspace",
+    config: {
+      agents: {
+        defaults: {
+          userTimezone: "UTC",
+          timeFormat: "24",
+        },
+      },
+    },
+    modelDisplay: "anthropic/claude-sonnet-4-6",
+    agentId: "main",
+    sessionKey: "agent:main:main",
+    sessionId: "session-1",
+    sourceReplyDeliveryMode: "automatic",
+    runtimeChannel: "telegram",
+    runtimeChatType: "direct",
+    runtimeCapabilities: ["reactions"],
+    docsPath: "/opt/openclaw/docs",
+    sourcePath: "/opt/openclaw/src",
+    skillsPrompt: "Use the migration skill.",
+    contextFiles: [{ path: "AGENTS.md", content: "Keep the cache exact." }],
+    tools: [
+      {
+        name: "read_file",
+        label: "Read File",
+        description: "Read one file",
+        parameters: {
+          type: "object",
+          properties: { path: { type: "string" } },
+          required: ["path"],
+        },
+      } as never,
+    ],
+    ...overrides,
+  };
+}
+
+describe("buildCliAgentSystemPrompt warm cache", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-05T12:00:00.000Z"));
+    clearSystemPromptCacheForTest();
+    clearPluginCommands();
+  });
+
+  afterEach(() => {
+    clearSystemPromptCacheForTest();
+    clearPluginCommands();
+    vi.useRealTimers();
+  });
+
+  it("returns the exact cached prompt for identical inputs in one minute bucket", () => {
+    const params = createSystemPromptCacheParams();
+
+    const first = buildCliAgentSystemPrompt(params);
+    const second = buildCliAgentSystemPrompt(params);
+
+    expect(second).toBe(first);
+    expect(getSystemPromptCacheStatsForTest()).toEqual({ size: 1, hits: 1, misses: 1 });
+  });
+
+  it("misses when config, tool schema, context, source, capabilities, or guidance changes", () => {
+    const base = createSystemPromptCacheParams();
+    buildCliAgentSystemPrompt(base);
+    buildCliAgentSystemPrompt(
+      createSystemPromptCacheParams({
+        config: {
+          ...base.config,
+          agents: {
+            ...base.config?.agents,
+            defaults: {
+              ...base.config?.agents?.defaults,
+              userTimezone: "America/Los_Angeles",
+            },
+          },
+        },
+      }),
+    );
+    buildCliAgentSystemPrompt(
+      createSystemPromptCacheParams({
+        tools: [
+          {
+            ...base.tools[0],
+            parameters: {
+              type: "object",
+              properties: { path: { type: "string" }, line: { type: "integer" } },
+              required: ["path"],
+            },
+          } as never,
+        ],
+      }),
+    );
+    buildCliAgentSystemPrompt(
+      createSystemPromptCacheParams({
+        contextFiles: [{ path: "AGENTS.md", content: "Changed repository policy." }],
+      }),
+    );
+    buildCliAgentSystemPrompt(
+      createSystemPromptCacheParams({ sourcePath: "/opt/openclaw/changed-source" }),
+    );
+    buildCliAgentSystemPrompt(
+      createSystemPromptCacheParams({ runtimeCapabilities: ["reactions", "edit"] }),
+    );
+    restorePluginCommands([
+      {
+        pluginId: "cache-guidance-test",
+        name: "cache_guidance",
+        description: "Cache guidance test",
+        agentPromptGuidance: [
+          { text: "Use /cache_guidance for this run.", surfaces: ["cli_backend"] },
+        ],
+        handler: async () => ({ text: "ok" }),
+      } as never,
+    ]);
+    const guided = buildCliAgentSystemPrompt(base);
+
+    expect(guided).toContain("Use /cache_guidance for this run.");
+    expect(getSystemPromptCacheStatsForTest()).toEqual({ size: 7, hits: 0, misses: 7 });
+  });
+
+  it("misses after the minute bucket rolls over", () => {
+    const params = createSystemPromptCacheParams();
+    const first = buildCliAgentSystemPrompt(params);
+    vi.setSystemTime(new Date("2026-07-05T12:00:59.999Z"));
+    expect(buildCliAgentSystemPrompt(params)).toBe(first);
+
+    vi.setSystemTime(new Date("2026-07-05T12:01:00.000Z"));
+    const nextMinute = buildCliAgentSystemPrompt(params);
+
+    // The rendered text can remain byte-identical; the counters prove the new
+    // minute used a distinct key and rebuilt it instead of returning the entry.
+    expect(nextMinute).toBe(first);
+    expect(getSystemPromptCacheStatsForTest()).toEqual({ size: 2, hits: 1, misses: 2 });
+  });
+
+  it("keeps at most 64 entries and refreshes recency on a hit", () => {
+    for (let index = 0; index < 64; index += 1) {
+      buildCliAgentSystemPrompt(createSystemPromptCacheParams({ sessionId: `session-${index}` }));
+    }
+    buildCliAgentSystemPrompt(createSystemPromptCacheParams({ sessionId: "session-0" }));
+    buildCliAgentSystemPrompt(createSystemPromptCacheParams({ sessionId: "session-64" }));
+    buildCliAgentSystemPrompt(createSystemPromptCacheParams({ sessionId: "session-1" }));
+    buildCliAgentSystemPrompt(createSystemPromptCacheParams({ sessionId: "session-0" }));
+
+    expect(getSystemPromptCacheStatsForTest()).toEqual({ size: 64, hits: 2, misses: 66 });
+  });
+});
 
 describe("loadPromptRefImages", () => {
   beforeEach(() => {

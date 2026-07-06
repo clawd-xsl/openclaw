@@ -31,6 +31,7 @@ import { resolveDefaultModelForAgent } from "../model-selection.js";
 import type { AgentTool } from "../runtime/index.js";
 import type { SandboxFsBridge } from "../sandbox/fs-bridge.js";
 import { detectRuntimeShell } from "../shell-utils.js";
+import { stableStringify } from "../stable-stringify.js";
 import { stripSystemPromptCacheBoundary } from "../system-prompt-cache-boundary.js";
 import { buildConfiguredAgentSystemPrompt } from "../system-prompt-config.js";
 import { buildSystemPromptParams } from "../system-prompt-params.js";
@@ -46,8 +47,139 @@ export {
 } from "./reliability.js";
 
 const CLI_RUN_QUEUE = new KeyedAsyncQueue();
+// The prompt embeds minute-granularity user time. A new bucket forces rebuild,
+// while the bounded LRU keeps stale buckets from accumulating indefinitely.
+const SYSTEM_PROMPT_CACHE_BUCKET_MS = 60_000;
+const MAX_SYSTEM_PROMPT_CACHE_ENTRIES = 64;
+const SYSTEM_PROMPT_CACHE = new Map<string, string>();
+let systemPromptCacheHitsForTest = 0;
+let systemPromptCacheMissesForTest = 0;
 const CLI_IMAGE_SWEEP_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
 const sweptCliImageRoots = new Set<string>();
+
+type CliAgentSystemPromptParams = {
+  workspaceDir: string;
+  cwd?: string;
+  config?: OpenClawConfig;
+  defaultThinkLevel?: ThinkLevel;
+  extraSystemPrompt?: string;
+  sourceReplyDeliveryMode?: SourceReplyDeliveryMode;
+  requireExplicitMessageTarget?: boolean;
+  silentReplyPromptMode?: SilentReplyPromptMode;
+  runtimeChannel?: string;
+  runtimeChatType?: ChatType;
+  runtimeCapabilities?: string[];
+  ownerNumbers?: string[];
+  heartbeatPrompt?: string;
+  docsPath?: string;
+  sourcePath?: string;
+  tools: AgentTool[];
+  contextFiles?: EmbeddedContextFile[];
+  skillsPrompt?: string;
+  modelDisplay: string;
+  agentId?: string;
+  sessionKey?: string;
+  sessionId?: string;
+};
+
+type CliSystemPromptDerivedInputs = {
+  acpEnabled: boolean;
+  defaultModelLabel: string;
+  nativeCommandGuidanceLines: string[];
+  runtimeInfo: ReturnType<typeof buildSystemPromptParams>["runtimeInfo"];
+  runtimeWorkspaceDir: string;
+  userTime: string | undefined;
+  userTimeFormat: ReturnType<typeof buildSystemPromptParams>["userTimeFormat"] | undefined;
+  userTimezone: string;
+};
+
+function buildSystemPromptCacheKey(
+  params: CliAgentSystemPromptParams,
+  derived: CliSystemPromptDerivedInputs,
+): string {
+  const minuteBucket = Math.floor(Date.now() / SYSTEM_PROMPT_CACHE_BUCKET_MS);
+  // Hash both source inputs and resolved runtime facts. Stable ordering prevents
+  // equivalent config/schema objects from missing due only to property order.
+  const serialized = stableStringify({
+    minuteBucket,
+    inputs: {
+      workspaceDir: params.workspaceDir,
+      cwd: params.cwd,
+      config: params.config,
+      defaultThinkLevel: params.defaultThinkLevel,
+      extraSystemPrompt: params.extraSystemPrompt,
+      sourceReplyDeliveryMode: params.sourceReplyDeliveryMode,
+      requireExplicitMessageTarget: params.requireExplicitMessageTarget,
+      silentReplyPromptMode: params.silentReplyPromptMode,
+      runtimeChannel: params.runtimeChannel,
+      runtimeChatType: params.runtimeChatType,
+      runtimeCapabilities: params.runtimeCapabilities,
+      ownerNumbers: params.ownerNumbers,
+      heartbeatPrompt: params.heartbeatPrompt,
+      docsPath: params.docsPath,
+      sourcePath: params.sourcePath,
+      tools: params.tools.map((tool) => ({
+        name: tool.name,
+        label: tool.label,
+        description: tool.description,
+        parameters: tool.parameters,
+      })),
+      contextFiles: params.contextFiles,
+      skillsPrompt: params.skillsPrompt,
+      modelDisplay: params.modelDisplay,
+      agentId: params.agentId,
+      sessionKey: params.sessionKey,
+      sessionId: params.sessionId,
+    },
+    derived,
+  });
+  return crypto.createHash("sha256").update(serialized).digest("hex");
+}
+
+function getCachedSystemPrompt(cacheKey: string): string | undefined {
+  const cached = SYSTEM_PROMPT_CACHE.get(cacheKey);
+  if (cached === undefined) {
+    return undefined;
+  }
+  // Map insertion order is the LRU order: refresh a hit to the newest slot.
+  SYSTEM_PROMPT_CACHE.delete(cacheKey);
+  SYSTEM_PROMPT_CACHE.set(cacheKey, cached);
+  return cached;
+}
+
+function setCachedSystemPrompt(cacheKey: string, prompt: string): void {
+  SYSTEM_PROMPT_CACHE.delete(cacheKey);
+  SYSTEM_PROMPT_CACHE.set(cacheKey, prompt);
+  while (SYSTEM_PROMPT_CACHE.size > MAX_SYSTEM_PROMPT_CACHE_ENTRIES) {
+    const oldestKey = SYSTEM_PROMPT_CACHE.keys().next().value;
+    if (oldestKey === undefined) {
+      break;
+    }
+    SYSTEM_PROMPT_CACHE.delete(oldestKey);
+  }
+}
+
+/** Clears the warm CLI system-prompt cache and counters for focused tests. */
+export function clearSystemPromptCacheForTest(): void {
+  SYSTEM_PROMPT_CACHE.clear();
+  systemPromptCacheHitsForTest = 0;
+  systemPromptCacheMissesForTest = 0;
+}
+
+/** Returns process-local warm CLI system-prompt cache counters for focused tests. */
+export function getSystemPromptCacheStats(): {
+  size: number;
+  hits: number;
+  misses: number;
+} {
+  return {
+    size: SYSTEM_PROMPT_CACHE.size,
+    hits: systemPromptCacheHitsForTest,
+    misses: systemPromptCacheMissesForTest,
+  };
+}
+
+export const getSystemPromptCacheStatsForTest = getSystemPromptCacheStats;
 
 function isClaudeCliProvider(providerId: string): boolean {
   return normalizeOptionalLowercaseString(providerId) === "claude-cli";
@@ -122,30 +254,7 @@ export function resolveCliRunQueueKey(params: {
 }
 
 /** Builds the system prompt sent to a CLI-backed agent runtime. */
-export function buildCliAgentSystemPrompt(params: {
-  workspaceDir: string;
-  cwd?: string;
-  config?: OpenClawConfig;
-  defaultThinkLevel?: ThinkLevel;
-  extraSystemPrompt?: string;
-  sourceReplyDeliveryMode?: SourceReplyDeliveryMode;
-  requireExplicitMessageTarget?: boolean;
-  silentReplyPromptMode?: SilentReplyPromptMode;
-  runtimeChannel?: string;
-  runtimeChatType?: ChatType;
-  runtimeCapabilities?: string[];
-  ownerNumbers?: string[];
-  heartbeatPrompt?: string;
-  docsPath?: string;
-  sourcePath?: string;
-  tools: AgentTool[];
-  contextFiles?: EmbeddedContextFile[];
-  skillsPrompt?: string;
-  modelDisplay: string;
-  agentId?: string;
-  sessionKey?: string;
-  sessionId?: string;
-}) {
+export function buildCliAgentSystemPrompt(params: CliAgentSystemPromptParams) {
   const runtimeWorkspaceDir = params.cwd?.trim() || params.workspaceDir;
   const defaultModelRef = resolveDefaultModelForAgent({
     cfg: params.config ?? {},
@@ -172,7 +281,27 @@ export function buildCliAgentSystemPrompt(params: {
       capabilities: params.runtimeCapabilities,
     },
   });
-  return buildConfiguredAgentSystemPrompt({
+  const acpEnabled = isAcpRuntimeSpawnAvailable({ config: params.config });
+  const nativeCommandGuidanceLines = listRegisteredPluginAgentPromptGuidance({
+    surface: "cli_backend",
+  });
+  const cacheKey = buildSystemPromptCacheKey(params, {
+    acpEnabled,
+    defaultModelLabel,
+    nativeCommandGuidanceLines,
+    runtimeInfo,
+    runtimeWorkspaceDir,
+    userTime,
+    userTimeFormat,
+    userTimezone,
+  });
+  const cached = getCachedSystemPrompt(cacheKey);
+  if (cached !== undefined) {
+    systemPromptCacheHitsForTest += 1;
+    return cached;
+  }
+  systemPromptCacheMissesForTest += 1;
+  const prompt = buildConfiguredAgentSystemPrompt({
     config: params.config,
     agentId: params.agentId,
     workspaceDir: runtimeWorkspaceDir,
@@ -186,11 +315,9 @@ export function buildCliAgentSystemPrompt(params: {
     heartbeatPrompt: params.heartbeatPrompt,
     docsPath: params.docsPath,
     sourcePath: params.sourcePath,
-    acpEnabled: isAcpRuntimeSpawnAvailable({ config: params.config }),
+    acpEnabled,
     promptSurface: "cli_backend",
-    nativeCommandGuidanceLines: listRegisteredPluginAgentPromptGuidance({
-      surface: "cli_backend",
-    }),
+    nativeCommandGuidanceLines,
     runtimeInfo,
     toolNames: params.tools.map((tool) => tool.name),
     skillsPrompt: params.skillsPrompt,
@@ -199,6 +326,8 @@ export function buildCliAgentSystemPrompt(params: {
     userTimeFormat,
     contextFiles: params.contextFiles,
   });
+  setCachedSystemPrompt(cacheKey, prompt);
+  return prompt;
 }
 
 /** Applies backend model aliases to a requested CLI model id. */
