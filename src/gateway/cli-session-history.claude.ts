@@ -21,6 +21,7 @@ import { attachOpenClawTranscriptMeta } from "./session-transcript-readers.js";
 
 export const CLAUDE_CLI_PROVIDER = "claude-cli";
 const CLAUDE_PROJECTS_RELATIVE_DIR = path.join(".claude", "projects");
+const CLAUDE_CONFIG_PROJECTS_RELATIVE_DIR = "projects";
 
 type ClaudeCliProjectEntry = {
   type?: unknown;
@@ -56,8 +57,17 @@ function resolveHistoryHomeDir(homeDir?: string): string {
   return normalizeOptionalString(homeDir) || process.env.HOME || os.homedir();
 }
 
-function resolveClaudeProjectsDir(homeDir?: string): string {
-  return path.join(resolveHistoryHomeDir(homeDir), CLAUDE_PROJECTS_RELATIVE_DIR);
+function resolveClaudeProjectsDirs(params: { homeDir?: string; configDir?: string }): string[] {
+  const configuredRoot =
+    normalizeOptionalString(params.configDir) ??
+    (params.homeDir === undefined
+      ? normalizeOptionalString(process.env.CLAUDE_CONFIG_DIR)
+      : undefined);
+  const candidates = [
+    ...(configuredRoot ? [path.resolve(configuredRoot, CLAUDE_CONFIG_PROJECTS_RELATIVE_DIR)] : []),
+    path.resolve(resolveHistoryHomeDir(params.homeDir), CLAUDE_PROJECTS_RELATIVE_DIR),
+  ];
+  return [...new Set(candidates)];
 }
 
 export function resolveClaudeCliBindingSessionId(
@@ -379,6 +389,7 @@ function parseClaudeCliHistoryEntry(
 export function resolveClaudeCliSessionFilePath(params: {
   cliSessionId: string;
   homeDir?: string;
+  configDir?: string;
 }): string | undefined {
   const sessionId = params.cliSessionId.trim();
   if (
@@ -391,26 +402,27 @@ export function resolveClaudeCliSessionFilePath(params: {
   ) {
     return undefined;
   }
-  const projectsDir = resolveClaudeProjectsDir(params.homeDir);
-  let projectEntries: fs.Dirent[];
-  try {
-    projectEntries = fs.readdirSync(projectsDir, { withFileTypes: true });
-  } catch {
-    return undefined;
-  }
+  for (const projectsDir of resolveClaudeProjectsDirs(params)) {
+    let projectEntries: fs.Dirent[];
+    try {
+      projectEntries = fs.readdirSync(projectsDir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
 
-  for (const entry of projectEntries) {
-    if (!entry.isDirectory()) {
-      continue;
-    }
-    const projectDir = path.join(projectsDir, entry.name);
-    const candidate = path.resolve(projectDir, `${sessionId}.jsonl`);
-    const resolvedProjectDir = path.resolve(projectDir);
-    if (!candidate.startsWith(`${resolvedProjectDir}${path.sep}`)) {
-      continue;
-    }
-    if (fs.existsSync(candidate)) {
-      return candidate;
+    for (const entry of projectEntries) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+      const projectDir = path.join(projectsDir, entry.name);
+      const candidate = path.resolve(projectDir, `${sessionId}.jsonl`);
+      const resolvedProjectDir = path.resolve(projectDir);
+      if (!candidate.startsWith(`${resolvedProjectDir}${path.sep}`)) {
+        continue;
+      }
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
     }
   }
   return undefined;
@@ -420,6 +432,7 @@ export function resolveClaudeCliSessionFilePath(params: {
 export function readClaudeCliSessionMessages(params: {
   cliSessionId: string;
   homeDir?: string;
+  configDir?: string;
   localSessionId?: string;
   reseedReceipt?: CliSessionReseedReceipt;
 }): TranscriptLikeMessage[] {
@@ -513,6 +526,7 @@ function extractSummaryText(entry: ClaudeCliProjectEntry): string | undefined {
 export function readClaudeCliFallbackSeed(params: {
   cliSessionId: string;
   homeDir?: string;
+  configDir?: string;
 }): ClaudeCliFallbackSeed | undefined {
   const filePath = resolveClaudeCliSessionFilePath(params);
   if (!filePath) {

@@ -1,7 +1,13 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { withEnvAsync } from "../../test-utils/env.js";
 import {
   buildClaudeCliContinuityPrompt,
   generateClaudeCliContinuitySummary,
+  readClaudeCliNativePromptTokens,
+  readClaudeCliNativeUsage,
   sanitizeClaudeCliContinuityText,
   setCliContinuityRuntimeTestDeps,
 } from "./agent-runner-cli-continuity.runtime.js";
@@ -143,5 +149,53 @@ describe("Claude CLI continuity summary source", () => {
       }),
     );
     expect(runCliAgent.mock.calls[0]?.[0]).not.toHaveProperty("cleanupBundleMcpOnRunEnd");
+  });
+
+  it("reads the final native Claude call prompt and output usage", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-cli-native-usage-"));
+    const homeDir = path.join(root, "home");
+    const sessionId = "f13c4c3a-355b-4d7a-8215-acdeaa5d44a5";
+    const filePath = path.join(homeDir, ".claude", "projects", "workspace", `${sessionId}.jsonl`);
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.writeFile(
+      filePath,
+      [
+        "not-json",
+        JSON.stringify({
+          type: "assistant",
+          message: {
+            usage: {
+              input_tokens: 2,
+              cache_creation_input_tokens: 17_394,
+              cache_read_input_tokens: 9_914,
+              output_tokens: 1,
+            },
+          },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          message: {
+            usage: {
+              input_tokens: 2,
+              cache_creation_input_tokens: 28,
+              cache_read_input_tokens: 27_308,
+              output_tokens: 6,
+            },
+          },
+        }),
+      ].join("\n"),
+      "utf8",
+    );
+    try {
+      await withEnvAsync({ HOME: homeDir, CLAUDE_CONFIG_DIR: "" }, async () => {
+        await expect(readClaudeCliNativeUsage(sessionId)).resolves.toEqual({
+          promptTokens: 27_338,
+          outputTokens: 6,
+        });
+        await expect(readClaudeCliNativePromptTokens(sessionId)).resolves.toBe(27_338);
+      });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 });

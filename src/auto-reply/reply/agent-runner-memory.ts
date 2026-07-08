@@ -129,8 +129,8 @@ async function runEmbeddedAgentDefault(
   return await runEmbeddedAgent(...args);
 }
 
-async function readClaudeCliNativePromptTokensDefault(cliSessionId: string) {
-  return await (await loadCliContinuityRuntime()).readClaudeCliNativePromptTokens(cliSessionId);
+async function readClaudeCliNativeUsageDefault(cliSessionId: string) {
+  return await (await loadCliContinuityRuntime()).readClaudeCliNativeUsage(cliSessionId);
 }
 
 async function generateClaudeCliContinuitySummaryDefault(
@@ -184,7 +184,7 @@ const memoryDeps = {
   runWithModelFallback,
   ensureSelectedAgentHarnessPlugin,
   runEmbeddedAgent: runEmbeddedAgentDefault,
-  readClaudeCliNativePromptTokens: readClaudeCliNativePromptTokensDefault,
+  readClaudeCliNativeUsage: readClaudeCliNativeUsageDefault,
   generateClaudeCliContinuitySummary: generateClaudeCliContinuitySummaryDefault,
   ensureMemoryFlushTargetFile,
   registerAgentRunContext,
@@ -203,7 +203,7 @@ export function setAgentRunnerMemoryTestDeps(overrides?: Partial<typeof memoryDe
     ensureSelectedAgentHarnessPlugin,
     compactEmbeddedAgentSession: compactEmbeddedAgentSessionDefault,
     runEmbeddedAgent: runEmbeddedAgentDefault,
-    readClaudeCliNativePromptTokens: readClaudeCliNativePromptTokensDefault,
+    readClaudeCliNativeUsage: readClaudeCliNativeUsageDefault,
     generateClaudeCliContinuitySummary: generateClaudeCliContinuitySummaryDefault,
     ensureMemoryFlushTargetFile,
     registerAgentRunContext,
@@ -599,21 +599,45 @@ async function runClaudeCliPreflightCompactionIfNeeded(params: {
     1,
     Math.min(transcriptThreshold, Math.floor(contextWindowTokens * CLI_CONTINUITY_CONTEXT_RATIO)),
   );
-  let promptTokens: number | undefined;
+  let nativeUsage: Awaited<ReturnType<typeof memoryDeps.readClaudeCliNativeUsage>> = undefined;
   try {
-    promptTokens = await memoryDeps.readClaudeCliNativePromptTokens(cliSessionId);
+    nativeUsage = await memoryDeps.readClaudeCliNativeUsage(cliSessionId);
   } catch (error) {
     logVerbose(
-      `preflightCompaction skipped: sessionKey=${params.sessionKey} runtime=${params.provider} native_usage_error=${formatErrorMessage(error)}`,
+      `preflightCompaction native usage unavailable: sessionKey=${params.sessionKey} runtime=${params.provider} error=${formatErrorMessage(error)}`,
+    );
+  }
+  const storedPromptTokens = resolveFreshSessionTotalTokens(params.entry);
+  const basePromptTokens = nativeUsage?.promptTokens ?? storedPromptTokens;
+  if (basePromptTokens === undefined) {
+    logVerbose(
+      `preflightCompaction skipped: sessionKey=${params.sessionKey} runtime=${params.provider} reason=no_context_usage`,
     );
     return params.entry;
   }
+  const storedLastCallOutputTokens = params.entry.lastCallOutputTokens;
+  const lastCallOutputTokens =
+    nativeUsage?.outputTokens ??
+    (typeof storedLastCallOutputTokens === "number" &&
+    Number.isFinite(storedLastCallOutputTokens) &&
+    storedLastCallOutputTokens >= 0
+      ? storedLastCallOutputTokens
+      : undefined);
+  const promptForEstimate = params.promptForEstimate ?? params.followupRun.prompt;
+  const promptTokenEstimate = estimatePromptTokensForMemoryFlush(promptForEstimate);
+  const projectedPromptTokens = resolveEffectivePromptTokens(
+    basePromptTokens,
+    lastCallOutputTokens,
+    promptTokenEstimate,
+  );
   logVerbose(
     `preflightCompaction check: sessionKey=${params.sessionKey} runtime=${params.provider} ` +
-      `nativeSession=${cliSessionId} nativePromptTokens=${promptTokens ?? "undefined"} ` +
+      `nativeSession=${cliSessionId} nativePromptTokens=${nativeUsage?.promptTokens ?? "undefined"} ` +
+      `storedPromptTokens=${storedPromptTokens ?? "undefined"} lastOutputTokens=${lastCallOutputTokens ?? "undefined"} ` +
+      `currentPromptEstimate=${promptTokenEstimate ?? "undefined"} projectedPromptTokens=${projectedPromptTokens} ` +
       `threshold=${thresholdTokens} overlay=${getCliCompactionOverlay(params.entry, params.provider) ? "yes" : "no"}`,
   );
-  if (!promptTokens || promptTokens < thresholdTokens) {
+  if (projectedPromptTokens < thresholdTokens) {
     return params.entry;
   }
 
@@ -665,7 +689,6 @@ async function runClaudeCliPreflightCompactionIfNeeded(params: {
     return params.entry;
   }
 
-  const promptForEstimate = params.promptForEstimate ?? params.followupRun.prompt;
   const tokensAfter = estimatePromptTokensForMemoryFlush(
     `${result.summary}\n\n${promptForEstimate}`,
   );
@@ -676,7 +699,7 @@ async function runClaudeCliPreflightCompactionIfNeeded(params: {
       provider: params.provider,
       summary: result.summary,
       sourceModel: result.model,
-      tokensBefore: promptTokens,
+      tokensBefore: projectedPromptTokens,
       tokensAfter,
       contextWindowTokens,
       thresholdTokens,
@@ -1463,14 +1486,14 @@ export async function runMemoryFlushIfNeeded(params: {
       : undefined;
   const hasFreshPersistedPromptTokens =
     typeof persistedPromptTokens === "number" && entry?.totalTokensFresh === true;
-  const persistedOutputTokensRaw = entry?.outputTokens;
-  const persistedOutputTokens =
+  const persistedLastCallOutputTokensRaw = entry?.lastCallOutputTokens;
+  const persistedLastCallOutputTokens =
     isCli &&
     hasFreshPersistedPromptTokens &&
-    typeof persistedOutputTokensRaw === "number" &&
-    Number.isFinite(persistedOutputTokensRaw) &&
-    persistedOutputTokensRaw >= 0
-      ? persistedOutputTokensRaw
+    typeof persistedLastCallOutputTokensRaw === "number" &&
+    Number.isFinite(persistedLastCallOutputTokensRaw) &&
+    persistedLastCallOutputTokensRaw >= 0
+      ? persistedLastCallOutputTokensRaw
       : undefined;
 
   const flushThreshold =
@@ -1485,7 +1508,7 @@ export async function runMemoryFlushIfNeeded(params: {
     canAttemptFlush &&
     entry &&
     hasFreshPersistedPromptTokens &&
-    persistedOutputTokens === undefined &&
+    persistedLastCallOutputTokens === undefined &&
     typeof promptTokenEstimate === "number" &&
     Number.isFinite(promptTokenEstimate) &&
     flushThreshold > 0 &&
@@ -1542,7 +1565,11 @@ export async function runMemoryFlushIfNeeded(params: {
     transcriptOutputTokens >= 0
       ? transcriptOutputTokens
       : undefined;
-  const transcriptOutputTokensPatch = { outputTokens: normalizedTranscriptOutputTokens };
+  // Transcript usage is a final-call context snapshot. Keep aggregate turn
+  // accounting intact while repairing only the context projection fields.
+  const transcriptOutputTokensPatch = {
+    lastCallOutputTokens: normalizedTranscriptOutputTokens,
+  };
 
   if (entry && shouldPersistTranscriptPromptTokens) {
     const nextEntry = {
@@ -1587,7 +1614,7 @@ export async function runMemoryFlushIfNeeded(params: {
   const persistedUsageSnapshot = hasFreshPersistedPromptTokens
     ? {
         promptTokens: persistedPromptTokens,
-        outputTokens: persistedOutputTokens,
+        outputTokens: persistedLastCallOutputTokens,
       }
     : undefined;
   const transcriptUsageCandidate = hasReliableTranscriptPromptTokens
@@ -1721,7 +1748,7 @@ export async function runMemoryFlushIfNeeded(params: {
       `isHeartbeat=${params.isHeartbeat} isCli=${isCli} memoryFlushWritable=${memoryFlushWritable} ` +
       `compactionCount=${entry?.compactionCount ?? 0} memoryFlushCompactionCount=${entry?.memoryFlushCompactionCount ?? "undefined"} ` +
       `persistedPromptTokens=${persistedPromptTokens ?? "undefined"} persistedFresh=${entry?.totalTokensFresh === true} ` +
-      `persistedOutputTokens=${persistedOutputTokens ?? "undefined"} ` +
+      `persistedLastCallOutputTokens=${persistedLastCallOutputTokens ?? "undefined"} ` +
       `promptTokensEst=${promptTokenEstimate ?? "undefined"} transcriptPromptTokens=${transcriptPromptTokens ?? "undefined"} transcriptOutputTokens=${transcriptOutputTokens ?? "undefined"} ` +
       `projectedTokenCount=${projectedTokenCount ?? "undefined"} transcriptBytes=${transcriptByteSize ?? "undefined"} ` +
       `forceFlushTranscriptBytes=${forceFlushTranscriptBytes} forceFlushByTranscriptSize=${shouldForceFlushByTranscriptSize} ` +

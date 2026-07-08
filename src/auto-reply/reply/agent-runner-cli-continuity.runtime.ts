@@ -351,10 +351,15 @@ export async function generateClaudeCliContinuitySummary(params: {
   }
 }
 
-/** Read the newest native Claude input-context usage without scanning the whole file. */
-export async function readClaudeCliNativePromptTokens(
+export type ClaudeCliNativeUsageSnapshot = {
+  promptTokens: number;
+  outputTokens?: number;
+};
+
+/** Read the newest native Claude call usage without scanning the whole file. */
+export async function readClaudeCliNativeUsage(
   cliSessionId: string,
-): Promise<number | undefined> {
+): Promise<ClaudeCliNativeUsageSnapshot | undefined> {
   const filePath = resolveClaudeCliSessionFilePath({ cliSessionId });
   if (!filePath) {
     return undefined;
@@ -384,7 +389,15 @@ export async function readClaudeCliNativePromptTokens(
         const usage = normalizeUsage(parsed.message?.usage ?? parsed.usage);
         const promptTokens = derivePromptTokens(usage);
         if (typeof promptTokens === "number" && Number.isFinite(promptTokens) && promptTokens > 0) {
-          return Math.floor(promptTokens);
+          const outputTokens = usage?.output;
+          return {
+            promptTokens: Math.floor(promptTokens),
+            ...(typeof outputTokens === "number" &&
+            Number.isFinite(outputTokens) &&
+            outputTokens >= 0
+              ? { outputTokens: Math.floor(outputTokens) }
+              : {}),
+          };
         }
       } catch {
         // Ignore malformed external history lines.
@@ -396,4 +409,11 @@ export async function readClaudeCliNativePromptTokens(
   } finally {
     await handle.close();
   }
+}
+
+/** Backwards-compatible prompt-only view of the newest native Claude call usage. */
+export async function readClaudeCliNativePromptTokens(
+  cliSessionId: string,
+): Promise<number | undefined> {
+  return (await readClaudeCliNativeUsage(cliSessionId))?.promptTokens;
 }

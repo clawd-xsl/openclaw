@@ -36,7 +36,7 @@ const incrementCompactionCountMock = vi.fn();
 const ensureSelectedAgentHarnessPluginMock = vi.fn();
 const ensureMemoryFlushTargetFileMock = vi.fn();
 const emitAgentEventMock = vi.fn();
-const readClaudeCliNativePromptTokensMock = vi.fn();
+const readClaudeCliNativeUsageMock = vi.fn();
 const generateClaudeCliContinuitySummaryMock = vi.fn();
 const TEST_MAX_FLUSH_FAILURES = 3;
 
@@ -211,7 +211,7 @@ describe("runMemoryFlushIfNeeded", () => {
     ensureMemoryFlushTargetFileMock.mockReset().mockResolvedValue(undefined);
     ensureSelectedAgentHarnessPluginMock.mockReset().mockResolvedValue(undefined);
     emitAgentEventMock.mockReset();
-    readClaudeCliNativePromptTokensMock.mockReset().mockResolvedValue(undefined);
+    readClaudeCliNativeUsageMock.mockReset().mockResolvedValue(undefined);
     generateClaudeCliContinuitySummaryMock.mockReset();
     incrementCompactionCountMock.mockReset().mockImplementation(async (params) => {
       const sessionKey = String(params.sessionKey ?? "");
@@ -252,7 +252,7 @@ describe("runMemoryFlushIfNeeded", () => {
       ensureSelectedAgentHarnessPlugin: ensureSelectedAgentHarnessPluginMock as never,
       registerAgentRunContext: vi.fn() as never,
       emitAgentEvent: emitAgentEventMock as never,
-      readClaudeCliNativePromptTokens: readClaudeCliNativePromptTokensMock as never,
+      readClaudeCliNativeUsage: readClaudeCliNativeUsageMock as never,
       generateClaudeCliContinuitySummary: generateClaudeCliContinuitySummaryMock as never,
       randomUUID: () => {
         randomUuidIndex += 1;
@@ -1139,7 +1139,7 @@ describe("runMemoryFlushIfNeeded", () => {
     { contextWindow: 200_000, threshold: 176_000 },
     { contextWindow: 1_000_000, threshold: 976_000 },
   ])(
-    "projects fresh CLI output across the $contextWindow-token context threshold",
+    "projects fresh CLI final-call output across the $contextWindow-token context threshold",
     async ({ contextWindow, threshold }) => {
       const cfg = {
         agents: {
@@ -1161,7 +1161,8 @@ describe("runMemoryFlushIfNeeded", () => {
         inputTokens: 20,
         cacheRead: promptTokens - 33_067,
         cacheWrite: 33_047,
-        outputTokens,
+        outputTokens: 87_000,
+        lastCallOutputTokens: outputTokens,
         totalTokens: promptTokens,
         totalTokensFresh: true,
         compactionCount: 1,
@@ -1193,6 +1194,60 @@ describe("runMemoryFlushIfNeeded", () => {
       expect(runEmbeddedAgentMock).toHaveBeenCalledTimes(1);
     },
   );
+
+  it("does not project aggregate tool-loop output as final-call context growth", async () => {
+    registerMemoryFlushPlanResolverForTest(() => ({
+      softThresholdTokens: 0,
+      forceFlushTranscriptBytes: 1_000_000_000,
+      reserveTokensFloor: 10,
+      prompt: "Pre-compaction memory flush.\nNO_REPLY",
+      systemPrompt: "Write memory to memory/YYYY-MM-DD.md.",
+      relativePath: "memory/2023-11-14.md",
+    }));
+    const cfg = {
+      agents: {
+        defaults: {
+          cliBackends: { "claude-cli": { command: "claude" } },
+          compaction: { memoryFlush: {} },
+        },
+      },
+    } satisfies OpenClawConfig;
+    const sessionFile = path.join(rootDir, "cli-tool-loop-output.jsonl");
+    await fs.writeFile(sessionFile, "", "utf8");
+    const sessionEntry: SessionEntry = {
+      sessionId: "tool-loop-output",
+      sessionFile,
+      updatedAt: Date.now(),
+      totalTokens: 80,
+      totalTokensFresh: true,
+      outputTokens: 87,
+      lastCallOutputTokens: 6,
+      compactionCount: 1,
+    };
+
+    await runMemoryFlushIfNeeded({
+      cfg,
+      followupRun: createTestFollowupRun({
+        provider: "claude-cli",
+        model: "claude-opus-4-7",
+        sessionId: sessionEntry.sessionId,
+        sessionFile,
+        workspaceDir: rootDir,
+      }),
+      promptForEstimate: "",
+      sessionCtx: { Provider: "whatsapp" } as unknown as TemplateContext,
+      defaultModel: "claude-cli/claude-opus-4-7",
+      agentCfgContextTokens: 100,
+      resolvedVerboseLevel: "off",
+      sessionEntry,
+      sessionStore: { main: sessionEntry },
+      sessionKey: "main",
+      isHeartbeat: false,
+      replyOperation: createReplyOperation(),
+    });
+
+    expect(runEmbeddedAgentMock).not.toHaveBeenCalled();
+  });
 
   it("repeats CLI pressure flushes only after configured token growth", async () => {
     registerMemoryFlushPlanResolverForTest(() => ({
@@ -2402,6 +2457,7 @@ describe("runMemoryFlushIfNeeded", () => {
         sessionFile,
         sessionKey: "main",
       }),
+      promptForEstimate: "",
       defaultModel: "anthropic/claude-opus-4-6",
       agentCfgContextTokens: 100_000,
       sessionEntry,
@@ -2438,6 +2494,7 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionId: "session",
       sessionFile,
       updatedAt: Date.now(),
+      outputTokens: 87,
       totalTokensFresh: false,
     };
     await writeTestSessionStore(storePath, "main", sessionEntry);
@@ -2476,7 +2533,8 @@ describe("runMemoryFlushIfNeeded", () => {
       SessionEntry
     >;
     expect(persistedStore.main?.totalTokens).toBe(80_000);
-    expect(persistedStore.main?.outputTokens).toBe(4_000);
+    expect(persistedStore.main?.outputTokens).toBe(87);
+    expect(persistedStore.main?.lastCallOutputTokens).toBe(4_000);
   });
 
   it("fails when required preflight compaction returns an unknown successful no-op", async () => {
@@ -2665,7 +2723,7 @@ describe("runMemoryFlushIfNeeded", () => {
 
     expect(entry).toBe(sessionEntry);
     expect(compactEmbeddedAgentSessionMock).not.toHaveBeenCalled();
-    expect(readClaudeCliNativePromptTokensMock).not.toHaveBeenCalled();
+    expect(readClaudeCliNativeUsageMock).not.toHaveBeenCalled();
   });
 
   it("rolls a pressured Claude CLI binding into a provider-scoped continuity overlay", async () => {
@@ -2687,7 +2745,7 @@ describe("runMemoryFlushIfNeeded", () => {
       systemPrompt: "Write memory to memory/YYYY-MM-DD.md.",
       relativePath: "memory/2023-11-14.md",
     }));
-    readClaudeCliNativePromptTokensMock.mockResolvedValue(300_000);
+    readClaudeCliNativeUsageMock.mockResolvedValue({ promptTokens: 300_000, outputTokens: 6 });
     generateClaudeCliContinuitySummaryMock.mockResolvedValue({
       ok: true,
       summary:
@@ -2724,6 +2782,7 @@ describe("runMemoryFlushIfNeeded", () => {
         sessionId: "local-session",
         sessionKey: "main",
       }),
+      promptForEstimate: "",
       defaultModel: "anthropic/claude-opus-4-6",
       sessionEntry,
       sessionStore,
@@ -2734,7 +2793,7 @@ describe("runMemoryFlushIfNeeded", () => {
       onCompactionNotice: notice,
     });
 
-    expect(readClaudeCliNativePromptTokensMock).toHaveBeenCalledWith("native-session");
+    expect(readClaudeCliNativeUsageMock).toHaveBeenCalledWith("native-session");
     expect(generateClaudeCliContinuitySummaryMock).toHaveBeenCalledWith(
       expect.objectContaining({
         cliSessionId: "native-session",
@@ -2748,7 +2807,7 @@ describe("runMemoryFlushIfNeeded", () => {
       provider: "claude-cli",
       localSessionId: "local-session",
       nativeSessionId: "native-session",
-      tokensBefore: 300_000,
+      tokensBefore: 300_006,
       contextWindowTokens: 350_000,
       thresholdTokens: 280_000,
       compactionModel: "anthropic/claude-sonnet-4-6",
@@ -2764,6 +2823,70 @@ describe("runMemoryFlushIfNeeded", () => {
     );
   });
 
+  it("falls back to fresh stored usage and projects the next Claude request", async () => {
+    cliBackendsTesting.setDepsForTest({
+      resolveRuntimeCliBackends: () => [
+        {
+          id: "claude-cli",
+          modelProvider: "anthropic",
+          pluginId: "anthropic",
+          config: { command: "claude" },
+        },
+      ],
+    });
+    registerMemoryFlushPlanResolverForTest(() => ({
+      softThresholdTokens: 4_000,
+      forceFlushTranscriptBytes: 1_000_000_000,
+      reserveTokensFloor: 0,
+      prompt: "Pre-compaction memory flush.\nNO_REPLY",
+      systemPrompt: "Write memory to memory/YYYY-MM-DD.md.",
+      relativePath: "memory/2023-11-14.md",
+    }));
+    generateClaudeCliContinuitySummaryMock.mockResolvedValue({
+      ok: true,
+      summary: "## Decisions\nContinue in a fresh native session.",
+      sourceMessageCount: 4,
+    });
+    const sessionEntry: SessionEntry = {
+      sessionId: "local-session",
+      updatedAt: Date.now(),
+      totalTokens: 79_900,
+      totalTokensFresh: true,
+      lastCallOutputTokens: 50,
+      agentRuntimeOverride: "claude-cli",
+      cliSessionBindings: { "claude-cli": { sessionId: "native-session" } },
+    };
+    const sessionStore = { main: sessionEntry };
+
+    const entry = await runPreflightCompactionIfNeeded({
+      cfg: {
+        models: {
+          providers: {
+            anthropic: { models: [{ id: "claude-opus-4-6", contextWindow: 100_000 }] },
+          },
+        },
+        agents: { defaults: { compaction: { memoryFlush: {} } } },
+      } as never,
+      followupRun: createTestFollowupRun({
+        provider: "anthropic",
+        model: "claude-opus-4-6",
+        sessionId: "local-session",
+        sessionKey: "main",
+      }),
+      promptForEstimate: "x".repeat(1_000),
+      defaultModel: "anthropic/claude-opus-4-6",
+      sessionEntry,
+      sessionStore,
+      sessionKey: "main",
+      isHeartbeat: false,
+      replyOperation: createReplyOperation(),
+    });
+
+    expect(readClaudeCliNativeUsageMock).toHaveBeenCalledWith("native-session");
+    expect(generateClaudeCliContinuitySummaryMock).toHaveBeenCalledOnce();
+    expect(entry?.cliCompactionOverlays?.["claude-cli"]?.tokensBefore).toBeGreaterThan(80_000);
+  });
+
   it("discards a Claude CLI summary when the local session changes during generation", async () => {
     cliBackendsTesting.setDepsForTest({
       resolveRuntimeCliBackends: () => [
@@ -2775,7 +2898,7 @@ describe("runMemoryFlushIfNeeded", () => {
         },
       ],
     });
-    readClaudeCliNativePromptTokensMock.mockResolvedValue(90_000);
+    readClaudeCliNativeUsageMock.mockResolvedValue({ promptTokens: 90_000, outputTokens: 6 });
     const oldEntry: SessionEntry = {
       sessionId: "old-local-session",
       updatedAt: 1,
@@ -2840,7 +2963,7 @@ describe("runMemoryFlushIfNeeded", () => {
         },
       ],
     });
-    readClaudeCliNativePromptTokensMock.mockResolvedValue(90_000);
+    readClaudeCliNativeUsageMock.mockResolvedValue({ promptTokens: 90_000, outputTokens: 6 });
     generateClaudeCliContinuitySummaryMock.mockRejectedValue(new Error("summary process failed"));
     const sessionEntry: SessionEntry = {
       sessionId: "local-session",

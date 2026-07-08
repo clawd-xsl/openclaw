@@ -225,6 +225,37 @@ describe("cli session history", () => {
     });
   });
 
+  it("finds sessions in CLAUDE_CONFIG_DIR while retaining the default store fallback", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-claude-config-history-"));
+    const homeDir = path.join(root, "home");
+    const configDir = path.join(root, "claude-config");
+    const sessionId = "77943d0e-2d1d-4d4d-8d09-e00e2f53226e";
+    const filePath = path.join(configDir, "projects", "demo-workspace", `${sessionId}.jsonl`);
+    const defaultSessionId = "6d19223c-2ec6-4d1f-aed9-27f43f88c751";
+    const defaultFilePath = path.join(
+      homeDir,
+      ".claude",
+      "projects",
+      "demo-workspace",
+      `${defaultSessionId}.jsonl`,
+    );
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.mkdir(path.dirname(defaultFilePath), { recursive: true });
+    await fs.writeFile(filePath, createClaudeHistoryLines(sessionId), "utf-8");
+    await fs.writeFile(defaultFilePath, createClaudeHistoryLines(defaultSessionId), "utf-8");
+    try {
+      await withEnvAsync({ HOME: homeDir, CLAUDE_CONFIG_DIR: configDir }, () => {
+        expect(resolveClaudeCliSessionFilePath({ cliSessionId: sessionId })).toBe(filePath);
+        expect(resolveClaudeCliSessionFilePath({ cliSessionId: defaultSessionId })).toBe(
+          defaultFilePath,
+        );
+        expect(readClaudeCliSessionMessages({ cliSessionId: sessionId })).toHaveLength(3);
+      });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("recovers the current user text from legacy reseed envelopes", async () => {
     await withClaudeProjectsDir(async ({ homeDir, sessionId, filePath }) => {
       const reseedPrompt = buildLegacyReseedPrompt();
