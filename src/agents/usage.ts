@@ -210,8 +210,9 @@ export function normalizeUsage(raw?: UsageLike | null): NormalizedUsage | undefi
 /**
  * Maps normalized usage to OpenAI Chat Completions `usage` fields.
  *
- * `prompt_tokens` is input + cacheRead (cache write is excluded to match the
- * OpenAI-style breakdown used by the compat endpoint).
+ * `prompt_tokens` is input + cacheRead + cacheWrite. Cache creation is prompt
+ * work too; omitting it undercounts Anthropic/Claude CLI turns that do not
+ * provide a separate aggregate total.
  *
  * `total_tokens` is the greater of the component sum and aggregate `total` when
  * present, so a partial breakdown cannot discard a valid upstream total.
@@ -227,7 +228,8 @@ export function toOpenAiChatCompletionsUsage(
   const input = usage?.input ?? 0;
   const output = usage?.output ?? 0;
   const cacheRead = usage?.cacheRead ?? 0;
-  const promptTokens = Math.max(0, input + cacheRead);
+  const cacheWrite = usage?.cacheWrite ?? 0;
+  const promptTokens = Math.max(0, input + cacheRead + cacheWrite);
   const completionTokens = Math.max(0, output);
   const componentTotal = promptTokens + completionTokens;
   const aggregateRaw = usage?.total;

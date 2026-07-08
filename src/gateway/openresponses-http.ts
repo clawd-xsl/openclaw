@@ -361,9 +361,11 @@ function toUsage(
   const output = value.output ?? 0;
   const cacheRead = value.cacheRead ?? 0;
   const cacheWrite = value.cacheWrite ?? 0;
-  const total = value.total ?? input + output + cacheRead + cacheWrite;
+  const inputTotal = input + cacheRead + cacheWrite;
+  const componentTotal = inputTotal + output;
+  const total = Math.max(value.total ?? 0, componentTotal);
   return {
-    input_tokens: Math.max(0, input),
+    input_tokens: Math.max(0, inputTotal),
     output_tokens: Math.max(0, output),
     total_tokens: Math.max(0, total),
   };

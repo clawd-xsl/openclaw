@@ -840,7 +840,7 @@ describe("OpenResponses HTTP API (e2e)", () => {
       });
       expect(resUsage.status).toBe(200);
       const usageJson = (await resUsage.json()) as Record<string, unknown>;
-      expect(usageJson.usage).toEqual({ input_tokens: 3, output_tokens: 5, total_tokens: 10 });
+      expect(usageJson.usage).toEqual({ input_tokens: 5, output_tokens: 5, total_tokens: 10 });
       await ensureResponseConsumed(resUsage);
 
       mockAgentOnce([{ text: "hello" }]);

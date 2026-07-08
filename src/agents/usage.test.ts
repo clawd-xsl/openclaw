@@ -227,7 +227,7 @@ describe("toOpenAiChatCompletionsUsage", () => {
     });
   });
 
-  it("raises total_tokens with aggregate when cache write is excluded from prompt sum", () => {
+  it("includes cache creation in prompt_tokens while preserving a larger aggregate", () => {
     expect(
       toOpenAiChatCompletionsUsage({
         input: 10,
@@ -236,9 +236,25 @@ describe("toOpenAiChatCompletionsUsage", () => {
         total: 200,
       }),
     ).toEqual({
-      prompt_tokens: 10,
+      prompt_tokens: 110,
       completion_tokens: 5,
       total_tokens: 200,
+    });
+  });
+
+  it("counts Claude cache creation when no explicit total is reported", () => {
+    expect(
+      toOpenAiChatCompletionsUsage({
+        input: 4,
+        output: 87,
+        cacheRead: 14_393,
+        cacheWrite: 22_829,
+      }),
+    ).toEqual({
+      prompt_tokens: 37_226,
+      completion_tokens: 87,
+      total_tokens: 37_313,
+      prompt_tokens_details: { cached_tokens: 14_393 },
     });
   });
 

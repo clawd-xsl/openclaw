@@ -1328,9 +1328,9 @@ describe("OpenAI-compatible HTTP API (e2e)", () => {
         } as never);
         const json = await postSyncUserMessage("usage");
         expect(json.usage).toEqual({
-          prompt_tokens: 30,
+          prompt_tokens: 33,
           completion_tokens: 5,
-          total_tokens: 35,
+          total_tokens: 38,
           prompt_tokens_details: { cached_tokens: 20 },
         });
       }
@@ -1439,7 +1439,7 @@ describe("OpenAI-compatible HTTP API (e2e)", () => {
         } as never);
         const json = await postSyncUserMessage("usage");
         expect(json.usage).toEqual({
-          prompt_tokens: 0,
+          prompt_tokens: 10,
           completion_tokens: 0,
           total_tokens: 10,
         });
