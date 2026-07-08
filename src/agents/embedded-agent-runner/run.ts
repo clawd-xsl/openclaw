@@ -324,6 +324,7 @@ async function resetNoRealConversationTokenSnapshot(params: {
         totalTokensFresh: true,
         inputTokens: undefined,
         outputTokens: undefined,
+        lastCallOutputTokens: undefined,
         cacheRead: undefined,
         cacheWrite: undefined,
         contextBudgetStatus: undefined,

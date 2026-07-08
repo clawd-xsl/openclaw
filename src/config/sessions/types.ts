@@ -373,6 +373,8 @@ export type SessionEntry = {
   queueDrop?: "old" | "new" | "summarize";
   inputTokens?: number;
   outputTokens?: number;
+  /** Output tokens from the final provider call that produced the current context snapshot. */
+  lastCallOutputTokens?: number;
   totalTokens?: number;
   /** Durable marker that final user reply delivery still needs a retry/resume pass. */
   pendingFinalDelivery?: boolean;

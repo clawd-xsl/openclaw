@@ -293,12 +293,16 @@ function expectTextMessage(value: unknown, fields: { role: string; content: stri
   expect(message.timestamp).toBeTypeOf("number");
 }
 
-function readTranscriptMessages(sessionFile: string): unknown[] {
+function readTranscriptEntries(sessionFile: string): Array<Record<string, unknown>> {
   return fs
     .readFileSync(sessionFile, "utf-8")
     .trim()
     .split("\n")
-    .map((line) => JSON.parse(line) as { message?: unknown })
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+function readTranscriptMessages(sessionFile: string): unknown[] {
+  return readTranscriptEntries(sessionFile)
     .map((entry) => entry.message)
     .filter(Boolean);
 }
@@ -626,9 +630,10 @@ describe("runCliAgent reliability", () => {
               role: "assistant",
               content: [{ type: "text", text: "done" }],
               usage: {
-                input_tokens: 11,
-                output_tokens: 6,
-                cache_read_input_tokens: 125,
+                input_tokens: 2,
+                output_tokens: 5,
+                cache_read_input_tokens: 46_338,
+                cache_creation_input_tokens: 96,
               },
             },
           }),
@@ -637,9 +642,10 @@ describe("runCliAgent reliability", () => {
             session_id: "usage-session",
             result: "done",
             usage: {
-              input_tokens: 30,
-              output_tokens: 15,
-              cache_read_input_tokens: 300,
+              input_tokens: 4,
+              output_tokens: 89,
+              cache_read_input_tokens: 75_002,
+              cache_creation_input_tokens: 17_770,
             },
           }),
         ].join("\n"),
@@ -648,7 +654,9 @@ describe("runCliAgent reliability", () => {
         noOutputTimedOut: false,
       }),
     );
+    const { dir, sessionFile, storePath } = createSessionFile();
     const context = buildPreparedContext({
+      sessionKey: "agent:main:main",
       provider: "claude-cli",
       model: "opus",
       runId: "run-claude-usage",
@@ -656,32 +664,148 @@ describe("runCliAgent reliability", () => {
     context.preparedBackend.backend.output = "jsonl";
     context.preparedBackend.backend.jsonlDialect = "claude-stream-json";
 
-    const result = await runPreparedCliAgent(context);
+    try {
+      const result = await runPreparedCliAgent({
+        ...context,
+        params: {
+          ...context.params,
+          agentId: "main",
+          sessionFile,
+          workspaceDir: dir,
+          persistAssistantTranscript: true,
+          storePath,
+        },
+      });
 
-    expect(result.meta.agentMeta?.usage).toEqual({
-      input: 30,
-      output: 15,
-      cacheRead: 300,
-      cacheWrite: undefined,
-      total: undefined,
-    });
-    expect(result.meta.agentMeta?.lastCallUsage).toEqual({
-      input: 11,
-      output: 6,
-      cacheRead: 125,
-      cacheWrite: undefined,
-      total: undefined,
-    });
-    const llmOutputEvent = requireRecord(
-      callArg(hookRunner.runLlmOutput, 0, 0, "llm_output event"),
-      "llm_output event",
+      expect(result.meta.agentMeta?.usage).toEqual({
+        input: 4,
+        output: 89,
+        cacheRead: 75_002,
+        cacheWrite: 17_770,
+        total: undefined,
+      });
+      expect(result.meta.agentMeta?.lastCallUsage).toEqual({
+        input: 2,
+        output: 5,
+        cacheRead: 46_338,
+        cacheWrite: 96,
+        total: undefined,
+      });
+      expect(result.meta.agentMeta?.usageIsContextSnapshot).toBe(false);
+      const llmOutputEvent = requireRecord(
+        callArg(hookRunner.runLlmOutput, 0, 0, "llm_output event"),
+        "llm_output event",
+      );
+      expect(llmOutputEvent.usage).toMatchObject({
+        input: 4,
+        output: 89,
+        cacheRead: 75_002,
+        cacheWrite: 17_770,
+      });
+      expect(requireRecord(llmOutputEvent.lastAssistant, "last assistant").usage).toMatchObject({
+        input: 2,
+        output: 5,
+        cacheRead: 46_338,
+        cacheWrite: 96,
+      });
+
+      const assistantEntry = readTranscriptEntries(sessionFile).find(
+        (entry) => (entry.message as { role?: unknown } | undefined)?.role === "assistant",
+      );
+      expect(assistantEntry?.usage).toEqual({
+        input: 4,
+        output: 89,
+        cacheRead: 75_002,
+        cacheWrite: 17_770,
+      });
+      expect(requireRecord(assistantEntry?.message, "persisted assistant").usage).toMatchObject({
+        input: 2,
+        output: 5,
+        cacheRead: 46_338,
+        cacheWrite: 96,
+        totalTokens: 46_441,
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not relabel aggregate Claude stream usage for an aliased backend", async () => {
+    const hookRunner = {
+      hasHooks: vi.fn((hookName: string) => hookName === "llm_output"),
+      runLlmOutput: vi.fn(async () => undefined),
+    };
+    setHookRunnerForTest(hookRunner);
+    supervisorSpawnMock.mockResolvedValueOnce(
+      createManagedRun({
+        reason: "exit",
+        exitCode: 0,
+        exitSignal: null,
+        durationMs: 50,
+        stdout: [
+          JSON.stringify({ type: "system", subtype: "init", session_id: "usage-session" }),
+          JSON.stringify({
+            type: "result",
+            session_id: "usage-session",
+            result: "done",
+            usage: {
+              input_tokens: 4,
+              output_tokens: 87,
+              cache_read_input_tokens: 14_393,
+              cache_creation_input_tokens: 22_829,
+            },
+          }),
+        ].join("\n"),
+        stderr: "",
+        timedOut: false,
+        noOutputTimedOut: false,
+      }),
     );
-    expect(llmOutputEvent.usage).toMatchObject({ input: 30, output: 15, cacheRead: 300 });
-    expect(requireRecord(llmOutputEvent.lastAssistant, "last assistant").usage).toMatchObject({
-      input: 11,
-      output: 6,
-      cacheRead: 125,
+    const { dir, sessionFile, storePath } = createSessionFile();
+    const context = buildPreparedContext({
+      sessionKey: "agent:main:main",
+      provider: "custom-claude",
+      model: "opus",
+      runId: "run-claude-aggregate-only-usage",
     });
+    context.preparedBackend.backend.output = "jsonl";
+    context.preparedBackend.backend.jsonlDialect = "claude-stream-json";
+
+    try {
+      const result = await runPreparedCliAgent({
+        ...context,
+        params: {
+          ...context.params,
+          agentId: "main",
+          sessionFile,
+          workspaceDir: dir,
+          persistAssistantTranscript: true,
+          storePath,
+        },
+      });
+
+      expect(result.meta.agentMeta?.usage?.output).toBe(87);
+      expect(result.meta.agentMeta?.usageIsContextSnapshot).toBe(false);
+      expect(result.meta.agentMeta).not.toHaveProperty("lastCallUsage");
+      const llmOutputEvent = requireRecord(
+        callArg(hookRunner.runLlmOutput, 0, 0, "llm_output event"),
+        "llm_output event",
+      );
+      expect(requireRecord(llmOutputEvent.lastAssistant, "last assistant")).not.toHaveProperty(
+        "usage",
+      );
+      const assistantEntry = readTranscriptEntries(sessionFile).find(
+        (entry) => (entry.message as { role?: unknown } | undefined)?.role === "assistant",
+      );
+      expect(assistantEntry?.usage).toMatchObject({ output: 87, cacheRead: 14_393 });
+      expect(requireRecord(assistantEntry?.message, "persisted assistant").usage).toMatchObject({
+        input: 0,
+        output: 0,
+        totalTokens: 0,
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("does not retry or fail over after a confirmed message send", async () => {

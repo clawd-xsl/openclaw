@@ -8,6 +8,24 @@ const TTL_MS = 5 * 60_000;
 
 const store = new Map<string, { snapshot: PluginHookReplyUsageState; expiresAt: number }>();
 
+function resolveUsageTotal(usage: NormalizedUsage): number | undefined {
+  const buckets = [usage.input, usage.output, usage.cacheRead, usage.cacheWrite];
+  const hasBucket = buckets.some((value) => typeof value === "number" && Number.isFinite(value));
+  const componentTotal = buckets.reduce<number>(
+    (sum, value) =>
+      sum + (typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0),
+    0,
+  );
+  const explicitTotal =
+    typeof usage.total === "number" && Number.isFinite(usage.total)
+      ? Math.max(0, usage.total)
+      : undefined;
+  if (!hasBucket && explicitTotal === undefined) {
+    return undefined;
+  }
+  return Math.max(componentTotal, explicitTotal ?? 0);
+}
+
 export function buildReplyUsageState(params: {
   config: OpenClawConfig;
   provider?: string;
@@ -31,6 +49,7 @@ export function buildReplyUsageState(params: {
   promptTokens?: number;
   usage?: NormalizedUsage;
   lastCallUsage?: NormalizedUsage;
+  usageIsContextSnapshot?: boolean;
   durationMs?: number;
 }): PluginHookReplyUsageState {
   const resolvedProvider = params.fallbackExhausted ? undefined : params.winnerProvider;
@@ -81,7 +100,7 @@ export function buildReplyUsageState(params: {
         : deriveContextPromptTokens({
             lastCallUsage: params.lastCallUsage,
             promptTokens: params.promptTokens,
-            usage: params.usage,
+            usage: params.usageIsContextSnapshot === false ? undefined : params.usage,
           }),
     usage: params.usage
       ? {
@@ -89,7 +108,7 @@ export function buildReplyUsageState(params: {
           output: params.usage.output,
           cacheRead: params.usage.cacheRead,
           cacheWrite: params.usage.cacheWrite,
-          total: params.usage.total,
+          total: resolveUsageTotal(params.usage),
         }
       : undefined,
     lastUsage: params.lastCallUsage
@@ -98,7 +117,7 @@ export function buildReplyUsageState(params: {
           output: params.lastCallUsage.output,
           cacheRead: params.lastCallUsage.cacheRead,
           cacheWrite: params.lastCallUsage.cacheWrite,
-          total: params.lastCallUsage.total,
+          total: resolveUsageTotal(params.lastCallUsage),
         }
       : undefined,
   };

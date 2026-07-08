@@ -46,6 +46,7 @@ describe("runCronIsolatedAgentTurn usage accounting", () => {
     expect(result.status).toBe("ok");
     expect(cronSession.sessionEntry.inputTokens).toBe(75000);
     expect(cronSession.sessionEntry.outputTokens).toBe(2000);
+    expect(cronSession.sessionEntry.lastCallOutputTokens).toBe(1000);
     expect(cronSession.sessionEntry.totalTokens).toBe(56000);
     expect(cronSession.sessionEntry.totalTokensFresh).toBe(true);
     expect(result.usage).toMatchObject({
@@ -144,6 +145,55 @@ describe("runCronIsolatedAgentTurn usage accounting", () => {
     });
     expect(deriveSessionTotalTokensMock).toHaveBeenNthCalledWith(2, {
       usage: { input: 75000, output: 2000 },
+      contextTokens: 128000,
+      promptTokens: undefined,
+    });
+  });
+
+  it("does not use aggregate CLI usage as a missing context snapshot", async () => {
+    const cronSession = makeCronSession();
+    resolveCronSessionMock.mockReturnValue(cronSession);
+    mockRunCronFallbackPassthrough();
+    deriveSessionTotalTokensMock.mockReturnValueOnce(undefined);
+    runEmbeddedAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "done" }],
+      meta: {
+        agentMeta: {
+          provider: "claude-cli",
+          model: "claude-opus-4-7",
+          usageIsContextSnapshot: false,
+          usage: {
+            input: 4,
+            output: 87,
+            cacheRead: 14_393,
+            cacheWrite: 22_829,
+          },
+        },
+      },
+    });
+
+    const result = await runCronIsolatedAgentTurn(
+      makeIsolatedAgentParamsFixture({
+        cfg: {
+          agents: {
+            defaults: {
+              cliBackends: { "claude-cli": { command: "claude" } },
+            },
+          },
+        },
+      }),
+    );
+
+    expect(result.status).toBe("ok");
+    expect(result.usage).toMatchObject({ output_tokens: 87, total_tokens: 37_313 });
+    expect(cronSession.sessionEntry.totalTokens).toBeUndefined();
+    expect(cronSession.sessionEntry.totalTokensFresh).toBe(false);
+    expect(cronSession.sessionEntry.lastCallOutputTokens).toBeUndefined();
+    expect(cronSession.sessionEntry.outputTokens).toBe(87);
+    expect(cronSession.sessionEntry.cacheRead).toBe(14_393);
+    expect(deriveSessionTotalTokensMock).toHaveBeenCalledTimes(1);
+    expect(deriveSessionTotalTokensMock).toHaveBeenCalledWith({
+      usage: undefined,
       contextTokens: 128000,
       promptTokens: undefined,
     });

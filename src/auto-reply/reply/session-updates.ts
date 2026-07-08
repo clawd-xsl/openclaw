@@ -319,10 +319,12 @@ export async function incrementCompactionCount(params: {
     // Clear input/output breakdown since we only have the total estimate after compaction
     updates.inputTokens = undefined;
     updates.outputTokens = undefined;
+    updates.lastCallOutputTokens = undefined;
     updates.cacheRead = undefined;
     updates.cacheWrite = undefined;
   } else if (incrementBy > 0) {
     updates.totalTokensFresh = false;
+    updates.lastCallOutputTokens = undefined;
   }
   const nextEntry = {
     ...entry,

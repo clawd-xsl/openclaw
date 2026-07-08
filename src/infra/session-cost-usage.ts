@@ -76,7 +76,7 @@ export type {
 
 // Bump when the durable cache schema or the meaning of cached totals changes, so
 // older builds are rebuilt instead of served stale.
-const USAGE_COST_CACHE_VERSION = 6;
+const USAGE_COST_CACHE_VERSION = 7;
 const USAGE_COST_CACHE_FILE = ".usage-cost-cache.json";
 const USAGE_COST_CACHE_LOCK_WRITE_GRACE_MS = 10_000;
 const USAGE_COST_CACHE_TEMP_FILE_GRACE_MS = USAGE_COST_CACHE_LOCK_WRITE_GRACE_MS;
@@ -888,8 +888,10 @@ const parseTranscriptEntry = (entry: Record<string, unknown>): ParsedTranscriptE
     return null;
   }
 
+  // Entry usage is the whole-turn aggregate used for historical cost. Message usage remains the
+  // last-call context snapshot so compaction pressure does not grow with every tool-loop call.
   const usageRaw =
-    (message.usage as UsageLike | undefined) ?? (entry.usage as UsageLike | undefined);
+    (entry.usage as UsageLike | undefined) ?? (message.usage as UsageLike | undefined);
   const usage = usageRaw ? (normalizeUsage(usageRaw) ?? undefined) : undefined;
 
   const provider =
@@ -2750,7 +2752,9 @@ export async function loadSessionLogs(params: {
       let tokens: number | undefined;
       let cost: number | undefined;
       if (role === "assistant") {
-        const usageRaw = message.usage as Record<string, unknown> | undefined;
+        const usageRaw =
+          (parsed.usage as Record<string, unknown> | undefined) ??
+          (message.usage as Record<string, unknown> | undefined);
         const usage = normalizeUsage(usageRaw);
         if (usage) {
           tokens =

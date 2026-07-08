@@ -2385,6 +2385,7 @@ describe("session accessor file-backed seam", () => {
       contextBudgetStatus,
       inputTokens: 10,
       outputTokens: 20,
+      lastCallOutputTokens: 6,
       sessionFile: manualTranscriptPath,
       sessionId,
       totalTokens: 30,
@@ -2445,6 +2446,7 @@ describe("session accessor file-backed seam", () => {
     expect(updatedEntry?.contextBudgetStatus).toBeUndefined();
     expect(updatedEntry?.inputTokens).toBeUndefined();
     expect(updatedEntry?.outputTokens).toBeUndefined();
+    expect(updatedEntry?.lastCallOutputTokens).toBeUndefined();
     expect(updatedEntry?.totalTokens).toBeUndefined();
     expect(updatedEntry?.totalTokensFresh).toBeUndefined();
     expect(updates).toEqual([

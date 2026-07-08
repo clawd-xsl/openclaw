@@ -1065,6 +1065,7 @@ export async function performGatewaySessionReset(params: {
         // skills snapshot version is runtime-local and may reset to 0.
         inputTokens: 0,
         outputTokens: 0,
+        lastCallOutputTokens: undefined,
         totalTokens: 0,
         totalTokensFresh: true,
       };

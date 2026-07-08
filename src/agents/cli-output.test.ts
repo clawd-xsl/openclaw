@@ -701,29 +701,55 @@ describe("parseCliJsonl", () => {
     });
   });
 
-  it("separates cumulative Claude result usage from the last assistant snapshot", () => {
+  it("prefers the final Claude result iteration over aggregate and early assistant usage", () => {
     const result = parseCliJsonl(
       [
         JSON.stringify({ type: "init", session_id: "session-stream" }),
         JSON.stringify({
           type: "assistant",
           message: {
-            id: "msg-1",
-            usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 100 },
+            id: "msg-final",
+            usage: {
+              input_tokens: 11,
+              output_tokens: 1,
+              cache_read_input_tokens: 125,
+              cache_creation_input_tokens: 7,
+            },
           },
         }),
         JSON.stringify({
-          type: "assistant",
-          message: {
-            id: "msg-2",
-            usage: { input_tokens: 11, output_tokens: 6, cache_read_input_tokens: 125 },
+          type: "stream_event",
+          event: {
+            type: "message_delta",
+            usage: { output_tokens: 6 },
           },
         }),
         JSON.stringify({
           type: "result",
           session_id: "session-stream",
           result: "done",
-          usage: { input_tokens: 30, output_tokens: 15, cache_read_input_tokens: 300 },
+          usage: {
+            input_tokens: 30,
+            output_tokens: 87,
+            cache_read_input_tokens: 300,
+            cache_creation_input_tokens: 20,
+            iterations: [
+              {
+                type: "message",
+                input_tokens: 19,
+                output_tokens: 81,
+                cache_read_input_tokens: 175,
+                cache_creation_input_tokens: 13,
+              },
+              {
+                type: "message",
+                input_tokens: 11,
+                output_tokens: 6,
+                cache_read_input_tokens: 125,
+                cache_creation_input_tokens: 7,
+              },
+            ],
+          },
         }),
       ].join("\n"),
       {
@@ -736,16 +762,115 @@ describe("parseCliJsonl", () => {
 
     expect(result?.usage).toEqual({
       input: 30,
-      output: 15,
+      output: 87,
       cacheRead: 300,
-      cacheWrite: undefined,
+      cacheWrite: 20,
       total: undefined,
     });
     expect(result?.lastCallUsage).toEqual({
       input: 11,
       output: 6,
       cacheRead: 125,
-      cacheWrite: undefined,
+      cacheWrite: 7,
+      total: undefined,
+    });
+  });
+
+  it("merges Claude message_delta output usage into the final prompt snapshot", () => {
+    const result = parseCliJsonl(
+      [
+        JSON.stringify({ type: "init", session_id: "session-stream" }),
+        JSON.stringify({
+          type: "assistant",
+          message: {
+            usage: {
+              input_tokens: 11,
+              output_tokens: 1,
+              cache_read_input_tokens: 125,
+              cache_creation_input_tokens: 7,
+            },
+          },
+        }),
+        JSON.stringify({
+          type: "stream_event",
+          event: { type: "message_delta", usage: { output_tokens: 6 } },
+        }),
+        JSON.stringify({
+          type: "result",
+          result: "done",
+          usage: {
+            input_tokens: 30,
+            output_tokens: 87,
+            cache_read_input_tokens: 300,
+            cache_creation_input_tokens: 20,
+          },
+        }),
+      ].join("\n"),
+      {
+        command: "claude",
+        output: "jsonl",
+        sessionIdFields: ["session_id"],
+      },
+      "claude-cli",
+    );
+
+    expect(result?.usage?.output).toBe(87);
+    expect(result?.lastCallUsage).toEqual({
+      input: 11,
+      output: 6,
+      cacheRead: 125,
+      cacheWrite: 7,
+      total: undefined,
+    });
+  });
+
+  it("recovers the final call from Claude message_start and message_delta events", () => {
+    const result = parseCliJsonl(
+      [
+        JSON.stringify({ type: "init", session_id: "session-stream" }),
+        JSON.stringify({
+          type: "stream_event",
+          event: {
+            type: "message_start",
+            message: {
+              usage: {
+                input_tokens: 2,
+                output_tokens: 1,
+                cache_read_input_tokens: 9_914,
+                cache_creation_input_tokens: 17_394,
+              },
+            },
+          },
+        }),
+        JSON.stringify({
+          type: "stream_event",
+          event: { type: "message_delta", usage: { output_tokens: 6 } },
+        }),
+        JSON.stringify({
+          type: "result",
+          result: "done",
+          usage: {
+            input_tokens: 4,
+            output_tokens: 87,
+            cache_read_input_tokens: 14_393,
+            cache_creation_input_tokens: 22_829,
+          },
+        }),
+      ].join("\n"),
+      {
+        command: "claude",
+        output: "jsonl",
+        sessionIdFields: ["session_id"],
+      },
+      "claude-cli",
+    );
+
+    expect(result?.usage?.output).toBe(87);
+    expect(result?.lastCallUsage).toEqual({
+      input: 2,
+      output: 6,
+      cacheRead: 9_914,
+      cacheWrite: 17_394,
       total: undefined,
     });
   });
@@ -1448,7 +1573,7 @@ describe("createCliJsonlStreamingParser", () => {
     });
   });
 
-  it("separates cumulative result usage from streaming context usage", () => {
+  it("prefers the final result iteration for streaming context usage", () => {
     const parser = createCliJsonlStreamingParser({
       backend: {
         command: "local-cli",
@@ -1466,21 +1591,47 @@ describe("createCliJsonlStreamingParser", () => {
         JSON.stringify({
           type: "assistant",
           message: {
-            id: "msg-1",
-            usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 100 },
+            id: "msg-final",
+            usage: {
+              input_tokens: 11,
+              output_tokens: 1,
+              cache_read_input_tokens: 125,
+              cache_creation_input_tokens: 7,
+            },
           },
         }),
         JSON.stringify({
-          type: "assistant",
-          message: {
-            id: "msg-2",
-            usage: { input_tokens: 11, output_tokens: 6, cache_read_input_tokens: 125 },
+          type: "stream_event",
+          event: {
+            type: "message_delta",
+            usage: { output_tokens: 6 },
           },
         }),
         JSON.stringify({
           type: "result",
           result: "done",
-          usage: { input_tokens: 30, output_tokens: 15, cache_read_input_tokens: 300 },
+          usage: {
+            input_tokens: 30,
+            output_tokens: 87,
+            cache_read_input_tokens: 300,
+            cache_creation_input_tokens: 20,
+            iterations: [
+              {
+                type: "message",
+                input_tokens: 19,
+                output_tokens: 81,
+                cache_read_input_tokens: 175,
+                cache_creation_input_tokens: 13,
+              },
+              {
+                type: "message",
+                input_tokens: 11,
+                output_tokens: 6,
+                cache_read_input_tokens: 125,
+                cache_creation_input_tokens: 7,
+              },
+            ],
+          },
         }),
       ].join("\n"),
     );
@@ -1489,17 +1640,74 @@ describe("createCliJsonlStreamingParser", () => {
     const output = parser.getOutput();
     expect(output?.usage).toEqual({
       input: 30,
-      output: 15,
+      output: 87,
       cacheRead: 300,
-      cacheWrite: undefined,
+      cacheWrite: 20,
       total: undefined,
     });
     expect(output?.lastCallUsage).toEqual({
       input: 11,
       output: 6,
       cacheRead: 125,
-      cacheWrite: undefined,
+      cacheWrite: 7,
       total: undefined,
+    });
+  });
+
+  it("merges message_delta output usage in the streaming parser", () => {
+    const parser = createCliJsonlStreamingParser({
+      backend: {
+        command: "local-cli",
+        output: "jsonl",
+        jsonlDialect: "claude-stream-json",
+      },
+      providerId: "local-cli",
+      onAssistantDelta: () => {},
+    });
+
+    parser.push(
+      [
+        JSON.stringify({
+          type: "stream_event",
+          event: { type: "message_start", message: { usage: { input_tokens: 11 } } },
+        }),
+        JSON.stringify({
+          type: "stream_event",
+          event: { type: "message_delta", usage: { output_tokens: 6 } },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          message: {
+            usage: {
+              input_tokens: 11,
+              output_tokens: 1,
+              cache_read_input_tokens: 125,
+              cache_creation_input_tokens: 7,
+            },
+          },
+        }),
+        JSON.stringify({
+          type: "result",
+          result: "done",
+          usage: {
+            input_tokens: 30,
+            output_tokens: 87,
+            cache_read_input_tokens: 300,
+            cache_creation_input_tokens: 20,
+          },
+        }),
+      ].join("\n"),
+    );
+    parser.finish();
+
+    expect(parser.getOutput()).toMatchObject({
+      usage: { output: 87 },
+      lastCallUsage: {
+        input: 11,
+        output: 6,
+        cacheRead: 125,
+        cacheWrite: 7,
+      },
     });
   });
 

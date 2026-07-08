@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   STREAM_ERROR_FALLBACK_TEXT,
   buildStreamErrorAssistantMessage,
+  buildUsageWithNoCost,
 } from "./stream-message-shared.js";
 
 const model = {
@@ -11,6 +12,20 @@ const model = {
   provider: "amazon-bedrock",
   id: "anthropic.claude-3-haiku-20240307-v1:0",
 };
+
+describe("buildUsageWithNoCost", () => {
+  it("includes cache reads and writes when deriving total tokens", () => {
+    expect(
+      buildUsageWithNoCost({ input: 2, output: 5, cacheRead: 46_338, cacheWrite: 96 }),
+    ).toMatchObject({
+      input: 2,
+      output: 5,
+      cacheRead: 46_338,
+      cacheWrite: 96,
+      totalTokens: 46_441,
+    });
+  });
+});
 
 describe("buildStreamErrorAssistantMessage", () => {
   it("never returns an empty content array", () => {

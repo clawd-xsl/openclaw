@@ -583,6 +583,50 @@ describe("appendAssistantMessageToSessionTranscript", () => {
     }
   });
 
+  it("persists whole-turn usage without replacing the last-call context snapshot", async () => {
+    writeTranscriptStore();
+    const lastCallUsage = {
+      input: 2,
+      output: 5,
+      cacheRead: 46_338,
+      cacheWrite: 96,
+      totalTokens: 46_441,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    };
+    const aggregateUsage = {
+      input: 4,
+      output: 89,
+      cacheRead: 75_002,
+      cacheWrite: 17_770,
+      total: 92_865,
+    };
+
+    const result = await appendExactAssistantMessageToSessionTranscript({
+      sessionKey,
+      storePath: fixture.storePath(),
+      aggregateUsage,
+      message: {
+        ...createExactAssistantMessage({ text: "Tool loop complete" }),
+        usage: lastCallUsage,
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    const records = fs
+      .readFileSync(result.sessionFile, "utf-8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    const entry = records.find((record) => record.type === "message") as
+      | { usage?: unknown; message?: { usage?: unknown } }
+      | undefined;
+    expect(entry?.usage).toEqual(aggregateUsage);
+    expect(entry?.message?.usage).toEqual(lastCallUsage);
+  });
+
   it("idempotently appends identified channel finals while preserving repeated replies", async () => {
     writeTranscriptStore();
 

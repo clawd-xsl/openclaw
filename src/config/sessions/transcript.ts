@@ -3,6 +3,7 @@ import path from "node:path";
 import type { AgentMessage } from "../../agents/runtime/index.js";
 import type { SessionManager } from "../../agents/sessions/session-manager.js";
 import { redactTranscriptMessage } from "../../agents/transcript-redact.js";
+import type { UsageLike } from "../../agents/usage.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { parseAgentSessionKey, resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import {
@@ -389,6 +390,8 @@ export async function appendExactAssistantMessageToSessionTranscript(params: {
   sessionKey: string;
   expectedSessionId?: string;
   message: SessionTranscriptAssistantMessage;
+  /** Whole-turn aggregate for historical cost; message.usage stays the last-call snapshot. */
+  aggregateUsage?: UsageLike;
   idempotencyKey?: string;
   storePath?: string;
   updateMode?: SessionTranscriptUpdateMode;
@@ -475,6 +478,7 @@ export async function appendExactAssistantMessageToSessionTranscript(params: {
         messages: [
           {
             message: preparedUnkeyedMessage,
+            ...(params.aggregateUsage !== undefined ? { entryUsage: params.aggregateUsage } : {}),
             ...(explicitIdempotencyKey ? { idempotencyLookup: "scan" } : {}),
             ...(explicitIdempotencyKey && params.beforeMessageWrite
               ? {

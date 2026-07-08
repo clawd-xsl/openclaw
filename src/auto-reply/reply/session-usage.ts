@@ -131,12 +131,12 @@ export async function persistSessionUsageUpdate(params: {
     typeof params.promptTokens === "number" &&
     Number.isFinite(params.promptTokens) &&
     params.promptTokens > 0;
-  const hasFreshContextSnapshot =
+  const hasContextSnapshotCandidate =
     Boolean(params.lastCallUsage) || hasPromptTokens || params.usageIsContextSnapshot === true;
   const compactionTokensAfter = resolveNonNegativeTokenCount(params.compactionTokensAfter);
   const hasCompactionSnapshot = compactionTokensAfter !== undefined;
 
-  if (hasUsage || hasFreshContextSnapshot || hasCompactionSnapshot) {
+  if (hasUsage || hasContextSnapshotCandidate || hasCompactionSnapshot) {
     try {
       await updateSessionEntry(
         {
@@ -161,7 +161,7 @@ export async function persistSessionUsageUpdate(params: {
             params.lastCallUsage ??
             (params.usageIsContextSnapshot === true ? params.usage : undefined);
           const usageTotalTokens =
-            hasFreshContextSnapshot && !preserveUserFacingRunState
+            hasContextSnapshotCandidate && !preserveUserFacingRunState
               ? deriveSessionTotalTokens({
                   usage: usageForContext,
                   contextTokens: resolvedContextTokens,
@@ -199,17 +199,20 @@ export async function persistSessionUsageUpdate(params: {
             updatedAt,
           };
           if (hasUsage && !preserveUserFacingRunState) {
+            // Keep status/billing counters on one aggregate-turn basis. The
+            // final call's output is separate because it extends the next prompt.
             patch.inputTokens = params.usage?.input ?? 0;
             patch.outputTokens = params.usage?.output ?? 0;
-            // Cache counters should reflect the latest context snapshot when
-            // available, not accumulated per-call totals across a whole run.
-            const cacheUsage = params.lastCallUsage ?? params.usage;
-            patch.cacheRead = cacheUsage?.cacheRead ?? 0;
-            patch.cacheWrite = cacheUsage?.cacheWrite ?? 0;
+            patch.cacheRead = params.usage?.cacheRead ?? 0;
+            patch.cacheWrite = params.usage?.cacheWrite ?? 0;
+          }
+          if ((hasUsage || params.lastCallUsage) && !preserveUserFacingRunState) {
+            patch.lastCallOutputTokens = resolveNonNegativeTokenCount(params.lastCallUsage?.output);
           }
           if (useCompactionSnapshot && !preserveUserFacingRunState) {
             patch.inputTokens = undefined;
             patch.outputTokens = undefined;
+            patch.lastCallOutputTokens = undefined;
             patch.cacheRead = undefined;
             patch.cacheWrite = undefined;
             patch.contextBudgetStatus = undefined;
@@ -220,7 +223,7 @@ export async function persistSessionUsageUpdate(params: {
           if (runEstimatedCostUsd !== undefined) {
             patch.estimatedCostUsd = runEstimatedCostUsd;
           }
-          if ((hasFreshContextSnapshot || hasCompactionSnapshot) && !preserveUserFacingRunState) {
+          if ((hasPositiveUsageTotal || hasCompactionSnapshot) && !preserveUserFacingRunState) {
             patch.totalTokens = totalTokens;
             patch.totalTokensFresh = true;
             const accountedGoal = resolveSessionGoalDisplayState({ ...entry, ...patch }, updatedAt);

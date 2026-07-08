@@ -1074,6 +1074,7 @@ async function finalizeCronRun(params: {
       usage.output !== undefined ||
       usage.cacheRead !== undefined ||
       usage.cacheWrite !== undefined;
+    const usageIsContextSnapshot = finalRunResult.meta?.agentMeta?.usageIsContextSnapshot ?? true;
     const lastCallTotalTokens = deriveSessionTotalTokens({
       usage: lastCallUsage,
       contextTokens,
@@ -1082,7 +1083,9 @@ async function finalizeCronRun(params: {
     const totalTokens =
       typeof lastCallTotalTokens === "number" && lastCallTotalTokens > 0
         ? lastCallTotalTokens
-        : deriveSessionTotalTokens({ usage, contextTokens, promptTokens });
+        : usageIsContextSnapshot
+          ? deriveSessionTotalTokens({ usage, contextTokens, promptTokens })
+          : undefined;
     const runEstimatedCostUsd = resolveNonNegativeNumber(
       estimateUsageCost({
         usage,
@@ -1095,6 +1098,9 @@ async function finalizeCronRun(params: {
     );
     prepared.cronSession.sessionEntry.inputTokens = input;
     prepared.cronSession.sessionEntry.outputTokens = output;
+    const lastCallOutputTokens = resolveNonNegativeNumber(lastCallUsage?.output);
+    prepared.cronSession.sessionEntry.lastCallOutputTokens =
+      lastCallOutputTokens === undefined ? undefined : Math.floor(lastCallOutputTokens);
     const telemetryUsage: NonNullable<CronRunTelemetry["usage"]> = {
       input_tokens: input,
       output_tokens: output,
@@ -1134,7 +1140,7 @@ async function finalizeCronRun(params: {
       const contextUsedTokens = deriveContextPromptTokens({
         lastCallUsage,
         promptTokens,
-        usage,
+        usage: usageIsContextSnapshot ? usage : undefined,
       });
       emitTrustedDiagnosticEvent({
         type: "model.usage",

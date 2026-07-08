@@ -4313,7 +4313,7 @@ describe("persistSessionUsageUpdate", () => {
     );
   }
 
-  it("uses lastCallUsage for totalTokens when provided", async () => {
+  it("keeps aggregate turn counters separate from the final-call context snapshot", async () => {
     const storePath = await createStorePath("openclaw-usage-");
     const sessionKey = "main";
     await seedSessionStore({
@@ -4322,8 +4322,20 @@ describe("persistSessionUsageUpdate", () => {
       entry: { sessionId: "s1", updatedAt: Date.now(), totalTokens: 100_000 },
     });
 
-    const accumulatedUsage = { input: 180_000, output: 10_000, total: 190_000 };
-    const lastCallUsage = { input: 12_000, output: 2_000, total: 14_000 };
+    const accumulatedUsage = {
+      input: 180,
+      output: 87,
+      cacheRead: 90,
+      cacheWrite: 12,
+      total: 369,
+    };
+    const lastCallUsage = {
+      input: 12,
+      output: 6,
+      cacheRead: 18,
+      cacheWrite: 4,
+      total: 40,
+    };
 
     await persistSessionUsageUpdate({
       storePath,
@@ -4334,10 +4346,13 @@ describe("persistSessionUsageUpdate", () => {
     });
 
     const stored = JSON.parse(await fs.readFile(storePath, "utf-8"));
-    expect(stored[sessionKey].totalTokens).toBe(12_000);
+    expect(stored[sessionKey].totalTokens).toBe(34);
     expect(stored[sessionKey].totalTokensFresh).toBe(true);
-    expect(stored[sessionKey].inputTokens).toBe(180_000);
-    expect(stored[sessionKey].outputTokens).toBe(10_000);
+    expect(stored[sessionKey].inputTokens).toBe(180);
+    expect(stored[sessionKey].outputTokens).toBe(87);
+    expect(stored[sessionKey].lastCallOutputTokens).toBe(6);
+    expect(stored[sessionKey].cacheRead).toBe(90);
+    expect(stored[sessionKey].cacheWrite).toBe(12);
   });
 
   it("marks a fresh zero stale when a completed run has no context snapshot", async () => {
@@ -4499,7 +4514,7 @@ describe("persistSessionUsageUpdate", () => {
     expect(stored2[sessionKey].goal.status).toBe("budget_limited");
   });
 
-  it("uses lastCallUsage cache counters when available", async () => {
+  it("uses aggregate cache counters while retaining final-call output", async () => {
     const storePath = await createStorePath("openclaw-usage-cache-");
     const sessionKey = "main";
     await seedSessionStore({
@@ -4529,8 +4544,9 @@ describe("persistSessionUsageUpdate", () => {
     const stored = JSON.parse(await fs.readFile(storePath, "utf-8"));
     expect(stored[sessionKey].inputTokens).toBe(100_000);
     expect(stored[sessionKey].outputTokens).toBe(8_000);
-    expect(stored[sessionKey].cacheRead).toBe(18_000);
-    expect(stored[sessionKey].cacheWrite).toBe(4_000);
+    expect(stored[sessionKey].lastCallOutputTokens).toBe(1_000);
+    expect(stored[sessionKey].cacheRead).toBe(260_000);
+    expect(stored[sessionKey].cacheWrite).toBe(90_000);
   });
 
   it("marks totalTokens as unknown when no fresh context snapshot is available", async () => {
@@ -4778,7 +4794,8 @@ describe("persistSessionUsageUpdate", () => {
     expect(stored[sessionKey].totalTokensFresh).toBe(true);
     expect(stored[sessionKey].inputTokens).toBe(100_000);
     expect(stored[sessionKey].outputTokens).toBe(3_000);
-    expect(stored[sessionKey].cacheRead).toBe(4_000);
+    expect(stored[sessionKey].lastCallOutputTokens).toBe(1_000);
+    expect(stored[sessionKey].cacheRead).toBe(20_000);
   });
 
   it("uses positive compactionTokensAfter when final usage has no prompt total", async () => {
@@ -4831,8 +4848,38 @@ describe("persistSessionUsageUpdate", () => {
     expect(stored[sessionKey].totalTokensFresh).toBe(true);
     expect(stored[sessionKey].inputTokens).toBeUndefined();
     expect(stored[sessionKey].outputTokens).toBeUndefined();
+    expect(stored[sessionKey].lastCallOutputTokens).toBeUndefined();
     expect(stored[sessionKey].cacheRead).toBeUndefined();
     expect(stored[sessionKey].contextBudgetStatus).toBeUndefined();
+  });
+
+  it("marks output-only last-call usage stale instead of claiming a fresh context", async () => {
+    const storePath = await createStorePath("openclaw-usage-output-only-");
+    const sessionKey = "main";
+    await seedSessionStore({
+      storePath,
+      sessionKey,
+      entry: {
+        sessionId: "s1",
+        updatedAt: Date.now(),
+        totalTokens: 80_000,
+        totalTokensFresh: true,
+      },
+    });
+
+    await persistSessionUsageUpdate({
+      storePath,
+      sessionKey,
+      usage: { output: 125 },
+      lastCallUsage: { output: 6 },
+      providerUsed: "claude-cli",
+    });
+
+    const stored = JSON.parse(await fs.readFile(storePath, "utf-8"));
+    expect(stored[sessionKey].totalTokens).toBe(80_000);
+    expect(stored[sessionKey].totalTokensFresh).toBe(false);
+    expect(stored[sessionKey].outputTokens).toBe(125);
+    expect(stored[sessionKey].lastCallOutputTokens).toBe(6);
   });
 
   it("persists totalTokens from promptTokens when usage is unavailable", async () => {
@@ -4984,7 +5031,9 @@ describe("persistSessionUsageUpdate", () => {
     expect(stored[sessionKey].model).toBe("gpt-5.4");
     expect(stored[sessionKey].inputTokens).toBe(1_200);
     expect(stored[sessionKey].outputTokens).toBe(100);
-    expect(stored[sessionKey].cacheRead).toBe(200);
+    expect(stored[sessionKey].lastCallOutputTokens).toBe(80);
+    expect(stored[sessionKey].cacheRead).toBe(300);
+    expect(stored[sessionKey].cacheWrite).toBe(10);
     expect(stored[sessionKey].totalTokens).toBe(1_105);
   });
 

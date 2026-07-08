@@ -4307,6 +4307,7 @@ describe("createFollowupRunner messaging delivery and dedupe", () => {
         agentMeta: {
           usage: { input: 10, output: 5 },
           lastCallUsage: { input: 6, output: 3 },
+          usageIsContextSnapshot: false,
           model: "claude-opus-4-6",
           provider: "anthropic",
         },
@@ -4344,7 +4345,7 @@ describe("createFollowupRunner messaging delivery and dedupe", () => {
     ).resolves.toBeUndefined();
 
     expect(requireMockCallArg(persistSpy, 0).providerUsed).toBe("anthropic");
-    expect(requireMockCallArg(persistSpy, 0).usageIsContextSnapshot).toBeUndefined();
+    expect(requireMockCallArg(persistSpy, 0).usageIsContextSnapshot).toBe(false);
     persistSpy.mockRestore();
   });
 

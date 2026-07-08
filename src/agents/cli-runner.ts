@@ -189,8 +189,22 @@ function buildCliHookUserMessage(prompt: string): unknown {
   };
 }
 
-function resolveCliAssistantUsage(output: Pick<CliOutput, "lastCallUsage" | "usage">) {
-  return output.lastCallUsage ?? output.usage;
+function cliUsageRequiresFinalCallSnapshot(params: {
+  provider: string;
+  jsonlDialect?: string;
+}): boolean {
+  return (
+    isClaudeCliProvider(params.provider) || params.jsonlDialect?.trim() === "claude-stream-json"
+  );
+}
+
+function resolveCliAssistantUsage(
+  output: Pick<CliOutput, "lastCallUsage" | "usage">,
+  params: { provider: string; jsonlDialect?: string },
+) {
+  return (
+    output.lastCallUsage ?? (cliUsageRequiresFinalCallSnapshot(params) ? undefined : output.usage)
+  );
 }
 
 function buildCliHookAssistantMessage(params: {
@@ -301,13 +315,8 @@ async function persistCliAssistantTranscript(params: {
   runParams: RunCliAgentParams;
   text: string;
   modelId: string;
-  usage?: {
-    input?: number;
-    output?: number;
-    cacheRead?: number;
-    cacheWrite?: number;
-    total?: number;
-  };
+  usage?: CliOutput["lastCallUsage"];
+  aggregateUsage?: CliOutput["usage"];
 }): Promise<boolean> {
   const { runParams } = params;
   if (!runParams.persistAssistantTranscript || !runParams.sessionKey || !params.text) {
@@ -325,6 +334,7 @@ async function persistCliAssistantTranscript(params: {
       idempotencyKey: `cli-assistant:${runParams.runId}`,
       config: runParams.config,
       beforeMessageWrite: runAgentHarnessBeforeMessageWriteHook,
+      ...(params.aggregateUsage !== undefined ? { aggregateUsage: params.aggregateUsage } : {}),
       message: buildAssistantMessage({
         model: {
           api: "cli",
@@ -378,7 +388,10 @@ async function finalizeCliContextEngineTurn(params: {
         text: params.assistantText,
         provider: runParams.provider,
         model: context.modelId,
-        usage: resolveCliAssistantUsage(params.output),
+        usage: resolveCliAssistantUsage(params.output, {
+          provider: runParams.provider,
+          jsonlDialect: context.preparedBackend.backend.jsonlDialect,
+        }),
       }),
     );
   }
@@ -868,7 +881,10 @@ export async function runPreparedCliAgent(
             text: assistantText,
             provider: params.provider,
             model: context.modelId,
-            usage: resolveCliAssistantUsage(output),
+            usage: resolveCliAssistantUsage(output, {
+              provider: params.provider,
+              jsonlDialect: context.preparedBackend.backend.jsonlDialect,
+            }),
           })
         : undefined;
     if (assistantText.length > 0 && hasLlmOutputHooks) {
@@ -969,7 +985,11 @@ export async function runPreparedCliAgent(
       : (resultParams.effectiveCliSessionId ?? params.sessionId ?? "");
     const yielded = resultParams.output.yielded === true;
     const stopReason = yielded ? "end_turn" : "completed";
-    const lastCallUsage = resultParams.output.lastCallUsage ?? resultParams.output.usage;
+    const cliUsagePolicy = {
+      provider: params.provider,
+      jsonlDialect: context.preparedBackend.backend.jsonlDialect,
+    };
+    const lastCallUsage = resolveCliAssistantUsage(resultParams.output, cliUsagePolicy);
 
     return {
       payloads,
@@ -1013,6 +1033,9 @@ export async function runPreparedCliAgent(
           provider: params.provider,
           model: context.modelId,
           usage: resultParams.output.usage,
+          ...(cliUsageRequiresFinalCallSnapshot(cliUsagePolicy)
+            ? { usageIsContextSnapshot: false }
+            : {}),
           ...(lastCallUsage ? { lastCallUsage } : {}),
           ...(persistedCliSessionId
             ? {
@@ -1109,7 +1132,11 @@ export async function runPreparedCliAgent(
           // Persisting them here would duplicate the same visible assistant reply.
           text: sourceReplyWasDelivered ? "" : assistantText,
           modelId: context.modelId,
-          usage: resolveCliAssistantUsage(output),
+          usage: resolveCliAssistantUsage(output, {
+            provider: params.provider,
+            jsonlDialect: context.preparedBackend.backend.jsonlDialect,
+          }),
+          ...(output.usage !== undefined ? { aggregateUsage: output.usage } : {}),
         });
         const bindingFlushOk = await isCliBindingFlushed(
           effectiveCliSessionId,

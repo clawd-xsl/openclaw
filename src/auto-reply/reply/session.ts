@@ -887,6 +887,7 @@ async function initSessionStateAttemptLocked(
     sessionEntry.totalTokensFresh = true;
     sessionEntry.inputTokens = undefined;
     sessionEntry.outputTokens = undefined;
+    sessionEntry.lastCallOutputTokens = undefined;
     sessionEntry.estimatedCostUsd = undefined;
     sessionEntry.cacheRead = undefined;
     sessionEntry.cacheWrite = undefined;

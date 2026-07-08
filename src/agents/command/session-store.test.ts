@@ -1121,7 +1121,7 @@ describe("updateSessionStoreAfterAgentRun", () => {
     });
   });
 
-  it("persists CLI lastCallUsage as the context snapshot (totalTokens)", async () => {
+  it("persists aggregate CLI counters and the final-call context snapshot separately", async () => {
     await withTempSessionStore(async ({ storePath }) => {
       const cfg = {
         agents: {
@@ -1160,14 +1160,14 @@ describe("updateSessionStoreAfterAgentRun", () => {
               provider: "claude-cli",
               model: "claude-opus-4-7",
               usage: {
-                input: 6,
-                output: 25,
-                cacheRead: 50_000,
-                cacheWrite: 0,
+                input: 140_000,
+                output: 87,
+                cacheRead: 90_000,
+                cacheWrite: 10_000,
               },
               lastCallUsage: {
                 input: 6,
-                output: 25,
+                output: 6,
                 cacheRead: 50_000,
                 cacheWrite: 0,
               },
@@ -1178,8 +1178,15 @@ describe("updateSessionStoreAfterAgentRun", () => {
 
       expect(sessionStore[sessionKey]?.totalTokens).toBe(50_006);
       expect(sessionStore[sessionKey]?.totalTokensFresh).toBe(true);
-      expect(loadSessionStore(storePath)[sessionKey]?.totalTokens).toBe(50_006);
-      expect(loadSessionStore(storePath)[sessionKey]?.totalTokensFresh).toBe(true);
+      expect(sessionStore[sessionKey]?.inputTokens).toBe(140_000);
+      expect(sessionStore[sessionKey]?.outputTokens).toBe(87);
+      expect(sessionStore[sessionKey]?.lastCallOutputTokens).toBe(6);
+      expect(sessionStore[sessionKey]?.cacheRead).toBe(90_000);
+      expect(sessionStore[sessionKey]?.cacheWrite).toBe(10_000);
+      const persisted = loadSessionStore(storePath)[sessionKey];
+      expect(persisted?.totalTokens).toBe(50_006);
+      expect(persisted?.totalTokensFresh).toBe(true);
+      expect(persisted?.lastCallOutputTokens).toBe(6);
     });
   });
 
@@ -1243,6 +1250,7 @@ describe("updateSessionStoreAfterAgentRun", () => {
           totalTokensFresh: true,
           inputTokens: 20,
           outputTokens: 10_855,
+          lastCallOutputTokens: 6,
           cacheRead: 1_761_324,
           cacheWrite: 33_047,
         },
@@ -1287,6 +1295,7 @@ describe("updateSessionStoreAfterAgentRun", () => {
       expect(sessionStore[sessionKey]?.totalTokensFresh).toBe(true);
       expect(sessionStore[sessionKey]?.inputTokens).toBe(20);
       expect(sessionStore[sessionKey]?.outputTokens).toBe(10_855);
+      expect(sessionStore[sessionKey]?.lastCallOutputTokens).toBe(10_855);
       expect(sessionStore[sessionKey]?.cacheRead).toBe(1_761_324);
       expect(sessionStore[sessionKey]?.cacheWrite).toBe(33_047);
     });
@@ -1343,6 +1352,7 @@ describe("updateSessionStoreAfterAgentRun", () => {
       expect(sessionStore[sessionKey]?.totalTokensFresh).toBe(true);
       expect(sessionStore[sessionKey]?.inputTokens).toBe(100_000);
       expect(sessionStore[sessionKey]?.outputTokens).toBe(3_000);
+      expect(sessionStore[sessionKey]?.lastCallOutputTokens).toBe(1_000);
       expect(sessionStore[sessionKey]?.cacheRead).toBe(20_000);
     });
   });
@@ -1360,6 +1370,7 @@ describe("updateSessionStoreAfterAgentRun", () => {
           totalTokensFresh: true,
           inputTokens: 20,
           outputTokens: 10_855,
+          lastCallOutputTokens: 6,
           cacheRead: 1_761_324,
           cacheWrite: 33_047,
           contextBudgetStatus: {
@@ -1412,6 +1423,7 @@ describe("updateSessionStoreAfterAgentRun", () => {
       expect(sessionStore[sessionKey]?.compactionCount).toBe(1);
       expect(sessionStore[sessionKey]?.inputTokens).toBeUndefined();
       expect(sessionStore[sessionKey]?.outputTokens).toBeUndefined();
+      expect(sessionStore[sessionKey]?.lastCallOutputTokens).toBeUndefined();
       expect(sessionStore[sessionKey]?.cacheRead).toBeUndefined();
       expect(sessionStore[sessionKey]?.cacheWrite).toBeUndefined();
       expect(sessionStore[sessionKey]?.contextBudgetStatus).toBeUndefined();
@@ -2189,6 +2201,7 @@ describe("recordCliCompactionInStore", () => {
           totalTokensFresh: true,
           inputTokens: 9_000,
           outputTokens: 100,
+          lastCallOutputTokens: 6,
           cacheRead: 2_900,
           cacheWrite: 0,
           contextBudgetStatus: {
@@ -2236,6 +2249,7 @@ describe("recordCliCompactionInStore", () => {
       expect(sessionStore[sessionKey]?.totalTokensFresh).toBe(true);
       expect(sessionStore[sessionKey]?.inputTokens).toBeUndefined();
       expect(sessionStore[sessionKey]?.outputTokens).toBeUndefined();
+      expect(sessionStore[sessionKey]?.lastCallOutputTokens).toBeUndefined();
       expect(sessionStore[sessionKey]?.cacheRead).toBeUndefined();
       expect(sessionStore[sessionKey]?.cacheWrite).toBeUndefined();
       expect(sessionStore[sessionKey]?.contextBudgetStatus).toBeUndefined();
@@ -2243,6 +2257,7 @@ describe("recordCliCompactionInStore", () => {
       expect(sessionStore[sessionKey]?.cliSessionIds?.codex).toBeUndefined();
       expect(persisted[sessionKey]?.totalTokens).toBe(0);
       expect(persisted[sessionKey]?.totalTokensFresh).toBe(true);
+      expect(persisted[sessionKey]?.lastCallOutputTokens).toBeUndefined();
       expect(persisted[sessionKey]?.contextBudgetStatus).toBeUndefined();
     });
   });
@@ -2259,6 +2274,7 @@ describe("recordCliCompactionInStore", () => {
           totalTokensFresh: true,
           inputTokens: 30_000,
           outputTokens: 100,
+          lastCallOutputTokens: 6,
           cacheRead: 6_900,
           cacheWrite: 0,
           contextBudgetStatus: {
@@ -2297,11 +2313,13 @@ describe("recordCliCompactionInStore", () => {
       expect(sessionStore[sessionKey]?.totalTokensFresh).toBe(false);
       expect(sessionStore[sessionKey]?.inputTokens).toBeUndefined();
       expect(sessionStore[sessionKey]?.outputTokens).toBeUndefined();
+      expect(sessionStore[sessionKey]?.lastCallOutputTokens).toBeUndefined();
       expect(sessionStore[sessionKey]?.cacheRead).toBeUndefined();
       expect(sessionStore[sessionKey]?.cacheWrite).toBeUndefined();
       expect(sessionStore[sessionKey]?.contextBudgetStatus).toBeUndefined();
       expect(persisted[sessionKey]?.totalTokens).toBe(37_000);
       expect(persisted[sessionKey]?.totalTokensFresh).toBe(false);
+      expect(persisted[sessionKey]?.lastCallOutputTokens).toBeUndefined();
       expect(persisted[sessionKey]?.contextBudgetStatus).toBeUndefined();
     });
   });

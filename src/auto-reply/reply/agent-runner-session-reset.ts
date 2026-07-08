@@ -71,6 +71,7 @@ export async function resetReplyRunSession(params: {
     model: undefined,
     inputTokens: undefined,
     outputTokens: undefined,
+    lastCallOutputTokens: undefined,
     totalTokens: undefined,
     totalTokensFresh: false,
     estimatedCostUsd: undefined,

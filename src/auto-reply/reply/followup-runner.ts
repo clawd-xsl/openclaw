@@ -1416,6 +1416,9 @@ export function createFollowupRunner(params: {
           lastCallUsage: runResult.meta?.agentMeta?.lastCallUsage,
           compactionTokensAfter: runResult.meta?.agentMeta?.compactionTokensAfter,
           promptTokens,
+          usageIsContextSnapshot:
+            runResult.meta?.agentMeta?.usageIsContextSnapshot ??
+            (usedCliProvider ? true : undefined),
           isHeartbeat: opts?.isHeartbeat === true,
           preserveRuntimeModel: fallbackExhausted,
           preserveUserFacingSessionModelState: preserveUserFacingSessionState,
@@ -1492,6 +1495,7 @@ export function createFollowupRunner(params: {
         promptTokens,
         usage,
         lastCallUsage,
+        usageIsContextSnapshot: runResult.meta?.agentMeta?.usageIsContextSnapshot,
       });
       const responseUsageLine = resolveResponseUsageLine({
         config: runtimeConfig,

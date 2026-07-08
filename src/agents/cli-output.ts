@@ -268,6 +268,115 @@ function readCliUsage(parsed: Record<string, unknown>): CliUsage | undefined {
   return undefined;
 }
 
+function mergeCliUsage(
+  base: CliUsage | undefined,
+  update: CliUsage | undefined,
+): CliUsage | undefined {
+  if (!base) {
+    return update;
+  }
+  if (!update) {
+    return base;
+  }
+  return {
+    input: update.input ?? base.input,
+    output: update.output ?? base.output,
+    cacheRead: update.cacheRead ?? base.cacheRead,
+    cacheWrite: update.cacheWrite ?? base.cacheWrite,
+    total: update.total ?? base.total,
+  };
+}
+
+type ClaudeLastCallUsageTracker = {
+  currentAssistantUsage?: CliUsage;
+  currentMessageDeltaUsage?: CliUsage;
+  lastCallUsage?: CliUsage;
+};
+
+function readClaudeMessageDeltaUsage(parsed: Record<string, unknown>): CliUsage | undefined {
+  if (parsed.type !== "stream_event" || !isRecord(parsed.event)) {
+    return undefined;
+  }
+  const event = parsed.event;
+  if (event.type !== "message_delta" || !isRecord(event.usage)) {
+    return undefined;
+  }
+  return toCliUsage(event.usage);
+}
+
+function readClaudeResultLastIterationUsage(parsed: Record<string, unknown>): CliUsage | undefined {
+  if (parsed.type !== "result" || !isRecord(parsed.usage)) {
+    return undefined;
+  }
+  const iterations = parsed.usage.iterations;
+  if (!Array.isArray(iterations)) {
+    return undefined;
+  }
+  for (let index = iterations.length - 1; index >= 0; index -= 1) {
+    const iteration = iterations[index];
+    if (!isRecord(iteration)) {
+      continue;
+    }
+    const usage = toCliUsage(isRecord(iteration.usage) ? iteration.usage : iteration);
+    if (usage) {
+      return usage;
+    }
+  }
+  return undefined;
+}
+
+function updateClaudeLastCallUsage(params: {
+  tracker: ClaudeLastCallUsageTracker;
+  parsed: Record<string, unknown>;
+  recordUsage?: CliUsage;
+}): void {
+  const { tracker, parsed } = params;
+  const isMessageStart =
+    parsed.type === "stream_event" &&
+    isRecord(parsed.event) &&
+    parsed.event.type === "message_start";
+  if (isMessageStart) {
+    const eventMessage = isRecord(parsed.event) ? parsed.event.message : undefined;
+    const messageStartUsage =
+      isRecord(eventMessage) && isRecord(eventMessage.usage)
+        ? toCliUsage(eventMessage.usage)
+        : undefined;
+    tracker.currentAssistantUsage = messageStartUsage;
+    tracker.currentMessageDeltaUsage = undefined;
+    tracker.lastCallUsage = messageStartUsage;
+  }
+
+  if (parsed.type === "assistant" && isRecord(parsed.message) && params.recordUsage) {
+    tracker.currentAssistantUsage = mergeCliUsage(
+      params.recordUsage,
+      tracker.currentMessageDeltaUsage,
+    );
+    tracker.currentMessageDeltaUsage = undefined;
+    tracker.lastCallUsage = tracker.currentAssistantUsage;
+  }
+
+  const messageDeltaUsage = readClaudeMessageDeltaUsage(parsed);
+  if (messageDeltaUsage) {
+    tracker.currentMessageDeltaUsage = mergeCliUsage(
+      tracker.currentMessageDeltaUsage,
+      messageDeltaUsage,
+    );
+    tracker.lastCallUsage = mergeCliUsage(
+      tracker.currentAssistantUsage,
+      tracker.currentMessageDeltaUsage,
+    );
+  }
+
+  const lastIterationUsage = readClaudeResultLastIterationUsage(parsed);
+  if (lastIterationUsage) {
+    // Claude's result aggregate covers every model call in the turn. Its final
+    // iteration is the authoritative snapshot for the active context. Merge it
+    // over the streamed snapshot so older CLI builds with a partial iteration
+    // record do not discard prompt/cache buckets already emitted by assistant.
+    tracker.lastCallUsage = mergeCliUsage(tracker.lastCallUsage, lastIterationUsage);
+  }
+}
+
 function collectCliText(value: unknown): string {
   if (!value) {
     return "";
@@ -894,6 +1003,8 @@ export function createCliJsonlStreamingParser(params: {
   const texts: string[] = [];
   const toolTracker = createToolUseTracker();
   const outputLimits = resolveCliStreamJsonOutputLimits(params.backend);
+  const claudeStreamJsonDialect = isClaudeStreamJsonDialect(params);
+  const claudeLastCallUsageTracker: ClaudeLastCallUsageTracker = {};
   // Classification is keyed on consumer presence so reclassified pre-tool text
   // always has a destination; a separate enable flag let it be dropped (#92092).
   const classifyClaudeCommentary =
@@ -939,13 +1050,13 @@ export function createCliJsonlStreamingParser(params: {
     }
     const nextUsage = readCliUsage(parsed);
     usage = nextUsage ?? usage;
-    if (
-      nextUsage &&
-      isClaudeStreamJsonDialect(params) &&
-      parsed.type === "assistant" &&
-      isRecord(parsed.message)
-    ) {
-      lastCallUsage = nextUsage;
+    if (claudeStreamJsonDialect) {
+      updateClaudeLastCallUsage({
+        tracker: claudeLastCallUsageTracker,
+        parsed,
+        recordUsage: nextUsage,
+      });
+      lastCallUsage = claudeLastCallUsageTracker.lastCallUsage;
     }
     const geminiErrorText = isGeminiStreamJsonDialect(params)
       ? readGeminiCliStreamJsonError(parsed)
@@ -961,7 +1072,7 @@ export function createCliJsonlStreamingParser(params: {
     }
 
     const isClaudeMessageStart =
-      isClaudeStreamJsonDialect(params) &&
+      claudeStreamJsonDialect &&
       parsed.type === "stream_event" &&
       isRecord(parsed.event) &&
       parsed.event.type === "message_start";
@@ -974,7 +1085,7 @@ export function createCliJsonlStreamingParser(params: {
     }
 
     const claudeAssistantMessage =
-      isClaudeStreamJsonDialect(params) && parsed.type === "assistant" && isRecord(parsed.message)
+      claudeStreamJsonDialect && parsed.type === "assistant" && isRecord(parsed.message)
         ? parsed.message
         : null;
     const assistantBoundary: CliStreamingBoundary | undefined =
@@ -1222,6 +1333,8 @@ export function parseCliJsonl(
   let geminiErrorText: string | undefined;
   let sawGeminiStructuredOutput = false;
   const streamJsonDialect = isStreamJsonDialect({ backend, providerId });
+  const claudeStreamJsonDialect = isClaudeStreamJsonDialect({ backend, providerId });
+  const claudeLastCallUsageTracker: ClaudeLastCallUsageTracker = {};
   for (const line of lines) {
     for (const parsed of parseJsonRecordCandidates(line)) {
       sessionId = pickCliSessionId(parsed, backend) ?? sessionId;
@@ -1230,13 +1343,13 @@ export function parseCliJsonl(
       }
       const nextUsage = readCliUsage(parsed);
       usage = nextUsage ?? usage;
-      if (
-        nextUsage &&
-        isClaudeStreamJsonDialect({ backend, providerId }) &&
-        parsed.type === "assistant" &&
-        isRecord(parsed.message)
-      ) {
-        lastCallUsage = nextUsage;
+      if (claudeStreamJsonDialect) {
+        updateClaudeLastCallUsage({
+          tracker: claudeLastCallUsageTracker,
+          parsed,
+          recordUsage: nextUsage,
+        });
+        lastCallUsage = claudeLastCallUsageTracker.lastCallUsage;
       }
 
       if (isGeminiStreamJsonDialect({ backend, providerId })) {

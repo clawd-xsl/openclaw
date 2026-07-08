@@ -556,6 +556,7 @@ function cloneCheckpointSessionEntry(params: {
     status: undefined,
     inputTokens: undefined,
     outputTokens: undefined,
+    lastCallOutputTokens: undefined,
     cacheRead: undefined,
     cacheWrite: undefined,
     estimatedCostUsd: undefined,

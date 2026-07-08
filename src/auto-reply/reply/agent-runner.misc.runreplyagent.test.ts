@@ -766,6 +766,46 @@ describe("runReplyAgent auto-compaction token update", () => {
     );
   });
 
+  it("leaves Claude CLI diagnostic context unknown without a final-call snapshot", async () => {
+    const { usageEvent } = await runBaseReplyWithAgentMeta({
+      tmpPrefix: "openclaw-usage-diagnostic-cli-missing-last-",
+      collectDiagnostics: true,
+      config: {
+        agents: {
+          defaults: {
+            cliBackends: { "claude-cli": { command: "claude" } },
+          },
+        },
+      },
+      agentMeta: {
+        provider: "claude-cli",
+        model: "claude-opus-4-7",
+        usage: { input: 4, output: 87, cacheRead: 14_393, cacheWrite: 22_829 },
+        usageIsContextSnapshot: false,
+      },
+    });
+
+    const usagePayload = expectRecordFields(
+      usageEvent,
+      { type: "model.usage" },
+      "usage diagnostic event",
+    );
+    expectRecordFields(
+      usagePayload.usage,
+      {
+        input: 4,
+        output: 87,
+        cacheRead: 14_393,
+        cacheWrite: 22_829,
+        total: 37_313,
+      },
+      "usage diagnostic usage",
+    );
+    expect(requireRecord(usagePayload.context, "usage diagnostic context")).not.toHaveProperty(
+      "used",
+    );
+  });
+
   it("reads opted-in post-compaction context from the queued workspace instead of process cwd", async () => {
     const workspaceDir = await fs.mkdtemp(
       path.join(os.tmpdir(), "openclaw-post-compaction-workspace-"),

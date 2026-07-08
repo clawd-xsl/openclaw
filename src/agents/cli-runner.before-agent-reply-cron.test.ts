@@ -88,7 +88,7 @@ function makeStubContext(params: typeof baseRunParams & { trigger?: string }) {
     bootstrapPromptWarningLines: [],
     authEpochVersion: 0,
     backendResolved: {},
-    preparedBackend: {},
+    preparedBackend: { backend: { command: params.provider } },
     reusableCliSession: { mode: "none" },
   } as unknown;
 }

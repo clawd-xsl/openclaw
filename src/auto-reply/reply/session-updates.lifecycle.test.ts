@@ -28,6 +28,7 @@ async function createFixture() {
     sessionFile: transcriptPath,
     updatedAt: Date.now(),
     compactionCount: 0,
+    lastCallOutputTokens: 6,
   } as SessionEntry;
   const sessionStore: Record<string, SessionEntry> = {
     [sessionKey]: entry,
@@ -107,6 +108,10 @@ describe("session-updates lifecycle hooks", () => {
     expect(startContext?.sessionId).toBe("s2");
     expect(startContext?.sessionKey).toBe(sessionKey);
     expect(startContext?.agentId).toBe("main");
+    expect(sessionStore[sessionKey]?.lastCallOutputTokens).toBeUndefined();
+    expect(loadSessionStore(storePath, { skipCache: true })[sessionKey]?.lastCallOutputTokens).toBe(
+      undefined,
+    );
   });
 
   it("recreates a complete persisted row when compaction updates a missing store row", async () => {
@@ -130,6 +135,7 @@ describe("session-updates lifecycle hooks", () => {
     expect(sessionStore[sessionKey]?.usageFamilySessionIds).toEqual(["s1", "s2"]);
     expect(sessionStore[sessionKey]?.compactionCount).toBe(1);
     expect(sessionStore[sessionKey]?.totalTokens).toBe(123);
+    expect(sessionStore[sessionKey]?.lastCallOutputTokens).toBeUndefined();
     expect(sessionStore[sessionKey]?.updatedAt).toBeGreaterThanOrEqual(entry.updatedAt);
     expect(persisted?.sessionId).toBe("s2");
     expect(persisted?.sessionFile).toContain("s2.jsonl");
@@ -137,6 +143,7 @@ describe("session-updates lifecycle hooks", () => {
     expect(persisted?.usageFamilySessionIds).toEqual(["s1", "s2"]);
     expect(persisted?.compactionCount).toBe(1);
     expect(persisted?.totalTokens).toBe(123);
+    expect(persisted?.lastCallOutputTokens).toBeUndefined();
     expect(persisted?.updatedAt).toBeGreaterThanOrEqual(entry.updatedAt);
   });
 });

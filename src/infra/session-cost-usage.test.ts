@@ -155,6 +155,69 @@ describe("session cost usage", () => {
     });
   });
 
+  it("uses the transcript aggregate instead of the last-call context snapshot", async () => {
+    const root = await makeSessionCostRoot("aggregate-vs-context");
+    const sessionsDir = path.join(root, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = path.join(sessionsDir, "sess-aggregate.jsonl");
+    const aggregateUsage = {
+      input: 4,
+      output: 89,
+      cacheRead: 75_002,
+      cacheWrite: 17_770,
+    };
+    const entry = {
+      type: "message",
+      timestamp: new Date().toISOString(),
+      usage: aggregateUsage,
+      message: {
+        role: "assistant",
+        provider: "openai",
+        model: "gpt-5.4",
+        content: "done",
+        usage: {
+          input: 2,
+          output: 5,
+          cacheRead: 46_338,
+          cacheWrite: 96,
+          totalTokens: 46_441,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+      },
+    };
+    await fs.writeFile(sessionFile, transcriptText("sess-aggregate", entry), "utf-8");
+    const config = {
+      models: {
+        providers: {
+          openai: {
+            models: [
+              {
+                id: "gpt-5.4",
+                cost: { input: 1, output: 1, cacheRead: 1, cacheWrite: 1 },
+              },
+            ],
+          },
+        },
+      },
+    } as unknown as OpenClawConfig;
+
+    await withStateDir(root, async () => {
+      const summary = await loadCostUsageSummary({ days: 30, config });
+      expect(summary.totals).toMatchObject({
+        input: 4,
+        output: 89,
+        cacheRead: 75_002,
+        cacheWrite: 17_770,
+        totalTokens: 92_865,
+      });
+      expect(summary.totals.totalCost).toBeCloseTo(0.092865, 8);
+
+      const logs = await loadSessionLogs({ sessionFile, config });
+      expect(logs?.[0]?.tokens).toBe(92_865);
+      expect(logs?.[0]?.cost).toBeCloseTo(0.092865, 8);
+    });
+  });
+
   it("reuses resolved model costs while scanning repeated session usage entries", async () => {
     const root = await makeSessionCostRoot("cost-resolver-cache");
     const sessionsDir = path.join(root, "agents", "main", "sessions");

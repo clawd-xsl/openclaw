@@ -228,8 +228,13 @@ export async function updateSessionStoreAfterAgentRun(params: {
         }),
       }),
     );
+    // Keep status/billing counters on one aggregate-turn basis. The final
+    // call's output is separate because it extends the next prompt.
+    const lastCallOutput = resolveNonNegativeNumber(lastCallUsage?.output);
     next.inputTokens = input;
     next.outputTokens = output;
+    next.lastCallOutputTokens =
+      lastCallOutput === undefined ? undefined : Math.floor(lastCallOutput);
     const hasUsageTotalTokens =
       typeof totalTokens === "number" && Number.isFinite(totalTokens) && totalTokens > 0;
     const useCompactionSnapshot = compactionTokensAfter !== undefined && !hasUsageTotalTokens;
@@ -238,6 +243,7 @@ export async function updateSessionStoreAfterAgentRun(params: {
       next.totalTokensFresh = true;
       next.inputTokens = undefined;
       next.outputTokens = undefined;
+      next.lastCallOutputTokens = undefined;
       next.cacheRead = undefined;
       next.cacheWrite = undefined;
       next.contextBudgetStatus = undefined;
@@ -263,6 +269,7 @@ export async function updateSessionStoreAfterAgentRun(params: {
     next.totalTokensFresh = true;
     next.inputTokens = undefined;
     next.outputTokens = undefined;
+    next.lastCallOutputTokens = undefined;
     next.cacheRead = undefined;
     next.cacheWrite = undefined;
     next.contextBudgetStatus = undefined;
@@ -404,12 +411,14 @@ export async function recordCliCompactionInStore(params: {
     next.totalTokensFresh = true;
     next.inputTokens = undefined;
     next.outputTokens = undefined;
+    next.lastCallOutputTokens = undefined;
     next.cacheRead = undefined;
     next.cacheWrite = undefined;
   } else {
     next.totalTokensFresh = false;
     next.inputTokens = undefined;
     next.outputTokens = undefined;
+    next.lastCallOutputTokens = undefined;
     next.cacheRead = undefined;
     next.cacheWrite = undefined;
   }

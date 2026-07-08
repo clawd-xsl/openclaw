@@ -8,6 +8,7 @@ import {
   acquireSessionWriteLock,
   resolveSessionWriteLockOptions,
 } from "../../agents/session-write-lock.js";
+import type { UsageLike } from "../../agents/usage.js";
 import {
   resolveSessionStoreAgentId,
   resolveSessionStoreKey,
@@ -280,6 +281,8 @@ export type TranscriptMessageAppendOptions<TMessage> = {
   idempotencyLookup?: "scan" | "caller-checked";
   /** Provider/channel message payload to persist. */
   message: TMessage;
+  /** Turn aggregate for historical accounting; message usage remains the context snapshot. */
+  entryUsage?: UsageLike;
   /** Testable timestamp override for the generated transcript entry. */
   now?: number;
   /** Optional finalizer that runs after duplicate detection but before persistence. */
@@ -2109,6 +2112,7 @@ export async function appendTranscriptMessage<TMessage>(
   return await appendSessionTranscriptMessage({
     transcriptPath: transcript.sessionFile,
     message: options.message,
+    ...(options.entryUsage !== undefined ? { entryUsage: options.entryUsage } : {}),
     ...(scope.sessionId ? { sessionId: scope.sessionId } : {}),
     ...(options.cwd ? { cwd: options.cwd } : {}),
     ...(options.config ? { config: options.config } : {}),
@@ -2216,6 +2220,7 @@ export async function trimSessionTranscriptForManualCompact(
       delete entry.contextBudgetStatus;
       delete entry.inputTokens;
       delete entry.outputTokens;
+      delete entry.lastCallOutputTokens;
       delete entry.totalTokens;
       delete entry.totalTokensFresh;
       entry.updatedAt = params.nowMs ?? Date.now();
@@ -2528,6 +2533,7 @@ async function appendTranscriptTurnMessages(
       const result = await appendMessage({
         transcriptPath: target.sessionFile,
         message: append.message,
+        ...(append.entryUsage !== undefined ? { entryUsage: append.entryUsage } : {}),
         ...(target.sessionId ? { sessionId: target.sessionId } : {}),
         ...((append.cwd ?? options.cwd) ? { cwd: append.cwd ?? options.cwd } : {}),
         ...((append.config ?? options.config) ? { config: append.config ?? options.config } : {}),

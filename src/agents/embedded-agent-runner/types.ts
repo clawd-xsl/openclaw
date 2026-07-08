@@ -47,6 +47,8 @@ export type EmbeddedAgentMeta = {
     reasoningTokens?: number;
     total?: number;
   };
+  /** Whether aggregate `usage` is also a valid latest-context snapshot. */
+  usageIsContextSnapshot?: boolean;
   /**
    * Usage from the last individual API call (not accumulated across tool-use
    * loops or compaction retries). Used for context-window utilization display

@@ -2523,6 +2523,7 @@ export const sessionsHandlers: GatewayRequestHandlers = {
           }
           delete entryToUpdate.inputTokens;
           delete entryToUpdate.outputTokens;
+          delete entryToUpdate.lastCallOutputTokens;
           delete entryToUpdate.contextBudgetStatus;
           if (
             typeof result.result?.tokensAfter === "number" &&

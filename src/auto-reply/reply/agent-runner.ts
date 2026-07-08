@@ -964,6 +964,7 @@ function buildInlineRawTracePayload(params: {
     cacheWrite?: number;
     total?: number;
   };
+  usageIsContextSnapshot?: boolean;
   provider?: string;
   model?: string;
   contextLimit?: number;
@@ -989,7 +990,7 @@ function buildInlineRawTracePayload(params: {
   const resolvedPromptTokens = deriveContextPromptTokens({
     lastCallUsage: params.lastCallUsage,
     promptTokens: params.promptTokens,
-    usage: params.usage,
+    usage: params.usageIsContextSnapshot === false ? undefined : params.usage,
   });
   const requestContextBlock = formatRequestContextTraceBlock({
     provider: params.provider,
@@ -1872,6 +1873,7 @@ export async function runReplyAgent(params: {
       promptTokens,
       usage,
       lastCallUsage,
+      usageIsContextSnapshot: runResult.meta?.agentMeta?.usageIsContextSnapshot,
     });
     recordReplyUsageState(runId, replyUsageState);
     const verboseEnabled = resolvedVerboseLevel !== "off";
@@ -1956,7 +1958,10 @@ export async function runReplyAgent(params: {
       lastCallUsage: runResult.meta?.agentMeta?.lastCallUsage,
       compactionTokensAfter: runResult.meta?.agentMeta?.compactionTokensAfter,
       promptTokens,
-      usageIsContextSnapshot: usedCliProvider ? true : undefined,
+      // Some CLI turns contain multiple provider iterations. The runner marks
+      // whether aggregate usage is safe to reuse as the active context size.
+      usageIsContextSnapshot:
+        runResult.meta?.agentMeta?.usageIsContextSnapshot ?? (usedCliProvider ? true : undefined),
       isHeartbeat,
       preserveRuntimeModel: fallbackExhausted,
       preserveUserFacingSessionModelState: preserveUserFacingSessionState,
@@ -2198,7 +2203,7 @@ export async function runReplyAgent(params: {
       const contextUsedTokens = deriveContextPromptTokens({
         lastCallUsage: runResult.meta?.agentMeta?.lastCallUsage,
         promptTokens,
-        usage,
+        usage: runResult.meta?.agentMeta?.usageIsContextSnapshot === false ? undefined : usage,
       });
       const costConfig = resolveModelCostConfig({
         provider: providerUsed,
@@ -2439,6 +2444,7 @@ export async function runReplyAgent(params: {
               sessionUsage,
               usage: runResult.meta?.agentMeta?.usage,
               lastCallUsage: runResult.meta?.agentMeta?.lastCallUsage,
+              usageIsContextSnapshot: runResult.meta?.agentMeta?.usageIsContextSnapshot,
               provider: providerUsed,
               model: modelUsed,
               contextLimit: contextTokensUsed,

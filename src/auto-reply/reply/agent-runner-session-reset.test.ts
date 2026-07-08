@@ -74,6 +74,7 @@ describe("resetReplyRunSession", () => {
       fallbackNoticeSelectedModel: "anthropic/claude",
       fallbackNoticeActiveModel: "openai/gpt",
       fallbackNoticeReason: "rate limit",
+      lastCallOutputTokens: 6,
       compactionCount: 4,
       compactionCheckpoints: [
         {
@@ -152,6 +153,7 @@ describe("resetReplyRunSession", () => {
     expect(activeSessionEntry?.fallbackNoticeSelectedModel).toBeUndefined();
     expect(activeSessionEntry?.fallbackNoticeActiveModel).toBeUndefined();
     expect(activeSessionEntry?.fallbackNoticeReason).toBeUndefined();
+    expect(activeSessionEntry?.lastCallOutputTokens).toBeUndefined();
     expect(activeSessionEntry?.systemPromptReport).toBeUndefined();
     expect(activeSessionEntry?.compactionCount).toBe(4);
     expect(activeSessionEntry?.compactionCheckpoints).toEqual(sessionEntry.compactionCheckpoints);
@@ -182,6 +184,7 @@ describe("resetReplyRunSession", () => {
     expect(persisted.main.sessionId).toBe(activeSessionEntry?.sessionId);
     expect(persisted.main.contextBudgetStatus).toBeUndefined();
     expect(persisted.main.fallbackNoticeReason).toBeUndefined();
+    expect(persisted.main.lastCallOutputTokens).toBeUndefined();
   });
 
   it("cleans up the old transcript when requested", async () => {

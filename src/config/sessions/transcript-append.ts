@@ -9,6 +9,7 @@ import {
   resolveSessionWriteLockOptions,
 } from "../../agents/session-write-lock.js";
 import { redactTranscriptMessage } from "../../agents/transcript-redact.js";
+import type { UsageLike } from "../../agents/usage.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { redactSecrets } from "../../logging/redact.js";
 import { isTranscriptOnlyOpenClawAssistantMessage } from "../../shared/transcript-only-openclaw-assistant.js";
@@ -420,6 +421,8 @@ export async function withSessionTranscriptAppendQueue<T>(
 export type AppendSessionTranscriptMessageParams<TMessage = unknown> = {
   transcriptPath: string;
   message: TMessage;
+  /** Turn aggregate for historical accounting; message usage remains the context snapshot. */
+  entryUsage?: UsageLike;
   now?: number;
   sessionId?: string;
   cwd?: string;
@@ -694,6 +697,7 @@ async function appendSessionTranscriptMessageLocked<TMessage>(
     ...(shouldRawAppend ? {} : { parentId: leafInfo.leafId ?? null }),
     timestamp: resolveTimestampMsToIsoString(now),
     message: finalMessage,
+    ...(params.entryUsage !== undefined ? { usage: redactSecrets(params.entryUsage) } : {}),
     ...(leafInfo.appendMode === "side" && isTranscriptOnlyOpenClawAssistantMessage(finalMessage)
       ? { appendMode: "side" as const }
       : {}),
