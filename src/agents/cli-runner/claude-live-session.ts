@@ -59,6 +59,7 @@ type ClaudeLiveTurn = {
   processAgeMs: number;
   sessionReuse: ClaudeLiveSessionReuse;
   restartReason?: ClaudeLiveRestartReason;
+  fingerprintChange?: string;
   timings: ClaudeLiveTurnTimings;
   rawLines: string[];
   rawChars: number;
@@ -408,14 +409,21 @@ function buildClaudeLiveFingerprint(params: {
     cwdHash: params.context.cwdHash ?? sha256(params.context.cwd ?? params.context.workspaceDir),
     provider: params.context.params.provider,
     model: params.context.normalizedModel,
-    systemPromptHash: sha256(params.context.systemPrompt),
+    // The composed system prompt is reassembled every turn (heartbeat text,
+    // hook context, media tasks), so it must NOT be part of the reuse
+    // fingerprint: a warm process owns its launch-time prompt until it
+    // restarts for another reason. Killing it per drift costs a cold start
+    // and the whole prompt cache each turn.
     authProfileIdHash: params.context.effectiveAuthProfileId
       ? sha256(params.context.effectiveAuthProfileId)
       : undefined,
     authEpochHash: params.context.authEpoch ? sha256(params.context.authEpoch) : undefined,
-    extraSystemPromptHash: params.context.extraSystemPromptHash,
     promptToolNamesHash: params.context.promptToolNamesHash,
-    mcpConfigHash: params.context.preparedBackend.mcpConfigHash,
+    // The loopback MCP port changes across gateway restarts; the resume hash is
+    // port-canonicalized so a loopback rebind alone must not kill a warm
+    // process. Raw-hash fallback mirrors the binding comparison in cli-session.
+    mcpConfigHash:
+      params.context.preparedBackend.mcpResumeHash ?? params.context.preparedBackend.mcpConfigHash,
     skillsFingerprint,
     argv: stableArgv,
     env: Object.keys(params.env)
@@ -423,6 +431,44 @@ function buildClaudeLiveFingerprint(params: {
       .toSorted()
       .map((key) => [key, params.env[key] ? sha256(params.env[key]) : ""]),
   });
+}
+
+/**
+ * Names the fingerprint components that changed between two launches so
+ * operators can see WHY a warm process restarted. Emits component names (and
+ * env var names, whose values are already hashed) only — never argv values,
+ * prompts, or hashes themselves, matching the restart-log redaction invariant.
+ */
+export function summarizeClaudeLiveFingerprintChange(
+  previousFingerprint: string,
+  nextFingerprint: string,
+): string | undefined {
+  if (previousFingerprint === nextFingerprint) {
+    return undefined;
+  }
+  let previous: Record<string, unknown>;
+  let next: Record<string, unknown>;
+  try {
+    previous = JSON.parse(previousFingerprint) as Record<string, unknown>;
+    next = JSON.parse(nextFingerprint) as Record<string, unknown>;
+  } catch {
+    return "unparsed";
+  }
+  const describeEnvChange = (): string => {
+    const toEnvMap = (value: unknown): Map<string, string> =>
+      new Map(Array.isArray(value) ? (value as Array<[string, string]>) : []);
+    const previousEnv = toEnvMap(previous.env);
+    const nextEnv = toEnvMap(next.env);
+    const changedKeys = [...new Set([...previousEnv.keys(), ...nextEnv.keys()])]
+      .filter((key) => previousEnv.get(key) !== nextEnv.get(key))
+      .toSorted();
+    return changedKeys.length > 0 ? `env(${changedKeys.join("|")})` : "env";
+  };
+  const changed = [...new Set([...Object.keys(previous), ...Object.keys(next)])]
+    .filter((key) => JSON.stringify(previous[key]) !== JSON.stringify(next[key]))
+    .toSorted()
+    .map((key) => (key === "env" ? describeEnvChange() : key));
+  return changed.length > 0 ? changed.join(",") : "unchanged";
 }
 
 function createAbortError(): Error {
@@ -463,6 +509,7 @@ function emitClaudeLiveTurnTiming(
     outcome,
     processAgeMs: turn.processAgeMs,
     ...(turn.restartReason ? { restartReason: turn.restartReason } : {}),
+    ...(turn.fingerprintChange ? { fingerprintChange: turn.fingerprintChange } : {}),
     ...turn.timings,
   } satisfies DiagnosticPhaseDetails;
   emitTrustedDiagnosticEvent({
@@ -485,8 +532,17 @@ function finishTurn(session: ClaudeLiveSession, output: CliOutput): void {
   clearTurnTimers(turn);
   turn.streamingParser.finish();
   const timing = emitClaudeLiveTurnTiming(session, turn, "completed");
+  // Keep the per-stage latencies in the message line itself: operators diagnose
+  // warm/cold latency from default logs, not from diagnostic-event subscribers.
+  const stageTimings = turn.timings;
   cliBackendLog.info(
-    `claude live session turn: provider=${session.providerId} model=${session.modelId} durationMs=${timing.durationMs} rawLines=${turn.rawLines.length} ${formatCliBackendOutputDigest(output.text)}`,
+    `claude live session turn: provider=${session.providerId} model=${session.modelId} reuse=${turn.sessionReuse}${
+      turn.restartReason ? ` restart=${turn.restartReason}` : ""
+    } durationMs=${timing.durationMs} stdinMs=${stageTimings.stdinWriteMs ?? "-"} firstStdoutMs=${
+      stageTimings.timeToFirstStdoutByteMs ?? "-"
+    } firstDeltaMs=${stageTimings.timeToFirstAssistantDeltaMs ?? "-"} resultMs=${
+      stageTimings.timeToResultMs ?? "-"
+    } rawLines=${turn.rawLines.length} ${formatCliBackendOutputDigest(output.text)}`,
     timing.details,
   );
   session.currentTurn = null;
@@ -1262,6 +1318,7 @@ function createTurn(params: {
   noOutputTimeoutMs: number;
   sessionReuse: ClaudeLiveSessionReuse;
   restartReason?: ClaudeLiveRestartReason;
+  fingerprintChange?: string;
   onAssistantDelta: (delta: CliStreamingDelta) => void;
   onAssistantBoundary?: (boundary: CliStreamingBoundary) => void;
   onToolUseStart?: (delta: CliToolUseStartDelta) => void;
@@ -1286,6 +1343,7 @@ function createTurn(params: {
     processAgeMs: Math.max(0, startedAtMs - params.session.createdAtMs),
     sessionReuse: params.sessionReuse,
     restartReason: params.restartReason,
+    fingerprintChange: params.fingerprintChange,
     timings,
     rawLines: [],
     rawChars: 0,
@@ -1464,6 +1522,7 @@ export async function runClaudeLiveSessionTurn(params: {
     await params.cleanup();
   };
   let restartReason: ClaudeLiveRestartReason | undefined;
+  let fingerprintChange: string | undefined;
   const selectReusableSession = (candidate: ClaudeLiveSession | null): ClaudeLiveSession | null => {
     if (!candidate) {
       return null;
@@ -1478,13 +1537,23 @@ export async function runClaudeLiveSessionTurn(params: {
       return candidate;
     }
     // Bound launch-time state and prevent non-resume turns from inheriting a
-    // reusable process. The closed code is safe to emit; fingerprints are not.
+    // reusable process. The closed code and component names are safe to emit;
+    // fingerprints are not.
     restartReason ??= reason;
+    if (reason === "fingerprint_changed") {
+      fingerprintChange ??= summarizeClaudeLiveFingerprintChange(
+        candidate.fingerprint,
+        fingerprint,
+      );
+    }
     cliBackendLog.info(
-      `claude live session restart: provider=${candidate.providerId} model=${candidate.modelId} reason=${reason}`,
+      `claude live session restart: provider=${candidate.providerId} model=${candidate.modelId} reason=${reason}${
+        fingerprintChange ? ` fingerprintChange=${fingerprintChange}` : ""
+      }`,
       {
         runId: params.context.params.runId,
         restartReason: reason,
+        ...(fingerprintChange ? { fingerprintChange } : {}),
         processAgeMs: Math.max(0, Date.now() - candidate.createdAtMs),
       },
     );
@@ -1588,6 +1657,7 @@ export async function runClaudeLiveSessionTurn(params: {
         noOutputTimeoutMs: params.noOutputTimeoutMs,
         sessionReuse,
         restartReason,
+        fingerprintChange,
         onAssistantDelta: params.onAssistantDelta,
         onAssistantBoundary: params.onAssistantBoundary,
         onToolUseStart: params.onToolUseStart,

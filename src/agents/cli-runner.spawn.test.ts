@@ -41,6 +41,7 @@ import {
   closeClaudeLiveSessionForContext,
   resetClaudeLiveSessionsForTest,
   runClaudeLiveSessionTurn,
+  summarizeClaudeLiveFingerprintChange,
 } from "./cli-runner/claude-live-session.js";
 import {
   attachCliMessagingDeliveryEvidence,
@@ -141,6 +142,7 @@ function buildPreparedCliRunContext(params: {
   executionMode?: PreparedCliRunContext["params"]["executionMode"];
   workspaceDir?: string;
   timeoutMs?: number;
+  systemPrompt?: string;
 }): PreparedCliRunContext {
   // Produces a prepared context without invoking prepare.runtime, keeping spawn
   // assertions focused on execute/runtime behavior.
@@ -240,7 +242,7 @@ function buildPreparedCliRunContext(params: {
     contextEngineConfig: {},
     modelId: params.model,
     normalizedModel: params.model,
-    systemPrompt: "You are a helpful assistant.",
+    systemPrompt: params.systemPrompt ?? "You are a helpful assistant.",
     systemPromptReport: {} as PreparedCliRunContext["systemPromptReport"],
     bootstrapPromptWarningLines: [],
     authEpochVersion: 2,
@@ -2647,6 +2649,66 @@ ${JSON.stringify({
     }
   });
 
+  it("keeps the warm Claude live process when the composed system prompt drifts", async () => {
+    const diagnostics = captureClaudeLiveTurnDiagnostics();
+    let turnIndex = 0;
+    supervisorSpawnMock.mockImplementationOnce(async (...args: unknown[]) => {
+      const input = (args[0] ?? {}) as { onStdout?: (chunk: string) => void };
+      return {
+        runId: "live-prompt-drift",
+        pid: 3063,
+        startedAtMs: Date.now(),
+        stdin: {
+          write: vi.fn((data: string, cb?: (err?: Error | null) => void) => {
+            turnIndex += 1;
+            cb?.();
+            input.onStdout?.(
+              `${JSON.stringify({
+                type: "result",
+                session_id: "live-prompt-drift",
+                result: `turn-${turnIndex}`,
+              })}\n`,
+            );
+          }),
+          end: vi.fn(),
+        },
+        wait: vi.fn(() => new Promise(() => {})),
+        cancel: vi.fn(),
+      };
+    });
+
+    try {
+      const first = await executePreparedCliRun(
+        buildPreparedCliRunContext({
+          provider: "claude-cli",
+          model: "sonnet",
+          runId: "run-live-prompt-first",
+          backend: { liveSession: "claude-stdio" },
+          systemPrompt: "Turn one composed prompt.",
+        }),
+      );
+      const second = await executePreparedCliRun(
+        buildPreparedCliRunContext({
+          provider: "claude-cli",
+          model: "sonnet",
+          runId: "run-live-prompt-drift",
+          backend: { liveSession: "claude-stdio" },
+          systemPrompt: "Turn two composed prompt with heartbeat context.",
+        }),
+      );
+
+      expect(first.text).toBe("turn-1");
+      expect(second.text).toBe("turn-2");
+      expect(supervisorSpawnMock).toHaveBeenCalledOnce();
+      expect(diagnostics.events[1]?.details).toMatchObject({
+        runId: "run-live-prompt-drift",
+        sessionReuse: "warm_hit",
+      });
+    } finally {
+      diagnostics.stop();
+    }
+  });
+
   it("reports a closed restart reason without exposing fingerprint inputs", async () => {
     const diagnostics = captureClaudeLiveTurnDiagnostics();
     const logInfoSpy = vi.spyOn(cliBackendLog, "info").mockImplementation(() => undefined);
@@ -2706,13 +2768,16 @@ ${JSON.stringify({
         runId: "run-live-after-fingerprint-change",
         sessionReuse: "cold_miss",
         restartReason: "fingerprint_changed",
+        fingerprintChange: "env(ANTHROPIC_BASE_URL)",
       });
       const restartLog = logInfoSpy.mock.calls.find(([message]) =>
         message.startsWith("claude live session restart:"),
       );
+      expect(restartLog?.[0]).toContain("fingerprintChange=env(ANTHROPIC_BASE_URL)");
       expect(restartLog?.[1]).toMatchObject({
         runId: "run-live-after-fingerprint-change",
         restartReason: "fingerprint_changed",
+        fingerprintChange: "env(ANTHROPIC_BASE_URL)",
       });
       expect(JSON.stringify({ event: diagnostics.events[1], log: restartLog })).not.toContain(
         "first.example",
@@ -2723,6 +2788,38 @@ ${JSON.stringify({
     } finally {
       diagnostics.stop();
     }
+  });
+
+  it("names changed fingerprint components without leaking values", () => {
+    const previous = JSON.stringify({
+      command: "claude",
+      model: "sonnet",
+      systemPromptHash: "hash-a",
+      argv: ["--flag", "secret-old"],
+      env: [
+        ["ANTHROPIC_BASE_URL", "hash-old"],
+        ["STABLE_KEY", "hash-same"],
+      ],
+    });
+    const next = JSON.stringify({
+      command: "claude",
+      model: "opus",
+      systemPromptHash: "hash-b",
+      argv: ["--flag", "secret-new"],
+      env: [
+        ["ANTHROPIC_BASE_URL", "hash-new"],
+        ["STABLE_KEY", "hash-same"],
+      ],
+    });
+
+    const summary = summarizeClaudeLiveFingerprintChange(previous, next);
+
+    expect(summary).toBe("argv,env(ANTHROPIC_BASE_URL),model,systemPromptHash");
+    expect(summary).not.toContain("secret-old");
+    expect(summary).not.toContain("secret-new");
+    expect(summary).not.toContain("hash-");
+    expect(summarizeClaudeLiveFingerprintChange(previous, previous)).toBeUndefined();
+    expect(summarizeClaudeLiveFingerprintChange("not-json", next)).toBe("unparsed");
   });
 
   it("reports Claude live stream progress and keeps native tools fresh while they are running", async () => {
