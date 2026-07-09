@@ -537,10 +537,11 @@ export async function prepareCliRunContext(
         : undefined,
       env: mcpLoopbackRuntime
         ? {
-            OPENCLAW_MCP_TOKEN: prepareDeps.resolveMcpLoopbackBearerToken(
-              mcpLoopbackRuntime,
-              params.senderIsOwner === true,
-            ),
+            // The launch token must be process-stable: it feeds the live
+            // fingerprint, and per-sender flips would respawn the warm process
+            // every owner/non-owner alternation. The effective sender identity
+            // travels per turn through the MCP capture instead.
+            OPENCLAW_MCP_TOKEN: prepareDeps.resolveMcpLoopbackBearerToken(mcpLoopbackRuntime, true),
             OPENCLAW_MCP_AGENT_ID: sessionAgentId ?? "",
             OPENCLAW_MCP_ACCOUNT_ID: params.agentAccountId ?? "",
             OPENCLAW_MCP_SESSION_KEY: params.sessionKey ?? "",

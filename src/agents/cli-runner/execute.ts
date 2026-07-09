@@ -870,6 +870,7 @@ export async function executePreparedCliRun(
             captureKey: gatewayCaptureKey,
             toolSurface: context.backendResolved.bundleMcpToolSurface,
             runtimeToolsAllow: context.params.toolsAllow,
+            senderIsOwner: context.params.senderIsOwner,
             requestContext: {
               messageProvider: context.params.messageChannel ?? context.params.messageProvider,
               currentChannelId: context.params.currentChannelId,

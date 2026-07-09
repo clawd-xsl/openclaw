@@ -22,6 +22,13 @@ type McpLoopbackToolCallCapture = {
   requestContext?: Partial<Omit<McpRequestContext, "senderIsOwner">>;
   toolSurface?: CliBackendBundleMcpToolSurface;
   runtimeToolsAllow?: readonly string[];
+  /**
+   * Sender identity admitted by the host for THIS turn. Kept separate from
+   * requestContext: the CLI process only holds the capture key and cannot
+   * forge capture contents, so this may override the launch bearer identity
+   * per turn (both directions) without respawning the warm process.
+   */
+  senderIsOwner?: boolean;
   onYield?: (message: string) => Promise<void> | void;
   onRequestStart?: () => void;
   onRequestClassified?: () => void;
@@ -81,6 +88,7 @@ export function beginMcpLoopbackToolCallCapture(params: {
   requestContext?: Partial<Omit<McpRequestContext, "senderIsOwner">>;
   toolSurface?: CliBackendBundleMcpToolSurface;
   runtimeToolsAllow?: readonly string[];
+  senderIsOwner?: boolean;
   onYield?: (message: string) => Promise<void> | void;
   onRequestStart?: () => void;
   onRequestClassified?: () => void;
@@ -103,6 +111,7 @@ export function beginMcpLoopbackToolCallCapture(params: {
     requestContext: params.requestContext,
     toolSurface: params.toolSurface,
     runtimeToolsAllow: params.runtimeToolsAllow,
+    senderIsOwner: params.senderIsOwner,
     onYield: params.onYield,
     onRequestStart: params.onRequestStart,
     onRequestClassified: params.onRequestClassified,
@@ -136,6 +145,13 @@ export function resolveMcpLoopbackRuntimeToolsAllow(
   captureHandle: McpLoopbackRequestCaptureHandle | undefined,
 ): readonly string[] | undefined {
   return captureHandle?.capture.runtimeToolsAllow;
+}
+
+/** Resolve the host-admitted sender identity for this CLI turn, if declared. */
+export function resolveMcpLoopbackSenderIsOwner(
+  captureHandle: McpLoopbackRequestCaptureHandle | undefined,
+): boolean | undefined {
+  return captureHandle?.capture.senderIsOwner;
 }
 
 /** Resolve yield state bound to the request's admitted CLI capture generation. */

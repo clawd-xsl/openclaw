@@ -860,6 +860,53 @@ describe("mcp loopback server", () => {
     expect(call.runtimeToolsAllow).toEqual(["exec", "read", "message"]);
   });
 
+  it("scopes the turn to the capture-admitted sender identity over the bearer", async () => {
+    const { runtime } = await startLoopbackServerForTest();
+    const captureKey = "capture-non-owner-turn";
+    beginMcpLoopbackToolCallCapture({
+      captureKey,
+      toolSurface: "openclaw",
+      senderIsOwner: false,
+      onToolCallResult: vi.fn(),
+    });
+
+    const response = await sendLoopbackToolsList({
+      // Owner bearer: the launch token is process-stable, so a non-owner turn
+      // on an owner-launched process must still resolve a non-owner scope.
+      token: runtime.ownerToken,
+      headers: {
+        "x-session-key": "agent:main:main",
+        "x-openclaw-cli-capture-key": captureKey,
+      },
+    });
+
+    expect(response.status).toBe(200);
+    const call = getScopedToolsCall(0);
+    expect(call.senderIsOwner).toBe(false);
+  });
+
+  it("falls back to the bearer identity when the capture declares no sender", async () => {
+    const { runtime } = await startLoopbackServerForTest();
+    const captureKey = "capture-undeclared-sender";
+    beginMcpLoopbackToolCallCapture({
+      captureKey,
+      toolSurface: "openclaw",
+      onToolCallResult: vi.fn(),
+    });
+
+    const response = await sendLoopbackToolsList({
+      token: runtime.ownerToken,
+      headers: {
+        "x-session-key": "agent:main:main",
+        "x-openclaw-cli-capture-key": captureKey,
+      },
+    });
+
+    expect(response.status).toBe(200);
+    const call = getScopedToolsCall(0);
+    expect(call.senderIsOwner).toBe(true);
+  });
+
   it("drops the admitted runtime toolsAllow for non-openclaw tool surfaces", async () => {
     const { runtime } = await startLoopbackServerForTest();
     const captureKey = "capture-native-tools-allow";

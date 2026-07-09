@@ -3088,6 +3088,51 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
     }
   });
 
+  it("keeps the loopback launch token stable across sender identities", async () => {
+    const { dir, sessionFile } = createSessionFile();
+    try {
+      const resolveMcpLoopbackBearerToken = vi.fn((runtime: { ownerToken: string }) => {
+        return runtime.ownerToken;
+      });
+      setCliRunnerPrepareTestDeps({
+        getActiveMcpLoopbackRuntime: vi.fn(() => ({
+          port: 31783,
+          ownerToken: "loopback-owner-token",
+          nonOwnerToken: "loopback-non-owner-token",
+        })),
+        resolveMcpLoopbackBearerToken,
+      });
+
+      const prepareForSender = async (senderIsOwner: boolean | undefined, runId: string) =>
+        prepareCliRunContext({
+          sessionId: "session-test",
+          sessionFile,
+          workspaceDir: dir,
+          prompt: "latest ask",
+          provider: "test-cli",
+          model: "test-model",
+          timeoutMs: 1_000,
+          runId,
+          config: createCliBackendConfig({ bundleMcp: true }),
+          senderIsOwner,
+        });
+
+      const ownerContext = await prepareForSender(true, "run-token-owner");
+      const nonOwnerContext = await prepareForSender(false, "run-token-non-owner");
+
+      // Sender flips must not flip the launch env: the token feeds the live
+      // process fingerprint, and identity travels per turn via the MCP capture.
+      expect(ownerContext.preparedBackend.env?.OPENCLAW_MCP_TOKEN).toBe(
+        nonOwnerContext.preparedBackend.env?.OPENCLAW_MCP_TOKEN,
+      );
+      for (const call of resolveMcpLoopbackBearerToken.mock.calls) {
+        expect(call[1]).toBe(true);
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("fails closed for native tool-capable CLI backends when tools are disabled", async () => {
     const { dir, sessionFile } = createSessionFile();
     try {

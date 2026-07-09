@@ -22,6 +22,7 @@ import {
   recordMcpLoopbackToolCallResult,
   resolveMcpLoopbackRequestContext,
   resolveMcpLoopbackRuntimeToolsAllow,
+  resolveMcpLoopbackSenderIsOwner,
   resolveMcpLoopbackToolSurface,
   resolveMcpLoopbackYieldContext,
   setActiveMcpLoopbackRuntime,
@@ -247,15 +248,18 @@ export async function startMcpLoopbackServer(port = 0): Promise<{
         const cfg = getRuntimeConfig();
         const headerRequestContext = resolveMcpRequestContext(req, cfg, auth);
         const capturedRequestContext = resolveMcpLoopbackRequestContext(cliRequestCaptureHandle);
-        const requestContext = capturedRequestContext
-          ? {
-              ...headerRequestContext,
-              ...capturedRequestContext,
-              // Bearer identity remains launch-bound and part of the live
-              // fingerprint; a turn lease cannot elevate it.
-              senderIsOwner: headerRequestContext.senderIsOwner,
-            }
-          : headerRequestContext;
+        const requestContext = {
+          ...headerRequestContext,
+          ...(capturedRequestContext ?? {}),
+          // Sender identity is a per-turn fact the host admits with the
+          // capture: the CLI process holds only the capture key and cannot
+          // forge capture contents. The launch bearer stays process-stable so
+          // per-sender flips never respawn the warm process; calls outside an
+          // admitted turn still fail closed above.
+          senderIsOwner:
+            resolveMcpLoopbackSenderIsOwner(cliRequestCaptureHandle) ??
+            headerRequestContext.senderIsOwner,
+        };
         const yieldContext = resolveMcpLoopbackYieldContext(cliRequestCaptureHandle);
         const scopedTools = toolCache.resolve({
           cfg,
