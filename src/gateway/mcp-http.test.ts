@@ -39,6 +39,7 @@ type ScopedToolsCall = {
   surface?: string;
   excludeToolNames?: Iterable<string>;
   toolSurface?: string;
+  runtimeToolsAllow?: readonly string[];
 };
 
 type BeforeToolCallHookInput = {
@@ -833,6 +834,53 @@ describe("mcp loopback server", () => {
     const call = getScopedToolsCall(0);
     expect(call.toolSurface).toBe("openclaw");
     expect(call.excludeToolNames).toBeUndefined();
+  });
+
+  it("passes the admitted runtime toolsAllow to the openclaw loopback tool scope", async () => {
+    const { runtime } = await startLoopbackServerForTest();
+    const captureKey = "capture-runtime-tools-allow";
+    beginMcpLoopbackToolCallCapture({
+      captureKey,
+      toolSurface: "openclaw",
+      runtimeToolsAllow: ["exec", "read", "message"],
+      onToolCallResult: vi.fn(),
+    });
+
+    const response = await sendLoopbackToolsList({
+      token: runtime.ownerToken,
+      headers: {
+        "x-session-key": "agent:main:main",
+        "x-openclaw-cli-capture-key": captureKey,
+      },
+    });
+
+    expect(response.status).toBe(200);
+    const call = getScopedToolsCall(0);
+    expect(call.toolSurface).toBe("openclaw");
+    expect(call.runtimeToolsAllow).toEqual(["exec", "read", "message"]);
+  });
+
+  it("drops the admitted runtime toolsAllow for non-openclaw tool surfaces", async () => {
+    const { runtime } = await startLoopbackServerForTest();
+    const captureKey = "capture-native-tools-allow";
+    beginMcpLoopbackToolCallCapture({
+      captureKey,
+      toolSurface: "native-complement",
+      runtimeToolsAllow: ["exec"],
+      onToolCallResult: vi.fn(),
+    });
+
+    const response = await sendLoopbackToolsList({
+      token: runtime.ownerToken,
+      headers: {
+        "x-session-key": "agent:main:main",
+        "x-openclaw-cli-capture-key": captureKey,
+      },
+    });
+
+    expect(response.status).toBe(200);
+    const call = getScopedToolsCall(0);
+    expect(call.runtimeToolsAllow).toBeUndefined();
   });
 
   it("fails closed when a warm CLI process calls a tool outside an active turn", async () => {

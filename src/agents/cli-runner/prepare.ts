@@ -327,7 +327,11 @@ export async function prepareCliRunContext(
   if (!backendResolved) {
     throw new Error(`Unknown CLI backend: ${params.provider}`);
   }
-  if (params.toolsAllow !== undefined) {
+  // Only openclaw-surface backends route every product tool through the MCP
+  // loopback (native tools disabled at launch), so only they can enforce a
+  // runtime restriction there; other surfaces execute native tools outside
+  // OpenClaw policy and must keep failing closed.
+  if (params.toolsAllow !== undefined && backendResolved.bundleMcpToolSurface !== "openclaw") {
     throw new Error(
       `CLI backend ${backendResolved.id} cannot enforce runtime toolsAllow; use an embedded runtime for restricted tool policy`,
     );
@@ -726,6 +730,9 @@ export async function prepareCliRunContext(
             requireExplicitMessageTarget: bindingRequireExplicitMessageTarget,
             senderIsOwner: undefined,
             toolSurface: backendResolved.bundleMcpToolSurface,
+            // Keep the advertised prompt tool list aligned with the runtime
+            // restriction the loopback will enforce at call time.
+            runtimeToolsAllow: params.toolsAllow,
           }).tools
         : [];
     const promptToolNamesHash =

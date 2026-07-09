@@ -96,6 +96,19 @@ describe("anthropic provider replay hooks", () => {
     expect(backend.config.args).not.toContain("--print");
     expect(backend.config.resumeArgs).not.toContain("-p");
     expect(backend.config.resumeArgs).not.toContain("--print");
+    // The "openclaw" tool surface promises the MCP loopback is the ONLY tool
+    // surface (runtime toolsAllow enforcement relies on it), so the launch args
+    // must keep Claude's native tools, hooks, settings, and slash commands off.
+    for (const argv of [backend.config.args, backend.config.resumeArgs]) {
+      expect(argv).toContain("--allowedTools");
+      expect(argv).toContain("mcp__openclaw__*");
+      expect(argv).toContain("--tools");
+      expect(argv).toContain("ToolSearch");
+      expect(argv).toContain("--disable-slash-commands");
+      expect(argv).toContain("--setting-sources");
+      expect(argv).toContain('{"disableAllHooks":true}');
+    }
+    expect(backend.config.env).toMatchObject({ CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1" });
   });
 
   it("owns native reasoning output mode for Claude transports", async () => {

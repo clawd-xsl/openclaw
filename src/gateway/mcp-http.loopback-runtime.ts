@@ -21,6 +21,7 @@ type McpLoopbackToolCallCapture = {
   generation: number;
   requestContext?: Partial<Omit<McpRequestContext, "senderIsOwner">>;
   toolSurface?: CliBackendBundleMcpToolSurface;
+  runtimeToolsAllow?: readonly string[];
   onYield?: (message: string) => Promise<void> | void;
   onRequestStart?: () => void;
   onRequestClassified?: () => void;
@@ -79,6 +80,7 @@ export function beginMcpLoopbackToolCallCapture(params: {
   captureKey: string;
   requestContext?: Partial<Omit<McpRequestContext, "senderIsOwner">>;
   toolSurface?: CliBackendBundleMcpToolSurface;
+  runtimeToolsAllow?: readonly string[];
   onYield?: (message: string) => Promise<void> | void;
   onRequestStart?: () => void;
   onRequestClassified?: () => void;
@@ -100,6 +102,7 @@ export function beginMcpLoopbackToolCallCapture(params: {
     generation: nextToolCallCaptureGeneration,
     requestContext: params.requestContext,
     toolSurface: params.toolSurface,
+    runtimeToolsAllow: params.runtimeToolsAllow,
     onYield: params.onYield,
     onRequestStart: params.onRequestStart,
     onRequestClassified: params.onRequestClassified,
@@ -126,6 +129,13 @@ export function resolveMcpLoopbackToolSurface(
   captureHandle: McpLoopbackRequestCaptureHandle | undefined,
 ): CliBackendBundleMcpToolSurface | undefined {
   return captureHandle?.capture.toolSurface;
+}
+
+/** Resolve the restrict-only runtime tool allowlist admitted with this CLI attempt. */
+export function resolveMcpLoopbackRuntimeToolsAllow(
+  captureHandle: McpLoopbackRequestCaptureHandle | undefined,
+): readonly string[] | undefined {
+  return captureHandle?.capture.runtimeToolsAllow;
 }
 
 /** Resolve yield state bound to the request's admitted CLI capture generation. */

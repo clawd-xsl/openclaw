@@ -21,6 +21,7 @@ import {
   markMcpLoopbackToolCallStarted,
   recordMcpLoopbackToolCallResult,
   resolveMcpLoopbackRequestContext,
+  resolveMcpLoopbackRuntimeToolsAllow,
   resolveMcpLoopbackToolSurface,
   resolveMcpLoopbackYieldContext,
   setActiveMcpLoopbackRuntime,
@@ -273,6 +274,7 @@ export async function startMcpLoopbackServer(port = 0): Promise<{
           requireExplicitMessageTarget: requestContext.requireExplicitMessageTarget,
           senderIsOwner: requestContext.senderIsOwner,
           toolSurface: resolveMcpLoopbackToolSurface(cliRequestCaptureHandle),
+          runtimeToolsAllow: resolveMcpLoopbackRuntimeToolsAllow(cliRequestCaptureHandle),
         });
 
         logMcpLoopbackTraffic("request", {

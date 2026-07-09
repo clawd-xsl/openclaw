@@ -43,6 +43,8 @@ type McpLoopbackScopeParams = {
   requireExplicitMessageTarget?: boolean;
   senderIsOwner: boolean | undefined;
   toolSurface?: CliBackendBundleMcpToolSurface;
+  /** Restrict-only runtime allowlist admitted with the CLI turn (cron/isolated toolsAllow). */
+  runtimeToolsAllow?: readonly string[];
 };
 
 /** Resolves loopback-visible tools after applying gateway scope and native-tool exclusions. */
@@ -54,6 +56,12 @@ export function resolveMcpLoopbackScopedTools(params: McpLoopbackScopeParams): {
     ...params,
     surface: "loopback",
     excludeToolNames: params.toolSurface === "openclaw" ? undefined : NATIVE_TOOL_EXCLUDE,
+    // Only openclaw-surface backends route every tool through this loopback:
+    // they get the coding tools their disabled native runtime would have
+    // provided, and only they may honor a runtime restriction here; other
+    // surfaces fail closed in the CLI runner before launch.
+    materializeCodingTools: params.toolSurface === "openclaw",
+    runtimeToolsAllow: params.toolSurface === "openclaw" ? params.runtimeToolsAllow : undefined,
   });
   return {
     agentId: scoped.agentId,
@@ -85,6 +93,7 @@ export class McpLoopbackToolCache {
           ? "non-owner"
           : "unknown-owner",
       params.toolSurface ?? "native-complement",
+      params.runtimeToolsAllow ? [...params.runtimeToolsAllow].toSorted().join(",") : "",
     ].join("\u0000");
     const now = Date.now();
     for (const [key, entry] of this.#entries) {

@@ -127,7 +127,10 @@ export type RunCliAgentParams = {
   senderIsOwner?: boolean;
   /** Device-scoped operator session allowed to review approvals initiated by this run. */
   approvalReviewerDeviceId?: string;
-  /** Runtime tool allow-list. CLI harnesses fail closed when this is set. */
+  /**
+   * Restrict-only runtime tool allow-list. Enforced through the MCP loopback
+   * for openclaw-surface backends; other CLI harnesses fail closed when set.
+   */
   toolsAllow?: string[];
   disableTools?: boolean;
   abortSignal?: AbortSignal;

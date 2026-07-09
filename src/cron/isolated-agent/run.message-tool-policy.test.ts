@@ -792,7 +792,7 @@ describe("runCronIsolatedAgentTurn message tool policy", () => {
 
     const cliRun = expectRecordFields(
       getMockCallArg(runCliAgentMock, 0, 0, "CLI run"),
-      { toolsAllow: ["read"] },
+      { toolsAllow: ["read"], senderIsOwner: true },
       "CLI run params",
     );
     expect(cliRun.prompt).not.toContain("Message delivery destination metadata");
@@ -826,10 +826,9 @@ describe("runCronIsolatedAgentTurn message tool policy", () => {
   });
 
   it("drops the auto-applied default toolsAllow cap for CLI-backed runs instead of failing", async () => {
-    // A CLI backend cannot enforce a runtime toolsAllow, so the auto-applied
-    // creator-surface cap (#91499, flagged toolsAllowIsDefault) is dropped at
-    // run time rather than handed to the CLI runner — which would otherwise
-    // reject the run. An explicit user restriction (no flag) is still
+    // The auto-applied creator-surface cap (#91499, flagged toolsAllowIsDefault)
+    // is scaffolding, not an explicit restriction: CLI runs keep the full
+    // loopback surface. An explicit user restriction (no flag) is still
     // propagated; see the "restricted toolsAllow" case above.
     mockRunCronFallbackPassthrough();
     resolveCronDeliveryPlanMock.mockReturnValue(makeAnnounceDeliveryPlan());

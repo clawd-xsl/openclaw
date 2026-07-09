@@ -869,6 +869,7 @@ export async function executePreparedCliRun(
           beginMcpLoopbackToolCallCapture({
             captureKey: gatewayCaptureKey,
             toolSurface: context.backendResolved.bundleMcpToolSurface,
+            runtimeToolsAllow: context.params.toolsAllow,
             requestContext: {
               messageProvider: context.params.messageChannel ?? context.params.messageProvider,
               currentChannelId: context.params.currentChannelId,

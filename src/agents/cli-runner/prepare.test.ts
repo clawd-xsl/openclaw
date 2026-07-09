@@ -3033,6 +3033,61 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
     }
   });
 
+  it("accepts runtime toolsAllow for openclaw-surface CLI backends and aligns prompt tools", async () => {
+    const { dir, sessionFile } = createSessionFile();
+    try {
+      const resolveMcpLoopbackScopedTools = vi.fn(() => ({ agentId: "main", tools: [] }));
+      setCliRunnerPrepareTestDeps({
+        getActiveMcpLoopbackRuntime: vi.fn(() => ({
+          port: 31783,
+          ownerToken: "loopback-owner-token",
+          nonOwnerToken: "loopback-non-owner-token",
+        })),
+        resolveMcpLoopbackScopedTools,
+      });
+      cliBackendsTesting.setDepsForTest({
+        resolvePluginSetupCliBackend: () => undefined,
+        resolveRuntimeCliBackends: () => [
+          {
+            id: "openclaw-cli",
+            pluginId: "openclaw-plugin",
+            bundleMcp: true,
+            bundleMcpMode: "claude-config-file",
+            bundleMcpToolSurface: "openclaw",
+            config: {
+              command: "openclaw-cli",
+              args: ["--print"],
+              resumeArgs: ["--resume", "{sessionId}"],
+              output: "jsonl",
+              input: "stdin",
+              sessionMode: "existing",
+            },
+          },
+        ],
+      });
+
+      const context = await prepareCliRunContext({
+        sessionId: "session-test",
+        sessionFile,
+        workspaceDir: dir,
+        prompt: "latest ask",
+        provider: "openclaw-cli",
+        model: "test-model",
+        timeoutMs: 1_000,
+        runId: "run-test-openclaw-tools-allow",
+        config: createCliBackendConfig(),
+        toolsAllow: ["exec", "read", "message"],
+      });
+
+      expect(context.backendResolved.bundleMcpToolSurface).toBe("openclaw");
+      expect(resolveMcpLoopbackScopedTools).toHaveBeenCalledWith(
+        expect.objectContaining({ runtimeToolsAllow: ["exec", "read", "message"] }),
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("fails closed for native tool-capable CLI backends when tools are disabled", async () => {
     const { dir, sessionFile } = createSessionFile();
     try {

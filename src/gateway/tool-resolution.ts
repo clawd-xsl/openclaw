@@ -1,11 +1,13 @@
 // Gateway-scoped tool resolution for HTTP and loopback tool surfaces.
 import { resolveAgentWorkspaceDir, resolveDefaultAgentId } from "../agents/agent-scope.js";
+import { createOpenClawCodingTools } from "../agents/agent-tools.js";
 import {
   resolveEffectiveToolPolicy,
   resolveGroupToolPolicy,
   resolveInheritedToolPolicyForSession,
   resolveSubagentToolPolicyForSession,
 } from "../agents/agent-tools.policy.js";
+import { applyEmbeddedAttemptToolsAllow } from "../agents/embedded-agent-runner/run/attempt-tool-construction-plan.js";
 import { createOpenClawTools } from "../agents/openclaw-tools.js";
 import {
   isSubagentEnvelopeSession,
@@ -65,6 +67,19 @@ export function resolveGatewayScopedTools(params: {
   excludeToolNames?: Iterable<string>;
   disablePluginTools?: boolean;
   gatewayRequestedTools?: string[];
+  /**
+   * Restrict-only runtime allowlist (cron/isolated toolsAllow). Applied as an
+   * intersection over the policy-resolved tools; unlike gatewayRequestedTools
+   * it can never widen the surface past agent/profile/gateway policy.
+   */
+  runtimeToolsAllow?: readonly string[];
+  /**
+   * Materialize workspace coding tools (read/write/edit/apply_patch/exec/
+   * process) into the scope. Only openclaw-surface CLI backends set this: the
+   * loopback is their ONLY tool surface, so without it the agent has no way to
+   * touch files or shells at all. Owner-gated below.
+   */
+  materializeCodingTools?: boolean;
 }) {
   const {
     agentId,
@@ -124,9 +139,12 @@ export function resolveGatewayScopedTools(params: {
     surface === "http"
       ? DEFAULT_GATEWAY_HTTP_TOOL_DENY.filter((name) => !gatewayToolsCfg?.allow?.includes(name))
       : [];
+  // Coding tools reach the host filesystem/shell; a non-owner sender must never
+  // see them even when the loopback materializes them for the CLI backend.
+  const codingToolDeny = ["read", "write", "edit", "apply_patch", "exec", "process"];
   const ownerOnlyGatewayDeny =
     params.senderIsOwner === false || (surface === "http" && params.senderIsOwner !== true)
-      ? [...GATEWAY_OWNER_ONLY_CORE_TOOLS]
+      ? [...GATEWAY_OWNER_ONLY_CORE_TOOLS, ...codingToolDeny]
       : [];
   // HTTP callers start with additional surface denies because they cross auth only.
   const workspaceDir = resolveAgentWorkspaceDir(
@@ -163,13 +181,36 @@ export function resolveGatewayScopedTools(params: {
     subagentPolicy,
     inheritedToolPolicy,
     gatewayRequestedTools.length > 0 ? { allow: gatewayRequestedTools } : undefined,
+    params.runtimeToolsAllow ? { allow: [...params.runtimeToolsAllow] } : undefined,
   ].some(hasRestrictiveAllowPolicy);
   const shouldCaptureCronCreatorToolAllowlist =
     shouldInheritEffectiveToolAllowlist ||
     explicitDenylist.length > 0 ||
     excludedToolNames.length > 0;
 
-  const allTools = createOpenClawTools({
+  // Coding tools come from the shared agent constructor so exec approvals,
+  // sandbox policy, and fs containment match embedded runs; the construction
+  // plan keeps product/plugin tools owned by createOpenClawTools below.
+  const codingTools = params.materializeCodingTools
+    ? createOpenClawCodingTools({
+        agentId,
+        sessionKey: params.sessionKey,
+        sessionId: params.sessionId,
+        config: params.cfg,
+        workspaceDir,
+        messageProvider: params.messageProvider,
+        agentAccountId: params.accountId,
+        senderIsOwner: params.senderIsOwner,
+        toolConstructionPlan: {
+          includeBaseCodingTools: true,
+          includeShellTools: true,
+          includeChannelTools: false,
+          includeOpenClawTools: false,
+          includePluginTools: false,
+        },
+      })
+    : [];
+  const productTools = createOpenClawTools({
     agentSessionKey: params.sessionKey,
     agentChannel: params.messageProvider ?? undefined,
     agentAccountId: params.accountId,
@@ -210,6 +251,7 @@ export function resolveGatewayScopedTools(params: {
     inheritedToolAllowlist,
     inheritedToolDenylist,
   });
+  const allTools = [...codingTools, ...productTools];
 
   const policyFiltered = applyToolPolicyPipeline({
     tools: allTools,
@@ -246,7 +288,15 @@ export function resolveGatewayScopedTools(params: {
     ...(Array.isArray(gatewayToolsCfg?.deny) ? gatewayToolsCfg.deny : []),
     ...excludedToolNames,
   ]);
-  const tools = policyFiltered.filter((tool) => !gatewayDenySet.has(tool.name));
+  const denyFiltered = policyFiltered.filter((tool) => !gatewayDenySet.has(tool.name));
+  // Runtime restriction narrows before inheritance capture so spawned child
+  // sessions and cron creator snapshots inherit the restricted surface, not the
+  // wider policy surface this run was denied.
+  const tools = params.runtimeToolsAllow
+    ? applyEmbeddedAttemptToolsAllow(denyFiltered, [...params.runtimeToolsAllow], {
+        toolMeta: (tool) => getPluginToolMeta(tool),
+      })
+    : denyFiltered;
   if (shouldInheritEffectiveToolAllowlist) {
     replaceWithEffectiveToolAllowlist(inheritedToolAllowlist, tools);
   }

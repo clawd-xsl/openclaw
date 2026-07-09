@@ -179,8 +179,10 @@ function resolveCliRuntimeToolsAllow(
   if (toolsAllow === undefined) {
     return undefined;
   }
-  // CLI runners reject runtime toolsAllow. Drop only the auto-stamped default;
-  // explicit per-cron restrictions stay fail-closed in prepareCliRunContext.
+  // The auto-stamped creator default is scaffolding, not an explicit restriction:
+  // drop it so CLI runs keep the full loopback surface. Explicit per-cron lists
+  // pass through; openclaw-surface backends enforce them at the loopback and
+  // other CLI backends stay fail-closed in prepareCliRunContext.
   if (toolsAllowIsDefault) {
     return undefined;
   }
@@ -369,6 +371,10 @@ export function createCronPromptExecutor(params: {
             agentId: params.agentId,
             trigger: "cron",
             jobId: params.job.id,
+            // Cron jobs are owner-configured system work: run the CLI backend
+            // with the owner loopback identity, or owner-only tools (cron,
+            // gateway, coding tools) vanish from the isolated run's surface.
+            senderIsOwner: true,
             cleanupCliLiveSessionOnRunEnd: params.job.sessionTarget === "isolated",
             sessionFile,
             workspaceDir: params.workspaceDir,

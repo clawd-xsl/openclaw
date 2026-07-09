@@ -71,6 +71,102 @@ describe("resolveGatewayScopedTools", () => {
     expect(result.tools.some((tool) => tool.name === "message")).toBe(false);
   });
 
+  it("intersects runtime toolsAllow with the resolved surface", () => {
+    const unrestricted = resolveGatewayScopedTools({
+      cfg: {} as OpenClawConfig,
+      sessionKey: "agent:main:cron:job-1",
+      surface: "loopback",
+    });
+    const unrestrictedNames = unrestricted.tools.map((tool) => tool.name);
+    expect(unrestrictedNames).toContain("message");
+    expect(unrestrictedNames).toContain("cron");
+
+    const restricted = resolveGatewayScopedTools({
+      cfg: {} as OpenClawConfig,
+      sessionKey: "agent:main:cron:job-1",
+      surface: "loopback",
+      runtimeToolsAllow: ["message", "web_search"],
+    });
+
+    const restrictedNames = restricted.tools.map((tool) => tool.name);
+    expect(restrictedNames).toContain("message");
+    expect(restrictedNames).toContain("web_search");
+    expect(restrictedNames).not.toContain("cron");
+  });
+
+  it("materializes coding tools for the openclaw loopback surface", () => {
+    const result = resolveGatewayScopedTools({
+      cfg: {} as OpenClawConfig,
+      sessionKey: "agent:main:main",
+      surface: "loopback",
+      senderIsOwner: true,
+      materializeCodingTools: true,
+    });
+
+    const names = result.tools.map((tool) => tool.name);
+    for (const name of ["read", "write", "edit", "exec", "process"]) {
+      expect(names).toContain(name);
+    }
+    expect(names).toContain("message");
+  });
+
+  it("keeps coding tools away from non-owner senders even when materialized", () => {
+    const result = resolveGatewayScopedTools({
+      cfg: {} as OpenClawConfig,
+      sessionKey: "agent:main:main",
+      surface: "loopback",
+      senderIsOwner: false,
+      materializeCodingTools: true,
+    });
+
+    const names = result.tools.map((tool) => tool.name);
+    for (const name of ["read", "write", "edit", "apply_patch", "exec", "process"]) {
+      expect(names).not.toContain(name);
+    }
+  });
+
+  it("grants restricted coding tools to runtime toolsAllow when materialized", () => {
+    const result = resolveGatewayScopedTools({
+      cfg: {} as OpenClawConfig,
+      sessionKey: "agent:main:cron:job-1",
+      surface: "loopback",
+      senderIsOwner: true,
+      materializeCodingTools: true,
+      runtimeToolsAllow: ["exec", "read", "message"],
+    });
+
+    const names = result.tools.map((tool) => tool.name).toSorted();
+    expect(names).toContain("exec");
+    expect(names).toContain("read");
+    expect(names).toContain("message");
+    expect(names).not.toContain("write");
+    expect(names).not.toContain("cron");
+  });
+
+  it("never widens the profile surface through runtime toolsAllow", () => {
+    const result = resolveGatewayScopedTools({
+      cfg: { tools: { profile: "minimal" } } as OpenClawConfig,
+      sessionKey: "agent:main:telegram:group:-100123",
+      messageProvider: "telegram",
+      inboundEventKind: "user_request",
+      surface: "loopback",
+      runtimeToolsAllow: ["message"],
+    });
+
+    expect(result.tools.some((tool) => tool.name === "message")).toBe(false);
+  });
+
+  it("disables all tools for an explicit empty runtime toolsAllow", () => {
+    const result = resolveGatewayScopedTools({
+      cfg: {} as OpenClawConfig,
+      sessionKey: "agent:main:cron:job-1",
+      surface: "loopback",
+      runtimeToolsAllow: [],
+    });
+
+    expect(result.tools).toHaveLength(0);
+  });
+
   it("passes loopback yield context into sessions_yield", async () => {
     const onYield = vi.fn();
     const result = resolveGatewayScopedTools({
