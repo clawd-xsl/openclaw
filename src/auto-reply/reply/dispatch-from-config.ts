@@ -1292,7 +1292,6 @@ export async function dispatchReplyFromConfig(
   const workspaceDir = resolveAgentWorkspaceDir(cfg, sessionAgentId);
   let dispatchReplyOperation: ReplyOperation | undefined;
   let dispatchAbortOperation: ReplyOperation | undefined;
-  let preDispatchAbortOperation: ReplyOperation | undefined;
   type DispatchReplyOperationAcquisition = { status: "ready" } | { status: "busy" };
   const ensureDispatchReplyOperation = async (
     phase: "pre_dispatch" | "dispatch",
@@ -1303,15 +1302,11 @@ export async function dispatchReplyFromConfig(
     if (dispatchAbortOperation && !dispatchAbortOperation.result) {
       return dispatchReplyOperation ? { status: "ready" } : { status: "busy" };
     }
-    if (
-      phase === "dispatch" &&
-      preDispatchAbortOperation?.result &&
-      preDispatchAbortOperation.result.kind !== "completed" &&
-      !dispatchReplyOperation
-    ) {
-      dispatchAbortOperation = preDispatchAbortOperation;
-      return { status: "busy" };
-    }
+    // A predecessor this turn deferred to during pre_dispatch may have ended
+    // aborted/failed by now; that outcome belonged to the predecessor, not this
+    // message. Fall through to admission so this turn re-claims the lane
+    // (admitReplyTurn still skips on our own upstream abort and waits for any
+    // live successor); reporting busy here silently drops the reply.
     if (!dispatchOperationSessionKey) {
       return { status: "ready" };
     }
@@ -1446,7 +1441,6 @@ export async function dispatchReplyFromConfig(
     }
     if (admission.status === "skipped") {
       if (allowActivePreDispatch && admission.reason === "active-run") {
-        preDispatchAbortOperation = admission.activeOperation;
         return { status: "ready" };
       }
       if (
@@ -1487,7 +1481,10 @@ export async function dispatchReplyFromConfig(
     dispatchAbortOperation = admission.operation;
     return { status: "ready" };
   };
-  const getPreDispatchAbortOperation = () => dispatchAbortOperation ?? preDispatchAbortOperation;
+  // Pre-dispatch aborts must come from our own claimed operation or the caller,
+  // never from the foreign predecessor this turn deferred to: its abort ends the
+  // predecessor's run, not this message, which re-claims the lane at dispatch.
+  const getPreDispatchAbortOperation = () => dispatchAbortOperation;
   let cachedPreDispatchAbortSignal:
     | {
         operationSignal: AbortSignal | undefined;

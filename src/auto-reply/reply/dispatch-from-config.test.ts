@@ -1264,6 +1264,109 @@ describe("dispatchReplyFromConfig", () => {
     activeOperation.complete();
   });
 
+  it("re-claims the reply lane after the deferred pre-dispatch operation aborted", async () => {
+    setNoAbort();
+    const sessionKey = "agent:main:telegram:group:-1003774691294:topic:3731";
+    const activeOperation = createReplyOperation({
+      sessionKey,
+      sessionId: "aborted-predecessor",
+      resetTriggered: false,
+    });
+    activeOperation.setPhase("running");
+    expect(activeOperation.abortByUser()).toBe(true);
+    // The aborted predecessor stays registered until its owner unwinds; release
+    // the lane shortly after this turn defers so dispatch admission can re-claim.
+    const releaseLane = setTimeout(() => activeOperation.complete(), 25);
+    const dispatcher = createDispatcher();
+    const replyResolver = vi.fn(
+      async () => ({ text: "delivered after re-claim" }) satisfies ReplyPayload,
+    );
+
+    const result = await dispatchReplyFromConfig({
+      ctx: buildTestCtx({
+        Provider: "telegram",
+        Surface: "telegram",
+        OriginatingChannel: "telegram",
+        SessionKey: sessionKey,
+        ChatType: "group",
+        IsForum: true,
+        MessageSid: "27785",
+        MessageThreadId: 3731,
+        TransportThreadId: 3731,
+        To: "telegram:-1003774691294:topic:3731",
+        BodyForAgent: "deferred behind aborted turn",
+      }),
+      cfg: automaticGroupReplyConfig,
+      dispatcher,
+      replyResolver,
+    });
+
+    clearTimeout(releaseLane);
+    expect(replyResolver).toHaveBeenCalledTimes(1);
+    expect(result.queuedFinal).toBe(true);
+    expect(dispatcher.sendFinalReply).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "delivered after re-claim" }),
+    );
+  });
+
+  it("serializes behind a live successor when the deferred operation aborted", async () => {
+    setNoAbort();
+    const sessionKey = "agent:main:telegram:group:-1003774691294:topic:3731";
+    const abortedOperation = createReplyOperation({
+      sessionKey,
+      sessionId: "aborted-predecessor",
+      resetTriggered: false,
+    });
+    abortedOperation.setPhase("running");
+    expect(abortedOperation.abortByUser()).toBe(true);
+    let successorOperation: ReturnType<typeof createReplyOperation> | undefined;
+    let successorCompleted = false;
+    // Hand the lane from the aborted predecessor straight to a live successor,
+    // then finish the successor later: the deferred turn must wait for it
+    // instead of double-running (#85709 topic serialization).
+    const handOverLane = setTimeout(() => {
+      abortedOperation.complete();
+      successorOperation = createReplyOperation({
+        sessionKey,
+        sessionId: "live-successor",
+        resetTriggered: false,
+      });
+      successorOperation.setPhase("running");
+      setTimeout(() => {
+        successorCompleted = true;
+        successorOperation?.complete();
+      }, 50);
+    }, 25);
+    const dispatcher = createDispatcher();
+    const replyResolver = vi.fn(async () => {
+      expect(successorCompleted).toBe(true);
+      return { text: "delivered after successor" } satisfies ReplyPayload;
+    });
+
+    const result = await dispatchReplyFromConfig({
+      ctx: buildTestCtx({
+        Provider: "telegram",
+        Surface: "telegram",
+        OriginatingChannel: "telegram",
+        SessionKey: sessionKey,
+        ChatType: "group",
+        IsForum: true,
+        MessageSid: "27786",
+        MessageThreadId: 3731,
+        TransportThreadId: 3731,
+        To: "telegram:-1003774691294:topic:3731",
+        BodyForAgent: "deferred behind superseded turn",
+      }),
+      cfg: automaticGroupReplyConfig,
+      dispatcher,
+      replyResolver,
+    });
+
+    clearTimeout(handOverLane);
+    expect(replyResolver).toHaveBeenCalledTimes(1);
+    expect(result.queuedFinal).toBe(true);
+  });
+
   it("skips a Telegram topic heartbeat turn while a reply operation is active", async () => {
     setNoAbort();
     const sessionKey = "agent:main:telegram:group:-1003774691294:topic:3731";
