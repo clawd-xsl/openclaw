@@ -650,6 +650,7 @@ export async function monitorSignalProvider(opts: MonitorSignalOpts = {}): Promi
         await loadSignalTsRuntime()
       ).monitorSignalTsProvider({
         accountInfo,
+        cfg,
         runtime,
         abortSignal: opts.abortSignal,
         reconnectPolicy: opts.reconnectPolicy,

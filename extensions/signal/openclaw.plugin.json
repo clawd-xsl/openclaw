@@ -5,6 +5,17 @@
     "onStartup": false
   },
   "channels": ["signal"],
+  "contracts": {
+    "tools": ["signal_voice_call"]
+  },
+  "toolMetadata": {
+    "signal_voice_call": {
+      "configSignals": [
+        { "rootPath": "channels.signal", "required": ["voiceCall"] },
+        { "rootPath": "channels.signal", "overlayMapPath": "accounts", "required": ["voiceCall"] }
+      ]
+    }
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

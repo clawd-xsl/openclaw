@@ -227,6 +227,7 @@ export type SignalIncomingMessage =
       kind: "decryption-error";
       decryptionError: { timestamp: number; deviceId: number; ratchetKey?: SignalBytes };
     })
+  | (SignalIncomingBase & { kind: "call"; call: SignalCallMessage })
   | (SignalIncomingBase & { kind: "unknown"; content: Record<string, unknown> });
 
 export type SignalIncomingEnvelope = {
@@ -291,6 +292,94 @@ export type SignalLibsignalStores = Record<string, unknown>;
 export type SignalLocalAddress = object;
 export type SignalFetch = (input: string | URL, init?: RequestInit) => Promise<Response>;
 
+// --- Calling (1:1 voice) -------------------------------------------------
+// callIds are random 64-bit values and stay bigint end to end; never narrow them.
+
+export type SignalCallMessage = {
+  offer?: { callId: bigint; type: "audio" | "video"; opaque: SignalBytes };
+  answer?: { callId: bigint; opaque: SignalBytes };
+  iceUpdate?: Array<{ callId: bigint; opaque: SignalBytes }>;
+  busy?: { callId: bigint };
+  hangup?: {
+    callId: bigint;
+    type: "normal" | "accepted" | "declined" | "busy" | "need-permission";
+    deviceId: number;
+  };
+  opaque?: { data: SignalBytes; urgency?: "droppable" | "handle-immediately" };
+  destinationDeviceId?: number;
+};
+
+export type SignalCallPeer = { aci: string; deviceId: number };
+
+export type SignalCallAudioBridge = {
+  readonly format: {
+    readonly sampleRateHz: 48000;
+    readonly channels: 2;
+    readonly encoding: "s16le";
+  };
+  readonly mic: NodeJS.WritableStream;
+  readonly ear: NodeJS.ReadableStream;
+  close(): Promise<void>;
+};
+
+export type SignalCallEvent =
+  | { type: "incoming"; callId: bigint; peer: SignalCallPeer; isVideoCall: boolean }
+  | { type: "outgoing"; callId: bigint; peer: SignalCallPeer }
+  | {
+      type: "state";
+      callId: bigint;
+      direction: "incoming" | "outgoing";
+      peer: SignalCallPeer;
+      state: "idle" | "ringing" | "connecting" | "connected" | "ended";
+    }
+  | { type: "connected"; callId: bigint; peer: SignalCallPeer; audio: SignalCallAudioBridge }
+  | { type: "ended"; callId: bigint; peer: SignalCallPeer; reason: string }
+  | { type: "busy"; peer: SignalCallPeer }
+  | { type: "error"; callId?: bigint; error: Error };
+
+export interface SignalCallManager {
+  on(listener: (event: SignalCallEvent) => void): () => void;
+  readonly activeCallId: bigint | null;
+  isBusy(): boolean;
+  ensureReady(): Promise<void>;
+  handleIncomingCallMessage(params: {
+    call: SignalCallMessage;
+    sender: SignalCallPeer;
+    ageSec: number;
+    receivedAtCounter: number;
+    receivedAtDate: number;
+  }): Promise<void>;
+  accept(callId: bigint): Promise<void>;
+  decline(callId: bigint): Promise<void>;
+  hangup(callId?: bigint): Promise<void>;
+  startOutgoingCall(params: { recipientAci: string }): Promise<{ callId: bigint }>;
+  close(): Promise<void>;
+}
+
+export type CreateSignalCallManagerParams = {
+  client: SignalTsClient;
+  account: SignalAccountState;
+  stores: SignalLibsignalStores;
+  config?: {
+    hideIp?: boolean;
+    dataMode?: "low" | "normal";
+    outgoingRingTimeoutMs?: number;
+    maxCallDurationMs?: number;
+    pulse?: { pactlPath?: string; pacatPath?: string };
+  };
+  environment?: "production" | "staging";
+  userAgent?: string;
+  logger?: {
+    debug?: (message: string) => void;
+    info?: (message: string) => void;
+    warn?: (message: string) => void;
+    error?: (message: string, error?: unknown) => void;
+  };
+};
+
+export declare function createSignalCallManager(
+  params: CreateSignalCallManagerParams,
+): SignalCallManager;
 export declare function base64ToBytes(value: string): SignalBytes;
 export declare function bytesToBase64(bytes: Uint8Array): string;
 export declare function hexToBytes(value: string): SignalBytes;

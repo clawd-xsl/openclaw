@@ -10,6 +10,7 @@ import {
   normalizeDecryptedIncomingMessage,
   signalAttachmentFetch,
 } from "@openclaw/signal-ts";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { saveMediaBuffer } from "openclaw/plugin-sdk/media-runtime";
 import {
   computeBackoff,
@@ -41,9 +42,14 @@ import {
   toSignalCliEnvelope,
 } from "./signal-ts-envelope.js";
 import { sendMessageSignalTs } from "./signal-ts-outbound.js";
+import { startSignalVoiceRuntime, type SignalVoiceRuntime } from "./voice/call-runtime.js";
 
 export type SignalTsMonitorParams = {
   accountInfo: ResolvedSignalAccount;
+  // Only consulted to bring up the opt-in voice runtime (agent routing + realtime
+  // consult). Text monitoring does not need it, so it stays optional for callers
+  // (probe/tests) that never enable voice.
+  cfg?: OpenClawConfig;
   runtime: RuntimeEnv;
   abortSignal?: AbortSignal;
   reconnectPolicy?: Partial<BackoffPolicy>;
@@ -167,6 +173,22 @@ async function runSignalTsMonitorConnection(params: SignalTsMonitorParams): Prom
   const { account, client, repository } = context;
   const stores = createLibsignalStores(repository);
   const localAddress = createSignalLocalAddress(account.account);
+  // Bring up the per-account voice controller only when opted in. It shares the
+  // monitor's client + stores so signaling and inbound call messages flow over the
+  // same authenticated connection; text features run regardless of its state.
+  const voiceConfig = params.accountInfo.config.voiceCall;
+  const voice: SignalVoiceRuntime | undefined =
+    voiceConfig?.enabled && params.cfg
+      ? startSignalVoiceRuntime({
+          cfg: params.cfg,
+          account: params.accountInfo,
+          accountState: account,
+          voiceConfig,
+          client,
+          stores,
+          runtime: params.runtime,
+        })
+      : undefined;
   let latestDiagnosticEnvelope: SignalEnvelope | undefined;
   const inFlightIncoming = new Set<Promise<void>>();
   const offIncoming = client.on("incoming", (incoming) => {
@@ -199,6 +221,32 @@ async function runSignalTsMonitorConnection(params: SignalTsMonitorParams): Prom
             params.runtime,
             `signal-ts inbound normalized ${describeSignalTsIncomingMessage(message)}`,
           );
+          if (message.kind === "call") {
+            // Call signaling never becomes a signal-cli envelope; feed it straight
+            // to the manager (which owns RingRTC + ring/answer) and skip dispatch.
+            const aci = message.sender.serviceId;
+            const deviceId = message.sender.deviceId;
+            if (voice?.isReady() && aci && deviceId !== undefined) {
+              const receivedAtDate = message.serverTimestamp ?? message.timestamp ?? Date.now();
+              // A reconnect redelivers queued envelopes; RingRTC uses the offer age
+              // to drop stale offers, so it must reflect real elapsed time — a fixed
+              // 0 would ring (and possibly auto-accept) an abandoned call.
+              const ageSec = Math.max(0, Math.round((Date.now() - receivedAtDate) / 1000));
+              await voice.manager.handleIncomingCallMessage({
+                call: message.call,
+                sender: { aci, deviceId },
+                ageSec,
+                receivedAtCounter: incoming.timestamp,
+                receivedAtDate,
+              });
+            } else {
+              logSignalTsInfo(
+                params.runtime,
+                `signal-ts inbound call skipped voice=${Boolean(voice)} aci=${aci ?? "none"} device=${deviceId ?? "none"}`,
+              );
+            }
+            continue;
+          }
           const envelope = await toSignalCliEnvelope(message, repository);
           if (!envelope) {
             logSignalTsInfo(
@@ -273,6 +321,11 @@ async function runSignalTsMonitorConnection(params: SignalTsMonitorParams): Prom
     unregisterSignalTsActiveClient(params.accountInfo, context);
     offIncoming();
     await Promise.allSettled(inFlightIncoming);
+    if (voice) {
+      await voice.stop().catch((err) => {
+        logSignalTsError(params.runtime, `signal-ts voice teardown failed: ${String(err)}`);
+      });
+    }
     await client.disconnect();
   }
 }

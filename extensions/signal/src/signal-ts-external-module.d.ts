@@ -25,6 +25,17 @@ declare module "@openclaw/signal-ts" {
   export type SignalRecipientTarget = import("./signal-ts-host-contract.js").SignalRecipientTarget;
   export type SignalSticker = import("./signal-ts-host-contract.js").SignalSticker;
 
+  export const createSignalCallManager: Contract["createSignalCallManager"];
+  export type SignalAccountState = import("./signal-ts-host-contract.js").SignalAccountState;
+  export type SignalLibsignalStores = import("./signal-ts-host-contract.js").SignalLibsignalStores;
+  export type SignalCallManager = import("./signal-ts-host-contract.js").SignalCallManager;
+  export type SignalCallEvent = import("./signal-ts-host-contract.js").SignalCallEvent;
+  export type SignalCallAudioBridge = import("./signal-ts-host-contract.js").SignalCallAudioBridge;
+  export type SignalCallMessage = import("./signal-ts-host-contract.js").SignalCallMessage;
+  export type SignalCallPeer = import("./signal-ts-host-contract.js").SignalCallPeer;
+  export type CreateSignalCallManagerParams =
+    import("./signal-ts-host-contract.js").CreateSignalCallManagerParams;
+
   export const base64ToBytes: Contract["base64ToBytes"];
   export const bytesToBase64: Contract["bytesToBase64"];
   export const createLibsignalStores: Contract["createLibsignalStores"];
