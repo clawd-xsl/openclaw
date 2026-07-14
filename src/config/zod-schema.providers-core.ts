@@ -1171,6 +1171,28 @@ const SignalGroupEntrySchema = z
 
 const SignalGroupsSchema = z.record(z.string(), SignalGroupEntrySchema.optional()).optional();
 
+// Signal 1:1 voice calling (opt-in). New, security-sensitive config surface:
+// `enabled` gates the whole feature and `allowFrom` gates who may reach the bot.
+const SignalVoiceCallSchema = z
+  .object({
+    enabled: z.boolean().optional().default(false),
+    allowFrom: z.array(z.union([z.string(), z.number()])).optional(), // ACIs/e164; "*" = open. Default: deny all.
+    realtimeProvider: z.string().optional(),
+    model: z.string().optional(),
+    voice: z.string().optional(),
+    instructions: z.string().optional(),
+    greeting: z.string().optional(),
+    toolPolicy: z.enum(["none", "safe-read-only", "owner"]).optional(),
+    consultPolicy: z.enum(["auto", "always"]).optional(),
+    hideIp: z.boolean().optional(), // true => TURN-relay only
+    maxCallDurationMs: z.number().int().positive().optional(),
+    pulse: z
+      .object({ pactlPath: z.string().optional(), pacatPath: z.string().optional() })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
 export const SignalAccountSchemaBase = z
   .object({
     name: z.string().optional(),
@@ -1222,6 +1244,7 @@ export const SignalAccountSchemaBase = z
     heartbeat: ChannelHeartbeatVisibilitySchema,
     healthMonitor: ChannelHealthMonitorSchema,
     responsePrefix: z.string().optional(),
+    voiceCall: SignalVoiceCallSchema.optional(),
   })
   .strict();
 

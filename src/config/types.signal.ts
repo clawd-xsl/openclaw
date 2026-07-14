@@ -15,6 +15,31 @@ export type SignalGroupConfig = {
   toolsBySender?: GroupToolPolicyBySenderConfig;
 };
 
+/**
+ * Signal 1:1 voice calling (opt-in). Front-end is a realtime voice model bridged
+ * over a headless PulseAudio pair inside the host signal-ts transport; the brain
+ * delegates to the main agent via the realtime-voice consult tool.
+ */
+export type SignalVoiceCallConfig = {
+  /** Master switch. Default: false. */
+  enabled?: boolean;
+  /** ACIs/e164 allowed to reach the bot by call. "*" = open. Default: deny all. */
+  allowFrom?: Array<string | number>;
+  /** Realtime voice provider id (e.g. "openai"). */
+  realtimeProvider?: string;
+  model?: string;
+  voice?: string;
+  instructions?: string;
+  greeting?: string;
+  toolPolicy?: "none" | "safe-read-only" | "owner";
+  consultPolicy?: "auto" | "always";
+  /** true => TURN-relay only (hide the server IP from the peer). */
+  hideIp?: boolean;
+  maxCallDurationMs?: number;
+  /** Optional overrides for the PulseAudio helper binaries used by the transport. */
+  pulse?: { pactlPath?: string; pacatPath?: string };
+};
+
 export type SignalAccountConfig = CommonChannelMessagingConfig & {
   /** Optional explicit E.164 account for signal-cli. */
   account?: string;
@@ -67,6 +92,8 @@ export type SignalAccountConfig = CommonChannelMessagingConfig & {
    * - "extensive": Agent can react liberally
    */
   reactionLevel?: SignalReactionLevel;
+  /** Signal 1:1 voice calling (opt-in); inherited per-account like allowFrom. */
+  voiceCall?: SignalVoiceCallConfig;
 };
 
 export type SignalConfig = {
