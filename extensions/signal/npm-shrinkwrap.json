@@ -8,8 +8,15 @@
       "name": "@openclaw/signal",
       "version": "2026.7.1-beta.2",
       "dependencies": {
+        "typebox": "1.1.39",
         "ws": "8.21.0"
       }
+    },
+    "node_modules/typebox": {
+      "version": "1.1.39",
+      "resolved": "https://registry.npmjs.org/typebox/-/typebox-1.1.39.tgz",
+      "integrity": "sha512-vj0afVtOfLQvv0GR0VxVagYxsXN64btL7Z9XoaG0ZggH3mruMMkOO6hXdgMsjCY3shZgEvooAWVeznQVs5c43w==",
+      "license": "MIT"
     },
     "node_modules/ws": {
       "version": "8.21.0",

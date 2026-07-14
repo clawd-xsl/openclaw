@@ -1469,6 +1469,9 @@ importers:
 
   extensions/signal:
     dependencies:
+      typebox:
+        specifier: 1.1.39
+        version: 1.1.39
       ws:
         specifier: 8.21.0
         version: 8.21.0
