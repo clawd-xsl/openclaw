@@ -25,6 +25,7 @@ import { resolveAgentRoute, type ResolvedAgentRoute } from "openclaw/plugin-sdk/
 import { createSubsystemLogger, type RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import type { ResolvedSignalAccount } from "../accounts.js";
 import { getOptionalSignalRuntime } from "../runtime.js";
+import { sendMessageSignalTs } from "../signal-ts-outbound.js";
 import { isAllowedSignalCaller } from "./allowlist.js";
 import { registerSignalCallManager, unregisterSignalCallManager } from "./call-registry.js";
 import type { SignalVoiceCallConfig } from "./config.js";
@@ -119,13 +120,16 @@ export function startSignalVoiceRuntime(params: StartSignalVoiceRuntimeParams): 
   });
 
   // Surface a call-setup failure to the caller as a normal user-facing message
-  // (a Signal text to their DM), mirroring how OpenClaw reports errors.
+  // (a Signal text to their DM). Route through the channel outbound path, not the
+  // raw client, which lacks the send auth setup (else RequestUnauthorized).
   const notifyCallerError = async (peer: SignalCallPeer, reason: string): Promise<void> => {
     try {
-      await client.sendMessage({
-        destination: peer.aci,
-        body: `⚠️ I couldn't pick up your voice call: ${reason}`,
-        stores,
+      await sendMessageSignalTs({
+        cfg,
+        accountInfo: account,
+        runtime,
+        to: peer.aci,
+        message: `⚠️ I couldn't pick up your voice call: ${reason}`,
       });
     } catch (err) {
       log.warn(`signal voice: failed to notify caller of error: ${formatErrorMessage(err)}`);
@@ -284,8 +288,16 @@ export function startSignalVoiceRuntime(params: StartSignalVoiceRuntimeParams): 
         }
         break;
       }
+      case "error": {
+        // Surface the real call-setup failure (e.g. TURN fetch): the manager
+        // carries the underlying error here, and swallowing it hid the root cause.
+        log.error(
+          `signal voice: call error callId=${event.callId ?? "unknown"}: ${formatErrorMessage(event.error)}`,
+        );
+        closeActiveSession();
+        break;
+      }
       case "ended":
-      case "error":
       case "busy": {
         closeActiveSession();
         break;
