@@ -69,8 +69,24 @@ function createMemoryStore<T>(): PluginStateKeyedStore<T> {
 
 type BeforePromptBuildHook = (
   event: { prompt: string; messages: unknown[] },
-  ctx: { agentId?: string; sessionId?: string; sessionKey?: string },
+  ctx: { runId?: string; agentId?: string; sessionId?: string; sessionKey?: string },
 ) => Promise<{ prependContext?: string } | void> | { prependContext?: string } | void;
+
+type AgentEndHook = (
+  event: { runId?: string; messages: unknown[]; success: boolean; error?: string },
+  ctx: { runId?: string; agentId?: string; sessionId?: string; sessionKey?: string },
+) => Promise<void> | void;
+
+type ReplyDispatchCompletedHook = (
+  event: {
+    runId?: string;
+    success: boolean;
+    queuedFinal: boolean;
+    counts: { tool: number; block: number; final: number };
+    failedCounts?: { tool?: number; block?: number; final?: number };
+  },
+  ctx: { runId?: string; sessionKey?: string },
+) => Promise<void> | void;
 
 type GatewayHandler = (ctx: {
   params: Record<string, unknown>;
@@ -122,6 +138,7 @@ function registerTestSessionSummaries(params: {
 }) {
   const hooks = new Map<string, unknown>();
   const gatewayHandlers = new Map<string, GatewayHandler>();
+  const injectionStore = createMemoryStore<unknown>();
   const summaryStore = createMemoryStore<SessionSummaryRecord>();
   const predecessorIndexStore = createMemoryStore<SessionSummaryPredecessorIndexRecord>();
   const complete =
@@ -139,7 +156,7 @@ function registerTestSessionSummaries(params: {
   let registeredService: Parameters<OpenClawPluginApi["registerService"]>[0] | undefined;
   const runtime = {
     config: { current: () => params.cfg },
-    state: { openKeyedStore: vi.fn() },
+    state: { openKeyedStore: vi.fn(() => injectionStore) },
     llm: { complete },
   } as unknown as OpenClawPluginApi["runtime"];
   const api = createTestPluginApi({
@@ -169,6 +186,7 @@ function registerTestSessionSummaries(params: {
     complete,
     gatewayHandlers,
     hooks,
+    injectionStore,
     predecessorIndexStore,
     readBoundedTranscriptEvents,
     registeredService: () => registeredService,
@@ -178,7 +196,7 @@ function registerTestSessionSummaries(params: {
 }
 
 describe("session summaries plugin registration", () => {
-  it("injects only a visible bounded predecessor lineage and exposes scoped tool/RPC reads", async () => {
+  it("injects a visible bounded predecessor lineage once and exposes scoped tool/RPC reads", async () => {
     const cfg = {
       agents: { list: [{ id: "main", default: true }] },
       plugins: {
@@ -198,6 +216,7 @@ describe("session summaries plugin registration", () => {
       },
     } satisfies OpenClawConfig;
     const store = createMemoryStore<SessionSummaryRecord>();
+    const injectionStore = createMemoryStore<unknown>();
     const predecessorIndexStore = createMemoryStore<SessionSummaryPredecessorIndexRecord>();
     const entriesSpy = vi.spyOn(store, "entries");
     const readBoundedTranscriptEvents = vi.fn(async () => ({
@@ -211,7 +230,7 @@ describe("session summaries plugin registration", () => {
     let registeredService: Parameters<OpenClawPluginApi["registerService"]>[0] | undefined;
     const runtime = {
       config: { current: () => cfg },
-      state: { openKeyedStore: () => store },
+      state: { openKeyedStore: () => injectionStore },
       llm: {
         complete: vi.fn(async () => ({
           text: "unused",
@@ -404,10 +423,27 @@ describe("session summaries plugin registration", () => {
       ),
     ).toBeUndefined();
     expect(readBoundedTranscriptEvents).not.toHaveBeenCalled();
-    const injection = await beforePromptBuild(
-      { prompt: "continue", messages: [] },
-      { agentId: "main", sessionId: "current", sessionKey: "agent:main:main" },
+    await expect(
+      beforePromptBuild(
+        { prompt: "continue with history", messages: [{ role: "user", content: "existing" }] },
+        { agentId: "main", sessionId: "current", sessionKey: "agent:main:main" },
+      ),
+    ).resolves.toBeUndefined();
+    await expect(injectionStore.entries()).resolves.toHaveLength(0);
+    const concurrentInjections = await Promise.all([
+      beforePromptBuild(
+        { prompt: "continue", messages: [] },
+        { agentId: "main", sessionId: "current", sessionKey: "agent:main:main" },
+      ),
+      beforePromptBuild(
+        { prompt: "continue concurrently", messages: [] },
+        { agentId: "main", sessionId: "current", sessionKey: "agent:main:main" },
+      ),
+    ]);
+    const injection = concurrentInjections.find(
+      (candidate): candidate is { prependContext?: string } => candidate !== undefined,
     );
+    expect(concurrentInjections.filter(Boolean)).toHaveLength(1);
     expect(injection?.prependContext).toContain("previous_session_summary");
     expect(injection?.prependContext).toContain("Migration reached 95%");
     expect(injection?.prependContext).toContain("streaming backend persistent");
@@ -418,6 +454,13 @@ describe("session summaries plugin registration", () => {
     );
     expect(injection?.prependContext?.length).toBeLessThanOrEqual(8_000);
     expect(entriesSpy).not.toHaveBeenCalled();
+    await expect(
+      beforePromptBuild(
+        { prompt: "continue again", messages: [] },
+        { agentId: "main", sessionId: "current", sessionKey: "agent:main:main" },
+      ),
+    ).resolves.toBeUndefined();
+    await expect(injectionStore.entries()).resolves.toHaveLength(1);
 
     await seed({
       sessionId: "huge-older",
@@ -582,6 +625,126 @@ describe("session summaries plugin registration", () => {
     expect(
       estimateSessionSummaryTokens(JSON.stringify(pathologicalMetadata, null, 2)),
     ).toBeLessThanOrEqual(SESSION_SUMMARY_TOOL_RESPONSE_MAX_TOKENS);
+  });
+
+  it("reuses a run-scoped injection across retries and commits it only after success", async () => {
+    const cfg = {
+      agents: { list: [{ id: "main", default: true }] },
+      plugins: {
+        entries: {
+          "memory-core": {
+            config: {
+              summaries: {
+                enabled: true,
+                autoInject: true,
+                lookbackDays: 30,
+                maxPromptTokens: 4_000,
+                minMessages: 2,
+              },
+            },
+          },
+        },
+      },
+    } satisfies OpenClawConfig;
+    const { hooks, injectionStore, service } = registerTestSessionSummaries({ cfg });
+    await service.repository.enqueue({
+      agentId: "main",
+      sessionId: "previous",
+      sessionKey: "agent:main:main",
+      nextSessionId: "current",
+      endedAt: Date.now(),
+      messageCount: 2,
+    });
+    const beforePromptBuild = hooks.get("before_prompt_build") as BeforePromptBuildHook;
+    const agentEnd = hooks.get("agent_end") as AgentEndHook;
+    const replyDispatchCompleted = hooks.get(
+      "reply_dispatch_completed",
+    ) as ReplyDispatchCompletedHook;
+    const context = {
+      agentId: "main",
+      sessionId: "current",
+      sessionKey: "agent:main:main",
+    };
+
+    const failedRunInjection = await beforePromptBuild(
+      { prompt: "continue", messages: [] },
+      { ...context, runId: "failed-run" },
+    );
+    const failedRunRetry = await beforePromptBuild(
+      { prompt: "retry", messages: [{ role: "assistant", content: "failed attempt" }] },
+      { ...context, runId: "failed-run" },
+    );
+    expect(failedRunRetry).toEqual(failedRunInjection);
+    await expect(injectionStore.entries()).resolves.toHaveLength(0);
+
+    await agentEnd(
+      { runId: "failed-run", messages: [], success: false, error: "provider failed" },
+      { ...context, runId: "failed-run" },
+    );
+    const recoveryRunInjection = await beforePromptBuild(
+      {
+        prompt: "retry after terminal run failure",
+        messages: [{ role: "assistant", content: "provider failed" }],
+      },
+      { ...context, runId: "recovery-run" },
+    );
+    expect(recoveryRunInjection).toEqual(failedRunInjection);
+    await expect(injectionStore.entries()).resolves.toHaveLength(0);
+
+    await agentEnd(
+      { runId: "recovery-run", messages: [], success: true },
+      { ...context, runId: "recovery-run" },
+    );
+    const retryAfterAttemptSuccess = await beforePromptBuild(
+      { prompt: "outer retry", messages: [] },
+      { ...context, runId: "recovery-run" },
+    );
+    expect(retryAfterAttemptSuccess).toEqual(failedRunInjection);
+    await expect(injectionStore.entries()).resolves.toHaveLength(0);
+
+    await agentEnd(
+      { runId: "recovery-run", messages: [], success: true },
+      { ...context, runId: "recovery-run" },
+    );
+    const overlappingRunInjection = await beforePromptBuild(
+      {
+        prompt: "overlap while delivery settles",
+        messages: [{ role: "assistant", content: "done" }],
+      },
+      { ...context, runId: "delivery-recovery-run" },
+    );
+    expect(overlappingRunInjection).toEqual(failedRunInjection);
+    await replyDispatchCompleted(
+      {
+        runId: "recovery-run",
+        success: false,
+        queuedFinal: false,
+        counts: { tool: 0, block: 0, final: 0 },
+        failedCounts: { final: 1 },
+      },
+      { runId: "recovery-run", sessionKey: context.sessionKey },
+    );
+    await expect(injectionStore.entries()).resolves.toHaveLength(0);
+    await agentEnd(
+      { runId: "delivery-recovery-run", messages: [], success: true },
+      { ...context, runId: "delivery-recovery-run" },
+    );
+    await replyDispatchCompleted(
+      {
+        runId: "delivery-recovery-run",
+        success: true,
+        queuedFinal: false,
+        counts: { tool: 0, block: 0, final: 0 },
+      },
+      { runId: "delivery-recovery-run", sessionKey: context.sessionKey },
+    );
+    await expect(injectionStore.entries()).resolves.toHaveLength(1);
+    await expect(
+      beforePromptBuild(
+        { prompt: "continue again", messages: [] },
+        { ...context, runId: "later-run" },
+      ),
+    ).resolves.toBeUndefined();
   });
 
   it("injects a bounded pending predecessor tail immediately and purges it on delete", async () => {

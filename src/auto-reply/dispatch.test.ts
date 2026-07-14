@@ -164,6 +164,85 @@ describe("withReplyDispatcher", () => {
     expect(order).toEqual(["sendFinalReply", "markComplete", "waitForIdle"]);
   });
 
+  it("emits reply_dispatch_completed only after queued delivery settles", async () => {
+    const order: string[] = [];
+    const runReplyDispatchCompleted = vi.fn(async () => {
+      order.push("replyDispatchCompleted");
+    });
+    hoisted.getGlobalHookRunnerMock.mockReturnValue({
+      hasHooks: vi.fn((name: string) => name === "reply_dispatch_completed"),
+      runReplyDispatchCompleted,
+      runMessageSending: vi.fn(async () => undefined),
+      runReplyPayloadSending: vi.fn(async () => undefined),
+    });
+    const dispatcher = createDispatcher(order);
+    hoisted.dispatchReplyFromConfigMock.mockResolvedValueOnce({
+      queuedFinal: false,
+      counts: { tool: 0, block: 0, final: 0 },
+    });
+
+    await dispatchInboundMessage({
+      ctx: buildTestCtx({ SessionKey: "agent:main:main" }),
+      cfg: {} as OpenClawConfig,
+      dispatcher,
+      replyOptions: { runId: "run-1" },
+    });
+
+    expect(order).toEqual(["markComplete", "waitForIdle", "replyDispatchCompleted"]);
+    expect(runReplyDispatchCompleted).toHaveBeenCalledWith(
+      {
+        runId: "run-1",
+        sessionKey: "agent:main:main",
+        success: true,
+        queuedFinal: false,
+        counts: { tool: 0, block: 0, final: 0 },
+      },
+      expect.objectContaining({
+        channelId: "threads",
+        accountId: "acct-1",
+        conversationId: "conv-1",
+        runId: "run-1",
+      }),
+    );
+  });
+
+  it("reports settled delivery failures through reply_dispatch_completed", async () => {
+    const runReplyDispatchCompleted = vi.fn(async () => undefined);
+    hoisted.getGlobalHookRunnerMock.mockReturnValue({
+      hasHooks: vi.fn((name: string) => name === "reply_dispatch_completed"),
+      runReplyDispatchCompleted,
+      runMessageSending: vi.fn(async () => undefined),
+      runReplyPayloadSending: vi.fn(async () => undefined),
+    });
+    const dispatcher = {
+      ...createDispatcher([]),
+      getQueuedCounts: () => ({ tool: 0, block: 0, final: 1 }),
+      getFailedCounts: () => ({ tool: 0, block: 0, final: 1 }),
+    } satisfies ReplyDispatcher;
+    hoisted.dispatchReplyFromConfigMock.mockResolvedValueOnce({
+      queuedFinal: true,
+      counts: { tool: 0, block: 0, final: 1 },
+    });
+
+    await dispatchInboundMessage({
+      ctx: buildTestCtx({ SessionKey: "agent:main:main" }),
+      cfg: {} as OpenClawConfig,
+      dispatcher,
+      replyOptions: { runId: "run-failed-delivery" },
+    });
+
+    expect(runReplyDispatchCompleted).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: "run-failed-delivery",
+        success: false,
+        queuedFinal: false,
+        counts: { tool: 0, block: 0, final: 0 },
+        failedCounts: { tool: 0, block: 0, final: 1 },
+      }),
+      expect.any(Object),
+    );
+  });
+
   it("emits message.received diagnostics before dispatch", async () => {
     const events: Array<{ type: string; channel?: string; sessionKey?: string; source?: string }> =
       [];

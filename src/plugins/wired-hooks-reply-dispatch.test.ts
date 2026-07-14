@@ -132,3 +132,27 @@ describe("reply_dispatch hook runner", () => {
     }
   });
 });
+
+describe("reply_dispatch_completed hook runner", () => {
+  it("notifies every observer with the settled outcome", async () => {
+    const first = vi.fn();
+    const second = vi.fn();
+    const { runner } = createHookRunnerWithRegistry([
+      { hookName: "reply_dispatch_completed", handler: first },
+      { hookName: "reply_dispatch_completed", handler: second },
+    ]);
+    const event = {
+      runId: "run-1",
+      sessionKey: "agent:test:session",
+      success: true,
+      queuedFinal: false,
+      counts: { tool: 0, block: 0, final: 0 },
+    };
+    const context = { channelId: "signal", sessionKey: "agent:test:session", runId: "run-1" };
+
+    await runner.runReplyDispatchCompleted(event, context);
+
+    expect(first).toHaveBeenCalledWith(event, context);
+    expect(second).toHaveBeenCalledWith(event, context);
+  });
+});

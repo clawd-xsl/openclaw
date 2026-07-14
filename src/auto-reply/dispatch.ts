@@ -381,6 +381,41 @@ function buildReplyPayloadSendingBeforeDeliver(
   };
 }
 
+function hasReplyDispatchFailures(result: DispatchInboundResult): boolean {
+  return (
+    (result.failedCounts?.tool ?? 0) > 0 ||
+    (result.failedCounts?.block ?? 0) > 0 ||
+    (result.failedCounts?.final ?? 0) > 0
+  );
+}
+
+async function runReplyDispatchCompletedHook(params: {
+  ctx: FinalizedMsgContext;
+  runId?: string;
+  result: DispatchInboundResult;
+  success: boolean;
+}): Promise<void> {
+  const hookRunner = getGlobalHookRunner();
+  if (!hookRunner?.hasHooks("reply_dispatch_completed")) {
+    return;
+  }
+  const hookCtx = deriveInboundMessageHookContext(params.ctx);
+  await hookRunner.runReplyDispatchCompleted(
+    {
+      runId: params.runId,
+      sessionKey: params.ctx.SessionKey,
+      success: params.success,
+      queuedFinal: params.result.queuedFinal,
+      counts: params.result.counts,
+      ...(params.result.failedCounts ? { failedCounts: params.result.failedCounts } : {}),
+    },
+    {
+      ...toPluginMessageContext(hookCtx),
+      runId: params.runId,
+    },
+  );
+}
+
 function bindReplyPayloadRunState(
   replyOptions: InternalDispatchReplyOptions | undefined,
   runState: ReplyPayloadRunState,
@@ -533,28 +568,52 @@ export async function dispatchInboundMessage(params: {
     });
   }
   installReplyPayloadSendingBeforeDeliver(params.dispatcher, finalized, replyPayloadRunState);
-  const result = await withReplyDispatcher({
-    dispatcher: params.dispatcher,
-    run: () =>
-      measureDiagnosticsTimelineSpan(
-        "auto_reply.dispatch_reply_from_config",
-        () =>
-          dispatchReplyFromConfig({
-            ctx: finalized,
-            cfg: params.cfg,
-            dispatcher: params.dispatcher,
-            replyOptions: replyOptionsWithRunState,
-            replyResolver: params.replyResolver,
-            onSessionMetadataChanges: params.onSessionMetadataChanges,
-          }),
+  let finalizedResult: DispatchInboundResult;
+  try {
+    const result = await withReplyDispatcher({
+      dispatcher: params.dispatcher,
+      run: () =>
+        measureDiagnosticsTimelineSpan(
+          "auto_reply.dispatch_reply_from_config",
+          () =>
+            dispatchReplyFromConfig({
+              ctx: finalized,
+              cfg: params.cfg,
+              dispatcher: params.dispatcher,
+              replyOptions: replyOptionsWithRunState,
+              replyResolver: params.replyResolver,
+              onSessionMetadataChanges: params.onSessionMetadataChanges,
+            }),
+          {
+            phase: "agent-turn",
+            config: params.cfg,
+            attributes: buildDispatchTimelineAttributes(finalized),
+          },
+        ),
+    });
+    finalizedResult = finalizeDispatchResult(result, params.dispatcher);
+  } catch (error) {
+    await runReplyDispatchCompletedHook({
+      ctx: finalized,
+      runId: replyPayloadRunState.runId,
+      result: finalizeDispatchResult(
         {
-          phase: "agent-turn",
-          config: params.cfg,
-          attributes: buildDispatchTimelineAttributes(finalized),
+          queuedFinal: false,
+          counts: params.dispatcher.getQueuedCounts(),
         },
+        params.dispatcher,
       ),
+      success: false,
+    });
+    throw error;
+  }
+  await runReplyDispatchCompletedHook({
+    ctx: finalized,
+    runId: replyPayloadRunState.runId,
+    result: finalizedResult,
+    success: !hasReplyDispatchFailures(finalizedResult),
   });
-  return finalizeDispatchResult(result, params.dispatcher);
+  return finalizedResult;
 }
 
 /** Creates a buffered dispatcher with typing, hooks, and stale foreground delivery suppression. */

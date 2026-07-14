@@ -97,6 +97,7 @@ export type PluginHookName =
   | "message_received"
   | "message_sending"
   | "reply_payload_sending"
+  | "reply_dispatch_completed"
   | "message_sent"
   | "before_tool_call"
   | "after_tool_call"
@@ -144,6 +145,7 @@ export const PLUGIN_HOOK_NAMES = [
   "message_received",
   "message_sending",
   "reply_payload_sending",
+  "reply_dispatch_completed",
   "message_sent",
   "before_tool_call",
   "after_tool_call",
@@ -516,6 +518,17 @@ export type PluginHookReplyDispatchResult = {
   queuedFinal: boolean;
   counts: Record<ReplyDispatchKind, number>;
 };
+
+export type PluginHookReplyDispatchCompletedEvent = {
+  runId?: string;
+  sessionKey?: string;
+  success: boolean;
+  queuedFinal: boolean;
+  counts: Record<ReplyDispatchKind, number>;
+  failedCounts?: Partial<Record<ReplyDispatchKind, number>>;
+};
+
+export type PluginHookReplyDispatchCompletedContext = PluginHookMessageContext;
 
 /**
  * Per-turn execution state for the outbound reply, available to every harness
@@ -1152,6 +1165,10 @@ export type PluginHookHandlerMap = {
     event: PluginHookReplyDispatchEvent,
     ctx: PluginHookReplyDispatchContext,
   ) => Promise<PluginHookReplyDispatchResult | void> | PluginHookReplyDispatchResult | void;
+  reply_dispatch_completed: (
+    event: PluginHookReplyDispatchCompletedEvent,
+    ctx: PluginHookReplyDispatchCompletedContext,
+  ) => Promise<void> | void;
   reply_payload_sending: (
     event: PluginHookReplyPayloadSendingEvent,
     ctx: PluginHookReplyPayloadSendingContext,

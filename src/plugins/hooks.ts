@@ -35,6 +35,8 @@ import type {
   PluginHookReplyPayloadSendingResult,
   PluginHookReplyPayload,
   PluginHookReplyDispatchContext,
+  PluginHookReplyDispatchCompletedContext,
+  PluginHookReplyDispatchCompletedEvent,
   PluginHookReplyDispatchEvent,
   PluginHookReplyDispatchResult,
   PluginHookBeforeModelResolveEvent,
@@ -1096,6 +1098,14 @@ export function createHookRunner(
     );
   }
 
+  /** Run after reply dispatch and queued delivery have settled. */
+  async function runReplyDispatchCompleted(
+    event: PluginHookReplyDispatchCompletedEvent,
+    ctx: PluginHookReplyDispatchCompletedContext,
+  ): Promise<void> {
+    return runVoidHook("reply_dispatch_completed", event, ctx);
+  }
+
   /**
    * Run reply_payload_sending hook.
    * Allows plugins to modify or cancel normalized reply payloads before delivery.
@@ -1646,6 +1656,7 @@ export function createHookRunner(
     runMessageReceived,
     runBeforeDispatch,
     runReplyDispatch,
+    runReplyDispatchCompleted,
     runReplyPayloadSending,
     runMessageSending,
     runMessageSent,

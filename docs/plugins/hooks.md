@@ -130,6 +130,7 @@ observation-only.
 - `message_received` — observe inbound content, sender, thread, and metadata
 - **`message_sending`** — rewrite outbound content or cancel delivery
 - **`reply_payload_sending`** — mutate or cancel normalized reply payloads before delivery
+- `reply_dispatch_completed` - observe the terminal dispatch outcome after queued delivery settles
 - `message_sent` — observe outbound delivery success or failure
 - **`before_dispatch`** - inspect or rewrite an outbound dispatch before channel handoff
 - **`reply_dispatch`** - participate in the final reply-dispatch pipeline
@@ -466,6 +467,8 @@ Use message hooks for channel-level routing and delivery policy:
 - `message_sending`: rewrite `content` or return `{ cancel: true }`.
 - `reply_payload_sending`: rewrite normalized `ReplyPayload` objects (including
   `presentation`, `delivery`, media refs, and text) or return `{ cancel: true }`.
+- `reply_dispatch_completed`: observe one terminal success/failure result after
+  reply generation and all queued delivery settle, including silent turns.
 - `message_sent`: observe final success or failure.
 
 For audio-only TTS replies, `content` may contain the hidden spoken transcript
