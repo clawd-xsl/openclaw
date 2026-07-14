@@ -214,10 +214,79 @@ async function finalizeSignalStatusReaction(params: {
 }
 
 export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
-  const activeReplyAbortControllers = new Map<
-    string,
-    { token: symbol; controller: AbortController }
-  >();
+  type SignalTypingQueue = {
+    tail: Promise<void>;
+    busy: boolean;
+  };
+  type SignalReplyState = {
+    controller: AbortController;
+    sessionKey: string;
+    target: string;
+    typingStarted: boolean;
+    typingClosed: boolean;
+    stopPromise?: Promise<void>;
+  };
+  const activeReplyStates = new Map<string, SignalReplyState>();
+  const typingQueuesByTarget = new Map<string, SignalTypingQueue>();
+
+  const enqueueSignalTyping = (target: string, action: "started" | "stopped"): Promise<void> => {
+    const queue = typingQueuesByTarget.get(target) ?? {
+      tail: Promise.resolve(),
+      busy: false,
+    };
+    typingQueuesByTarget.set(target, queue);
+    const run = async () => {
+      await sendTypingSignal(target, {
+        cfg: deps.cfg,
+        baseUrl: deps.baseUrl,
+        account: deps.account,
+        accountId: deps.accountId,
+        runtime: deps.runtime,
+        ...(action === "stopped" ? { stop: true } : {}),
+      });
+    };
+    const operation = queue.busy ? queue.tail.then(run) : run();
+    queue.busy = true;
+    queue.tail = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    const expectedTail = queue.tail;
+    void expectedTail.then(() => {
+      if (queue.tail === expectedTail) {
+        queue.busy = false;
+        if (typingQueuesByTarget.get(target) === queue) {
+          typingQueuesByTarget.delete(target);
+        }
+      }
+    });
+    return operation;
+  };
+
+  const startReplyTyping = async (state: SignalReplyState): Promise<void> => {
+    if (
+      state.typingClosed ||
+      state.controller.signal.aborted ||
+      activeReplyStates.get(state.sessionKey) !== state
+    ) {
+      return;
+    }
+    state.typingStarted = true;
+    await enqueueSignalTyping(state.target, "started");
+  };
+
+  const stopReplyTyping = (state: SignalReplyState): Promise<void> => {
+    state.typingClosed = true;
+    if (!state.typingStarted) {
+      return Promise.resolve();
+    }
+    if (!state.stopPromise) {
+      // STOP is never tied to the superseded run's abort signal. Keeping it in
+      // the target queue prevents a late old STOP from following a new START.
+      state.stopPromise = enqueueSignalTyping(state.target, "stopped");
+    }
+    return state.stopPromise;
+  };
 
   type SignalInboundEntry = {
     senderName: string;
@@ -242,13 +311,12 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
     replyToBody?: string;
     replyToSender?: string;
     replyToIsQuote?: boolean;
-    replyAbortToken: symbol;
-    replyAbortController: AbortController;
+    replyState: SignalReplyState;
     typingStartedAt?: number;
   };
 
   async function handleSignalInboundMessage(entry: SignalInboundEntry) {
-    if (entry.replyAbortController.signal.aborted) {
+    if (entry.replyState.controller.signal.aborted) {
       return;
     }
     const fromLabel = formatInboundFromLabel({
@@ -266,21 +334,22 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
       groupId: entry.groupId,
       senderPeerId: entry.senderPeerId,
     });
-    const { replyAbortToken, replyAbortController } = entry;
+    const replyState = entry.replyState;
+    const replyAbortController = replyState.controller;
+    const handleReplyTypingError = (err: unknown) => {
+      logTypingFailure({
+        log: logVerbose,
+        channel: "signal",
+        target: replyState.target,
+        error: err,
+      });
+    };
     try {
       const signalToRaw = entry.isGroup
         ? `group:${entry.groupId}`
         : `signal:${entry.senderRecipient}`;
       const signalTo = normalizeSignalMessagingTarget(signalToRaw) ?? signalToRaw;
       let lastTypingSignalAt = entry.typingStartedAt;
-      const handleTypingStartError = (err: unknown) => {
-        logTypingFailure({
-          log: logVerbose,
-          channel: "signal",
-          target: signalTo,
-          error: err,
-        });
-      };
       const startSignalTyping = async () => {
         const now = Date.now();
         if (
@@ -290,17 +359,13 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
           return;
         }
         lastTypingSignalAt = now;
-        await sendTypingSignal(signalTo, {
-          cfg: deps.cfg,
-          baseUrl: deps.baseUrl,
-          account: deps.account,
-          accountId: deps.accountId,
-          runtime: deps.runtime,
-          abortSignal: replyAbortController.signal,
-        });
+        await startReplyTyping(replyState);
+      };
+      const stopSignalTyping = async () => {
+        await stopReplyTyping(replyState);
       };
       if (!entry.isGroup && lastTypingSignalAt === undefined) {
-        void startSignalTyping().catch(handleTypingStartError);
+        void startSignalTyping().catch(handleReplyTypingError);
       }
 
       const storePath = resolveStorePath(deps.cfg.session?.store, {
@@ -524,7 +589,9 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
           accountId: route.accountId,
           typing: {
             start: startSignalTyping,
-            onStartError: handleTypingStartError,
+            stop: stopSignalTyping,
+            onStartError: handleReplyTypingError,
+            onStopError: handleReplyTypingError,
           },
         });
 
@@ -684,8 +751,9 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
         },
       });
     } finally {
-      if (activeReplyAbortControllers.get(route.sessionKey)?.token === replyAbortToken) {
-        activeReplyAbortControllers.delete(route.sessionKey);
+      void stopReplyTyping(replyState).catch(handleReplyTypingError);
+      if (activeReplyStates.get(route.sessionKey) === replyState) {
+        activeReplyStates.delete(route.sessionKey);
       }
     }
   }
@@ -1120,27 +1188,34 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
       return;
     }
 
-    const replyAbortToken = Symbol(route.sessionKey);
     const replyAbortController = new AbortController();
-    activeReplyAbortControllers
-      .get(route.sessionKey)
-      ?.controller.abort(new Error(`Signal inbound reply superseded for ${route.sessionKey}`));
-    activeReplyAbortControllers.set(route.sessionKey, {
-      token: replyAbortToken,
-      controller: replyAbortController,
-    });
+    const previousReplyState = activeReplyStates.get(route.sessionKey);
+    previousReplyState?.controller.abort(
+      new Error(`Signal inbound reply superseded for ${route.sessionKey}`),
+    );
+    if (previousReplyState) {
+      void stopReplyTyping(previousReplyState).catch((err: unknown) => {
+        logTypingFailure({
+          log: logVerbose,
+          channel: "signal",
+          target: previousReplyState.target,
+          error: err,
+        });
+      });
+    }
     const signalToRaw = isGroup ? `group:${groupId}` : `signal:${senderRecipient}`;
     const signalTo = normalizeSignalMessagingTarget(signalToRaw) ?? signalToRaw;
+    const replyState: SignalReplyState = {
+      controller: replyAbortController,
+      sessionKey: route.sessionKey,
+      target: signalTo,
+      typingStarted: false,
+      typingClosed: false,
+    };
+    activeReplyStates.set(route.sessionKey, replyState);
     const typingStartedAt = isGroup ? undefined : Date.now();
     if (!isGroup) {
-      void sendTypingSignal(signalTo, {
-        cfg: deps.cfg,
-        baseUrl: deps.baseUrl,
-        account: deps.account,
-        accountId: deps.accountId,
-        runtime: deps.runtime,
-        abortSignal: replyAbortController.signal,
-      }).catch((err: unknown) => {
+      void startReplyTyping(replyState).catch((err: unknown) => {
         logTypingFailure({
           log: logVerbose,
           channel: "signal",
@@ -1267,8 +1342,7 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
       replyToBody: visibleQuoteText || undefined,
       replyToSender: visibleQuoteSender,
       replyToIsQuote: visibleQuoteText ? true : undefined,
-      replyAbortToken,
-      replyAbortController,
+      replyState,
       typingStartedAt,
     });
   };

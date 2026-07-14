@@ -319,9 +319,49 @@ describe("signal createSignalEventHandler inbound context", () => {
     );
 
     expect(order).toEqual(["typing", "store-read", "store-write", "dispatch"]);
-    expect(sendTypingMock).toHaveBeenCalledTimes(1);
+    expect(
+      sendTypingMock.mock.calls.filter(([, opts]) => !(opts as { stop?: boolean }).stop),
+    ).toHaveLength(1);
+    expect(
+      sendTypingMock.mock.calls.filter(([, opts]) => (opts as { stop?: boolean }).stop),
+    ).toHaveLength(0);
     resolveTyping();
-    await Promise.resolve();
+    await vi.waitFor(() =>
+      expect(sendTypingMock).toHaveBeenCalledWith(
+        "+15550001111",
+        expect.objectContaining({ stop: true }),
+      ),
+    );
+  });
+
+  it("stops DM typing after dispatch settles", async () => {
+    const handler = createSignalEventHandler(
+      createBaseSignalEventHandlerDeps({
+        cfg: {
+          messages: { inbound: { debounceMs: 0 } },
+          channels: { signal: { dmPolicy: "open", allowFrom: ["*"] } },
+        },
+        historyLimit: 0,
+      }),
+    );
+
+    await handler(
+      createSignalReceiveEvent({
+        dataMessage: { message: "clear typing", attachments: [] },
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(sendTypingMock).toHaveBeenCalledWith(
+        "+15550001111",
+        expect.objectContaining({ stop: true }),
+      ),
+    );
+
+    const calls = sendTypingMock.mock.calls as Array<[string, { stop?: boolean }]>;
+    const startIndex = calls.findIndex(([, opts]) => opts.stop !== true);
+    const stopIndex = calls.findIndex(([, opts]) => opts.stop === true);
+    expect(startIndex).toBeGreaterThanOrEqual(0);
+    expect(stopIndex).toBeGreaterThan(startIndex);
   });
 
   it("keeps group typing owned by reply start instead of ingress", async () => {
@@ -372,18 +412,68 @@ describe("signal createSignalEventHandler inbound context", () => {
     const firstTypingOptions = sendTypingMock.mock.calls[0]?.[1] as
       | { abortSignal?: AbortSignal }
       | undefined;
-    expect(firstTypingOptions?.abortSignal).toBeInstanceOf(AbortSignal);
-    expect(firstTypingOptions?.abortSignal?.aborted).toBe(false);
+    expect(firstTypingOptions?.abortSignal).toBeUndefined();
     expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
 
     await handler(event(1700000000002, "second"));
-    const secondTypingOptions = sendTypingMock.mock.calls[1]?.[1] as
-      | { abortSignal?: AbortSignal }
-      | undefined;
-    expect(firstTypingOptions?.abortSignal?.aborted).toBe(true);
-    expect(secondTypingOptions?.abortSignal).toBeInstanceOf(AbortSignal);
-    expect(secondTypingOptions?.abortSignal?.aborted).toBe(false);
+    await vi.waitFor(() => expect(sendTypingMock.mock.calls).toHaveLength(3));
+    expect(
+      sendTypingMock.mock.calls.map(([, opts]) =>
+        (opts as { stop?: boolean }).stop ? "stopped" : "started",
+      ),
+    ).toEqual(["started", "stopped", "started"]);
     expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
+  });
+
+  it("settles an old typing stop before a superseding turn starts typing", async () => {
+    let releaseFirstStop!: () => void;
+    const firstStopPending = new Promise<void>((resolve) => {
+      releaseFirstStop = resolve;
+    });
+    let heldFirstStop = false;
+    sendTypingMock.mockImplementation(async (_target, opts: { stop?: boolean }) => {
+      if (opts.stop && !heldFirstStop) {
+        heldFirstStop = true;
+        await firstStopPending;
+      }
+      return true;
+    });
+    const handler = createSignalEventHandler(
+      createBaseSignalEventHandlerDeps({
+        cfg: {
+          messages: { inbound: { debounceMs: 0 } },
+          channels: { signal: { dmPolicy: "open", allowFrom: ["*"] } },
+        },
+        historyLimit: 0,
+      }),
+    );
+    const event = (timestamp: number, message: string) =>
+      createSignalReceiveEvent({
+        timestamp,
+        dataMessage: { timestamp, message, attachments: [] },
+      });
+
+    await handler(event(1700000000001, "first"));
+    await vi.waitFor(() => expect(heldFirstStop).toBe(true));
+    const callsBeforeSupersession = sendTypingMock.mock.calls as Array<
+      [string, { abortSignal?: AbortSignal; stop?: boolean }]
+    >;
+    const firstStopIndex = callsBeforeSupersession.findIndex(([, opts]) => opts.stop === true);
+    const firstStopSignal = callsBeforeSupersession[firstStopIndex]?.[1].abortSignal;
+    const callCountBeforeSupersession = callsBeforeSupersession.length;
+
+    await handler(event(1700000000002, "second"));
+    expect(firstStopSignal).toBeUndefined();
+    expect(sendTypingMock.mock.calls).toHaveLength(callCountBeforeSupersession);
+
+    releaseFirstStop();
+    await vi.waitFor(() => expect(sendTypingMock.mock.calls).toHaveLength(4));
+
+    expect(
+      sendTypingMock.mock.calls.map(([, opts]) =>
+        (opts as { stop?: boolean }).stop ? "stopped" : "started",
+      ),
+    ).toEqual(["started", "stopped", "started", "stopped"]);
   });
 
   it("keeps supersession ownership on the newest same-session inbound turn", async () => {
@@ -1625,7 +1715,6 @@ describe("signal createSignalEventHandler inbound context", () => {
         baseUrl: "http://localhost",
         account: "+15550009999",
         accountId: "default",
-        abortSignal: expect.any(AbortSignal),
       }),
     );
     expect(sendReadReceiptMock).toHaveBeenCalledWith("signal:+15550001111", 1700000000000, {
