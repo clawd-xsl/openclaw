@@ -50,6 +50,8 @@ const CALL_FAILURE_END_REASONS = new Set([
   "signaling-failure",
   "unsupported",
   "internal-failure",
+  // Callee's message-request gate blocked the call (they lack our profile key).
+  "need-permission",
 ]);
 
 export type SignalVoiceRuntime = {

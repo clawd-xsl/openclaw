@@ -44,6 +44,14 @@ import {
 import { sendMessageSignalTs } from "./signal-ts-outbound.js";
 import { startSignalVoiceRuntime, type SignalVoiceRuntime } from "./voice/call-runtime.js";
 
+// Per-process monotonic receipt counter for inbound call messages (Desktop uses
+// a persistent one); RingRTC only echoes it through call-history hooks.
+let callReceivedAtCounter = 0;
+function nextCallReceivedAtCounter(): number {
+  callReceivedAtCounter += 1;
+  return callReceivedAtCounter;
+}
+
 export type SignalTsMonitorParams = {
   accountInfo: ResolvedSignalAccount;
   // Only consulted to bring up the opt-in voice runtime (agent routing + realtime
@@ -228,17 +236,26 @@ async function runSignalTsMonitorConnection(params: SignalTsMonitorParams): Prom
             const aci = message.sender.serviceId;
             const deviceId = message.sender.deviceId;
             if (voice?.isReady() && aci && deviceId !== undefined) {
-              const receivedAtDate = message.serverTimestamp ?? message.timestamp ?? Date.now();
-              // A reconnect redelivers queued envelopes; RingRTC uses the offer age
-              // to drop stale offers, so it must reflect real elapsed time — a fixed
-              // 0 would ring (and possibly auto-accept) an abandoned call.
-              const ageSec = Math.max(0, Math.round((Date.now() - receivedAtDate) / 1000));
+              // RingRTC drops offers older than 60s. Compute age like Signal
+              // Desktop: server delivery timestamp minus envelope server
+              // timestamp — both server clocks, so host clock skew cancels.
+              // Date.now() here would shift the expiry window by the skew and
+              // could expire every fresh offer (or ring abandoned ones).
+              const serverDeliveredAt = incoming.timestamp;
+              const ageSec = Math.max(
+                0,
+                Math.floor(
+                  (serverDeliveredAt - (message.serverTimestamp ?? serverDeliveredAt)) / 1000,
+                ),
+              );
               await voice.manager.handleIncomingCallMessage({
                 call: message.call,
                 sender: { aci, deviceId },
                 ageSec,
-                receivedAtCounter: incoming.timestamp,
-                receivedAtDate,
+                // Local receipt metadata (Desktop: monotonic counter + local
+                // clock); RingRTC only echoes these through call-history hooks.
+                receivedAtCounter: nextCallReceivedAtCounter(),
+                receivedAtDate: Date.now(),
               });
             } else {
               logSignalTsInfo(
