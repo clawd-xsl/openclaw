@@ -186,6 +186,7 @@ async function runSignalTsMonitorConnection(params: SignalTsMonitorParams): Prom
           voiceConfig,
           client,
           stores,
+          repository,
           runtime: params.runtime,
         })
       : undefined;

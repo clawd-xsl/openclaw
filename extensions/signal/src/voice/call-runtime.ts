@@ -6,6 +6,7 @@ import {
   createSignalCallManager,
   type CreateSignalCallManagerParams,
   type FileSignalAccountState,
+  type FileSignalRepository,
   type SignalCallAudioBridge,
   type SignalCallEvent,
   type SignalCallManager,
@@ -25,6 +26,7 @@ import { resolveAgentRoute, type ResolvedAgentRoute } from "openclaw/plugin-sdk/
 import { createSubsystemLogger, type RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import type { ResolvedSignalAccount } from "../accounts.js";
 import { getOptionalSignalRuntime } from "../runtime.js";
+import { resolveSignalTsPreKeyAuth } from "../signal-ts-client.js";
 import { sendMessageSignalTs } from "../signal-ts-outbound.js";
 import { isAllowedSignalCaller } from "./allowlist.js";
 import { registerSignalCallManager, unregisterSignalCallManager } from "./call-registry.js";
@@ -57,11 +59,13 @@ export type StartSignalVoiceRuntimeParams = {
   voiceConfig: SignalVoiceCallConfig;
   client: SignalTsClient;
   stores: SignalLibsignalStores;
+  // Recipient store backing per-peer access-key resolution for call signaling.
+  repository: FileSignalRepository;
   runtime: RuntimeEnv;
 };
 
 export function startSignalVoiceRuntime(params: StartSignalVoiceRuntimeParams): SignalVoiceRuntime {
-  const { cfg, account, accountState, voiceConfig, client, stores, runtime } = params;
+  const { cfg, account, accountState, voiceConfig, client, stores, repository, runtime } = params;
   const accountId = account.accountId;
 
   // Single active voice session slot (v1 is one concurrent call per account).
@@ -115,14 +119,38 @@ export function startSignalVoiceRuntime(params: StartSignalVoiceRuntimeParams): 
     client,
     account: accountState.account,
     stores,
+    // Call signaling rides the same content-send path as normal messages and
+    // needs the same per-recipient access-key auth for its prekey fetch.
+    resolvePreKeyAuth: (recipientAci) => resolveSignalTsPreKeyAuth(recipientAci, repository),
     config: buildManagerConfig(voiceConfig),
     logger: buildManagerLogger(),
   });
+
+  // Pickup-failure notification state, reset per call attempt. The manager's
+  // "error" event carries the root cause (e.g. SignalingFailure) but its teardown
+  // also kills the in-flight provider socket, so the prepare catch would
+  // otherwise report the secondary "WebSocket was closed" error. Notify once per
+  // attempt, root cause first; after audio is wired the call counts as picked up
+  // and later errors are log-only.
+  let currentPeer: SignalCallPeer | undefined;
+  let lastCallError: string | undefined;
+  let callerNotified = false;
+  let pickedUp = false;
+  const beginCallAttempt = (peer: SignalCallPeer): void => {
+    currentPeer = peer;
+    lastCallError = undefined;
+    callerNotified = false;
+    pickedUp = false;
+  };
 
   // Surface a call-setup failure to the caller as a normal user-facing message
   // (a Signal text to their DM). Route through the channel outbound path, not the
   // raw client, which lacks the send auth setup (else RequestUnauthorized).
   const notifyCallerError = async (peer: SignalCallPeer, reason: string): Promise<void> => {
+    if (callerNotified) {
+      return;
+    }
+    callerNotified = true;
     try {
       await sendMessageSignalTs({
         cfg,
@@ -187,7 +215,9 @@ export function startSignalVoiceRuntime(params: StartSignalVoiceRuntimeParams): 
     try {
       await buildAndConnectSession(peer);
     } catch (err) {
-      const reason = formatErrorMessage(err);
+      // Prefer the manager's error: its teardown closed our in-flight provider
+      // socket, so `err` is often just the secondary "WebSocket was closed".
+      const reason = lastCallError ?? formatErrorMessage(err);
       log.error(`signal voice: inbound preparation failed for ${peer.aci}; declining: ${reason}`);
       closeActiveSession();
       await notifyCallerError(peer, reason);
@@ -211,7 +241,7 @@ export function startSignalVoiceRuntime(params: StartSignalVoiceRuntimeParams): 
     try {
       session = await buildAndConnectSession(peer);
     } catch (err) {
-      const reason = formatErrorMessage(err);
+      const reason = lastCallError ?? formatErrorMessage(err);
       log.error(`signal voice: outbound preparation failed for ${peer.aci}; hanging up: ${reason}`);
       closeActiveSession();
       await notifyCallerError(peer, reason);
@@ -219,6 +249,7 @@ export function startSignalVoiceRuntime(params: StartSignalVoiceRuntimeParams): 
       return;
     }
     session.attachAudio(audio);
+    pickedUp = true;
   };
 
   const buildRunAgentTurn = (ctx: {
@@ -259,6 +290,7 @@ export function startSignalVoiceRuntime(params: StartSignalVoiceRuntimeParams): 
       case "incoming": {
         if (isAllowedSignalCaller(event.peer, voiceConfig.allowFrom)) {
           log.info(`signal voice: preparing inbound call from ${event.peer.aci}`);
+          beginCallAttempt(event.peer);
           // Start the brief immediately; do NOT answer until the whole
           // instruction is built and the voice model is connected.
           kickOffContextBrief(event.peer);
@@ -267,6 +299,9 @@ export function startSignalVoiceRuntime(params: StartSignalVoiceRuntimeParams): 
           log.info(
             `signal voice: declining inbound call from ${event.peer.aci} (not in allowFrom)`,
           );
+          // Not a tracked attempt: a stale currentPeer must not get notified
+          // for errors this decline may raise.
+          currentPeer = undefined;
           void manager.decline(event.callId).catch((err: unknown) => {
             log.warn(`signal voice: decline failed: ${formatErrorMessage(err)}`);
           });
@@ -275,6 +310,7 @@ export function startSignalVoiceRuntime(params: StartSignalVoiceRuntimeParams): 
       }
       case "outgoing": {
         // Agent-placed call: start the brief now so it overlaps ringing.
+        beginCallAttempt(event.peer);
         kickOffContextBrief(event.peer);
         break;
       }
@@ -282,6 +318,7 @@ export function startSignalVoiceRuntime(params: StartSignalVoiceRuntimeParams): 
         if (activeSession) {
           // Inbound: the session was prepared before we answered — just wire audio.
           activeSession.attachAudio(event.audio);
+          pickedUp = true;
         } else {
           // Outbound: the remote just answered — prepare, then wire audio.
           void prepareOutboundThenWire(event.peer, event.audio);
@@ -289,11 +326,17 @@ export function startSignalVoiceRuntime(params: StartSignalVoiceRuntimeParams): 
         break;
       }
       case "error": {
-        // Surface the real call-setup failure (e.g. TURN fetch): the manager
-        // carries the underlying error here, and swallowing it hid the root cause.
-        log.error(
-          `signal voice: call error callId=${event.callId ?? "unknown"}: ${formatErrorMessage(event.error)}`,
-        );
+        // Surface the real call-setup failure (e.g. TURN fetch, signaling): the
+        // manager carries the underlying error here; swallowing it hid the root
+        // cause behind secondary teardown errors.
+        lastCallError = formatErrorMessage(event.error);
+        log.error(`signal voice: call error callId=${event.callId ?? "unknown"}: ${lastCallError}`);
+        if (!pickedUp && currentPeer) {
+          // Pickup failed on the call path itself (no prepare catch will fire,
+          // e.g. after accept). notifyCallerError dedupes against the prepare
+          // catch when both race on the same attempt.
+          void notifyCallerError(currentPeer, lastCallError);
+        }
         closeActiveSession();
         break;
       }

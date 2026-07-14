@@ -360,6 +360,9 @@ export type CreateSignalCallManagerParams = {
   client: SignalTsClient;
   account: SignalAccountState;
   stores: SignalLibsignalStores;
+  // Per-recipient prekey auth (access key) for call signaling sends; without it
+  // the prekey fetch before the first signaling send is RequestUnauthorized.
+  resolvePreKeyAuth?: (recipientAci: string) => Promise<PreKeyAuth | undefined>;
   config?: {
     hideIp?: boolean;
     dataMode?: "low" | "normal";
