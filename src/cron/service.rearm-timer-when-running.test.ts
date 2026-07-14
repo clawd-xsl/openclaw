@@ -138,6 +138,7 @@ describe("CronService - timer re-arm when running (#12025)", () => {
       nowMs: () => now,
       enqueueSystemEvent: vi.fn(),
       requestHeartbeat: vi.fn(),
+      requestSystemEventTurn: vi.fn(),
       runIsolatedAgentJob: vi.fn(async () => await deferredRun.promise),
     });
 

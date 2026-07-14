@@ -226,17 +226,21 @@ export function buildReplyPromptEnvelopeBase(
     : params.hasUserBody
       ? resetModelBody
       : "[User sent media without caption]";
+  const explicitTranscriptBody =
+    normalizeOptionalString(params.sessionCtx.TranscriptBody) ??
+    normalizeOptionalString(params.ctx.TranscriptBody);
+  const ordinaryTranscriptBody = isRoomEvent
+    ? resolveRoomEventTranscriptBody(params)
+    : params.hasUserBody
+      ? params.baseBody
+      : "[User sent media without caption]";
   // Room-event transcript rows are plain chat lines; replay treats them as
   // conversation, while the OpenClaw marker remains current-turn context only.
   const transcriptBody = params.isHeartbeat
     ? HEARTBEAT_TRANSCRIPT_PROMPT
     : params.isBareSessionReset
       ? softResetTail || `[OpenClaw session ${params.startupAction}]`
-      : isRoomEvent
-        ? resolveRoomEventTranscriptBody(params)
-        : params.hasUserBody
-          ? params.baseBody
-          : "[User sent media without caption]";
+      : (explicitTranscriptBody ?? ordinaryTranscriptBody);
   const currentInboundContext: CurrentInboundPromptContext | undefined =
     !params.isBareSessionReset && currentInboundContextText
       ? {

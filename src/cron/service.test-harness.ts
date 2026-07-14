@@ -132,6 +132,7 @@ export function createStartedCronServiceWithFinishedBarrier(params: {
     log: params.logger,
     enqueueSystemEvent,
     requestHeartbeat,
+    requestSystemEventTurn: vi.fn(),
     runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     onEvent: finished.onEvent,
   });
@@ -160,6 +161,7 @@ export async function withCronServiceForTest(
     log: params.logger,
     enqueueSystemEvent,
     requestHeartbeat,
+    requestSystemEventTurn: vi.fn(),
     runIsolatedAgentJob:
       params.runIsolatedAgentJob ??
       (vi.fn(async () => ({ status: "ok" as const, summary: "done" })) as never),
@@ -187,6 +189,7 @@ export function createRunningCronServiceState(params: {
     nowMs: params.nowMs,
     enqueueSystemEvent: vi.fn(),
     requestHeartbeat: vi.fn(),
+    requestSystemEventTurn: vi.fn(),
     runIsolatedAgentJob: vi.fn().mockResolvedValue({ status: "ok", summary: "ok" }),
   });
   state.running = true;
@@ -251,6 +254,7 @@ export function createMockCronStateForJobs(params: {
       nowMs: () => nowMs,
       enqueueSystemEvent: () => {},
       requestHeartbeat: () => {},
+      requestSystemEventTurn: async () => {},
       runIsolatedAgentJob: async () => ({ status: "ok" }),
       log: {
         debug: () => {},

@@ -72,6 +72,7 @@ describe("CronService", () => {
       nowMs: () => Date.now(),
       enqueueSystemEvent,
       requestHeartbeat,
+      requestSystemEventTurn: vi.fn(),
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     });
     const job: CronJob = {

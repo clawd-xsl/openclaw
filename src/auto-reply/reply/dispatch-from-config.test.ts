@@ -56,9 +56,13 @@ type AbortResult = {
 type ResolveInboundConversationParams = Parameters<
   NonNullable<ChannelMessagingAdapter["resolveInboundConversation"]>
 >[0];
+type MockRouteReplyResult = { ok: boolean; messageId?: string; error?: string };
 
 const mocks = vi.hoisted(() => ({
-  routeReply: vi.fn(async (_params: unknown) => ({ ok: true, messageId: "mock" })),
+  routeReply: vi.fn<(_params: unknown) => Promise<MockRouteReplyResult>>(async () => ({
+    ok: true,
+    messageId: "mock",
+  })),
   tryFastAbortFromMessage: vi.fn<() => Promise<AbortResult>>(async () => ({
     handled: false,
     aborted: false,
@@ -2263,63 +2267,127 @@ describe("dispatchReplyFromConfig", () => {
     expect(routeCall?.groupId).toBe("telegram:999");
   });
 
-  it("routes exec-event replies using persisted session delivery context when current turn has no originating route", async () => {
+  it.each(["exec-event", "system-event"] as const)(
+    "routes %s replies using persisted session delivery context when current turn has no originating route",
+    async (eventProvider) => {
+      setNoAbort();
+      mocks.routeReply.mockClear();
+      installThreadingTestPlugin({ id: "telegram" });
+      sessionStoreMocks.currentEntry = {
+        deliveryContext: {
+          channel: "telegram",
+          to: "telegram:999",
+          accountId: "acc-1",
+        },
+        lastChannel: "telegram",
+        lastTo: "telegram:999",
+        lastAccountId: "acc-1",
+      };
+      const cfg = emptyConfig;
+      const dispatcher = createDispatcher();
+      const ctx = buildTestCtx({
+        Provider: eventProvider,
+        Surface: eventProvider,
+        SessionKey: "agent:main:main",
+        AccountId: undefined,
+        OriginatingChannel: undefined,
+        OriginatingTo: undefined,
+      });
+
+      const replyResolver = async () =>
+        ({ text: "hi", mediaUrl: "https://example.test/reply.png" }) satisfies ReplyPayload;
+      await dispatchReplyFromConfig({ ctx, cfg, dispatcher, replyResolver });
+
+      expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
+      const routeCall = firstRouteReplyCall() as
+        | { accountId?: unknown; channel?: unknown; to?: unknown }
+        | undefined;
+      expect(routeCall?.channel).toBe("telegram");
+      expect(routeCall?.to).toBe("telegram:999");
+      expect(routeCall?.accountId).toBe("acc-1");
+      const normalizerOptions = replyMediaPathMocks.createReplyMediaPathNormalizer.mock
+        .calls[0]?.[0] as { accountId?: unknown; messageProvider?: unknown } | undefined;
+      expect(normalizerOptions?.messageProvider).toBe("telegram");
+      expect(normalizerOptions?.accountId).toBe("acc-1");
+      const replyDispatchCall = firstMockCall(
+        hookMocks.runner.runReplyDispatch,
+        "reply dispatch",
+      ) as
+        | [
+            {
+              originatingAccountId?: unknown;
+              originatingChannel?: unknown;
+              originatingThreadId?: unknown;
+              originatingTo?: unknown;
+              shouldRouteToOriginating?: unknown;
+            },
+            unknown,
+          ]
+        | undefined;
+      expect(replyDispatchCall?.[0]?.shouldRouteToOriginating).toBe(true);
+      expect(replyDispatchCall?.[0]?.originatingChannel).toBe("telegram");
+      expect(replyDispatchCall?.[0]?.originatingTo).toBe("telegram:999");
+      expect(typeof replyDispatchCall?.[1]).toBe("object");
+    },
+  );
+
+  it("throws when routed system-event delivery fails", async () => {
     setNoAbort();
-    mocks.routeReply.mockClear();
+    mocks.routeReply.mockResolvedValueOnce({ ok: false, error: "channel unavailable" });
     installThreadingTestPlugin({ id: "telegram" });
     sessionStoreMocks.currentEntry = {
-      deliveryContext: {
-        channel: "telegram",
-        to: "telegram:999",
-        accountId: "acc-1",
-      },
+      deliveryContext: { channel: "telegram", to: "telegram:999" },
       lastChannel: "telegram",
       lastTo: "telegram:999",
-      lastAccountId: "acc-1",
     };
-    const cfg = emptyConfig;
     const dispatcher = createDispatcher();
     const ctx = buildTestCtx({
-      Provider: "exec-event",
-      Surface: "exec-event",
+      Provider: "system-event",
+      Surface: "system-event",
       SessionKey: "agent:main:main",
-      AccountId: undefined,
       OriginatingChannel: undefined,
       OriginatingTo: undefined,
     });
 
-    const replyResolver = async () =>
-      ({ text: "hi", mediaUrl: "https://example.test/reply.png" }) satisfies ReplyPayload;
-    await dispatchReplyFromConfig({ ctx, cfg, dispatcher, replyResolver });
-
+    await expect(
+      dispatchReplyFromConfig({
+        ctx,
+        cfg: emptyConfig,
+        dispatcher,
+        replyResolver: async () => ({ text: "hi" }),
+      }),
+    ).rejects.toThrow("channel unavailable");
     expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
-    const routeCall = firstRouteReplyCall() as
-      | { accountId?: unknown; channel?: unknown; to?: unknown }
-      | undefined;
-    expect(routeCall?.channel).toBe("telegram");
-    expect(routeCall?.to).toBe("telegram:999");
-    expect(routeCall?.accountId).toBe("acc-1");
-    const normalizerOptions = replyMediaPathMocks.createReplyMediaPathNormalizer.mock
-      .calls[0]?.[0] as { accountId?: unknown; messageProvider?: unknown } | undefined;
-    expect(normalizerOptions?.messageProvider).toBe("telegram");
-    expect(normalizerOptions?.accountId).toBe("acc-1");
-    const replyDispatchCall = firstMockCall(hookMocks.runner.runReplyDispatch, "reply dispatch") as
-      | [
-          {
-            originatingAccountId?: unknown;
-            originatingChannel?: unknown;
-            originatingThreadId?: unknown;
-            originatingTo?: unknown;
-            shouldRouteToOriginating?: unknown;
-          },
-          unknown,
-        ]
-      | undefined;
-    expect(replyDispatchCall?.[0]?.shouldRouteToOriginating).toBe(true);
-    expect(replyDispatchCall?.[0]?.originatingChannel).toBe("telegram");
-    expect(replyDispatchCall?.[0]?.originatingTo).toBe("telegram:999");
-    expect(typeof replyDispatchCall?.[1]).toBe("object");
   });
+
+  it.each(["system-event", "heartbeat", "cron-event", "exec-event"])(
+    "throws routed %s delivery failures from an early fast-abort return",
+    async (provider) => {
+      mocks.tryFastAbortFromMessage.mockResolvedValueOnce({ handled: true, aborted: true });
+      mocks.routeReply.mockResolvedValueOnce({ ok: false, error: "channel unavailable" });
+      installThreadingTestPlugin({ id: "telegram" });
+      sessionStoreMocks.currentEntry = {
+        deliveryContext: { channel: "telegram", to: "telegram:999" },
+        lastChannel: "telegram",
+        lastTo: "telegram:999",
+      };
+
+      await expect(
+        dispatchReplyFromConfig({
+          ctx: buildTestCtx({
+            Provider: provider,
+            Surface: provider,
+            SessionKey: "agent:main:main",
+            OriginatingChannel: undefined,
+            OriginatingTo: undefined,
+          }),
+          cfg: emptyConfig,
+          dispatcher: createDispatcher(),
+          replyResolver: async () => ({ text: "unused" }),
+        }),
+      ).rejects.toThrow("channel unavailable");
+    },
+  );
 
   it("routes sessions_send internal webchat handoffs through persisted external delivery context", async () => {
     setNoAbort();

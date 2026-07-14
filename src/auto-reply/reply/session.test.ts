@@ -22,6 +22,7 @@ import {
 } from "../../infra/outbound/session-binding-service.js";
 import {
   enqueueSystemEvent,
+  enqueueSystemEventEntry,
   peekSystemEvents,
   resetSystemEventsForTest,
 } from "../../infra/system-events.js";
@@ -4293,6 +4294,31 @@ describe("drainFormattedSystemEvents", () => {
 
       expect(result).toContain("Reminder: rotate API keys");
       expect(peekSystemEvents("agent:main:main")).toEqual([]);
+    } finally {
+      resetSystemEventsForTest();
+    }
+  });
+
+  it("leaves turn-owned events queued for the dedicated synthetic turn", async () => {
+    const sessionKey = "agent:main:main";
+    try {
+      const reserved = enqueueSystemEventEntry("Route-bound wake", {
+        sessionKey,
+        consumer: "system-event-turn",
+        deliveryContext: { channel: "signal", to: "recipient" },
+      });
+      expect(reserved).not.toBeNull();
+
+      const ordinaryResult = await drainFormattedSystemEvents({
+        cfg: {} as OpenClawConfig,
+        sessionKey,
+        isMainSession: true,
+        isNewSession: false,
+      });
+      expect(ordinaryResult).toBeUndefined();
+      expect(peekSystemEvents(sessionKey)).toEqual(["Route-bound wake"]);
+
+      expect(reserved).not.toBeNull();
     } finally {
       resetSystemEventsForTest();
     }

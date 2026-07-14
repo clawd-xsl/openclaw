@@ -27,6 +27,7 @@ describe("CronService", () => {
       log: noopLogger,
       enqueueSystemEvent,
       requestHeartbeat,
+      requestSystemEventTurn: vi.fn(),
       runIsolatedAgentJob,
     });
 
@@ -47,6 +48,7 @@ describe("CronService", () => {
       log: noopLogger,
       enqueueSystemEvent,
       requestHeartbeat,
+      requestSystemEventTurn: vi.fn(),
       runIsolatedAgentJob,
     });
 

@@ -16,10 +16,14 @@ import {
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { RunCronAgentTurnResult } from "../../cron/isolated-agent/run.types.js";
 import type { CronJob } from "../../cron/types.js";
-import { requestHeartbeat } from "../../infra/heartbeat-wake.js";
+import { requestSystemEventTurn } from "../../infra/system-event-turn.js";
 import { enqueueSystemEvent } from "../../infra/system-events.js";
 import type { createSubsystemLogger } from "../../logging/subsystem.js";
-import type { HookAgentDispatchPayload, HooksConfigResolved } from "../hooks.js";
+import type {
+  HookAgentDispatchPayload,
+  HooksConfigResolved,
+  HookWakeDispatchPayload,
+} from "../hooks.js";
 import { createHooksRequestHandler, type HookClientIpConfig } from "./hooks-request-handler.js";
 
 /**
@@ -36,16 +40,23 @@ function resolveHookEventSessionKey(params: { cfg: OpenClawConfig; agentId?: str
     : resolveMainSessionKey(params.cfg);
 }
 
+function resolveExplicitHookDeliveryContext(value: { channel?: string; to?: string }) {
+  return value.channel && value.channel !== "last" && value.to
+    ? { channel: value.channel, to: value.to }
+    : undefined;
+}
+
 function shouldAnnounceHookRunResult(params: {
   deliver: boolean;
   result: RunCronAgentTurnResult;
 }): boolean {
+  if (!params.deliver) {
+    return false;
+  }
   if (params.result.status !== "ok") {
     return true;
   }
-  return (
-    params.deliver && params.result.delivered !== true && params.result.deliveryAttempted !== true
-  );
+  return params.result.delivered !== true && params.result.deliveryAttempted !== true;
 }
 
 function resolveHookRunSummary(result: RunCronAgentTurnResult): string {
@@ -102,13 +113,17 @@ export function createGatewayHooksRequestHandler(params: {
 }) {
   const { deps, getHooksConfig, getClientIpConfig, bindHost, port, logHooks } = params;
 
-  const dispatchWakeHook = (value: { text: string; mode: "now" | "next-heartbeat" }) => {
+  const dispatchWakeHook = (value: HookWakeDispatchPayload) => {
     const sessionKey = resolveMainSessionKeyFromConfig();
+    const immediate = value.mode === "now";
+    const deliveryContext = immediate ? resolveExplicitHookDeliveryContext(value) : undefined;
     enqueueSystemEvent(value.text, {
       sessionKey,
+      ...(deliveryContext ? { deliveryContext } : {}),
+      ...(immediate ? { consumer: "system-event-turn" as const } : {}),
     });
-    if (value.mode === "now") {
-      requestHeartbeat({ source: "hook", intent: "immediate", reason: "hook:wake" });
+    if (immediate) {
+      requestSystemEventTurn({ sessionKey, reason: "hook:wake" });
     }
   };
 
@@ -191,11 +206,15 @@ export function createGatewayHooksRequestHandler(params: {
         }
         if (shouldAnnounce) {
           const eventSessionKey = hookEventSessionKey ?? resolveMainSessionKeyFromConfig();
+          const immediate = value.wakeMode === "now";
+          const deliveryContext = immediate ? resolveExplicitHookDeliveryContext(value) : undefined;
           enqueueSystemEvent(`${prefix}: ${summary}`.trim(), {
             sessionKey: eventSessionKey,
+            ...(deliveryContext ? { deliveryContext } : {}),
+            ...(immediate ? { consumer: "system-event-turn" as const } : {}),
           });
-          if (value.wakeMode === "now") {
-            requestHeartbeat({ source: "hook", intent: "immediate", reason: `hook:${jobId}` });
+          if (immediate) {
+            requestSystemEventTurn({ sessionKey: eventSessionKey, reason: `hook:${jobId}` });
           }
         } else if (result.status === "ok" && !value.deliver) {
           logHooks.info("hook agent run completed without announcement", {
@@ -210,13 +229,20 @@ export function createGatewayHooksRequestHandler(params: {
         }
       } catch (err) {
         logHooks.warn(`hook agent failed: ${String(err)}`);
+        if (!value.deliver) {
+          return;
+        }
+        const eventSessionKey = hookEventSessionKey ?? resolveMainSessionKeyFromConfig();
+        const immediate = value.wakeMode === "now";
+        const deliveryContext = immediate ? resolveExplicitHookDeliveryContext(value) : undefined;
         enqueueSystemEvent(`Hook ${safeName} (error): ${String(err)}`, {
-          sessionKey: hookEventSessionKey ?? resolveMainSessionKeyFromConfig(),
+          sessionKey: eventSessionKey,
+          ...(deliveryContext ? { deliveryContext } : {}),
+          ...(immediate ? { consumer: "system-event-turn" as const } : {}),
         });
-        if (value.wakeMode === "now") {
-          requestHeartbeat({
-            source: "hook",
-            intent: "immediate",
+        if (immediate) {
+          requestSystemEventTurn({
+            sessionKey: eventSessionKey,
             reason: `hook:${jobId}:error`,
           });
         }

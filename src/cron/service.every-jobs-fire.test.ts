@@ -180,6 +180,7 @@ describe("CronService interval/cron jobs fire on time", () => {
       log: noopLogger,
       enqueueSystemEvent,
       requestHeartbeat,
+      requestSystemEventTurn: vi.fn(),
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     });
 

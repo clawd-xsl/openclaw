@@ -10,7 +10,11 @@ vi.mock("../config/sessions/delivery-info.js", () => ({
   extractDeliveryInfo: extractDeliveryInfoMock,
 }));
 
-import { cronDeliveryFromContext, resolveCronCreationDelivery } from "./delivery-context.js";
+import {
+  cronDeliveryFromContext,
+  resolveCronCreationDelivery,
+  resolveCronStoredDeliveryRoute,
+} from "./delivery-context.js";
 
 describe("cron delivery context", () => {
   const cfg = {} as OpenClawConfig;
@@ -103,6 +107,26 @@ describe("cron delivery context", () => {
       channel: "telegram",
       to: "-1001234567890",
       threadId: "99",
+    });
+  });
+
+  it("carries persisted chat type with the stored delivery route", () => {
+    extractDeliveryInfoMock.mockReturnValueOnce({
+      deliveryContext: { channel: "signal", to: "group:family" },
+      threadId: undefined,
+      chatType: "group",
+      senderId: "signal:owner",
+    });
+
+    expect(
+      resolveCronStoredDeliveryRoute({
+        cfg,
+        sessionKey: "agent:main:signal:group:family",
+      }),
+    ).toEqual({
+      deliveryContext: { channel: "signal", to: "group:family" },
+      chatType: "group",
+      senderId: "signal:owner",
     });
   });
 

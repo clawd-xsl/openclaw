@@ -6,6 +6,7 @@ import {
   normalizeOptionalLowercaseString,
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
+import { normalizeChatType, type ChatType } from "../channels/chat-type.js";
 import { channelRouteDedupeKey } from "../plugin-sdk/channel-route.js";
 import { sanitizeInboundSystemTags } from "../security/system-tags.js";
 import { resolveGlobalMap } from "../shared/global-singleton.js";
@@ -20,6 +21,9 @@ export type SystemEvent = {
   ts: number;
   contextKey?: string | null;
   deliveryContext?: DeliveryContext;
+  chatType?: ChatType;
+  senderId?: string;
+  consumer?: "system-event-turn";
 };
 
 const MAX_EVENTS = 20;
@@ -37,6 +41,9 @@ type SystemEventOptions = {
   sessionKey: string;
   contextKey?: string | null;
   deliveryContext?: DeliveryContext;
+  chatType?: ChatType;
+  senderId?: string;
+  consumer?: "system-event-turn";
 };
 
 function requireSessionKey(key?: string | null): string {
@@ -90,8 +97,11 @@ function findDuplicateInQueue(
   text: string,
   contextKey: string | null,
   deliveryContext: DeliveryContext | undefined,
+  chatType: ChatType | undefined,
+  senderId: string | undefined,
+  consumer: SystemEvent["consumer"],
 ): boolean {
-  const incoming = { text, contextKey, deliveryContext };
+  const incoming = { text, contextKey, deliveryContext, chatType, senderId, consumer };
   if (contextKey === null) {
     const last = queue[queue.length - 1];
     return last ? isDuplicateSystemEvent(last, incoming) : false;
@@ -113,7 +123,21 @@ export function enqueueSystemEventEntry(
   }
   const normalizedContextKey = normalizeContextKey(options.contextKey);
   const normalizedDeliveryContext = normalizeDeliveryContext(options.deliveryContext);
-  if (findDuplicateInQueue(entry.queue, cleaned, normalizedContextKey, normalizedDeliveryContext)) {
+  const chatType = normalizeChatType(options.chatType);
+  const senderId = normalizedDeliveryContext
+    ? normalizeOptionalString(options.senderId)
+    : undefined;
+  if (
+    findDuplicateInQueue(
+      entry.queue,
+      cleaned,
+      normalizedContextKey,
+      normalizedDeliveryContext,
+      chatType,
+      senderId,
+      options.consumer,
+    )
+  ) {
     return null;
   }
   if (normalizedContextKey !== null) {
@@ -124,6 +148,9 @@ export function enqueueSystemEventEntry(
     ts: Date.now(),
     contextKey: normalizedContextKey,
     deliveryContext: normalizedDeliveryContext,
+    ...(chatType ? { chatType } : {}),
+    ...(senderId ? { senderId } : {}),
+    ...(options.consumer ? { consumer: options.consumer } : {}),
   };
   entry.queue.push(event);
   if (entry.queue.length > MAX_EVENTS) {
@@ -161,12 +188,18 @@ function areDeliveryContextsEqual(left?: DeliveryContext, right?: DeliveryContex
 
 function isDuplicateSystemEvent(
   existing: SystemEvent,
-  incoming: Pick<SystemEvent, "text" | "contextKey" | "deliveryContext">,
+  incoming: Pick<
+    SystemEvent,
+    "text" | "contextKey" | "deliveryContext" | "chatType" | "senderId" | "consumer"
+  >,
 ): boolean {
   return (
     existing.text === incoming.text &&
     (existing.contextKey ?? null) === (incoming.contextKey ?? null) &&
-    areDeliveryContextsEqual(existing.deliveryContext, incoming.deliveryContext)
+    areDeliveryContextsEqual(existing.deliveryContext, incoming.deliveryContext) &&
+    existing.chatType === incoming.chatType &&
+    existing.senderId === incoming.senderId &&
+    existing.consumer === incoming.consumer
   );
 }
 
@@ -175,8 +208,15 @@ function areSystemEventsEqual(left: SystemEvent, right: SystemEvent): boolean {
     left.text === right.text &&
     left.ts === right.ts &&
     (left.contextKey ?? null) === (right.contextKey ?? null) &&
-    areDeliveryContextsEqual(left.deliveryContext, right.deliveryContext)
+    areDeliveryContextsEqual(left.deliveryContext, right.deliveryContext) &&
+    left.chatType === right.chatType &&
+    left.senderId === right.senderId &&
+    left.consumer === right.consumer
   );
+}
+
+export function isSystemEventTurnOwned(event: SystemEvent): boolean {
+  return event.consumer === "system-event-turn";
 }
 
 function resetQueueState(key: string, entry: SessionQueue) {
@@ -237,6 +277,29 @@ export function consumeSelectedSystemEventEntries(
   }
   resetQueueState(key, entry);
   return removed;
+}
+
+/** Restores entries consumed by a failed turn without duplicating events still in the queue. */
+export function restoreSystemEventEntries(
+  sessionKey: string,
+  restoredEntries: readonly SystemEvent[],
+): void {
+  if (restoredEntries.length === 0) {
+    return;
+  }
+  const key = requireSessionKey(sessionKey);
+  const entry = getOrCreateSessionQueue(key);
+  const merged = entry.queue.map(cloneSystemEvent);
+  for (const restored of restoredEntries) {
+    if (!merged.some((current) => areSystemEventsEqual(current, restored))) {
+      merged.push(cloneSystemEvent(restored));
+    }
+  }
+  // A failed turn can overlap new arrivals. Exact timestamps reconstruct the
+  // original order while retaining the queue's normal newest-MAX_EVENTS bound.
+  merged.sort((left, right) => left.ts - right.ts);
+  entry.queue = merged.slice(-MAX_EVENTS);
+  resetQueueState(key, entry);
 }
 
 export function drainSystemEvents(sessionKey: string): string[] {

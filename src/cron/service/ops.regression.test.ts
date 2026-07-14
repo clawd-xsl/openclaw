@@ -66,6 +66,7 @@ describe("cron service ops regressions", () => {
       log: noopLogger,
       enqueueSystemEvent: vi.fn(),
       requestHeartbeat: vi.fn(),
+      requestSystemEventTurn: vi.fn(),
       runIsolatedAgentJob: vi.fn(),
     });
     state.store = {
@@ -125,6 +126,7 @@ describe("cron service ops regressions", () => {
       log: noopLogger,
       enqueueSystemEvent: vi.fn(),
       requestHeartbeat: vi.fn(),
+      requestSystemEventTurn: vi.fn(),
       runIsolatedAgentJob,
       onEvent: (evt: CronEvent) => {
         if (evt.jobId !== job.id) {
@@ -187,6 +189,7 @@ describe("cron service ops regressions", () => {
       nowMs: () => now,
       enqueueSystemEvent: vi.fn(),
       requestHeartbeat: vi.fn(),
+      requestSystemEventTurn: vi.fn(),
       runIsolatedAgentJob,
       onEvent: (evt: CronEvent) => {
         if (evt.jobId === job.id && evt.action === "finished") {
@@ -252,6 +255,7 @@ describe("cron service ops regressions", () => {
       log: noopLogger,
       enqueueSystemEvent: vi.fn(),
       requestHeartbeat: vi.fn(),
+      requestSystemEventTurn: vi.fn(),
       runIsolatedAgentJob: vi.fn().mockResolvedValue({ status: "ok", summary: "ok" }),
     });
 
@@ -287,6 +291,7 @@ describe("cron service ops regressions", () => {
       log: noopLogger,
       enqueueSystemEvent: vi.fn(),
       requestHeartbeat: vi.fn(),
+      requestSystemEventTurn: vi.fn(),
       runIsolatedAgentJob,
     });
 
@@ -322,6 +327,7 @@ describe("cron service ops regressions", () => {
         log: noopLogger,
         enqueueSystemEvent: vi.fn(),
         requestHeartbeat: vi.fn(),
+        requestSystemEventTurn: vi.fn(),
         runIsolatedAgentJob: abortAwareRunner.runIsolatedAgentJob,
       });
 
@@ -377,6 +383,7 @@ describe("cron service ops regressions", () => {
       nowMs: () => now,
       enqueueSystemEvent,
       requestHeartbeat: vi.fn(),
+      requestSystemEventTurn: vi.fn(),
       runIsolatedAgentJob: vi.fn().mockResolvedValue({ status: "ok", summary: "ok" }),
     });
 
@@ -440,6 +447,7 @@ describe("cron service ops regressions", () => {
       nowMs: () => now,
       enqueueSystemEvent: vi.fn(),
       requestHeartbeat: vi.fn(),
+      requestSystemEventTurn: vi.fn(),
       runIsolatedAgentJob,
       onEvent: (evt) => {
         if (evt.action === "finished" && evt.jobId === second.id && evt.status === "ok") {
@@ -504,6 +512,7 @@ describe("cron service ops regressions", () => {
       nowMs: () => dueAt,
       enqueueSystemEvent: vi.fn(),
       requestHeartbeat: vi.fn(),
+      requestSystemEventTurn: vi.fn(),
       runIsolatedAgentJob,
     });
 

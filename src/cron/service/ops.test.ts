@@ -39,6 +39,7 @@ function createTimedOutIsolatedCronState(params: { storePath: string; now: numbe
     nowMs: () => params.now,
     enqueueSystemEvent: vi.fn(),
     requestHeartbeat: vi.fn(),
+    requestSystemEventTurn: vi.fn(),
     runIsolatedAgentJob: vi.fn(async () => {
       throw new Error("cron: job execution timed out");
     }),
@@ -53,6 +54,7 @@ function createOkIsolatedCronState(params: { storePath: string; now: number; sum
     nowMs: () => params.now,
     enqueueSystemEvent: vi.fn(),
     requestHeartbeat: vi.fn(),
+    requestSystemEventTurn: vi.fn(),
     runIsolatedAgentJob: vi.fn(async () => ({
       status: "ok" as const,
       ...(params.summary === undefined ? {} : { summary: params.summary }),
@@ -277,6 +279,7 @@ describe("cron service ops seam coverage", () => {
       nowMs: () => now,
       enqueueSystemEvent: vi.fn(),
       requestHeartbeat: vi.fn(),
+      requestSystemEventTurn: vi.fn(),
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     });
 
@@ -322,6 +325,7 @@ describe("cron service ops seam coverage", () => {
       nowMs: () => now,
       enqueueSystemEvent,
       requestHeartbeat,
+      requestSystemEventTurn: vi.fn(),
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     });
 
@@ -395,6 +399,7 @@ describe("cron service ops seam coverage", () => {
       nowMs: () => now,
       enqueueSystemEvent: vi.fn(),
       requestHeartbeat: vi.fn(),
+      requestSystemEventTurn: vi.fn(),
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     });
 
@@ -617,6 +622,7 @@ describe("cron service ops seam coverage", () => {
         nowMs: () => now,
         enqueueSystemEvent: vi.fn(),
         requestHeartbeat: vi.fn(),
+        requestSystemEventTurn: vi.fn(),
         runIsolatedAgentJob: vi.fn(
           () =>
             new Promise<{ status: "ok"; summary: string }>((resolve) => {

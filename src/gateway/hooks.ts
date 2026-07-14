@@ -207,9 +207,7 @@ export function normalizeHookHeaders(req: IncomingMessage) {
 /** Validate a hook wake payload. */
 export function normalizeWakePayload(
   payload: Record<string, unknown>,
-):
-  | { ok: true; value: { text: string; mode: "now" | "next-heartbeat" } }
-  | { ok: false; error: string } {
+): { ok: true; value: HookWakeDispatchPayload } | { ok: false; error: string } {
   const normalizedText = normalizeOptionalString(payload.text) ?? "";
   if (!normalizedText) {
     return { ok: false, error: "text required" };
@@ -217,6 +215,14 @@ export function normalizeWakePayload(
   const mode = payload.mode === "next-heartbeat" ? "next-heartbeat" : "now";
   return { ok: true, value: { text: normalizedText, mode } };
 }
+
+/** Wake dispatch after mapping resolution, including an optional explicit reply route. */
+export type HookWakeDispatchPayload = {
+  text: string;
+  mode: "now" | "next-heartbeat";
+  channel?: HookMessageChannel;
+  to?: string;
+};
 
 type HookAgentPayload = {
   message: string;

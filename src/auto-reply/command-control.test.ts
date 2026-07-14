@@ -95,6 +95,27 @@ describe("resolveCommandAuthorization", () => {
     });
   }
 
+  it("authorizes a routed system event through its originating channel", () => {
+    registerAllowFromPlugins(createAllowFromPlugin("mobilechat", () => ["owner-1"]));
+    const auth = resolveCommandAuthorization({
+      ctx: {
+        Provider: "system-event",
+        OriginatingChannel: "mobilechat",
+        From: "owner-1",
+        To: "owner-1",
+        ChatType: "direct",
+      } as MsgContext,
+      cfg: {
+        channels: { mobilechat: { allowFrom: ["owner-1"] } },
+      } as OpenClawConfig,
+      commandAuthorized: true,
+    });
+
+    expect(auth.providerId).toBe("mobilechat");
+    expect(auth.senderIsOwner).toBe(true);
+    expect(auth.isAuthorizedSender).toBe(true);
+  });
+
   it.each([
     {
       name: "falls back from empty SenderId to SenderE164",

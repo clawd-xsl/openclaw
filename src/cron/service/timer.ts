@@ -1,14 +1,8 @@
 /** Cron timer loop, execution, catch-up, and run-result state transitions. */
 import { resolveIntegerOption } from "@openclaw/normalization-core/number-coercion";
 import { resolveFailoverReasonFromError } from "../../agents/failover-error.js";
-import { loadSessionEntry } from "../../config/sessions/session-accessor.js";
 import type { CronConfig, CronRetryOn } from "../../config/types.cron.js";
 import { formatErrorMessage } from "../../infra/errors.js";
-import type { HeartbeatRunResult } from "../../infra/heartbeat-wake.js";
-import {
-  HEARTBEAT_SKIP_CRON_IN_PROGRESS,
-  isRetryableHeartbeatBusySkipReason,
-} from "../../infra/heartbeat-wake.js";
 import {
   DEFAULT_AGENT_ID,
   normalizeAgentId,
@@ -19,8 +13,6 @@ import {
   startActiveCronTaskRunSettlementGrace,
   trackActiveCronTaskRunSettlement,
 } from "../../tasks/cron-task-cancel.js";
-import { deliveryContextFromSession } from "../../utils/delivery-context.shared.js";
-import type { DeliveryContext } from "../../utils/delivery-context.types.js";
 import {
   clearCronJobActive,
   isCronActiveJobMarkerCurrent,
@@ -78,7 +70,12 @@ import {
   resolveJobPayloadTextForMain,
 } from "./jobs.js";
 import { locked } from "./locked.js";
-import type { CronEvent, CronServiceState, CronSystemEventEnqueueResult } from "./state.js";
+import type {
+  CronEvent,
+  CronOriginDeliveryRoute,
+  CronServiceState,
+  CronSystemEventEnqueueResult,
+} from "./state.js";
 import { ensureLoaded, persist } from "./store.js";
 import {
   resolveMainSessionCronRunSessionKey,
@@ -392,32 +389,21 @@ function resolveRunConcurrency(state: CronServiceState): number {
   return resolveIntegerOption(state.deps.cronConfig?.maxConcurrentRuns, 1, { min: 1 });
 }
 
-function resolveMainSessionCronDeliveryContext(
+function resolveMainSessionCronDeliveryRoute(
   state: CronServiceState,
   job: CronJob,
-): DeliveryContext | undefined {
+): CronOriginDeliveryRoute | undefined {
   const targetSessionKey = job.sessionKey?.trim();
-  if (!targetSessionKey) {
-    return undefined;
-  }
-  const explicitAgentId = job.agentId?.trim();
   const agentId = normalizeAgentId(
-    explicitAgentId || resolveAgentIdFromSessionKey(targetSessionKey),
+    job.agentId?.trim() ||
+      (targetSessionKey
+        ? resolveAgentIdFromSessionKey(targetSessionKey)
+        : state.deps.defaultAgentId),
   );
-  const storePath = state.deps.resolveSessionStorePath?.(agentId) ?? state.deps.sessionStorePath;
-  if (!storePath) {
-    return undefined;
-  }
-  try {
-    const sessionEntry = loadSessionEntry({
-      agentId,
-      sessionKey: targetSessionKey,
-      storePath,
-    });
-    return deliveryContextFromSession(sessionEntry);
-  } catch {
-    return undefined;
-  }
+  return state.deps.resolveOriginDeliveryRoute?.({
+    ...(targetSessionKey ? { sessionKey: targetSessionKey } : {}),
+    agentId,
+  });
 }
 
 /** Default max retries for cron jobs on transient errors (#24355). */
@@ -1922,35 +1908,11 @@ export async function executeJobCore(
     status: "error" as const,
     error: abortErrorMessage(abortSignal),
   });
-  const waitWithAbort = async (ms: number) => {
-    if (!abortSignal) {
-      await new Promise<void>((resolve) => {
-        setTimeout(resolve, ms);
-      });
-      return;
-    }
-    if (abortSignal.aborted) {
-      return;
-    }
-    await new Promise<void>((resolve) => {
-      const timer = setTimeout(() => {
-        abortSignal.removeEventListener("abort", onAbort);
-        resolve();
-      }, ms);
-      const onAbort = () => {
-        clearTimeout(timer);
-        abortSignal.removeEventListener("abort", onAbort);
-        resolve();
-      };
-      abortSignal.addEventListener("abort", onAbort, { once: true });
-    });
-  };
-
   if (abortSignal?.aborted) {
     return resolveAbortError();
   }
   if (job.sessionTarget === "main") {
-    return await executeMainSessionCronJob(state, job, abortSignal, waitWithAbort);
+    return await executeMainSessionCronJob(state, job, abortSignal);
   }
 
   return await executeDetachedCronJob(state, job, abortSignal, resolveAbortError, options);
@@ -1960,7 +1922,6 @@ async function executeMainSessionCronJob(
   state: CronServiceState,
   job: CronJob,
   abortSignal: AbortSignal | undefined,
-  waitWithAbort: (ms: number) => Promise<void>,
 ): Promise<
   CronRunOutcome &
     CronRunTelemetry & {
@@ -1983,7 +1944,7 @@ async function executeMainSessionCronJob(
   const cronStartedAt =
     typeof job.state.runningAtMs === "number" ? job.state.runningAtMs : state.deps.nowMs();
   const cronRunSessionKey = resolveMainSessionCronRunSessionKey(job, cronStartedAt);
-  const deliveryContext = resolveMainSessionCronDeliveryContext(state, job);
+  const deliveryRoute = resolveMainSessionCronDeliveryRoute(state, job);
   // Main-session jobs enqueue text into a per-run child session so each cron
   // execution has its own transcript and task drill-down target.
   const queuedSystemEvent = normalizeQueuedSystemEventHandle(
@@ -1991,102 +1952,40 @@ async function executeMainSessionCronJob(
       agentId: job.agentId,
       sessionKey: cronRunSessionKey,
       contextKey: `cron:${job.id}`,
-      ...(deliveryContext ? { deliveryContext } : {}),
+      ...(deliveryRoute?.deliveryContext ? { deliveryContext: deliveryRoute.deliveryContext } : {}),
+      ...(deliveryRoute?.chatType ? { chatType: deliveryRoute.chatType } : {}),
+      ...(deliveryRoute?.senderId ? { senderId: deliveryRoute.senderId } : {}),
+      ...(job.wakeMode === "now" ? { consumer: "system-event-turn" as const } : {}),
     }),
   );
-  if (job.wakeMode === "now" && state.deps.runHeartbeatOnce) {
-    const reason = `cron:${job.id}`;
-    const maxWaitMs = state.deps.wakeNowHeartbeatBusyMaxWaitMs ?? 2 * 60_000;
-    const retryDelayMs = state.deps.wakeNowHeartbeatBusyRetryDelayMs ?? 250;
-    const waitStartedAt = state.deps.nowMs();
-
-    let heartbeatResult: HeartbeatRunResult;
-    for (;;) {
-      if (abortSignal?.aborted) {
-        removeQueuedSystemEventHandle(state, job, queuedSystemEvent);
-        return { status: "error", error: timeoutErrorMessage() };
-      }
-      heartbeatResult = await state.deps.runHeartbeatOnce({
-        source: "cron",
-        intent: "immediate",
-        reason,
-        agentId: job.agentId,
-        sessionKey: cronRunSessionKey,
-        heartbeat: { target: "last" },
-      });
-      if (abortSignal?.aborted) {
-        removeQueuedSystemEventHandle(state, job, queuedSystemEvent);
-        return { status: "error", error: timeoutErrorMessage() };
-      }
-      if (
-        heartbeatResult.status !== "skipped" ||
-        !isRetryableHeartbeatBusySkipReason(heartbeatResult.reason)
-      ) {
-        break;
-      }
-      if (heartbeatResult.reason === HEARTBEAT_SKIP_CRON_IN_PROGRESS) {
-        // The active cron marker blocks direct wake-now until this job returns.
-        state.deps.requestHeartbeat({
-          source: "cron",
-          intent: "immediate",
-          reason,
-          agentId: job.agentId,
-          sessionKey: cronRunSessionKey,
-          heartbeat: { target: "last" },
-        });
-        return { status: "ok", summary: text, sessionKey: cronRunSessionKey };
-      }
-      if (abortSignal?.aborted) {
-        removeQueuedSystemEventHandle(state, job, queuedSystemEvent);
-        return { status: "error", error: timeoutErrorMessage() };
-      }
-      if (state.deps.nowMs() - waitStartedAt > maxWaitMs) {
-        if (abortSignal?.aborted) {
-          removeQueuedSystemEventHandle(state, job, queuedSystemEvent);
-          return { status: "error", error: timeoutErrorMessage() };
-        }
-        state.deps.requestHeartbeat({
-          source: "cron",
-          intent: "immediate",
-          reason,
-          agentId: job.agentId,
-          sessionKey: cronRunSessionKey,
-          heartbeat: { target: "last" },
-        });
-        return { status: "ok", summary: text, sessionKey: cronRunSessionKey };
-      }
-      await waitWithAbort(retryDelayMs);
-    }
-
-    if (heartbeatResult.status === "ran") {
-      return { status: "ok", summary: text, sessionKey: cronRunSessionKey };
-    }
-    if (heartbeatResult.status === "skipped") {
-      removeQueuedSystemEventHandle(state, job, queuedSystemEvent);
-      return {
-        status: "skipped",
-        error: heartbeatResult.reason,
-        summary: text,
-        sessionKey: cronRunSessionKey,
-      };
-    }
-    removeQueuedSystemEventHandle(state, job, queuedSystemEvent);
-    return {
-      status: "error",
-      error: heartbeatResult.reason,
-      summary: text,
-      sessionKey: cronRunSessionKey,
-    };
-  }
-
   if (abortSignal?.aborted) {
     removeQueuedSystemEventHandle(state, job, queuedSystemEvent);
     return { status: "error", error: timeoutErrorMessage() };
   }
+  const reason = `cron:${job.id}`;
+  if (job.wakeMode === "now") {
+    try {
+      await state.deps.requestSystemEventTurn({
+        reason,
+        agentId: job.agentId,
+        sessionKey: cronRunSessionKey,
+        abortSignal,
+      });
+      return { status: "ok", summary: text, sessionKey: cronRunSessionKey };
+    } catch (error) {
+      removeQueuedSystemEventHandle(state, job, queuedSystemEvent);
+      return {
+        status: "error",
+        error: abortSignal?.aborted ? timeoutErrorMessage() : formatErrorMessage(error),
+        summary: text,
+        sessionKey: cronRunSessionKey,
+      };
+    }
+  }
   state.deps.requestHeartbeat({
     source: "cron",
-    intent: job.wakeMode === "now" ? "immediate" : "event",
-    reason: `cron:${job.id}`,
+    intent: "event",
+    reason,
     agentId: job.agentId,
     sessionKey: cronRunSessionKey,
     heartbeat: { target: "last" },

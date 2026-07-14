@@ -40,16 +40,20 @@ export function wake(
   // of the chat root. Only attempt this when an origin session is targeted; a
   // no-origin wake keeps the exact pre-fix `enqueueSystemEvent(text, undefined)`
   // shape so its default-sessionKey binding still kicks in.
-  const originDeliveryContext =
+  const originDeliveryRoute =
     sessionKey || agentId
-      ? state.deps.resolveOriginDeliveryContext?.({ sessionKey, agentId })
+      ? state.deps.resolveOriginDeliveryRoute?.({ sessionKey, agentId })
       : undefined;
   const enqueueOpts =
     sessionKey || agentId
       ? {
           ...(sessionKey ? { sessionKey } : {}),
           ...(agentId ? { agentId } : {}),
-          ...(originDeliveryContext ? { deliveryContext: originDeliveryContext } : {}),
+          ...(originDeliveryRoute?.deliveryContext
+            ? { deliveryContext: originDeliveryRoute.deliveryContext }
+            : {}),
+          ...(originDeliveryRoute?.chatType ? { chatType: originDeliveryRoute.chatType } : {}),
+          ...(originDeliveryRoute?.senderId ? { senderId: originDeliveryRoute.senderId } : {}),
         }
       : undefined;
   state.deps.enqueueSystemEvent(text, enqueueOpts);

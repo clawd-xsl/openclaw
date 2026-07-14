@@ -370,6 +370,29 @@ describe("system events (session routing)", () => {
     expect(peekSystemEventEntries(key)).toHaveLength(2);
   });
 
+  it("keeps chat type as part of queued route identity", () => {
+    const key = "agent:main:test-context-chat-type-disambiguates";
+    const route = { channel: "signal", to: "family" };
+
+    expect(
+      enqueueSystemEvent("Build completed", {
+        sessionKey: key,
+        contextKey: "build:123",
+        deliveryContext: route,
+        chatType: "direct",
+      }),
+    ).toBe(true);
+    expect(
+      enqueueSystemEvent("Build completed", {
+        sessionKey: key,
+        contextKey: "build:123",
+        deliveryContext: route,
+        chatType: "group",
+      }),
+    ).toBe(true);
+    expect(peekSystemEventEntries(key).map((event) => event.chatType)).toEqual(["direct", "group"]);
+  });
+
   it("preserves lastContextKey when a duplicate is skipped", () => {
     const key = "agent:main:test-context-preserved";
     enqueueSystemEvent("Node connected", { sessionKey: key, contextKey: "build:123" });

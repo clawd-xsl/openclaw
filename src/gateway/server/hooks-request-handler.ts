@@ -16,6 +16,7 @@ import {
   getHookChannelError,
   getHookSessionKeyPrefixError,
   type HookAgentDispatchPayload,
+  type HookWakeDispatchPayload,
   type HooksConfigResolved,
   isHookAgentAllowed,
   isSessionKeyAllowedByPrefix,
@@ -48,7 +49,7 @@ export type HookClientIpConfig = Readonly<{
 export type HooksRequestHandler = (req: IncomingMessage, res: ServerResponse) => Promise<boolean>;
 
 type HookDispatchers = {
-  dispatchWakeHook: (value: { text: string; mode: "now" | "next-heartbeat" }) => void;
+  dispatchWakeHook: (value: HookWakeDispatchPayload) => void;
   dispatchAgentHook: (value: HookAgentDispatchPayload) => string;
 };
 
@@ -360,9 +361,19 @@ export function createHooksRequestHandler(
             return true;
           }
           if (mapped.action.kind === "wake") {
+            const channel =
+              mapped.action.channel === undefined
+                ? undefined
+                : resolveHookChannel(mapped.action.channel);
+            if (mapped.action.channel !== undefined && !channel) {
+              sendJson(res, 400, { ok: false, error: getHookChannelError() });
+              return true;
+            }
             dispatchWakeHook({
               text: mapped.action.text,
               mode: mapped.action.mode,
+              channel: channel ?? undefined,
+              to: mapped.action.to,
             });
             sendJson(res, 200, { ok: true, mode: mapped.action.mode });
             return true;

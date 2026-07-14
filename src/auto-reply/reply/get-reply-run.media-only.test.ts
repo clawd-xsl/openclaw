@@ -3294,6 +3294,19 @@ describe("runPreparedReply media-only handling", () => {
     expect(applySessionHints).not.toHaveBeenCalled();
   });
 
+  it("does not drain queued system events for a dedicated system event turn", async () => {
+    await runPreparedReply(
+      baseParams({
+        opts: {
+          suppressSystemEventDrain: true,
+        },
+      }),
+    );
+
+    expect(drainFormattedSystemEvents).not.toHaveBeenCalled();
+    expect(runReplyAgent).toHaveBeenCalledOnce();
+  });
+
   it("keeps sender ownership when queued system events are prepended", async () => {
     vi.mocked(drainFormattedSystemEvents).mockResolvedValueOnce(
       "System: [t] External webhook payload.",

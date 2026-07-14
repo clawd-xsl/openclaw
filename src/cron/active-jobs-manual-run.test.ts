@@ -80,6 +80,7 @@ async function createManualRunHarness(jobId: string) {
     log: logger,
     enqueueSystemEvent: () => {},
     requestHeartbeat: () => {},
+    requestSystemEventTurn: async () => {},
     runIsolatedAgentJob: async () => {
       entered.resolve();
       return await release.promise;
@@ -206,6 +207,7 @@ describe("cron activeJobIds — manual-run mark/clear", () => {
       log: logger,
       enqueueSystemEvent: () => {},
       requestHeartbeat: () => {},
+      requestSystemEventTurn: async () => {},
       onIsolatedAgentSetupTimeout,
       runIsolatedAgentJob: async ({ abortSignal }) => {
         startedCount += 1;

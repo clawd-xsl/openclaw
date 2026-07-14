@@ -1,9 +1,14 @@
 // Delivery lookup recovers routable channel context from persisted session stores.
-import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
+import {
+  normalizeLowercaseStringOrEmpty,
+  normalizeOptionalString,
+} from "@openclaw/normalization-core/string-coerce";
+import { normalizeChatType, type ChatType } from "../../channels/chat-type.js";
 import {
   resolveSessionStoreAgentId,
   resolveSessionStoreKey,
 } from "../../gateway/session-store-key.js";
+import { channelRouteDedupeKey } from "../../plugin-sdk/channel-route.js";
 import { requiresFoldedSessionKeyAliasProof } from "../../sessions/session-key-utils.js";
 import { deliveryContextFromSession } from "../../utils/delivery-context.shared.js";
 import { getRuntimeConfig } from "../io.js";
@@ -48,6 +53,8 @@ export function extractDeliveryInfo(
     | { channel?: string; to?: string; accountId?: string; threadId?: string | number }
     | undefined;
   threadId: string | undefined;
+  chatType?: ChatType;
+  senderId?: string;
 } {
   const { baseSessionKey, threadId } = parseSessionThreadInfo(sessionKey);
   if (!sessionKey || !baseSessionKey) {
@@ -57,6 +64,8 @@ export function extractDeliveryInfo(
   let deliveryContext:
     | { channel?: string; to?: string; accountId?: string; threadId?: string | number }
     | undefined;
+  let chatType: ChatType | undefined;
+  let senderId: string | undefined;
   try {
     const cfg = options?.cfg ?? getRuntimeConfig();
     const lookup = loadDeliverySessionEntry({ cfg, sessionKey, baseSessionKey });
@@ -73,11 +82,36 @@ export function extractDeliveryInfo(
         accountId: storedDeliveryContext.accountId,
         threadId: storedDeliveryContext.threadId,
       };
+      chatType = normalizeChatType(
+        entry?.route?.target?.chatType ?? entry?.chatType ?? entry?.origin?.chatType,
+      );
+      const originRouteKey = channelRouteDedupeKey({
+        channel: entry?.origin?.provider,
+        to: entry?.origin?.to,
+        accountId: entry?.origin?.accountId,
+        threadId: entry?.origin?.threadId,
+      });
+      const deliveryRouteKey = channelRouteDedupeKey({
+        ...storedDeliveryContext,
+        threadId: threadId ?? storedDeliveryContext.threadId,
+      });
+      // Origin owns the sender identity. Require its complete route to match the
+      // selected delivery route before exposing that identity to authorization.
+      if (originRouteKey === deliveryRouteKey) {
+        senderId =
+          normalizeOptionalString(entry?.origin?.nativeDirectUserId) ??
+          normalizeOptionalString(entry?.origin?.from);
+      }
     }
   } catch {
     // ignore: best-effort
   }
-  return { deliveryContext, threadId };
+  return {
+    deliveryContext,
+    threadId,
+    ...(chatType ? { chatType } : {}),
+    ...(senderId ? { senderId } : {}),
+  };
 }
 
 function resolveDeliveryStorePaths(cfg: OpenClawConfig, agentId: string): string[] {

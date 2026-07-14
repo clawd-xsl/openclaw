@@ -51,6 +51,7 @@ describe("recurring error backoff floor persistence", () => {
           nowMs: () => now,
           enqueueSystemEvent: vi.fn(),
           requestHeartbeat: vi.fn(),
+          requestSystemEventTurn: vi.fn(),
           // Permanent (non-retryable) error -> recurring safety-net backoff
           // floor, the branch that must honor the configured backoffMs.
           runIsolatedAgentJob: vi.fn(async () => {

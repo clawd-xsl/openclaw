@@ -1,14 +1,14 @@
 // Covers the "capture origin delivery context, carry it to the wake event"
 // half of the cron wake origin fix: a sessionKey-targeted wake() must thread
 // the bound channel thread/topic (e.g. Telegram topic 4052) onto the enqueued
-// system event's deliveryContext so the delivered heartbeat routes back into
+// system event's deliveryContext so the resulting turn routes back into
 // the originating thread instead of the chat root.
 //
-// The channel-correct threadId is sourced via the resolveOriginDeliveryContext
+// The channel-correct threadId is sourced via the resolveOriginDeliveryRoute
 // dep (implemented in server-cron from the session store), NOT by splitting the
 // composite session-key thread suffix. The tests mock that dep so they exercise
 // only wake()'s carry behavior. Scheduled main-session cron jobs resolve their
-// delivery context natively in timer.ts (resolveMainSessionCronDeliveryContext)
+// delivery route natively in timer.ts (resolveMainSessionCronDeliveryRoute)
 // and are covered there.
 import { describe, expect, it, vi } from "vitest";
 import type { DeliveryContext } from "../../utils/delivery-context.types.js";
@@ -23,39 +23,44 @@ const TOPIC_DELIVERY_CONTEXT: DeliveryContext = {
 };
 
 function makeStateWithMocks(
-  resolveOriginDeliveryContext?: (params: {
-    sessionKey?: string;
-    agentId?: string;
-  }) => DeliveryContext | undefined,
+  resolveOriginDeliveryRoute?: (params: { sessionKey?: string; agentId?: string }) =>
+    | {
+        deliveryContext: DeliveryContext;
+        chatType?: "direct" | "group" | "channel";
+        senderId?: string;
+      }
+    | undefined,
 ): {
   state: CronServiceState;
   enqueueSystemEvent: ReturnType<typeof vi.fn>;
   requestHeartbeat: ReturnType<typeof vi.fn>;
-  resolveOriginDeliveryContext: ReturnType<typeof vi.fn>;
+  resolveOriginDeliveryRoute: ReturnType<typeof vi.fn>;
 } {
   const enqueueSystemEvent = vi.fn();
   const requestHeartbeat = vi.fn();
-  const resolveOrigin = vi.fn(resolveOriginDeliveryContext ?? (() => undefined));
+  const resolveOrigin = vi.fn(resolveOriginDeliveryRoute ?? (() => undefined));
   const state = {
     deps: {
       enqueueSystemEvent,
       requestHeartbeat,
-      resolveOriginDeliveryContext: resolveOrigin,
+      resolveOriginDeliveryRoute: resolveOrigin,
     },
   } as unknown as CronServiceState;
   return {
     state,
     enqueueSystemEvent,
     requestHeartbeat,
-    resolveOriginDeliveryContext: resolveOrigin,
+    resolveOriginDeliveryRoute: resolveOrigin,
   };
 }
 
 describe("cron wake() origin delivery-context carry", () => {
   it("threads the resolved deliveryContext onto a sessionKey-targeted wake", () => {
-    const { state, enqueueSystemEvent, resolveOriginDeliveryContext } = makeStateWithMocks(
-      () => TOPIC_DELIVERY_CONTEXT,
-    );
+    const { state, enqueueSystemEvent, resolveOriginDeliveryRoute } = makeStateWithMocks(() => ({
+      deliveryContext: TOPIC_DELIVERY_CONTEXT,
+      chatType: "group",
+      senderId: "telegram-owner",
+    }));
 
     const result = wake(state, {
       mode: "now",
@@ -65,7 +70,7 @@ describe("cron wake() origin delivery-context carry", () => {
     });
 
     expect(result).toEqual({ ok: true });
-    expect(resolveOriginDeliveryContext).toHaveBeenCalledWith({
+    expect(resolveOriginDeliveryRoute).toHaveBeenCalledWith({
       sessionKey: "agent:main:telegram:8661849123:topic:4052",
       agentId: "main",
     });
@@ -73,6 +78,8 @@ describe("cron wake() origin delivery-context carry", () => {
       sessionKey: "agent:main:telegram:8661849123:topic:4052",
       agentId: "main",
       deliveryContext: TOPIC_DELIVERY_CONTEXT,
+      chatType: "group",
+      senderId: "telegram-owner",
     });
   });
 
@@ -82,9 +89,9 @@ describe("cron wake() origin delivery-context carry", () => {
     // fields. A sessionKey-only wake (the common tool-path shape for
     // single-agent setups) must still consult the resolver and carry the
     // stored topic/thread context.
-    const { state, enqueueSystemEvent, resolveOriginDeliveryContext } = makeStateWithMocks(
-      () => TOPIC_DELIVERY_CONTEXT,
-    );
+    const { state, enqueueSystemEvent, resolveOriginDeliveryRoute } = makeStateWithMocks(() => ({
+      deliveryContext: TOPIC_DELIVERY_CONTEXT,
+    }));
 
     wake(state, {
       mode: "now",
@@ -92,7 +99,7 @@ describe("cron wake() origin delivery-context carry", () => {
       sessionKey: "agent:main:telegram:8661849123:topic:4052",
     });
 
-    expect(resolveOriginDeliveryContext).toHaveBeenCalledExactlyOnceWith({
+    expect(resolveOriginDeliveryRoute).toHaveBeenCalledExactlyOnceWith({
       sessionKey: "agent:main:telegram:8661849123:topic:4052",
       agentId: undefined,
     });
@@ -118,11 +125,9 @@ describe("cron wake() origin delivery-context carry", () => {
     expect(options).not.toHaveProperty("deliveryContext");
   });
 
-  it("works when no resolveOriginDeliveryContext dep is wired (legacy deps)", () => {
+  it("works when no resolveOriginDeliveryRoute dep is wired", () => {
     const { state, enqueueSystemEvent } = makeStateWithMocks();
-    // Drop the dep entirely to mirror a deployment whose adapter predates the fix.
-    (state.deps as { resolveOriginDeliveryContext?: unknown }).resolveOriginDeliveryContext =
-      undefined;
+    (state.deps as { resolveOriginDeliveryRoute?: unknown }).resolveOriginDeliveryRoute = undefined;
 
     const result = wake(state, {
       mode: "now",
@@ -137,15 +142,15 @@ describe("cron wake() origin delivery-context carry", () => {
   });
 
   it("keeps the no-origin call shape (enqueueSystemEvent(text, undefined)) when untargeted", () => {
-    const { state, enqueueSystemEvent, resolveOriginDeliveryContext } = makeStateWithMocks(
-      () => TOPIC_DELIVERY_CONTEXT,
-    );
+    const { state, enqueueSystemEvent, resolveOriginDeliveryRoute } = makeStateWithMocks(() => ({
+      deliveryContext: TOPIC_DELIVERY_CONTEXT,
+    }));
 
     wake(state, { mode: "now", text: "no origin" });
 
     // Untargeted wakes must not even consult the resolver, preserving the exact
     // pre-fix default-sessionKey binding behavior.
-    expect(resolveOriginDeliveryContext).not.toHaveBeenCalled();
+    expect(resolveOriginDeliveryRoute).not.toHaveBeenCalled();
     expect(enqueueSystemEvent).toHaveBeenCalledExactlyOnceWith("no origin", undefined);
   });
 });

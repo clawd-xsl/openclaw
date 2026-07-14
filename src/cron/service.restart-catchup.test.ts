@@ -34,6 +34,7 @@ describe("CronService restart catch-up", () => {
       ...(params.nowMs ? { nowMs: params.nowMs } : {}),
       enqueueSystemEvent: params.enqueueSystemEvent as never,
       requestHeartbeat: params.requestHeartbeat as never,
+      requestSystemEventTurn: vi.fn(),
       runIsolatedAgentJob:
         (params.runIsolatedAgentJob as never) ??
         (vi.fn(async () => ({ status: "ok" as const })) as never),
@@ -616,6 +617,7 @@ describe("CronService restart catch-up", () => {
       nowMs: () => now,
       enqueueSystemEvent: vi.fn(),
       requestHeartbeat: vi.fn(),
+      requestSystemEventTurn: vi.fn(),
       runIsolatedAgentJob: vi.fn(async () => {
         now += 6_000;
         return { status: "ok" as const, summary: "ok" };
@@ -660,6 +662,7 @@ describe("CronService restart catch-up", () => {
       nowMs: () => now,
       enqueueSystemEvent: vi.fn(),
       requestHeartbeat: vi.fn(),
+      requestSystemEventTurn: vi.fn(),
       runIsolatedAgentJob: vi.fn(async () => {
         now += 6_000;
         return { status: "ok" as const, summary: "ok" };
@@ -681,7 +684,7 @@ describe("CronService restart catch-up", () => {
     await store.cleanup();
   });
 
-  it("stagger-limits overdue disabled-heartbeat one-shot retries after restart", async () => {
+  it("stagger-limits overdue one-shot event retries when heartbeat is disabled", async () => {
     const store = await makeStorePath();
     const startNow = Date.parse("2025-12-13T17:00:00.000Z");
 
@@ -692,6 +695,7 @@ describe("CronService restart catch-up", () => {
 
     const enqueueSystemEvent = vi.fn();
     const requestHeartbeat = vi.fn();
+    const requestSystemEventTurn = vi.fn(async () => {});
     const state = createCronServiceState({
       cronEnabled: true,
       storePath: store.storePath,
@@ -699,6 +703,7 @@ describe("CronService restart catch-up", () => {
       nowMs: () => startNow,
       enqueueSystemEvent,
       requestHeartbeat,
+      requestSystemEventTurn,
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
       maxMissedJobsPerRestart: 1,
       missedJobStaggerMs: 5_000,
@@ -707,7 +712,8 @@ describe("CronService restart catch-up", () => {
     await runMissedJobs(state);
 
     expectQueuedSystemEvent(enqueueSystemEvent, "retry-disabled-retry-0");
-    expect(requestHeartbeat).toHaveBeenCalledTimes(1);
+    expect(requestSystemEventTurn).toHaveBeenCalledTimes(1);
+    expect(requestHeartbeat).not.toHaveBeenCalled();
 
     const listedJobs = state.store?.jobs ?? [];
     expect(listedJobs.find((job) => job.id === "disabled-retry-0")).toBeUndefined();

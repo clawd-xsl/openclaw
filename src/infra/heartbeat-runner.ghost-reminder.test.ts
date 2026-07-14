@@ -259,6 +259,24 @@ describe("Ghost reminder bug (issue #13317)", () => {
     expect(sendTelegram).toHaveBeenCalled();
   });
 
+  it("leaves immediate-turn-owned events for the system event runner", async () => {
+    const { calledCtx, sessionKey } = await runHeartbeatCase({
+      tmpPrefix: "openclaw-turn-owned-",
+      replyText: "HEARTBEAT_OK",
+      reason: "interval",
+      enqueue: (targetSessionKey) => {
+        enqueueSystemEvent("Route-bound wake", {
+          sessionKey: targetSessionKey,
+          consumer: "system-event-turn",
+          deliveryContext: { channel: "signal", to: "recipient" },
+        });
+      },
+    });
+
+    expect(calledCtx?.Body).not.toContain("Route-bound wake");
+    expect(peekSystemEvents(sessionKey)).toEqual(["Route-bound wake"]);
+  });
+
   it("uses CRON_EVENT_PROMPT when cron events are mixed with heartbeat noise", async () => {
     const { result, sendTelegram, calledCtx } = await runCronReminderCase(
       "openclaw-cron-mixed-",

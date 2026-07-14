@@ -20,7 +20,7 @@ import {
   redactCronCommandSummaryForExternalDelivery,
 } from "../cron/command-output-summary.js";
 import { runCronCommandJob } from "../cron/command-runner.js";
-import { resolveCronStoredDeliveryContext } from "../cron/delivery-context.js";
+import { resolveCronStoredDeliveryRoute } from "../cron/delivery-context.js";
 import { resolveCronDeliveryPlan, sendCronAnnouncePayloadStrict } from "../cron/delivery.js";
 import { runCronIsolatedAgentTurn } from "../cron/isolated-agent.js";
 import { appendCronRunLog, resolveCronRunLogPruneOptions } from "../cron/run-log.js";
@@ -34,8 +34,8 @@ import { resolveCronJobsStorePath } from "../cron/store.js";
 import type { CronJob, CronPayload } from "../cron/types.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { resolveMainScopedEventSessionKey } from "../infra/event-session-routing.js";
-import { runHeartbeatOnce } from "../infra/heartbeat-runner.js";
 import { requestHeartbeat } from "../infra/heartbeat-wake.js";
+import { runSystemEventTurn } from "../infra/system-event-turn.js";
 import {
   consumeSelectedSystemEventEntries,
   enqueueSystemEventEntry,
@@ -54,7 +54,6 @@ import {
   resolveEventSessionKey,
   toAgentStoreSessionKey,
 } from "../routing/session-key.js";
-import { defaultRuntime } from "../runtime.js";
 import { parseAgentSessionKey } from "../sessions/session-key-utils.js";
 import { createCronExitWatchers, type CronExitResult } from "./cron-exit-watchers.js";
 import {
@@ -327,28 +326,6 @@ export function buildGatewayCronService(params: {
     return { runtimeConfig, agentId, sessionKey };
   };
 
-  const resolveCronHeartbeatOverride = (paramsLocal: {
-    runtimeConfig: OpenClawConfig;
-    agentId?: string;
-    heartbeat?: AgentDefaultsConfig["heartbeat"];
-  }) => {
-    if (!paramsLocal.heartbeat) {
-      return undefined;
-    }
-    const agentEntry =
-      paramsLocal.agentId !== undefined
-        ? findAgentEntry(paramsLocal.runtimeConfig, paramsLocal.agentId)
-        : undefined;
-    const agentHeartbeat =
-      agentEntry && typeof agentEntry === "object" ? agentEntry.heartbeat : undefined;
-    const baseHeartbeat = {
-      ...paramsLocal.runtimeConfig.agents?.defaults?.heartbeat,
-      ...agentHeartbeat,
-    };
-    const heartbeatOverride = { ...baseHeartbeat, ...paramsLocal.heartbeat };
-    return sanitizeCronHeartbeatOverride(heartbeatOverride);
-  };
-
   const defaultAgentId = resolveDefaultAgentId(params.cfg);
   const runLogPrune = resolveCronRunLogPruneOptions(params.cfg.cron?.runLog);
   const resolveSessionStorePath = (agentId?: string) =>
@@ -411,6 +388,9 @@ export function buildGatewayCronService(params: {
         sessionKey,
         contextKey: opts?.contextKey,
         deliveryContext: opts?.deliveryContext,
+        chatType: opts?.chatType,
+        senderId: opts?.senderId,
+        consumer: opts?.consumer,
       });
       return event
         ? {
@@ -419,7 +399,7 @@ export function buildGatewayCronService(params: {
           }
         : { accepted: false };
     },
-    resolveOriginDeliveryContext: (opts) => {
+    resolveOriginDeliveryRoute: (opts) => {
       // Resolve the wake target the same way the enqueue/heartbeat deps do,
       // then read the channel-correct delivery context from that session's
       // store entry (NOT by string-splitting the composite session key).
@@ -430,7 +410,7 @@ export function buildGatewayCronService(params: {
       if (!sessionKey) {
         return undefined;
       }
-      return resolveCronStoredDeliveryContext({ cfg: runtimeConfig, sessionKey });
+      return resolveCronStoredDeliveryRoute({ cfg: runtimeConfig, sessionKey });
     },
     requestHeartbeat: (opts) => {
       const { agentId, sessionKey } = resolveCronTarget({ ...opts, preserveUntargeted: true });
@@ -443,24 +423,18 @@ export function buildGatewayCronService(params: {
         heartbeat: sanitizeCronHeartbeatOverride(opts?.heartbeat),
       });
     },
-    runHeartbeatOnce: async (opts) => {
-      const { runtimeConfig, agentId, sessionKey } = resolveCronTarget({
+    requestSystemEventTurn: async (opts) => {
+      const { sessionKey } = resolveCronTarget({
         ...opts,
         preserveUntargeted: true,
       });
-      return await runHeartbeatOnce({
-        cfg: runtimeConfig,
-        source: opts?.source ?? "cron",
-        intent: opts?.intent ?? "event",
+      if (!sessionKey) {
+        throw new Error("Cron system event turn target did not resolve a session key.");
+      }
+      await runSystemEventTurn({
         reason: opts?.reason,
-        agentId,
         sessionKey,
-        heartbeat: resolveCronHeartbeatOverride({
-          runtimeConfig,
-          agentId,
-          heartbeat: opts?.heartbeat,
-        }),
-        deps: { ...params.deps, runtime: defaultRuntime },
+        abortSignal: opts?.abortSignal,
       });
     },
     runIsolatedAgentJob: async ({

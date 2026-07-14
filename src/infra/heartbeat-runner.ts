@@ -157,6 +157,7 @@ import {
 } from "./outbound/targets.js";
 import {
   consumeSelectedSystemEventEntries,
+  isSystemEventTurnOwned,
   peekSystemEventEntries,
   resolveSystemEventDeliveryContext,
   type SystemEvent,
@@ -1017,7 +1018,11 @@ async function resolveHeartbeatPreflight(params: {
     params.forcedSessionKey,
   );
   const pendingEventEntries =
-    params.runScope === "commitment-only" ? [] : peekSystemEventEntries(session.sessionKey);
+    params.runScope === "commitment-only"
+      ? []
+      : peekSystemEventEntries(session.sessionKey).filter(
+          (event) => !isSystemEventTurnOwned(event),
+        );
   const dueCommitments = canHeartbeatDeliverCommitments(params.heartbeat)
     ? selectCommitmentDeliveryBatch(
         await listDueCommitmentsForSession({

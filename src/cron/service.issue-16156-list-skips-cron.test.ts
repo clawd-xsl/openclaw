@@ -24,6 +24,7 @@ function createCronFromStorePath(storePath: string) {
     log: noopLogger,
     enqueueSystemEvent: vi.fn(),
     requestHeartbeat: vi.fn(),
+    requestSystemEventTurn: vi.fn(),
     runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
   });
 }

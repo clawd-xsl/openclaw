@@ -60,6 +60,7 @@ describe("CronService store load", () => {
       log: noopLogger,
       enqueueSystemEvent,
       requestHeartbeat,
+      requestSystemEventTurn: vi.fn(),
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     });
 

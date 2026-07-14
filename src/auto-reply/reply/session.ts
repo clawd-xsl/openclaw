@@ -51,6 +51,7 @@ import {
 } from "../../gateway/active-sessions-shutdown-tracker.js";
 import { getSessionBindingService } from "../../infra/outbound/session-binding-service.js";
 import { deliverSessionMaintenanceWarning } from "../../infra/session-maintenance-warning.js";
+import { isSystemEventProvider } from "../../infra/system-event-provider.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import type { PluginHookSessionEndReason } from "../../plugins/hook-types.js";
@@ -274,8 +275,7 @@ function resolveInitSessionStateAttemptContext(
 ): InitSessionStateAttemptContext {
   const { cfg, ctx } = params;
   // Automated system events must not reset sessions or retarget conversation bindings.
-  const isSystemEvent =
-    ctx.Provider === "heartbeat" || ctx.Provider === "cron-event" || ctx.Provider === "exec-event";
+  const isSystemEvent = isSystemEventProvider(ctx.Provider);
   const conversationBindingContext = isSystemEvent
     ? null
     : resolveSessionConversationBindingContext(cfg, ctx);
@@ -824,7 +824,7 @@ async function initSessionStateAttemptLocked(
     sessionKey,
     existing: sessionEntry,
     groupResolution,
-    skipSystemEventOrigin: isSystemEvent,
+    skipSystemEventMetadata: isSystemEvent,
   });
   if (metaPatch) {
     sessionEntry = { ...sessionEntry, ...metaPatch };

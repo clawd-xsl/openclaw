@@ -1,6 +1,7 @@
 /** Resolves the effective reply route from current context and persisted session route. */
 import { normalizeChatType, type ChatType } from "../../channels/chat-type.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
+import { isSystemEventProvider } from "../../infra/system-event-provider.js";
 import { stringifyRouteThreadId } from "../../plugin-sdk/channel-route.js";
 import type { InputProvenance } from "../../sessions/input-provenance.js";
 import { INTERNAL_MESSAGE_CHANNEL, normalizeMessageChannel } from "../../utils/message-channel.js";
@@ -34,10 +35,7 @@ export type EffectiveReplyRoute = {
   inheritedExternalRoute?: boolean;
 };
 
-/** Returns true for synthetic providers that should not define a user channel route. */
-export function isSystemEventProvider(provider?: string): boolean {
-  return provider === "heartbeat" || provider === "cron-event" || provider === "exec-event";
-}
+export { isSystemEventProvider };
 
 function isSessionsSendInterSessionHandoff(inputProvenance: InputProvenance | undefined): boolean {
   return (

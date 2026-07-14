@@ -359,4 +359,49 @@ describe("initSessionState - heartbeat should not trigger session reset", () => 
     expect(result.isNewSession).toBe(false);
     expect(result.sessionId).toBe("exec-session-id-fghij");
   });
+
+  it("should handle system-event provider same as heartbeat (no reset)", async () => {
+    const now = Date.now();
+    const staleTime = now - 10 * 60 * 1000;
+    await saveExistingSession("system-event-session-id", staleTime);
+
+    const result = await initSessionState({
+      ctx: createBaseCtx({ Provider: "system-event", Body: "hook wake" }),
+      cfg: createBaseConfig(),
+      commandAuthorized: true,
+    });
+
+    expect(result.isNewSession).toBe(false);
+    expect(result.sessionId).toBe("system-event-session-id");
+  });
+
+  it("does not replace existing session metadata with a synthetic group route", async () => {
+    const staleTime = Date.now() - 10 * 60 * 1000;
+    await saveExistingSession("system-event-group-route", staleTime, {
+      chatType: "direct",
+      channel: "signal",
+      displayName: "Signal DM",
+    });
+
+    const result = await initSessionState({
+      ctx: createBaseCtx({
+        Provider: "system-event",
+        Surface: "system-event",
+        OriginatingChannel: "signal",
+        OriginatingTo: "group:configured-target",
+        ChatType: "group",
+        Body: "group wake",
+      }),
+      cfg: createBaseConfig(),
+      commandAuthorized: true,
+    });
+
+    expect(result.sessionEntry).toMatchObject({
+      sessionId: "system-event-group-route",
+      chatType: "direct",
+      channel: "signal",
+      displayName: "Signal DM",
+    });
+    expect(result.sessionEntry.groupId).toBeUndefined();
+  });
 });

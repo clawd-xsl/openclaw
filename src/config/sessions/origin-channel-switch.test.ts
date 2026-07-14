@@ -8,11 +8,16 @@ import type { SessionEntry } from "./types.js";
 
 const sessionKey = "agent:user";
 
-function applyOrigin(existing: SessionEntry | undefined, ctx: Partial<MsgContext>): SessionEntry {
+function applyOrigin(
+  existing: SessionEntry | undefined,
+  ctx: Partial<MsgContext>,
+  opts?: { skipSystemEventMetadata?: boolean },
+): SessionEntry {
   const patch = deriveSessionMetaPatch({
     ctx: ctx as MsgContext,
     sessionKey,
     existing,
+    skipSystemEventMetadata: opts?.skipSystemEventMetadata,
   });
   return { ...existing, ...patch } as SessionEntry;
 }
@@ -278,6 +283,26 @@ describe("session origin across a non-delivery turn", () => {
 
     expect(afterExec.origin?.nativeChannelId).toBe("D111SLACK");
     expect(afterExec.origin?.threadId).toBe("1700000000.000100");
+  });
+
+  it("keeps the bound channel identity across a system-event turn", () => {
+    const afterSlack = applyOrigin(undefined, slackTurn);
+    const afterSystemEvent = applyOrigin(
+      afterSlack,
+      {
+        Provider: "system-event",
+        Surface: "system-event",
+        OriginatingChannel: "signal",
+        OriginatingTo: "group:configured-target",
+        ChatType: "group",
+      } satisfies Partial<MsgContext>,
+      { skipSystemEventMetadata: true },
+    );
+
+    expect(afterSystemEvent.origin?.nativeChannelId).toBe("D111SLACK");
+    expect(afterSystemEvent.origin?.nativeDirectUserId).toBe("U0001");
+    expect(afterSystemEvent.origin?.accountId).toBe("slack-team-1");
+    expect(afterSystemEvent.origin?.threadId).toBe("1700000000.000100");
   });
 
   it("still adopts a real channel after an intervening non-delivery turn", () => {

@@ -1,6 +1,7 @@
 /** Cron service dependency, event, state, and public result types. */
+import type { ChatType } from "../../channels/chat-type.js";
 import type { CronConfig } from "../../config/types.cron.js";
-import type { HeartbeatRunResult, HeartbeatWakeRequest } from "../../infra/heartbeat-wake.js";
+import type { HeartbeatWakeRequest } from "../../infra/heartbeat-wake.js";
 import type { DeliveryContext } from "../../utils/delivery-context.types.js";
 import type { QuarantinedCronConfigJob } from "../store.js";
 import type {
@@ -59,6 +60,12 @@ export type CronSystemEventEnqueueResult =
       remove?: () => boolean | void;
     };
 
+export type CronOriginDeliveryRoute = {
+  deliveryContext: DeliveryContext;
+  chatType?: ChatType;
+  senderId?: string;
+};
+
 /** Dependency injection surface for the cron service runtime. */
 export type CronServiceDeps = {
   nowMs?: () => number;
@@ -97,37 +104,27 @@ export type CronServiceDeps = {
       sessionKey?: string;
       contextKey?: string;
       deliveryContext?: DeliveryContext;
+      chatType?: ChatType;
+      senderId?: string;
+      consumer?: "system-event-turn";
     },
   ) => CronSystemEventEnqueueResult;
   /**
-   * Resolve the channel-correct origin delivery context for a session key (the
-   * value the channel's send expects, e.g. Telegram message_thread_id), sourced
-   * from the session store entry the wake targets. Used to carry the bound
-   * thread/topic onto manual wake system events. Optional: when unset, wakes
-   * route as before. Returning `undefined` is also a no-op (default routing).
+   * Resolve the channel-correct origin delivery route for a session key, including
+   * the persisted conversation shape needed by delivery policy. The session store
+   * entry is authoritative for provider thread/topic ids and chat type.
    */
-  resolveOriginDeliveryContext?: (params: {
+  resolveOriginDeliveryRoute?: (params: {
     sessionKey?: string;
     agentId?: string;
-  }) => DeliveryContext | undefined;
+  }) => CronOriginDeliveryRoute | undefined;
   requestHeartbeat: (opts: HeartbeatWakeRequest) => void;
-  runHeartbeatOnce?: (opts?: {
-    source?: HeartbeatWakeRequest["source"];
-    intent?: HeartbeatWakeRequest["intent"];
+  requestSystemEventTurn: (opts: {
     reason?: string;
     agentId?: string;
-    sessionKey?: string;
-    /** Optional heartbeat config override (e.g. target: "last" for cron-triggered heartbeats). */
-    heartbeat?: HeartbeatWakeRequest["heartbeat"];
-  }) => Promise<HeartbeatRunResult>;
-  /**
-   * WakeMode=now: max time to wait for runHeartbeatOnce to stop returning
-   * { status:"skipped", reason:"requests-in-flight" } before falling back to
-   * requestHeartbeat.
-   */
-  wakeNowHeartbeatBusyMaxWaitMs?: number;
-  /** WakeMode=now: delay between runHeartbeatOnce retries while busy. */
-  wakeNowHeartbeatBusyRetryDelayMs?: number;
+    sessionKey: string;
+    abortSignal?: AbortSignal;
+  }) => Promise<void>;
   runIsolatedAgentJob: (params: {
     job: CronJob;
     message: string;

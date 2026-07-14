@@ -111,6 +111,7 @@ describe("CronService read ops while job is running", () => {
       log: noopLogger,
       enqueueSystemEvent,
       requestHeartbeat,
+      requestSystemEventTurn: vi.fn(),
       runIsolatedAgentJob: isolatedRun.runIsolatedAgentJob,
       onEvent: (evt) => {
         if (evt.action === "finished" && evt.status === "ok") {
@@ -188,6 +189,7 @@ describe("CronService read ops while job is running", () => {
       log: noopLogger,
       enqueueSystemEvent,
       requestHeartbeat,
+      requestSystemEventTurn: vi.fn(),
       runIsolatedAgentJob: isolatedRun.runIsolatedAgentJob,
     });
 
@@ -264,6 +266,7 @@ describe("CronService read ops while job is running", () => {
       nowMs: () => nowMs,
       enqueueSystemEvent,
       requestHeartbeat,
+      requestSystemEventTurn: vi.fn(),
       runIsolatedAgentJob: isolatedRun.runIsolatedAgentJob,
       startupDeferredMissedAgentJobDelayMs: 120_000,
     });

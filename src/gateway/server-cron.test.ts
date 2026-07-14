@@ -15,7 +15,7 @@ const {
   enqueueSystemEventMock,
   consumeSelectedSystemEventEntriesMock,
   requestHeartbeatMock,
-  runHeartbeatOnceMock,
+  requestSystemEventTurnMock,
   loadConfigMock,
   fetchWithSsrFGuardMock,
   sendCronAnnouncePayloadStrictMock,
@@ -31,9 +31,7 @@ const {
   enqueueSystemEventMock: vi.fn(),
   consumeSelectedSystemEventEntriesMock: vi.fn((_sessionKey, entries) => entries ?? []),
   requestHeartbeatMock: vi.fn(),
-  runHeartbeatOnceMock: vi.fn<
-    (...args: unknown[]) => Promise<{ status: "ran"; durationMs: number }>
-  >(async () => ({ status: "ran", durationMs: 1 })),
+  requestSystemEventTurnMock: vi.fn(),
   loadConfigMock: vi.fn(),
   fetchWithSsrFGuardMock: vi.fn(),
   sendCronAnnouncePayloadStrictMock: vi.fn(async () => {}),
@@ -108,8 +106,8 @@ function requestHeartbeat(...args: unknown[]) {
   return requestHeartbeatMock(...args);
 }
 
-function runHeartbeatOnce(...args: unknown[]) {
-  return runHeartbeatOnceMock(...args);
+function runSystemEventTurn(...args: unknown[]) {
+  return requestSystemEventTurnMock(...args);
 }
 
 vi.mock("../infra/system-events.js", () => ({
@@ -128,8 +126,8 @@ vi.mock("../infra/heartbeat-wake.js", async () => {
   };
 });
 
-vi.mock("../infra/heartbeat-runner.js", () => ({
-  runHeartbeatOnce,
+vi.mock("../infra/system-event-turn.js", () => ({
+  runSystemEventTurn,
 }));
 
 vi.mock("../infra/restart-coordinator.js", async () => {
@@ -289,7 +287,7 @@ describe("buildGatewayCronService", () => {
     enqueueSystemEventMock.mockClear();
     consumeSelectedSystemEventEntriesMock.mockClear();
     requestHeartbeatMock.mockClear();
-    runHeartbeatOnceMock.mockClear();
+    requestSystemEventTurnMock.mockClear();
     loadConfigMock.mockClear();
     fetchWithSsrFGuardMock.mockClear();
     sendCronAnnouncePayloadStrictMock.mockClear();
@@ -828,7 +826,7 @@ describe("buildGatewayCronService", () => {
     }
   });
 
-  it("routes global-scope immediate main cron jobs through the global heartbeat lane", async () => {
+  it("routes global-scope immediate main cron jobs through a system event turn", async () => {
     const cfg = {
       ...createCronConfig("server-cron-global-now"),
       session: { mainKey: "main", scope: "global" },
@@ -857,17 +855,12 @@ describe("buildGatewayCronService", () => {
         "options",
       );
       expect(eventOptions.sessionKey).toBe("global");
-      const heartbeatRun = requireRecord(
-        callArg(runHeartbeatOnceMock, 0, 0, "heartbeat run options"),
-        "heartbeat run options",
+      const eventTurn = requireRecord(
+        callArg(requestSystemEventTurnMock, 0, 0, "system event turn options"),
+        "system event turn options",
       );
-      expect(heartbeatRun.agentId).toBe("main");
-      expect(heartbeatRun.sessionKey).toBe("global");
-      expect(heartbeatRun.heartbeat).toEqual({
-        target: "last",
-        to: undefined,
-        accountId: undefined,
-      });
+      expect(eventTurn.reason).toBe(`cron:${job.id}`);
+      expect(eventTurn.sessionKey).toBe("global");
     } finally {
       state.cron.stop();
     }
@@ -915,69 +908,6 @@ describe("buildGatewayCronService", () => {
         agentId: "main",
         sessionKey: "agent:main:discord:channel:ops",
         heartbeat: { target: "last", to: undefined, accountId: undefined },
-      });
-    } finally {
-      state.cron.stop();
-    }
-  });
-
-  it("does not inherit explicit heartbeat destinations for direct target-last wakes", async () => {
-    const cfg = {
-      ...createCronConfig("server-cron-direct-heartbeat-route"),
-      agents: {
-        defaults: {
-          heartbeat: {
-            every: "1h",
-            prompt: "Default heartbeat prompt",
-            target: "none",
-            directPolicy: "block",
-            to: "telegram:dm",
-            accountId: "default",
-          },
-        },
-      },
-    } as OpenClawConfig;
-    loadConfigMock.mockReturnValue(cfg);
-
-    const state = buildGatewayCronService({
-      cfg,
-      deps: {} as CliDeps,
-      broadcast: () => {},
-    });
-    try {
-      const cronDeps = (
-        state.cron as unknown as {
-          state?: {
-            deps?: {
-              runHeartbeatOnce?: (opts?: {
-                agentId?: string;
-                sessionKey?: string | null;
-                reason?: string;
-                heartbeat?: { target?: string };
-              }) => Promise<unknown>;
-            };
-          };
-        }
-      ).state?.deps;
-
-      await cronDeps?.runHeartbeatOnce?.({
-        reason: "cron:test",
-        sessionKey: "telegram:group:123:topic:456",
-        heartbeat: { target: "last" },
-      });
-
-      const call = requireRecord(
-        callArg(runHeartbeatOnceMock, 0, 0, "heartbeat run options"),
-        "heartbeat run options",
-      );
-      expect(call.sessionKey).toBe("agent:main:telegram:group:123:topic:456");
-      expect(call.heartbeat).toEqual({
-        every: "1h",
-        prompt: "Default heartbeat prompt",
-        target: "last",
-        directPolicy: "block",
-        to: undefined,
-        accountId: undefined,
       });
     } finally {
       state.cron.stop();
@@ -1568,108 +1498,6 @@ describe("buildGatewayCronService", () => {
         "yinze agent entry",
       );
       expect(yinze.workspace).toBe(path.join(tmpDir, "workspace-yinze"));
-    } finally {
-      state.cron.stop();
-    }
-  });
-
-  it("preserves agent heartbeat overrides when runtime reload config is stale", async () => {
-    const tmpDir = path.join(os.tmpdir(), `server-cron-agent-heartbeat-${Date.now()}`);
-    const startupCfg = {
-      session: {
-        mainKey: "main",
-      },
-      cron: {
-        store: path.join(tmpDir, "cron.json"),
-      },
-      agents: {
-        defaults: {
-          workspace: path.join(tmpDir, "workspace"),
-          heartbeat: {
-            target: "main",
-            deliveryFormat: "text",
-          },
-        },
-        list: [
-          { id: "main", default: true },
-          {
-            id: "yinze",
-            workspace: path.join(tmpDir, "workspace-yinze"),
-            heartbeat: {
-              target: "last",
-              deliveryFormat: "markdown",
-            },
-          },
-        ],
-      },
-    } as OpenClawConfig;
-    const reloadedCfg = {
-      session: {
-        mainKey: "main",
-      },
-      cron: {
-        store: path.join(tmpDir, "cron.json"),
-      },
-      agents: {
-        defaults: {
-          workspace: path.join(tmpDir, "workspace"),
-          heartbeat: {
-            target: "main",
-            deliveryFormat: "text",
-          },
-        },
-        list: [{ id: "main", default: true }],
-      },
-    } as OpenClawConfig;
-    loadConfigMock.mockReturnValue(reloadedCfg);
-
-    const state = buildGatewayCronService({
-      cfg: startupCfg,
-      deps: {} as CliDeps,
-      broadcast: () => {},
-    });
-    try {
-      const cronDeps = (
-        state.cron as unknown as {
-          state?: {
-            deps?: {
-              runHeartbeatOnce?: (opts?: {
-                agentId?: string;
-                sessionKey?: string | null;
-                heartbeat?: Record<string, unknown>;
-              }) => Promise<unknown>;
-            };
-          };
-        }
-      ).state?.deps;
-      await cronDeps?.runHeartbeatOnce?.({
-        agentId: "yinze",
-        sessionKey: "agent:yinze:main",
-        heartbeat: {},
-      });
-
-      const options = requireRecord(
-        callArg(runHeartbeatOnceMock, 0, 0, "heartbeat options"),
-        "heartbeat options",
-      );
-      expect(options.agentId).toBe("yinze");
-      const cfg = requireRecord(options.cfg, "heartbeat config");
-      const agents = requireRecord(cfg.agents, "heartbeat agents");
-      const list = requireArray(agents.list, "heartbeat agent list");
-      const yinze = requireRecord(
-        list.find((agent) => requireRecord(agent, "agent entry").id === "yinze"),
-        "yinze agent entry",
-      );
-      const agentHeartbeat = requireRecord(yinze.heartbeat, "agent heartbeat");
-      expect(agentHeartbeat.target).toBe("last");
-      expect(agentHeartbeat.deliveryFormat).toBe("markdown");
-      const heartbeat = requireRecord(options.heartbeat, "heartbeat override");
-      expect(heartbeat).toEqual({
-        target: "last",
-        deliveryFormat: "markdown",
-        to: undefined,
-        accountId: undefined,
-      });
     } finally {
       state.cron.stop();
     }

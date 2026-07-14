@@ -67,6 +67,7 @@ import { isDiagnosticsEnabled } from "../../infra/diagnostic-events.js";
 import { measureDiagnosticsTimelineSpan } from "../../infra/diagnostics-timeline.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { getSessionBindingService } from "../../infra/outbound/session-binding-service.js";
+import { isSystemEventProvider } from "../../infra/system-event-provider.js";
 import type { StuckSessionRecoveryOutcome } from "../../logging/diagnostic-session-recovery.js";
 import {
   logMessageDispatchCompleted,
@@ -178,6 +179,8 @@ import {
 import { stageRemoteInboundMediaIfNeeded } from "./stage-remote-inbound-media.js";
 import { resolveStoredModelOverride } from "./stored-model-override.js";
 import { resolveRunTypingPolicy } from "./typing-policy.js";
+
+class SystemEventReplyDeliveryError extends Error {}
 
 type SourceReplyTranscriptMirror = NonNullable<
   NonNullable<ReturnType<typeof getReplyPayloadMetadata>>["sourceReplyTranscriptMirror"]
@@ -1764,7 +1767,6 @@ export async function dispatchReplyFromConfig(
     const normalizeReplyMediaPayloadPaths = await getNormalizeReplyMediaPaths();
     return await normalizeReplyMediaPayloadPaths(payload);
   };
-
   const routeReplyToOriginating = async (
     payload: ReplyPayload,
     options?: { abortSignal?: AbortSignal; mirror?: boolean; kind?: ReplyDispatchKind },
@@ -1780,7 +1782,7 @@ export async function dispatchReplyFromConfig(
       ctx.CommandSource === "native"
         ? (resolveCommandTurnTargetSessionKey(ctx) ?? ctx.SessionKey)
         : ctx.SessionKey;
-    return await routeReplyRuntime.routeReply({
+    const result = await routeReplyRuntime.routeReply({
       payload,
       channel: routeReplyChannel,
       to: routeReplyTo,
@@ -1802,6 +1804,10 @@ export async function dispatchReplyFromConfig(
       replyKind: options?.kind ?? "final",
       runId: params.replyOptions?.runId,
     });
+    if (!result.ok && isSystemEventProvider(ctx.Provider)) {
+      throw new SystemEventReplyDeliveryError(result.error ?? "system event reply delivery failed");
+    }
+    return result;
   };
 
   const isRoutedReplyDelivered = (result: { ok: boolean; suppressed?: boolean }) =>
@@ -3635,7 +3641,10 @@ export async function dispatchReplyFromConfig(
             }
           }
         } catch (err) {
-          if (isDispatchReplyOperationAbortedError(err)) {
+          if (
+            isDispatchReplyOperationAbortedError(err) ||
+            err instanceof SystemEventReplyDeliveryError
+          ) {
             throw err;
           }
           logVerbose(

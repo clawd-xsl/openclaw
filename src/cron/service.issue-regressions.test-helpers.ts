@@ -43,6 +43,7 @@ export async function startCronForStore(params: {
     params.enqueueSystemEvent ?? (vi.fn() as unknown as CronServiceOptions["enqueueSystemEvent"]);
   const requestHeartbeat =
     params.requestHeartbeat ?? (vi.fn() as unknown as CronServiceOptions["requestHeartbeat"]);
+  const requestSystemEventTurn = vi.fn() as unknown as CronServiceOptions["requestSystemEventTurn"];
   const runIsolatedAgentJob = params.runIsolatedAgentJob ?? createDefaultIsolatedRunner();
 
   const cron = new CronService({
@@ -51,6 +52,7 @@ export async function startCronForStore(params: {
     log: noopLogger,
     enqueueSystemEvent,
     requestHeartbeat,
+    requestSystemEventTurn,
     runIsolatedAgentJob,
     ...(params.onEvent ? { onEvent: params.onEvent } : {}),
   });

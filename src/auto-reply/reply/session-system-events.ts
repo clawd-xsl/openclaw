@@ -14,6 +14,7 @@ import {
 import { isExecCompletionEvent } from "../../infra/heartbeat-events-filter.js";
 import {
   consumeSelectedSystemEventEntries,
+  isSystemEventTurnOwned,
   peekSystemEventEntries,
   type SystemEvent,
 } from "../../infra/system-events.js";
@@ -30,11 +31,13 @@ function selectGenericSystemEvents(
   // (buildExecEventPrompt / buildCronEventPrompt). During heartbeat runs, leave
   // cron entries queued for that owner; ordinary turns still drain them as the
   // fallback when a heartbeat was skipped before it could consume the event.
-  return events.filter(
-    (event) =>
+  return events.filter((event) => {
+    return (
       !isExecCompletionEvent(event.text) &&
-      !(options?.suppressHeartbeatOwnedEvents === true && isCronContextSystemEvent(event)),
-  );
+      !isSystemEventTurnOwned(event) &&
+      !(options?.suppressHeartbeatOwnedEvents === true && isCronContextSystemEvent(event))
+    );
+  });
 }
 
 function compactSystemEvent(line: string): string | null {

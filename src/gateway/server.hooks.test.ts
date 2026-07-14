@@ -18,6 +18,11 @@ import {
   waitForSystemEvent,
 } from "./test-helpers.js";
 
+const requestSystemEventTurnMock = vi.hoisted(() => vi.fn());
+vi.mock("../infra/system-event-turn.js", () => ({
+  requestSystemEventTurn: requestSystemEventTurnMock,
+}));
+
 installGatewayTestHooks({ scope: "suite" });
 
 await import("./server.js");
@@ -345,7 +350,7 @@ describe("gateway server hooks", () => {
     });
   });
 
-  test("hook announcement policy keeps no-deliver success silent without hiding failures", async () => {
+  test("hook announcement policy keeps all no-deliver results silent", async () => {
     testState.hooksConfig = {
       enabled: true,
       token: HOOK_TOKEN,
@@ -397,9 +402,8 @@ describe("gateway server hooks", () => {
         deliver: false,
       });
       expect(directFailure.status).toBe(200);
-      const failureEvents = await waitForSystemEventTexts(resolveMainKey());
-      expect(failureEvents).toContain("Hook Email (error): boom");
-      drainSystemEvents(resolveMainKey());
+      await waitForCronIsolatedRuns(3);
+      expect(peekSystemEventEntries(resolveMainKey())).toStrictEqual([]);
     });
   });
 
@@ -434,6 +438,8 @@ describe("gateway server hooks", () => {
           match: { path: "mapped-wake" },
           action: "wake",
           textTemplate: "Mapped wake: {{payload.subject}}",
+          channel: "signal",
+          to: "signal-target",
         },
       ],
     };
@@ -445,6 +451,7 @@ describe("gateway server hooks", () => {
       const directEvents = peekSystemEventEntries(resolveMainKey());
       expect(directEvents).toHaveLength(1);
       expect(directEvents[0]?.text).toBe("Direct wake");
+      expect(directEvents[0]?.consumer).toBe("system-event-turn");
       drainSystemEvents(resolveMainKey());
 
       const mapped = await postHook(port, "/hooks/mapped-wake", { subject: "Email" });
@@ -453,6 +460,15 @@ describe("gateway server hooks", () => {
       const mappedEvents = peekSystemEventEntries(resolveMainKey());
       expect(mappedEvents).toHaveLength(1);
       expect(mappedEvents[0]?.text).toBe("Mapped wake: Email");
+      expect(mappedEvents[0]?.deliveryContext).toEqual({
+        channel: "signal",
+        to: "signal-target",
+      });
+      expect(mappedEvents[0]?.consumer).toBe("system-event-turn");
+      expect(requestSystemEventTurnMock).toHaveBeenCalledWith({
+        sessionKey: resolveMainKey(),
+        reason: "hook:wake",
+      });
       drainSystemEvents(resolveMainKey());
     });
   });

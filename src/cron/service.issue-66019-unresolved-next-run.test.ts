@@ -36,6 +36,7 @@ function createIssue66019State(params: {
     nowMs: params.nowMs,
     enqueueSystemEvent: vi.fn(),
     requestHeartbeat: vi.fn(),
+    requestSystemEventTurn: vi.fn(),
     runIsolatedAgentJob: params.runIsolatedAgentJob,
   });
 }

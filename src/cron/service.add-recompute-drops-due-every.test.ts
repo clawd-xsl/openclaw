@@ -25,6 +25,7 @@ describe("add() must not drop a due every-job's pending run", () => {
       log: noopLogger,
       enqueueSystemEvent,
       requestHeartbeat,
+      requestSystemEventTurn: vi.fn(),
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
       onEvent: finished.onEvent,
     });

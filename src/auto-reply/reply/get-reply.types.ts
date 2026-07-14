@@ -15,6 +15,8 @@ export type InternalReplySessionOptions = {
   requestedSessionId?: string;
   resumeRequestedSession?: boolean;
   sessionPromptSourceReplyDeliveryMode?: GetReplyOptions["sourceReplyDeliveryMode"];
+  /** Dedicated event turns carry their claimed batch in the prompt and must not drain other owners. */
+  suppressSystemEventDrain?: boolean;
 };
 
 export type InternalGetReplyOptions = GetReplyOptions &

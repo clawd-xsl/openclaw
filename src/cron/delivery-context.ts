@@ -1,4 +1,5 @@
 /** Converts live or stored session routing into cron delivery config. */
+import type { ChatType } from "../channels/chat-type.js";
 import { extractDeliveryInfo } from "../config/sessions/delivery-info.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
@@ -34,16 +35,33 @@ export function resolveCronStoredDeliveryContext(params: {
   cfg: OpenClawConfig;
   sessionKey?: string;
 }): DeliveryContext | undefined {
+  return resolveCronStoredDeliveryRoute(params)?.deliveryContext;
+}
+
+/** Recovers delivery and conversation shape from a stored cron origin session. */
+export function resolveCronStoredDeliveryRoute(params: {
+  cfg: OpenClawConfig;
+  sessionKey?: string;
+}): { deliveryContext: DeliveryContext; chatType?: ChatType; senderId?: string } | undefined {
   const sessionKey = params.sessionKey?.trim();
   if (!sessionKey) {
     return undefined;
   }
-  const { deliveryContext, threadId } = extractDeliveryInfo(sessionKey, { cfg: params.cfg });
-  if (deliveryContext && threadId) {
-    // Parsed session-key thread ids are canonical; replace any stale thread value in stored context.
-    return { ...deliveryContext, threadId };
+  const { deliveryContext, threadId, chatType, senderId } = extractDeliveryInfo(sessionKey, {
+    cfg: params.cfg,
+  });
+  if (!deliveryContext) {
+    return undefined;
   }
-  return deliveryContext;
+  const resolvedDeliveryContext = threadId
+    ? // Parsed session-key thread ids are canonical; replace any stale thread value in stored context.
+      { ...deliveryContext, threadId }
+    : deliveryContext;
+  return {
+    deliveryContext: resolvedDeliveryContext,
+    ...(chatType ? { chatType } : {}),
+    ...(senderId ? { senderId } : {}),
+  };
 }
 
 /** Resolves initial cron delivery, preferring the live context before falling back to session storage. */

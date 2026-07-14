@@ -129,6 +129,98 @@ describe("extractDeliveryInfo", () => {
     });
   });
 
+  it("returns the persisted chat type with the selected delivery entry", () => {
+    const sessionKey = "agent:main:signal:group:family";
+    storeState.store[sessionKey] = {
+      ...buildEntry({ channel: "signal", to: "group:family" }),
+      chatType: "group",
+    };
+
+    expect(extractDeliveryInfo(sessionKey)).toEqual({
+      deliveryContext: { channel: "signal", to: "group:family" },
+      threadId: undefined,
+      chatType: "group",
+    });
+  });
+
+  it("returns the persisted sender separately from the delivery target", () => {
+    const sessionKey = "agent:main:slack:channel:C1";
+    storeState.store[sessionKey] = {
+      ...buildEntry({ channel: "slack", to: "channel:C1" }),
+      origin: { provider: "slack", from: "slack:U123", to: "channel:C1" },
+    };
+
+    expect(extractDeliveryInfo(sessionKey)).toEqual({
+      deliveryContext: { channel: "slack", to: "channel:C1" },
+      threadId: undefined,
+      senderId: "slack:U123",
+    });
+  });
+
+  it("omits a sender whose persisted origin does not own the delivery domain", () => {
+    const sessionKey = "agent:main:main";
+    storeState.store[sessionKey] = {
+      ...buildEntry({ channel: "signal", to: "+15551234567", accountId: "primary" }),
+      origin: {
+        provider: "webchat",
+        from: "webchat:owner",
+        accountId: "browser",
+      },
+    };
+
+    expect(extractDeliveryInfo(sessionKey)).toEqual({
+      deliveryContext: {
+        channel: "signal",
+        to: "+15551234567",
+        accountId: "primary",
+      },
+      threadId: undefined,
+    });
+  });
+
+  it.each([
+    {
+      name: "target",
+      sessionKey: "agent:main:slack:channel:C2",
+      delivery: { channel: "slack", to: "channel:C2", accountId: "work" },
+      origin: {
+        provider: "slack",
+        from: "slack:U123",
+        to: "channel:C1",
+        accountId: "work",
+      },
+      threadId: undefined,
+    },
+    {
+      name: "canonical thread",
+      sessionKey: "agent:main:slack:channel:C1:thread:thread-2",
+      delivery: {
+        channel: "slack",
+        to: "channel:C1",
+        accountId: "work",
+        threadId: "thread-1",
+      },
+      origin: {
+        provider: "slack",
+        from: "slack:U123",
+        to: "channel:C1",
+        accountId: "work",
+        threadId: "thread-1",
+      },
+      threadId: "thread-2",
+    },
+  ])("omits a sender whose origin has a different $name", (testCase) => {
+    storeState.store[testCase.sessionKey] = {
+      ...buildEntry(testCase.delivery),
+      origin: testCase.origin,
+    };
+
+    expect(extractDeliveryInfo(testCase.sessionKey)).toEqual({
+      deliveryContext: testCase.delivery,
+      threadId: testCase.threadId,
+    });
+  });
+
   it("does not build the normalized index when an exact routable key is present", () => {
     const sessionKey = "agent:main:webchat:dm:user-123";
     storeState.store = new Proxy(

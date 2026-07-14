@@ -37,6 +37,7 @@ function createFailureAlertCron(params: {
     log: noopLogger,
     enqueueSystemEvent: vi.fn(),
     requestHeartbeat: vi.fn(),
+    requestSystemEventTurn: vi.fn(),
     runIsolatedAgentJob: params.runIsolatedAgentJob,
     sendCronFailureAlert: params.sendCronFailureAlert,
   });

@@ -77,6 +77,7 @@ describe("remove() must not drop a due every-job's pending run", () => {
       log: noopLogger,
       enqueueSystemEvent: vi.fn(),
       requestHeartbeat: vi.fn(),
+      requestSystemEventTurn: vi.fn(),
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     });
 

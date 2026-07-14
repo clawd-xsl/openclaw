@@ -87,16 +87,16 @@ This fires ~5–6 times per month instead of 0–1 times per month. OpenClaw use
 
 ## Execution styles
 
-| Style           | `--session` value   | Runs in                  | Best for                        |
-| --------------- | ------------------- | ------------------------ | ------------------------------- |
-| Main session    | `main`              | Dedicated cron wake lane | Reminders, system events        |
-| Isolated        | `isolated`          | Dedicated `cron:<jobId>` | Reports, background chores      |
-| Current session | `current`           | Bound at creation time   | Context-aware recurring work    |
-| Custom session  | `session:custom-id` | Persistent named session | Workflows that build on history |
+| Style           | `--session` value   | Runs in                   | Best for                        |
+| --------------- | ------------------- | ------------------------- | ------------------------------- |
+| Main session    | `main`              | Dedicated cron event turn | Reminders, system events        |
+| Isolated        | `isolated`          | Dedicated `cron:<jobId>`  | Reports, background chores      |
+| Current session | `current`           | Bound at creation time    | Context-aware recurring work    |
+| Custom session  | `session:custom-id` | Persistent named session  | Workflows that build on history |
 
 <AccordionGroup>
   <Accordion title="Main session vs isolated vs custom">
-    **Main session** jobs enqueue a system event into a cron-owned run lane and optionally wake the heartbeat (`--wake now` or `--wake next-heartbeat`). They can use the target main session's last delivery context for replies, but they do not append routine cron turns to the human chat lane and do not extend daily/idle reset freshness for the target session. **Isolated** jobs run a dedicated agent turn with a fresh session. **Custom sessions** (`session:xxx`) persist context across runs, enabling workflows like daily standups that build on previous summaries.
+    **Main session** jobs enqueue a system event into a cron-owned run lane. `--wake now` starts a non-heartbeat system-event turn immediately, even when periodic heartbeat is disabled with `heartbeat.every: "0s"`. `--wake next-heartbeat` leaves the event queued for the next scheduled heartbeat instead. Event turns can use the target main session's last delivery context for replies, but they do not append routine cron turns to the human chat lane and do not extend daily/idle reset freshness for the target session. **Isolated** jobs run a dedicated agent turn with a fresh session. **Custom sessions** (`session:xxx`) persist context across runs, enabling workflows like daily standups that build on previous summaries.
 
     Main-session cron events are self-contained system-event reminders. They do
     not automatically include the default heartbeat prompt's "Read
@@ -339,6 +339,10 @@ Query-string tokens are rejected.
       `now` or `next-heartbeat`.
     </ParamField>
 
+    `now` starts a system-event turn independently of the periodic heartbeat
+    schedule. `next-heartbeat` only queues the event, so a disabled heartbeat
+    will not process it until another turn drains the queue.
+
   </Accordion>
   <Accordion title="POST /hooks/agent">
     Run an isolated agent turn:
@@ -355,6 +359,15 @@ Query-string tokens are rejected.
   </Accordion>
   <Accordion title="Mapped hooks (POST /hooks/<name>)">
     Custom hook names are resolved via `hooks.mappings` in config. Mappings can transform arbitrary payloads into `wake` or `agent` actions with templates or code transforms.
+
+    A `wake` mapping with `wakeMode: "now"` can set both `channel` and `to` to
+    carry an explicit reply route into its system-event turn. Without that pair,
+    the turn falls back to the target main session's stored delivery context.
+    `next-heartbeat` remains heartbeat-owned and uses the target session's route.
+    For `agent` mappings, `deliver: false` is strict: neither isolated results nor
+    errors are sent or handed off to the main session; failures remain visible in
+    gateway logs.
+
   </Accordion>
 </AccordionGroup>
 
@@ -560,6 +573,7 @@ openclaw doctor
     - Channel auth errors (`unauthorized`, `Forbidden`) mean delivery was blocked by credentials.
     - If the isolated run returns only the silent token (`NO_REPLY` / `no_reply`), OpenClaw suppresses direct outbound delivery and also suppresses the fallback queued summary path, so nothing is posted back to chat.
     - If the agent should message the user itself, check that the job has a usable route (`channel: "last"` with a previous chat, or an explicit channel/target).
+    - For main-session jobs, `wakeMode: "now"` does not require heartbeat to be enabled. If the event turn ran but produced no outbound message, verify the target session has a stored delivery route or have the event use the `message` tool with an explicit target.
 
   </Accordion>
   <Accordion title="Cron or heartbeat appears to prevent /new-style rollover">

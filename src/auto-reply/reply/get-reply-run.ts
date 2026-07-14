@@ -259,7 +259,15 @@ function resolvePersistedPromptSurface(entry?: SessionEntry): string | undefined
 export function resolvePromptSessionContextForSystemEvent(params: {
   sessionCtx: TemplateContext;
   sessionEntry?: SessionEntry;
-  ctx?: Pick<MsgContext, "Provider">;
+  ctx?: Pick<
+    MsgContext,
+    | "Provider"
+    | "OriginatingChannel"
+    | "OriginatingTo"
+    | "ExplicitDeliverRoute"
+    | "AccountId"
+    | "MessageThreadId"
+  >;
   isHeartbeat?: boolean;
 }): TemplateContext {
   const { sessionCtx, sessionEntry } = params;
@@ -271,20 +279,57 @@ export function resolvePromptSessionContextForSystemEvent(params: {
     return sessionCtx;
   }
 
-  const persistedChatType =
-    normalizeChatType(sessionEntry.chatType) ?? normalizeChatType(sessionEntry.origin?.chatType);
-  const liveChatType = normalizeChatType(sessionCtx.ChatType);
-  const effectiveChatType = liveChatType ?? persistedChatType;
   const persistedProvider = resolvePersistedPromptProvider(sessionEntry);
   const persistedSurface = resolvePersistedPromptSurface(sessionEntry);
+  const persistedAccountId = normalizeOptionalString(
+    sessionEntry.lastAccountId ??
+      sessionEntry.deliveryContext?.accountId ??
+      sessionEntry.origin?.accountId,
+  );
+  const persistedTarget = normalizeOptionalString(
+    sessionEntry.lastTo ?? sessionEntry.deliveryContext?.to ?? sessionEntry.origin?.to,
+  );
+  const persistedThreadId =
+    sessionEntry.lastThreadId ??
+    sessionEntry.deliveryContext?.threadId ??
+    sessionEntry.origin?.threadId;
+  const hasExplicitRoute =
+    sessionCtx.ExplicitDeliverRoute === true || params.ctx?.ExplicitDeliverRoute === true;
+  const explicitRouteChannel = hasExplicitRoute
+    ? normalizePromptRouteChannel(sessionCtx.OriginatingChannel ?? params.ctx?.OriginatingChannel)
+    : undefined;
+  const explicitRouteAccountId = hasExplicitRoute
+    ? normalizeOptionalString(sessionCtx.AccountId ?? params.ctx?.AccountId)
+    : undefined;
+  const explicitRouteTarget = hasExplicitRoute
+    ? normalizeOptionalString(sessionCtx.OriginatingTo ?? params.ctx?.OriginatingTo)
+    : undefined;
+  const explicitRouteThreadId = hasExplicitRoute
+    ? (sessionCtx.MessageThreadId ?? params.ctx?.MessageThreadId)
+    : undefined;
+  const canInheritPersistedMetadata =
+    !hasExplicitRoute ||
+    (explicitRouteChannel !== undefined &&
+      explicitRouteChannel === persistedProvider &&
+      (explicitRouteAccountId ?? "") === (persistedAccountId ?? "") &&
+      explicitRouteTarget !== undefined &&
+      explicitRouteTarget === persistedTarget &&
+      String(explicitRouteThreadId ?? "") === String(persistedThreadId ?? ""));
+  const persistedChatType = canInheritPersistedMetadata
+    ? (normalizeChatType(sessionEntry.chatType) ?? normalizeChatType(sessionEntry.origin?.chatType))
+    : undefined;
+  const liveChatType = normalizeChatType(sessionCtx.ChatType);
+  const effectiveChatType = liveChatType ?? persistedChatType;
   const liveProvider = normalizeOptionalString(sessionCtx.Provider);
   const liveSurface = normalizeOptionalString(sessionCtx.Surface);
-  const nextProvider =
-    liveProvider && !isSystemEventProvider(liveProvider)
+  const nextProvider = explicitRouteChannel
+    ? explicitRouteChannel
+    : liveProvider && !isSystemEventProvider(liveProvider)
       ? liveProvider
       : (persistedProvider ?? liveProvider);
-  const nextSurface =
-    liveSurface && !isSystemEventProvider(liveSurface)
+  const nextSurface = explicitRouteChannel
+    ? explicitRouteChannel
+    : liveSurface && !isSystemEventProvider(liveSurface)
       ? liveSurface
       : (persistedSurface ?? liveSurface);
 
@@ -311,32 +356,21 @@ export function resolvePromptSessionContextForSystemEvent(params: {
   setIfChanged("Provider", nextProvider);
   setIfChanged("Surface", nextSurface);
   setIfMissing("ChatType", persistedChatType);
-  if (effectiveChatType === "group" || effectiveChatType === "channel") {
+  if (
+    canInheritPersistedMetadata &&
+    (effectiveChatType === "group" || effectiveChatType === "channel")
+  ) {
     setIfMissing("GroupSubject", normalizeOptionalString(sessionEntry.subject));
     setIfMissing("GroupChannel", normalizeOptionalString(sessionEntry.groupChannel));
     setIfMissing("GroupSpace", normalizeOptionalString(sessionEntry.space));
   }
-  setIfMissing("OriginatingChannel", persistedProvider);
+  setIfMissing("OriginatingChannel", canInheritPersistedMetadata ? persistedProvider : undefined);
   setIfMissing(
     "OriginatingTo",
-    normalizeOptionalString(
-      sessionEntry.lastTo ?? sessionEntry.deliveryContext?.to ?? sessionEntry.origin?.to,
-    ),
+    canInheritPersistedMetadata ? normalizeOptionalString(persistedTarget) : undefined,
   );
-  setIfMissing(
-    "AccountId",
-    normalizeOptionalString(
-      sessionEntry.lastAccountId ??
-        sessionEntry.deliveryContext?.accountId ??
-        sessionEntry.origin?.accountId,
-    ),
-  );
-  setIfMissing(
-    "MessageThreadId",
-    sessionEntry.lastThreadId ??
-      sessionEntry.deliveryContext?.threadId ??
-      sessionEntry.origin?.threadId,
-  );
+  setIfMissing("AccountId", canInheritPersistedMetadata ? persistedAccountId : undefined);
+  setIfMissing("MessageThreadId", canInheritPersistedMetadata ? persistedThreadId : undefined);
 
   return changed ? next : sessionCtx;
 }
@@ -854,7 +888,11 @@ export async function runPreparedReply(
     transcriptCommandBody: string;
     currentInboundContext?: typeof promptEnvelopeBase.currentInboundContext;
   }> => {
-    if (!useFastReplyRuntime && heartbeatRunScope !== "commitment-only") {
+    if (
+      !useFastReplyRuntime &&
+      heartbeatRunScope !== "commitment-only" &&
+      opts?.suppressSystemEventDrain !== true
+    ) {
       const eventsBlock = await drainFormattedSystemEvents({
         cfg,
         sessionKey,

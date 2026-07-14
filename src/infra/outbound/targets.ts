@@ -444,6 +444,18 @@ function inferChatTypeFromTarget(params: {
   return plugin?.messaging?.inferTargetChatType?.({ to }) ?? undefined;
 }
 
+/** Infers the conversation shape for an already-selected outbound channel target. */
+export function inferOutboundTargetChatType(params: {
+  channel: string;
+  to: string;
+}): ChatType | undefined {
+  const channel = normalizeDeliverableOutboundChannel(params.channel);
+  if (!channel) {
+    return undefined;
+  }
+  return inferChatTypeFromTarget({ channel, to: params.to });
+}
+
 function resolveHeartbeatDeliveryChatType(params: {
   channel: DeliverableMessageChannel;
   to: string;

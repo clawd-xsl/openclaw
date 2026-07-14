@@ -3,11 +3,11 @@ import { describe, expect, it, vi } from "vitest";
 import { createCronServiceState } from "./state.js";
 
 describe("cron service state seam coverage", () => {
-  it("threads heartbeat and session-store dependencies into internal state", () => {
+  it("threads wake and session-store dependencies into internal state", () => {
     const nowMs = vi.fn(() => 123_456);
     const enqueueSystemEvent = vi.fn();
     const requestHeartbeat = vi.fn();
-    const runHeartbeatOnce = vi.fn();
+    const requestSystemEventTurn = vi.fn();
     const resolveSessionStorePath = vi.fn((agentId?: string) => `/tmp/${agentId ?? "main"}.json`);
 
     const state = createCronServiceState({
@@ -25,7 +25,7 @@ describe("cron service state seam coverage", () => {
       resolveSessionStorePath,
       enqueueSystemEvent,
       requestHeartbeat,
-      runHeartbeatOnce,
+      requestSystemEventTurn,
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     });
 
@@ -42,7 +42,7 @@ describe("cron service state seam coverage", () => {
     expect(state.deps.resolveSessionStorePath).toBe(resolveSessionStorePath);
     expect(state.deps.enqueueSystemEvent).toBe(enqueueSystemEvent);
     expect(state.deps.requestHeartbeat).toBe(requestHeartbeat);
-    expect(state.deps.runHeartbeatOnce).toBe(runHeartbeatOnce);
+    expect(state.deps.requestSystemEventTurn).toBe(requestSystemEventTurn);
     expect(state.deps.nowMs()).toBe(123_456);
   });
 
@@ -60,6 +60,7 @@ describe("cron service state seam coverage", () => {
       cronEnabled: false,
       enqueueSystemEvent: vi.fn(),
       requestHeartbeat: vi.fn(),
+      requestSystemEventTurn: vi.fn(),
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     });
 

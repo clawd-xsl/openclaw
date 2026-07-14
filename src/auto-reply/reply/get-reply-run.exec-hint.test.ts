@@ -199,4 +199,126 @@ describe("resolvePromptSessionContextForSystemEvent", () => {
 
     expect(result).toBe(sessionCtx);
   });
+
+  it("uses an explicit cross-channel route instead of persisted prompt metadata", () => {
+    const sessionCtx = {
+      Provider: "system-event",
+      OriginatingChannel: "telegram",
+      OriginatingTo: "chat-2",
+      AccountId: "telegram-account",
+      ChatType: "direct",
+      ExplicitDeliverRoute: true,
+    } as TemplateContext;
+    const result = resolvePromptSessionContextForSystemEvent({
+      sessionCtx,
+      sessionEntry: {
+        sessionId: "session-1",
+        updatedAt: 1,
+        chatType: "channel",
+        channel: "slack",
+        groupChannel: "#ops",
+        groupId: "C1",
+        lastChannel: "slack",
+        lastTo: "channel:C1",
+        lastAccountId: "slack-account",
+        lastThreadId: "thread-1",
+        origin: {
+          provider: "slack",
+          surface: "slack",
+          chatType: "channel",
+          accountId: "slack-account",
+        },
+      },
+      ctx: {
+        Provider: "system-event",
+        OriginatingChannel: "telegram",
+        AccountId: "telegram-account",
+        ExplicitDeliverRoute: true,
+      },
+    });
+
+    expect(result).toEqual({
+      ...sessionCtx,
+      Provider: "telegram",
+      Surface: "telegram",
+    });
+    expect(result.GroupChannel).toBeUndefined();
+    expect(result.MessageThreadId).toBeUndefined();
+  });
+
+  it("does not inherit persisted thread metadata for a different explicit target", () => {
+    const sessionCtx = {
+      Provider: "system-event",
+      OriginatingChannel: "slack",
+      OriginatingTo: "channel:C2",
+      AccountId: "work",
+      ChatType: "channel",
+      ExplicitDeliverRoute: true,
+    } as TemplateContext;
+    const result = resolvePromptSessionContextForSystemEvent({
+      sessionCtx,
+      sessionEntry: {
+        sessionId: "session-1",
+        updatedAt: 1,
+        chatType: "channel",
+        channel: "slack",
+        groupChannel: "#old-channel",
+        lastChannel: "slack",
+        lastTo: "channel:C1",
+        lastAccountId: "work",
+        lastThreadId: "old-thread",
+        origin: { provider: "slack", surface: "slack", accountId: "work" },
+      },
+      ctx: {
+        Provider: "system-event",
+        OriginatingChannel: "slack",
+        OriginatingTo: "channel:C2",
+        AccountId: "work",
+        ExplicitDeliverRoute: true,
+      },
+    });
+
+    expect(result.Provider).toBe("slack");
+    expect(result.Surface).toBe("slack");
+    expect(result.GroupChannel).toBeUndefined();
+    expect(result.MessageThreadId).toBeUndefined();
+  });
+
+  it("does not resurrect a persisted thread when the explicit route omits one", () => {
+    const sessionCtx = {
+      Provider: "system-event",
+      OriginatingChannel: "slack",
+      OriginatingTo: "channel:C1",
+      AccountId: "work",
+      ChatType: "channel",
+      ExplicitDeliverRoute: true,
+    } as TemplateContext;
+    const result = resolvePromptSessionContextForSystemEvent({
+      sessionCtx,
+      sessionEntry: {
+        sessionId: "session-1",
+        updatedAt: 1,
+        chatType: "channel",
+        channel: "slack",
+        groupChannel: "#ops-thread",
+        lastChannel: "slack",
+        lastTo: "channel:C1",
+        lastAccountId: "work",
+        lastThreadId: "old-thread",
+        origin: { provider: "slack", surface: "slack", accountId: "work" },
+      },
+      ctx: {
+        Provider: "system-event",
+        OriginatingChannel: "slack",
+        OriginatingTo: "channel:C1",
+        AccountId: "work",
+        ExplicitDeliverRoute: true,
+      },
+    });
+
+    expect(result.Provider).toBe("slack");
+    expect(result.Surface).toBe("slack");
+    expect(result.GroupChannel).toBeUndefined();
+    expect(result.MessageThreadId).toBeUndefined();
+  });
 });

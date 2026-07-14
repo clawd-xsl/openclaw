@@ -79,6 +79,8 @@ export type SupplementalContextFacts = {
 /** Raw inbound message context accepted from channels before finalization. */
 export type MsgContext = {
   Body?: string;
+  /** Runtime-selected transcript text when the model-visible body is synthetic. */
+  TranscriptBody?: string;
   InboundEventKind?: InboundEventKind;
   /**
    * Agent prompt body (may include envelope/history/context). Prefer this for prompt shaping.

@@ -7,6 +7,7 @@ import type { MsgContext } from "../../auto-reply/templating.js";
 import { normalizeChatType } from "../../channels/chat-type.js";
 import { resolveConversationLabel } from "../../channels/conversation-label.js";
 import { getLoadedChannelPlugin, normalizeChannelId } from "../../channels/plugins/index.js";
+import { isSystemEventProvider } from "../../infra/system-event-provider.js";
 import {
   INTERNAL_MESSAGE_CHANNEL,
   isInternalNonDeliveryChannel,
@@ -14,10 +15,6 @@ import {
 } from "../../utils/message-channel.js";
 import { buildGroupDisplayName, resolveGroupSessionKey } from "./group.js";
 import type { GroupKeyResolution, SessionEntry, SessionOrigin } from "./types.js";
-
-function isSystemEventProvider(provider?: string): boolean {
-  return provider === "heartbeat" || provider === "cron-event" || provider === "exec-event";
-}
 
 // Origin updates merge sparse channel metadata without deleting previously known fields.
 const mergeOrigin = (
@@ -218,11 +215,11 @@ export function deriveSessionMetaPatch(params: {
   sessionKey: string;
   existing?: SessionEntry;
   groupResolution?: GroupKeyResolution | null;
-  skipSystemEventOrigin?: boolean;
+  skipSystemEventMetadata?: boolean;
 }): Partial<SessionEntry> | null {
-  const groupPatch = deriveGroupSessionPatch(params);
+  const groupPatch = params.skipSystemEventMetadata ? null : deriveGroupSessionPatch(params);
   const origin = deriveSessionOrigin(params.ctx, {
-    skipSystemEventOrigin: params.skipSystemEventOrigin,
+    skipSystemEventOrigin: params.skipSystemEventMetadata,
   });
   if (!groupPatch && !origin) {
     return null;

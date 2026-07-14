@@ -63,6 +63,28 @@ describe("buildReplyPromptEnvelope", () => {
     });
   });
 
+  it("uses an explicit transcript body without hiding the model-visible synthetic input", () => {
+    const sessionCtx = finalizeInboundContext({
+      Body: "[OpenClaw system event]\nEvent: run the check",
+      TranscriptBody: "[OpenClaw system event]",
+      Provider: "system-event",
+      ChatType: "direct",
+    });
+
+    const envelope = buildReplyPromptEnvelope({
+      ctx: sessionCtx,
+      sessionCtx,
+      baseBody: sessionCtx.BodyForAgent ?? "",
+      hasUserBody: true,
+      inboundUserContext: "",
+      isBareSessionReset: false,
+      startupAction: "new",
+    });
+
+    expect(envelope.prefixedCommandBody).toContain("Event: run the check");
+    expect(envelope.transcriptCommandBody).toBe("[OpenClaw system event]");
+  });
+
   it("adds one message-tool delivery hint to user-request runtime context only", () => {
     const sessionCtx = finalizeInboundContext({
       Body: "@bot what changed?",

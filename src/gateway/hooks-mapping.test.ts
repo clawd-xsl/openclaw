@@ -236,6 +236,38 @@ describe("hooks mapping", () => {
     }
   });
 
+  it("preserves an explicit delivery route on wake mappings", async () => {
+    const mappings = resolveHookMappings({
+      mappings: [
+        {
+          match: { path: "whoop" },
+          action: "wake",
+          textTemplate: "Whoop: {{payload.type}}",
+          channel: "signal",
+          to: "{{payload.target}}",
+        },
+      ],
+    });
+
+    const result = await applyHookMappings(mappings, {
+      payload: { type: "recovery", target: "signal-target" },
+      headers: {},
+      url: new URL("http://127.0.0.1:18789/hooks/whoop"),
+      path: "whoop",
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      action: {
+        kind: "wake",
+        text: "Whoop: recovery",
+        mode: "now",
+        channel: "signal",
+        to: "signal-target",
+      },
+    });
+  });
+
   it("runs transform module", async () => {
     const configDir = makeTempDir(hooksTempDirs, "openclaw-config-");
     const transformsRoot = path.join(configDir, "hooks", "transforms");
