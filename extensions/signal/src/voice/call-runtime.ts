@@ -81,8 +81,6 @@ export function startSignalVoiceRuntime(params: StartSignalVoiceRuntimeParams): 
     account: accountState.account,
     stores,
     config: buildManagerConfig(voiceConfig),
-    environment: "production",
-    ...(accountState.userAgent ? { userAgent: accountState.userAgent } : {}),
     logger: buildManagerLogger(),
   });
 

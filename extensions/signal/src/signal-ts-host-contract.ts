@@ -367,8 +367,6 @@ export type CreateSignalCallManagerParams = {
     maxCallDurationMs?: number;
     pulse?: { pactlPath?: string; pacatPath?: string };
   };
-  environment?: "production" | "staging";
-  userAgent?: string;
   logger?: {
     debug?: (message: string) => void;
     info?: (message: string) => void;
