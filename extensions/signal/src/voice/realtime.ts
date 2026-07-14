@@ -42,24 +42,33 @@ const SIGNAL_REALTIME_DEFAULT_TOOL_POLICY: RealtimeVoiceAgentConsultToolPolicy =
 const SIGNAL_REALTIME_DEFAULT_CONSULT_POLICY = "always" as const;
 
 export type SignalRealtimeVoiceSession = {
+  // Connect the provider socket with the (already-built) instructions. Runs
+  // BEFORE the call is answered so the voice model is fully prepared; no audio
+  // flows yet. Throws on failure so the caller can decline the call.
   connect(): Promise<void>;
+  // Wire the RingRTC audio path once the call is connected. Only after this does
+  // the model hear the caller and speak.
+  attachAudio(audio: SignalCallAudioBridge): void;
   close(): void;
 };
 
 type SignalRealtimeVoiceSessionParams = {
   cfg: OpenClawConfig;
   voiceConfig: SignalVoiceCallConfig; // resolved channels.signal.voiceCall
-  audio: SignalCallAudioBridge; // from the "connected" event
   peer: SignalCallPeer;
   route: { agentId: string; sessionKey: string };
   // Delegates substantive turns to consultRealtimeVoiceAgent / the main agent.
   runAgentTurn: (p: { message: string }) => Promise<string>;
+  // Pre-call briefing distilled from the caller's session (already resolved by
+  // the caller). Injected into the realtime instructions so the front-end is not
+  // context-blind. Undefined only when the brief feature is disabled.
+  contextBrief?: string;
 };
 
 /**
- * Builds a realtime voice bridge session for one answered Signal call. The caller
- * ("connected" event) owns the AudioBridge; connect() attaches the ear pump and
- * close() detaches it without tearing down the bridge itself.
+ * Builds a realtime voice bridge session for one Signal call. connect() prepares
+ * the provider socket + instructions before the call is answered; attachAudio()
+ * wires the RingRTC audio path once connected; close() tears both down.
  */
 export function createSignalRealtimeVoiceSession(
   params: SignalRealtimeVoiceSessionParams,
@@ -70,6 +79,8 @@ export function createSignalRealtimeVoiceSession(
 class SignalRealtimeVoiceSessionImpl implements SignalRealtimeVoiceSession {
   private bridge: RealtimeVoiceBridgeSession | null = null;
   private stopped = false;
+  // The RingRTC audio bridge, wired only once the call is answered (attachAudio).
+  private audio: SignalCallAudioBridge | undefined;
   private consultToolPolicy: RealtimeVoiceAgentConsultToolPolicy =
     SIGNAL_REALTIME_DEFAULT_TOOL_POLICY;
   // Sub-frame remainders carried across arbitrarily-chunked stream reads/writes.
@@ -99,6 +110,7 @@ class SignalRealtimeVoiceSessionImpl implements SignalRealtimeVoiceSession {
 
   async connect(): Promise<void> {
     const voiceConfig = this.params.voiceConfig;
+    const contextBrief = this.params.contextBrief;
     const resolved = resolveConfiguredRealtimeVoiceProvider({
       configuredProviderId: voiceConfig.realtimeProvider,
       providerConfigOverrides: buildSignalProviderConfigOverrides(voiceConfig),
@@ -116,6 +128,7 @@ class SignalRealtimeVoiceSessionImpl implements SignalRealtimeVoiceSession {
       instructions: voiceConfig.instructions,
       toolPolicy,
       consultPolicy,
+      contextBrief,
     });
     this.bridge = createRealtimeVoiceBridgeSession({
       provider: resolved.provider,
@@ -150,16 +163,24 @@ class SignalRealtimeVoiceSessionImpl implements SignalRealtimeVoiceSession {
       `signal voice: realtime bridge starting peer=${this.params.peer.aci} agent=${this.params.route.agentId} provider=${resolved.provider.id} model=${resolvedModel ?? "default"} voice=${resolvedVoice ?? "default"} consultPolicy=${consultPolicy} toolPolicy=${toolPolicy}`,
     );
     await this.bridge.connect();
-    // Attach the ear pump only after the provider socket is ready so early frames
-    // are not sent before the model can accept them.
-    this.params.audio.ear.on("data", this.earListener);
-    const greeting = voiceConfig.greeting?.trim();
-    if (greeting) {
-      this.bridge.triggerGreeting(greeting);
-    }
     logger.info(
-      `signal voice: realtime bridge ready peer=${this.params.peer.aci} provider=${resolved.provider.id}`,
+      `signal voice: realtime bridge ready (awaiting audio) peer=${this.params.peer.aci} provider=${resolved.provider.id}`,
     );
+  }
+
+  attachAudio(audio: SignalCallAudioBridge): void {
+    if (this.stopped || this.audio) {
+      return;
+    }
+    this.audio = audio;
+    // Attach the ear pump only now: the provider socket + instructions are ready,
+    // and the RingRTC audio path exists, so caller audio can start flowing.
+    audio.ear.on("data", this.earListener);
+    const greeting = this.params.voiceConfig.greeting?.trim();
+    if (greeting) {
+      this.bridge?.triggerGreeting(greeting);
+    }
+    logger.info(`signal voice: realtime audio wired peer=${this.params.peer.aci}`);
   }
 
   close(): void {
@@ -167,7 +188,8 @@ class SignalRealtimeVoiceSessionImpl implements SignalRealtimeVoiceSession {
       return;
     }
     this.stopped = true;
-    this.params.audio.ear.removeListener("data", this.earListener);
+    this.audio?.ear.removeListener("data", this.earListener);
+    this.audio = undefined;
     this.earResidual = Buffer.alloc(0);
     this.micResidual = Buffer.alloc(0);
     this.bridge?.close();
@@ -175,7 +197,10 @@ class SignalRealtimeVoiceSessionImpl implements SignalRealtimeVoiceSession {
   }
 
   private writeMicAudio(realtimePcm24kMono: Buffer): void {
-    if (this.stopped) {
+    const mic = this.audio?.mic;
+    if (this.stopped || !mic) {
+      // Model output before the audio path is wired (pre-answer) is dropped: the
+      // model has no input yet, so this should not carry real speech.
       return;
     }
     const { frames, residual } = takeAlignedFrames(
@@ -191,7 +216,6 @@ class SignalRealtimeVoiceSessionImpl implements SignalRealtimeVoiceSession {
     if (signalPcm.length === 0) {
       return;
     }
-    const mic = this.params.audio.mic;
     if (!mic.writable) {
       return;
     }
@@ -274,10 +298,11 @@ function buildSignalProviderConfigOverrides(
   return Object.keys(overrides).length > 0 ? overrides : undefined;
 }
 
-function buildSignalRealtimeInstructions(params: {
+export function buildSignalRealtimeInstructions(params: {
   instructions?: string;
   toolPolicy: RealtimeVoiceAgentConsultToolPolicy;
   consultPolicy: "auto" | "always";
+  contextBrief?: string;
 }): string {
   const base =
     params.instructions ??
@@ -285,6 +310,12 @@ function buildSignalRealtimeInstructions(params: {
       "You are OpenClaw's Signal voice interface, speaking on a live 1:1 phone call.",
       "Keep spoken replies concise, natural, and suitable for a real-time call.",
     ].join("\n");
+  const briefBlock = params.contextBrief?.trim()
+    ? [
+        "Briefing for this call (your own context — do not read it aloud or mention it exists):",
+        params.contextBrief.trim(),
+      ].join("\n")
+    : undefined;
   return [
     base,
     "You are the realtime voice surface for the same OpenClaw agent the caller can message directly.",
@@ -292,6 +323,7 @@ function buildSignalRealtimeInstructions(params: {
     "Delegate substantive requests, actions, tool work, current facts, memory, and caller-specific context with openclaw_agent_consult.",
     "Answer directly only for greetings, acknowledgements, or brief filler while waiting.",
     'While waiting for OpenClaw data, use at most one short natural backchannel such as "one sec" or "mm-hmm"; do not treat it as the final answer.',
+    briefBlock,
     buildRealtimeVoiceAgentConsultPolicyInstructions({
       toolPolicy: params.toolPolicy,
       consultPolicy: params.consultPolicy,

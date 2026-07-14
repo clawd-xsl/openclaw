@@ -1186,6 +1186,20 @@ const SignalVoiceCallSchema = z
     consultPolicy: z.enum(["auto", "always"]).optional(),
     hideIp: z.boolean().optional(), // true => TURN-relay only
     maxCallDurationMs: z.number().int().positive().optional(),
+    // Pre-call context brief: before the realtime front-end connects, run a
+    // one-shot compression on the caller's session (system prompt + turns +
+    // memory) with `model`, and inject the resulting bounded briefing into the
+    // realtime instructions so the front-end is not context-blind.
+    contextBrief: z
+      .object({
+        enabled: z.boolean().optional().default(false),
+        model: z.string().optional(),
+        provider: z.string().optional(),
+        maxTokens: z.number().int().positive().optional(),
+        timeoutMs: z.number().int().positive().optional(),
+      })
+      .strict()
+      .optional(),
     pulse: z
       .object({ pactlPath: z.string().optional(), pacatPath: z.string().optional() })
       .strict()

@@ -36,6 +36,23 @@ export type SignalVoiceCallConfig = {
   /** true => TURN-relay only (hide the server IP from the peer). */
   hideIp?: boolean;
   maxCallDurationMs?: number;
+  /**
+   * Pre-call context brief. Before the realtime front-end connects, a one-shot
+   * compression runs on the caller's session (system prompt + turns + memory)
+   * using `model`; the bounded briefing is injected into the realtime
+   * instructions so the front-end knows who it is and who is calling.
+   */
+  contextBrief?: {
+    /** Master switch. Default: false. */
+    enabled?: boolean;
+    /** Compressor model ref (e.g. "sonnet"). Falls back to the agent default when unset. */
+    model?: string;
+    provider?: string;
+    /** Target size of the injected briefing. Default: 1500. */
+    maxTokens?: number;
+    /** Skip the brief (proceed with generic instructions) if it exceeds this. Default: 4000. */
+    timeoutMs?: number;
+  };
   /** Optional overrides for the PulseAudio helper binaries used by the transport. */
   pulse?: { pactlPath?: string; pacatPath?: string };
 };

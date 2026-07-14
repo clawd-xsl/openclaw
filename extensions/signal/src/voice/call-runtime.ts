@@ -28,6 +28,7 @@ import { getOptionalSignalRuntime } from "../runtime.js";
 import { isAllowedSignalCaller } from "./allowlist.js";
 import { registerSignalCallManager, unregisterSignalCallManager } from "./call-registry.js";
 import type { SignalVoiceCallConfig } from "./config.js";
+import { generateSignalVoiceContextBrief } from "./context-brief.js";
 import { createSignalRealtimeVoiceSession, type SignalRealtimeVoiceSession } from "./realtime.js";
 
 const log = createSubsystemLogger("signal/voice");
@@ -64,7 +65,11 @@ export function startSignalVoiceRuntime(params: StartSignalVoiceRuntimeParams): 
 
   // Single active voice session slot (v1 is one concurrent call per account).
   let activeSession: SignalRealtimeVoiceSession | undefined;
+  // Pre-call brief kicked off at accept so it overlaps the RingRTC handshake +
+  // audio bringup; consumed (awaited inside the session) at connect. One slot.
+  let pendingBrief: Promise<string | undefined> | undefined;
   const closeActiveSession = (): void => {
+    pendingBrief = undefined;
     if (!activeSession) {
       return;
     }
@@ -76,6 +81,35 @@ export function startSignalVoiceRuntime(params: StartSignalVoiceRuntimeParams): 
     activeSession = undefined;
   };
 
+  // Pre-start the brief so it overlaps ringing; buildAndConnectSession awaits it.
+  const kickOffContextBrief = (peer: SignalCallPeer): void => {
+    if (pendingBrief || !voiceConfig.contextBrief?.enabled) {
+      return;
+    }
+    const pluginRuntime = getOptionalSignalRuntime();
+    if (!pluginRuntime) {
+      // buildAndConnectSession re-checks the runtime and starts the brief itself.
+      return;
+    }
+    const route = resolveAgentRoute({
+      cfg,
+      channel: "signal",
+      accountId,
+      peer: { kind: "direct", id: peer.aci },
+    });
+    const promise = generateSignalVoiceContextBrief({
+      cfg,
+      agentRuntime: pluginRuntime.agent,
+      voiceConfig,
+      route: { agentId: route.agentId, sessionKey: route.sessionKey },
+      peerAci: peer.aci,
+    });
+    // Suppress unhandled rejection if the call ends before anyone awaits it
+    // (e.g. an outbound call the remote never answers). Awaiters still re-throw.
+    promise.catch(() => {});
+    pendingBrief = promise;
+  };
+
   const manager = createSignalCallManager({
     client,
     account: accountState.account,
@@ -84,39 +118,103 @@ export function startSignalVoiceRuntime(params: StartSignalVoiceRuntimeParams): 
     logger: buildManagerLogger(),
   });
 
-  const startVoiceSession = (peer: SignalCallPeer, audio: SignalCallAudioBridge): void => {
+  // Surface a call-setup failure to the caller as a normal user-facing message
+  // (a Signal text to their DM), mirroring how OpenClaw reports errors.
+  const notifyCallerError = async (peer: SignalCallPeer, reason: string): Promise<void> => {
+    try {
+      await client.sendMessage({
+        destination: peer.aci,
+        body: `⚠️ I couldn't pick up your voice call: ${reason}`,
+        stores,
+      });
+    } catch (err) {
+      log.warn(`signal voice: failed to notify caller of error: ${formatErrorMessage(err)}`);
+    }
+  };
+
+  // Build the realtime session and connect its provider socket + instructions.
+  // The brief is awaited HERE and is fail-closed: a brief/instruction failure
+  // throws, so the call is never answered without full context. No audio yet.
+  const buildAndConnectSession = async (
+    peer: SignalCallPeer,
+  ): Promise<SignalRealtimeVoiceSession> => {
     const pluginRuntime = getOptionalSignalRuntime();
     if (!pluginRuntime) {
-      // Without the plugin runtime we cannot reach the agent; drop the call rather
-      // than hold a silent line open.
-      log.error("signal voice: plugin runtime unavailable; hanging up connected call");
-      void manager.hangup();
-      return;
+      throw new Error("signal voice runtime unavailable");
     }
-    // Route per caller so the voice call shares the same agent + session the caller's
-    // text DM would resolve to (resolveAgentRoute is the channel's own router).
+    // Route per caller so the call shares the same agent + session the caller's
+    // text DM resolves to (resolveAgentRoute is the channel's own router).
     const route = resolveAgentRoute({
       cfg,
       channel: "signal",
       accountId,
       peer: { kind: "direct", id: peer.aci },
     });
+    // Use the pre-started brief (overlaps ringing) or start it now; either way
+    // await it before building instructions.
+    const briefPromise =
+      pendingBrief ??
+      generateSignalVoiceContextBrief({
+        cfg,
+        agentRuntime: pluginRuntime.agent,
+        voiceConfig,
+        route: { agentId: route.agentId, sessionKey: route.sessionKey },
+        peerAci: peer.aci,
+      });
+    pendingBrief = undefined;
+    const contextBrief = await briefPromise;
     const session = createSignalRealtimeVoiceSession({
       cfg,
       voiceConfig,
-      audio,
       peer,
       route: { agentId: route.agentId, sessionKey: route.sessionKey },
       runAgentTurn: buildRunAgentTurn({ pluginRuntime, route, peer }),
+      ...(contextBrief ? { contextBrief } : {}),
     });
     activeSession = session;
-    void session.connect().catch((err: unknown) => {
-      log.error(`signal voice: realtime session connect failed: ${formatErrorMessage(err)}`);
-      if (activeSession === session) {
-        closeActiveSession();
-      }
-      void manager.hangup();
+    await session.connect();
+    return session;
+  };
+
+  // Inbound barrier: prepare the voice model FULLY (brief + instructions +
+  // provider socket) before answering. Only then accept. On any failure, decline
+  // and tell the caller — never answer a call without its instructions.
+  const prepareInboundThenAccept = async (peer: SignalCallPeer, callId: bigint): Promise<void> => {
+    try {
+      await buildAndConnectSession(peer);
+    } catch (err) {
+      const reason = formatErrorMessage(err);
+      log.error(`signal voice: inbound preparation failed for ${peer.aci}; declining: ${reason}`);
+      closeActiveSession();
+      await notifyCallerError(peer, reason);
+      void manager.decline(callId).catch((declineErr: unknown) => {
+        log.warn(`signal voice: decline failed: ${formatErrorMessage(declineErr)}`);
+      });
+      return;
+    }
+    await manager.accept(callId).catch((err: unknown) => {
+      log.warn(`signal voice: accept failed: ${formatErrorMessage(err)}`);
     });
+  };
+
+  // Outbound: the remote already answered; prepare, then wire the audio. Same
+  // fail-closed policy — hang up and notify on any preparation failure.
+  const prepareOutboundThenWire = async (
+    peer: SignalCallPeer,
+    audio: SignalCallAudioBridge,
+  ): Promise<void> => {
+    let session: SignalRealtimeVoiceSession;
+    try {
+      session = await buildAndConnectSession(peer);
+    } catch (err) {
+      const reason = formatErrorMessage(err);
+      log.error(`signal voice: outbound preparation failed for ${peer.aci}; hanging up: ${reason}`);
+      closeActiveSession();
+      await notifyCallerError(peer, reason);
+      void manager.hangup();
+      return;
+    }
+    session.attachAudio(audio);
   };
 
   const buildRunAgentTurn = (ctx: {
@@ -156,10 +254,11 @@ export function startSignalVoiceRuntime(params: StartSignalVoiceRuntimeParams): 
     switch (event.type) {
       case "incoming": {
         if (isAllowedSignalCaller(event.peer, voiceConfig.allowFrom)) {
-          log.info(`signal voice: accepting inbound call from ${event.peer.aci}`);
-          void manager.accept(event.callId).catch((err: unknown) => {
-            log.warn(`signal voice: accept failed: ${formatErrorMessage(err)}`);
-          });
+          log.info(`signal voice: preparing inbound call from ${event.peer.aci}`);
+          // Start the brief immediately; do NOT answer until the whole
+          // instruction is built and the voice model is connected.
+          kickOffContextBrief(event.peer);
+          void prepareInboundThenAccept(event.peer, event.callId);
         } else {
           log.info(
             `signal voice: declining inbound call from ${event.peer.aci} (not in allowFrom)`,
@@ -170,10 +269,19 @@ export function startSignalVoiceRuntime(params: StartSignalVoiceRuntimeParams): 
         }
         break;
       }
+      case "outgoing": {
+        // Agent-placed call: start the brief now so it overlaps ringing.
+        kickOffContextBrief(event.peer);
+        break;
+      }
       case "connected": {
-        // A fresh connect supersedes any lingering session from a prior call.
-        closeActiveSession();
-        startVoiceSession(event.peer, event.audio);
+        if (activeSession) {
+          // Inbound: the session was prepared before we answered — just wire audio.
+          activeSession.attachAudio(event.audio);
+        } else {
+          // Outbound: the remote just answered — prepare, then wire audio.
+          void prepareOutboundThenWire(event.peer, event.audio);
+        }
         break;
       }
       case "ended":
