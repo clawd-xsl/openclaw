@@ -19,6 +19,7 @@ import {
   applyQwenStandardConfigCn,
 } from "./onboard.js";
 import { buildQwenOAuthProvider, buildQwenProvider } from "./provider-catalog.js";
+import { buildQwenRealtimeVoiceProvider } from "./realtime-voice-provider.js";
 import { wrapQwenProviderStream } from "./stream.js";
 import { buildQwenVideoGenerationProvider } from "./video-generation-provider.js";
 
@@ -239,5 +240,6 @@ export default defineSingleProviderPluginEntry({
     });
     api.registerMediaUnderstandingProvider(buildQwenMediaUnderstandingProvider());
     api.registerVideoGenerationProvider(buildQwenVideoGenerationProvider());
+    api.registerRealtimeVoiceProvider(buildQwenRealtimeVoiceProvider());
   },
 });
