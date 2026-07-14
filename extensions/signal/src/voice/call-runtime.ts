@@ -40,6 +40,18 @@ const log = createSubsystemLogger("signal/voice");
 // access; voiceCall.toolPolicy narrows it (safe-read-only / none) per deployment.
 const SIGNAL_VOICE_DEFAULT_TOOL_POLICY = "owner" as const;
 
+// End reasons that indicate failure rather than an intentional hangup/decline.
+// The manager emits no separate "error" event for these (e.g. a signaling
+// failure just ends the call), so they carry the real pickup-failure cause.
+const CALL_FAILURE_END_REASONS = new Set([
+  "glare",
+  "timeout",
+  "connection-failure",
+  "signaling-failure",
+  "unsupported",
+  "internal-failure",
+]);
+
 export type SignalVoiceRuntime = {
   manager: SignalCallManager;
   // False once ensureReady() has failed (optional @signalapp/ringrtc missing):
@@ -226,8 +238,15 @@ export function startSignalVoiceRuntime(params: StartSignalVoiceRuntimeParams): 
       });
       return;
     }
-    await manager.accept(callId).catch((err: unknown) => {
-      log.warn(`signal voice: accept failed: ${formatErrorMessage(err)}`);
+    // accept() waits for RingRTC to become acceptable (ICE connected) and
+    // throws if the call ends or wedges first — the caller must hear about
+    // that, since no prepare catch fires after this point.
+    await manager.accept(callId).catch(async (err: unknown) => {
+      const reason = lastCallError ?? formatErrorMessage(err);
+      log.error(`signal voice: accept failed for ${peer.aci}: ${reason}`);
+      closeActiveSession();
+      await notifyCallerError(peer, reason);
+      void manager.hangup();
     });
   };
 
@@ -340,7 +359,19 @@ export function startSignalVoiceRuntime(params: StartSignalVoiceRuntimeParams): 
         closeActiveSession();
         break;
       }
-      case "ended":
+      case "ended": {
+        // Failure-flavored ends arrive without a separate "error" event; record
+        // the cause (first writer wins) and tell the caller when pickup never
+        // happened. Intentional hangups/declines stay silent.
+        if (CALL_FAILURE_END_REASONS.has(event.reason)) {
+          lastCallError ??= `call ended: ${event.reason}`;
+          if (!pickedUp && currentPeer) {
+            void notifyCallerError(currentPeer, lastCallError);
+          }
+        }
+        closeActiveSession();
+        break;
+      }
       case "busy": {
         closeActiveSession();
         break;
