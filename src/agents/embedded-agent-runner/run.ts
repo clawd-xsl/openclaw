@@ -663,6 +663,14 @@ async function runEmbeddedAgentInternal(
   // configured runtime binding matters too: an API provider/model pair (e.g.
   // anthropic/...) whose model runtime policy binds a CLI runtime must run
   // through that CLI, exactly like the main-turn dispatch.
+  // Plugin-registered CLI backends are only visible once runtime plugins are
+  // loaded (idempotent; the embedded loop does the same before its own model
+  // resolution).
+  ensureRuntimePluginsLoaded({
+    config: params.config,
+    workspaceDir: params.workspaceDir,
+    allowGatewaySubagentBinding: params.allowGatewaySubagentBinding,
+  });
   const initialModelForCliDispatch = resolveInitialEmbeddedRunModel({
     config: params.config,
     agentId: params.agentId,
