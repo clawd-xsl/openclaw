@@ -153,6 +153,19 @@ class SignalRealtimeVoiceSessionImpl implements SignalRealtimeVoiceSession {
       },
       onTranscript: (role, text, isFinal) => this.handleTranscript(role, text, isFinal),
       onToolCall: (event, session) => this.handleToolCall(event, session),
+      // Response-lifecycle evidence trail (created/done/cancelled, errors, VAD
+      // boundaries, tool submits) for diagnosing wedged calls. Per-frame audio
+      // appends and streaming deltas are noise and skipped.
+      onEvent: (event) => {
+        if (event.type === "input_audio_buffer.append" || event.type.includes(".delta")) {
+          return;
+        }
+        logger.info(
+          `signal voice: realtime ${event.direction} ${event.type}` +
+            `${event.detail ? ` ${event.detail}` : ""}` +
+            `${event.responseId ? ` responseId=${event.responseId}` : ""}`,
+        );
+      },
       onError: (error) => logger.warn(`signal voice: realtime error: ${formatErrorMessage(error)}`),
       onClose: (reason) => logger.debug(`signal voice: realtime closed: ${reason}`),
     });
