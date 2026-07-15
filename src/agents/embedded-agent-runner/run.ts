@@ -110,6 +110,7 @@ import {
   resolveAuthProfileOrder,
   shouldPreferExplicitConfigApiKeyAuth,
 } from "../model-auth.js";
+import { resolveCliRuntimeExecutionProvider } from "../model-runtime-aliases.js";
 import { isCliProvider } from "../model-selection-cli.js";
 import {
   buildModelAliasIndex,
@@ -658,17 +659,28 @@ async function runEmbeddedAgentInternal(
   // CLI runtime backends (claude-cli, ...) execute through the CLI harness,
   // matching the auto-reply/cron dispatch seams. Without this the embedded API
   // loop silently falls through to the provider's API transport for callers
-  // (plugin runs, voice brief/consult) that selected a CLI backend.
+  // (plugin runs, voice brief/consult) that selected a CLI backend. The
+  // configured runtime binding matters too: an API provider/model pair (e.g.
+  // anthropic/...) whose model runtime policy binds a CLI runtime must run
+  // through that CLI, exactly like the main-turn dispatch.
   const initialModelForCliDispatch = resolveInitialEmbeddedRunModel({
     config: params.config,
     agentId: params.agentId,
     provider: params.provider,
     model: params.model,
   });
-  if (isCliProvider(initialModelForCliDispatch.provider, params.config)) {
+  const cliExecutionProvider =
+    resolveCliRuntimeExecutionProvider({
+      provider: initialModelForCliDispatch.provider,
+      cfg: params.config,
+      agentId: params.agentId,
+      modelId: initialModelForCliDispatch.modelId,
+      ...(params.authProfileId ? { authProfileId: params.authProfileId } : {}),
+    }) ?? initialModelForCliDispatch.provider;
+  if (isCliProvider(cliExecutionProvider, params.config)) {
     return await runEmbeddedRunViaCliBackend({
       params,
-      provider: initialModelForCliDispatch.provider,
+      provider: cliExecutionProvider,
       modelId: initialModelForCliDispatch.modelId,
     });
   }
