@@ -110,6 +110,7 @@ import {
   resolveAuthProfileOrder,
   shouldPreferExplicitConfigApiKeyAuth,
 } from "../model-auth.js";
+import { isCliProvider } from "../model-selection-cli.js";
 import {
   buildModelAliasIndex,
   resolveDefaultModelForAgent,
@@ -167,6 +168,7 @@ import {
   PostCompactionLoopPersistedError,
 } from "./post-compaction-loop-guard.js";
 import { createEmbeddedRunReplayState, observeReplayMetadata } from "./replay-state.js";
+import { runEmbeddedRunViaCliBackend } from "./run-cli-dispatch.js";
 import {
   handleAssistantFailover,
   isShortWindowRateLimitMessage,
@@ -653,6 +655,23 @@ async function runEmbeddedAgentInternal(
     sessionKey: normalizeOptionalString(effectiveSessionKey ?? runSessionTarget.sessionKey),
     sessionFile: runSessionTarget.sessionFile,
   };
+  // CLI runtime backends (claude-cli, ...) execute through the CLI harness,
+  // matching the auto-reply/cron dispatch seams. Without this the embedded API
+  // loop silently falls through to the provider's API transport for callers
+  // (plugin runs, voice brief/consult) that selected a CLI backend.
+  const initialModelForCliDispatch = resolveInitialEmbeddedRunModel({
+    config: params.config,
+    agentId: params.agentId,
+    provider: params.provider,
+    model: params.model,
+  });
+  if (isCliProvider(initialModelForCliDispatch.provider, params.config)) {
+    return await runEmbeddedRunViaCliBackend({
+      params,
+      provider: initialModelForCliDispatch.provider,
+      modelId: initialModelForCliDispatch.modelId,
+    });
+  }
   const sessionLane = resolveSessionLane(params.sessionKey?.trim() || params.sessionId);
   const globalLane = resolveGlobalLane(params.lane);
   // Outer fallback attempts defer session suspension only while another
