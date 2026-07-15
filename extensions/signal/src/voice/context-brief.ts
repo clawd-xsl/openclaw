@@ -1,17 +1,26 @@
-// Pre-call context brief. Before the realtime front-end connects, compress the
-// caller's whole session (its composed system prompt + all turns) into a bounded
-// briefing and inject it into the realtime instructions so the otherwise
-// context-blind front-end knows who it is and who is calling.
+// Pre-call context brief, two-stage so call pickup never waits on the slow part:
 //
-// It runs as a fully isolated one-shot embedded agent: a fresh randomUUID session
-// on a throwaway session file (never the caller's session, no store entry, no
-// pollution). The run's OWN system prompt supplies the agent persona; the caller's
-// transcript is stuffed into the prompt. The compressor model is config-selected
-// (contextBrief.model) — an anthropic/* ref is a lean API call, a claude-cli/* ref
-// spawns a separate throwaway CLI process; either way it is isolated from the
-// caller's warm process (distinct sessionId => distinct live-session key).
-import { randomUUID } from "node:crypto";
+// 1. PERSONA brief — who the agent is and how it talks. Derived from the run's
+//    own composed system prompt (persona/memory), independent of any caller, and
+//    stable — so it is generated OFF the call path and cached in plugin state
+//    (SQLite), keyed by agentId. The cache invalidates ONLY when the persona
+//    workspace files (SOUL/IDENTITY/USER/AGENTS/MEMORY.md) change content —
+//    no TTL, so an unchanged persona is never recomputed.
+// 2. RECENT-TOPICS brief — a fast live compression of the last few caller
+//    messages (tool calls already stripped) plus the spoken-language instruction.
+//    Small input => seconds, overlapped with ringing/ICE setup.
+//
+// Both stages run as fully isolated one-shot embedded agents: a fresh randomUUID
+// session on a throwaway session file (never the caller's session, no store
+// entry, no pollution). The compressor model is config-selected
+// (contextBrief.model) — an anthropic/* ref is a lean API call, a claude-cli/*
+// ref spawns a separate throwaway CLI process; either way it is isolated from
+// the caller's warm process (distinct sessionId => distinct live-session key).
+import { createHash, randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import type { PluginStateSyncKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
 import {
   collectRealtimeVoiceAgentConsultVisibleText,
   type RealtimeVoiceAgentConsultRuntime,
@@ -19,16 +28,28 @@ import {
 import { createSubsystemLogger } from "openclaw/plugin-sdk/runtime-env";
 import { readBoundedSessionTranscriptEvents } from "openclaw/plugin-sdk/session-transcript-runtime";
 import { tempWorkspace } from "openclaw/plugin-sdk/temp-path";
+import { getOptionalSignalRuntime } from "../runtime.js";
 import type { SignalVoiceCallConfig } from "./config.js";
 
 const log = createSubsystemLogger("signal/voice");
 
 const DEFAULT_BRIEF_MAX_TOKENS = 1500;
 const DEFAULT_BRIEF_TIMEOUT_MS = 4_000;
-// Bound the compression INPUT so a long history cannot blow the compressor's
-// context or the call-setup budget.
-const BRIEF_TRANSCRIPT_MAX_BYTES = 256 * 1024;
-const BRIEF_TRANSCRIPT_MAX_EVENTS = 400;
+// Persona-forward split of contextBrief.maxTokens across the two stages.
+const PERSONA_TOKEN_SHARE = 0.6;
+// Workspace files that feed the persona portion of the composed system prompt
+// (well-known OpenClaw workspace bootstrap names). The cached persona
+// regenerates ONLY when one of these changes content — deliberately no TTL:
+// they change rarely, and a timer would re-run the compressor on calls whose
+// persona had not actually changed.
+const PERSONA_SOURCE_FILES = ["SOUL.md", "IDENTITY.md", "USER.md", "AGENTS.md", "MEMORY.md"];
+const PERSONA_STORE_NAMESPACE = "voice.persona-brief";
+const PERSONA_STORE_MAX_ENTRIES = 64;
+// Bound the topics compression INPUT: recent messages only, so the live run
+// stays small and fast on the call-setup path.
+const TOPICS_TRANSCRIPT_MAX_BYTES = 64 * 1024;
+const TOPICS_TRANSCRIPT_MAX_EVENTS = 160;
+const TOPICS_RECENT_MESSAGES = 30;
 
 export type SignalVoiceContextBriefParams = {
   cfg: OpenClawConfig;
@@ -36,6 +57,16 @@ export type SignalVoiceContextBriefParams = {
   voiceConfig: SignalVoiceCallConfig;
   route: { agentId: string; sessionKey: string };
   peerAci: string;
+};
+
+type SignalVoicePersonaParams = Omit<SignalVoiceContextBriefParams, "peerAci">;
+
+type PersonaBriefEntry = {
+  brief: string;
+  // Compressor identity at generation time; a config change invalidates the cache.
+  modelKey: string;
+  // Content hash of PERSONA_SOURCE_FILES at generation time.
+  sourceHash: string;
 };
 
 /**
@@ -51,15 +82,167 @@ export async function generateSignalVoiceContextBrief(
   if (!brief?.enabled) {
     return undefined;
   }
-  const { cfg, agentRuntime, route, peerAci } = params;
+  // Persona first (cache hit is ~0ms; a miss generates live, fail-closed), then
+  // the small live topics run. Sequential is fine: topics is the only live model
+  // call on a warm cache and it overlaps ringing/ICE setup.
+  const persona = await getPersonaBrief(params);
+  const topics = await generateRecentTopicsBrief(params);
+  return topics ? `${persona}\n\n${topics}` : persona;
+}
+
+/**
+ * Warms the persona cache in the background at voice-runtime start. Reruns the
+ * compressor ONLY when the persona source files changed since the cached copy
+ * was generated (or the compressor config changed); otherwise it is a no-op
+ * beyond hashing a handful of small files. Never throws; deduped per agent.
+ */
+export function refreshSignalVoicePersonaBrief(params: SignalVoicePersonaParams): void {
+  const brief = params.voiceConfig.contextBrief;
+  if (!brief?.enabled) {
+    return;
+  }
+  const agentId = params.route.agentId;
+  if (personaRefreshInFlight.has(agentId)) {
+    return;
+  }
+  const task = (async () => {
+    const { cached, sourceHash, modelKey } = await lookupPersonaBrief(params);
+    if (cached) {
+      return;
+    }
+    const persona = await runPersonaBriefAgent(params);
+    storePersonaBrief(agentId, { brief: persona, modelKey, sourceHash });
+    log.info(`signal voice: persona brief refreshed agent=${agentId} chars=${persona.length}`);
+  })();
+  personaRefreshInFlight.set(agentId, task);
+  void task
+    .catch((err) => {
+      log.warn(`signal voice: persona brief refresh failed agent=${agentId}: ${String(err)}`);
+    })
+    .finally(() => {
+      personaRefreshInFlight.delete(agentId);
+    });
+}
+
+const personaRefreshInFlight = new Map<string, Promise<void>>();
+
+async function getPersonaBrief(params: SignalVoiceContextBriefParams): Promise<string> {
+  const { cached, sourceHash, modelKey } = await lookupPersonaBrief(params);
+  if (cached) {
+    return cached;
+  }
+  // Cache miss (first call for this agent, persona files changed, or the
+  // compressor config changed): generate live — slower, but fail-closed
+  // correctness beats answering blind — and cache for every following call.
+  const persona = await runPersonaBriefAgent(params);
+  storePersonaBrief(params.route.agentId, { brief: persona, modelKey, sourceHash });
+  return persona;
+}
+
+async function lookupPersonaBrief(
+  params: SignalVoicePersonaParams,
+): Promise<{ cached: string | undefined; sourceHash: string; modelKey: string }> {
+  const { cfg, agentRuntime, route } = params;
+  const workspaceDir = agentRuntime.resolveAgentWorkspaceDir(cfg, route.agentId);
+  const sourceHash = await computePersonaSourceHash(workspaceDir);
+  const modelKey = personaModelKey(params.voiceConfig);
+  const entry = openPersonaStore()?.lookup(route.agentId);
+  const fresh = entry && entry.modelKey === modelKey && entry.sourceHash === sourceHash;
+  return { cached: fresh ? entry.brief : undefined, sourceHash, modelKey };
+}
+
+async function computePersonaSourceHash(workspaceDir: string): Promise<string> {
+  const hash = createHash("sha256");
+  for (const name of PERSONA_SOURCE_FILES) {
+    hash.update(name);
+    hash.update("\0");
+    try {
+      hash.update(await readFile(join(workspaceDir, name)));
+    } catch {
+      // Absent files hash distinctly from empty ones so adding a file later
+      // still invalidates.
+      hash.update("<absent>");
+    }
+    hash.update("\0");
+  }
+  return hash.digest("hex");
+}
+
+function personaModelKey(voiceConfig: SignalVoiceCallConfig): string {
+  const brief = voiceConfig.contextBrief;
+  return `${brief?.provider ?? ""}\0${brief?.model ?? ""}`;
+}
+
+// Single-slot module cache: openSyncKeyedStore validates + touches SQLite.
+let personaStore: PluginStateSyncKeyedStore<PersonaBriefEntry> | undefined;
+function openPersonaStore(): PluginStateSyncKeyedStore<PersonaBriefEntry> | undefined {
+  if (personaStore) {
+    return personaStore;
+  }
+  const state = getOptionalSignalRuntime()?.state;
+  if (!state) {
+    // No runtime (tests/probe): persona still generates live, just uncached.
+    return undefined;
+  }
+  personaStore = state.openSyncKeyedStore<PersonaBriefEntry>({
+    namespace: PERSONA_STORE_NAMESPACE,
+    maxEntries: PERSONA_STORE_MAX_ENTRIES,
+  });
+  return personaStore;
+}
+
+function storePersonaBrief(agentId: string, entry: PersonaBriefEntry): void {
+  try {
+    openPersonaStore()?.register(agentId, entry);
+  } catch (err) {
+    log.warn(`signal voice: persona brief store failed agent=${agentId}: ${String(err)}`);
+  }
+}
+
+async function runPersonaBriefAgent(params: SignalVoicePersonaParams): Promise<string> {
+  const maxTokens = params.voiceConfig.contextBrief?.maxTokens ?? DEFAULT_BRIEF_MAX_TOKENS;
+  const personaTokens = Math.round(maxTokens * PERSONA_TOKEN_SHARE);
+  return await runBriefAgent({
+    params,
+    prompt: "Write the persona briefing now.",
+    instruction: buildPersonaInstruction(personaTokens),
+    label: "persona brief",
+  });
+}
+
+async function generateRecentTopicsBrief(
+  params: SignalVoiceContextBriefParams,
+): Promise<string | undefined> {
+  const maxTokens = params.voiceConfig.contextBrief?.maxTokens ?? DEFAULT_BRIEF_MAX_TOKENS;
+  const topicsTokens = maxTokens - Math.round(maxTokens * PERSONA_TOKEN_SHARE);
+  const transcriptText = await readRecentCallerTranscriptText(params);
+  if (!transcriptText) {
+    // Brand-new caller: nothing to summarize (and no history to detect a
+    // language from) — the persona alone is the briefing.
+    return undefined;
+  }
+  const text = await runBriefAgent({
+    params,
+    prompt: `Recent conversation with the caller:\n\n${transcriptText}\n\n---\nWrite the recent-topics briefing now.`,
+    instruction: buildTopicsInstruction(topicsTokens),
+    label: "recent-topics brief",
+  });
+  log.info(
+    `signal voice: recent-topics brief ready peer=${params.peerAci} agent=${params.route.agentId} chars=${text.length}`,
+  );
+  return text;
+}
+
+async function runBriefAgent(args: {
+  params: SignalVoicePersonaParams;
+  prompt: string;
+  instruction: string;
+  label: string;
+}): Promise<string> {
+  const { cfg, agentRuntime, voiceConfig, route } = args.params;
+  const brief = voiceConfig.contextBrief;
+  const timeoutMs = brief?.timeoutMs ?? DEFAULT_BRIEF_TIMEOUT_MS;
   const agentId = route.agentId;
-  const maxTokens = brief.maxTokens ?? DEFAULT_BRIEF_MAX_TOKENS;
-  const timeoutMs = brief.timeoutMs ?? DEFAULT_BRIEF_TIMEOUT_MS;
-
-  // Best-effort caller history: a brand-new caller has none, and the run still
-  // produces a persona-only briefing from its own composed system prompt.
-  const transcriptText = await readCallerTranscriptText({ agentRuntime, cfg, agentId, route });
-
   const workspaceDir = agentRuntime.resolveAgentWorkspaceDir(cfg, agentId);
   await agentRuntime.ensureAgentWorkspace({ dir: workspaceDir });
   const agentDir = agentRuntime.resolveAgentDir(cfg, agentId);
@@ -83,10 +266,8 @@ export async function generateSignalVoiceContextBrief(
       config: cfg,
       sessionFile,
       transcriptPrompt: "",
-      prompt: transcriptText
-        ? `Conversation so far:\n\n${transcriptText}\n\n---\nWrite the briefing now.`
-        : "There is no prior conversation with this caller yet. Write the briefing now.",
-      extraSystemPrompt: buildBriefInstruction(maxTokens),
+      prompt: args.prompt,
+      extraSystemPrompt: args.instruction,
       timeoutMs,
       runId: randomUUID(),
       verboseLevel: "off",
@@ -100,34 +281,29 @@ export async function generateSignalVoiceContextBrief(
       suppressLiveStreamOutput: true,
       suppressToolErrorWarnings: true,
       silentExpected: true,
-      ...(brief.model ? { model: brief.model, modelFallbacksOverride: [] } : {}),
-      ...(brief.provider ? { provider: brief.provider } : {}),
+      ...(brief?.model ? { model: brief.model, modelFallbacksOverride: [] } : {}),
+      ...(brief?.provider ? { provider: brief.provider } : {}),
     });
     const text = collectRealtimeVoiceAgentConsultVisibleText(result.payloads ?? [])?.trim();
     if (!text) {
       // Fail-closed: an empty brief must not silently become "no context".
       throw new Error(
         result.meta?.aborted
-          ? "context brief run aborted before producing a briefing"
-          : "context brief run produced no briefing text",
+          ? `${args.label} run aborted before producing text`
+          : `${args.label} run produced no text`,
       );
     }
-    log.info(
-      `signal voice: context brief ready peer=${peerAci} agent=${agentId} chars=${text.length}`,
-    );
     return text;
   } finally {
     await workspace.cleanup();
   }
 }
 
-async function readCallerTranscriptText(params: {
-  agentRuntime: RealtimeVoiceAgentConsultRuntime;
-  cfg: OpenClawConfig;
-  agentId: string;
-  route: { agentId: string; sessionKey: string };
-}): Promise<string> {
-  const { agentRuntime, cfg, agentId, route } = params;
+async function readRecentCallerTranscriptText(
+  params: SignalVoiceContextBriefParams,
+): Promise<string> {
+  const { agentRuntime, cfg, route } = params;
+  const agentId = route.agentId;
   const storePath = agentRuntime.session.resolveStorePath(cfg.session?.store, { agentId });
   const callerEntry = agentRuntime.session.getSessionEntry({
     storePath,
@@ -142,32 +318,52 @@ async function readCallerTranscriptText(params: {
     sessionId: callerSessionId,
     sessionKey: route.sessionKey,
     ...(callerEntry?.sessionFile ? { sessionFile: callerEntry.sessionFile } : {}),
-    maxBytes: BRIEF_TRANSCRIPT_MAX_BYTES,
-    maxEvents: BRIEF_TRANSCRIPT_MAX_EVENTS,
+    maxBytes: TOPICS_TRANSCRIPT_MAX_BYTES,
+    maxEvents: TOPICS_TRANSCRIPT_MAX_EVENTS,
   });
-  return transcript.available ? formatTranscriptForBrief(transcript.events) : "";
+  if (!transcript.available) {
+    return "";
+  }
+  return formatTranscriptForBrief(transcript.events, { maxMessages: TOPICS_RECENT_MESSAGES });
 }
 
-function buildBriefInstruction(maxTokens: number): string {
-  // Deliberately NOT a compaction/technical summary: this is a persona-forward
-  // briefing for talking to a person on a live call.
+function buildPersonaInstruction(maxTokens: number): string {
+  // Deliberately NOT a compaction/technical summary: this is who-you-are
+  // material for sounding like the agent on a live call. Caller-independent so
+  // it can be cached and reused across calls.
   return [
-    `Write a pre-call briefing of at most ~${maxTokens} tokens for your realtime voice front-end,`,
-    "which is about to answer a live voice call and starts with none of your context.",
-    "This is a briefing for talking to a person on the phone — NOT a technical summary or a compaction.",
+    `Write a persona briefing of at most ~${maxTokens} tokens for your realtime voice front-end,`,
+    "which answers live voice calls with none of your context and must sound like you on the phone.",
     "",
-    "Weight it like this:",
-    "- MOST of the briefing is your PERSONA: your name, personality, how you talk, your tone and style,",
-    "  how you address this caller, and how you should come across live. Make the voice model sound like you.",
-    "- Then the caller and your relationship, plus the gist of what you two discussed most recently in this",
-    "  session — the recent topics and any open threads worth continuing by voice.",
+    "Cover: your name, personality, how you talk, your tone and style, and how you should come",
+    "across live on a call.",
     "",
-    "Leave OUT technical details, implementation specifics, IDs, code, config, numbers, and fine-grained facts.",
-    "The front-end delegates anything factual or substantive to the full agent, so it does not need those here.",
+    "Also cover your user: who they are, what you call them and how they address you, and the",
+    "relationship and rapport between you two — familiarity, running jokes, how formal or casual",
+    "you are with each other — so the voice front-end treats them the way you would.",
     "",
-    "Finally, judge the dominant language of the conversation and memory above, and END the briefing with an",
-    "explicit instruction telling the voice model which language to speak — e.g. if the history is mostly",
-    "Chinese, instruct it to converse in Chinese; if English, English.",
+    "This is who-you-are material only — leave OUT technical details, implementation specifics,",
+    "IDs, code, config, numbers, and fine-grained facts. The front-end delegates anything factual",
+    "or substantive to the full agent, so it does not need those here.",
+    "",
+    "Write as direct second-person instructions to the voice front-end. Output ONLY the briefing text.",
+  ].join("\n");
+}
+
+function buildTopicsInstruction(maxTokens: number): string {
+  // Who the caller is and the relationship are already covered by the persona
+  // briefing; this stage is only the recent substance of THIS conversation.
+  return [
+    `Write a recent-topics briefing of at most ~${maxTokens} tokens for your realtime voice`,
+    "front-end, which is about to answer a live voice call from the caller in the conversation above.",
+    "",
+    "Cover the gist of what you two discussed most recently and any open threads worth continuing",
+    "by voice. Leave OUT technical details, implementation specifics, IDs, code, config, numbers,",
+    "and fine-grained facts — the front-end delegates anything substantive to the full agent.",
+    "",
+    "Finally, judge the dominant language of the conversation above and END the briefing with an",
+    "explicit instruction telling the voice model which language to speak — e.g. if the history is",
+    "mostly Chinese, instruct it to converse in Chinese; if English, English.",
     "",
     "Write as direct second-person instructions to the voice front-end. Output ONLY the briefing text.",
   ].join("\n");
@@ -175,7 +371,11 @@ function buildBriefInstruction(maxTokens: number): string {
 
 // Minimal transcript formatter: session events are opaque (SessionTranscriptEvent
 // is unknown), so narrow defensively to visible user/assistant message text.
-export function formatTranscriptForBrief(events: readonly unknown[]): string {
+// Tool calls/results are message-typed with other roles or no text and drop out.
+export function formatTranscriptForBrief(
+  events: readonly unknown[],
+  opts?: { maxMessages?: number },
+): string {
   const lines: string[] = [];
   for (const event of events) {
     const entry = asRecord(event);
@@ -193,7 +393,8 @@ export function formatTranscriptForBrief(events: readonly unknown[]): string {
     }
     lines.push(`${role === "user" ? "User" : "Assistant"}: ${text}`);
   }
-  return lines.join("\n").trim();
+  const recent = opts?.maxMessages !== undefined ? lines.slice(-opts.maxMessages) : lines;
+  return recent.join("\n").trim();
 }
 
 function extractContentText(content: unknown): string {

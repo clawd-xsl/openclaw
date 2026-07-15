@@ -33,6 +33,13 @@ describe("formatTranscriptForBrief", () => {
     expect(formatTranscriptForBrief([])).toBe("");
     expect(formatTranscriptForBrief([msg("user", "")])).toBe("");
   });
+
+  it("keeps only the most recent maxMessages messages", () => {
+    const events = [msg("user", "one"), msg("assistant", "two"), msg("user", "three")];
+    expect(formatTranscriptForBrief(events, { maxMessages: 2 })).toBe(
+      "Assistant: two\nUser: three",
+    );
+  });
 });
 
 // A runtime whose model call would throw if reached — proves the disabled path

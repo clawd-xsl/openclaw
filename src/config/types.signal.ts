@@ -37,10 +37,13 @@ export type SignalVoiceCallConfig = {
   hideIp?: boolean;
   maxCallDurationMs?: number;
   /**
-   * Pre-call context brief. Before the realtime front-end connects, a one-shot
-   * compression runs on the caller's session (system prompt + turns + memory)
-   * using `model`; the bounded briefing is injected into the realtime
-   * instructions so the front-end knows who it is and who is calling.
+   * Pre-call context brief, two-stage: a cached persona briefing (generated off
+   * the call path from the agent's own composed system prompt; regenerated only
+   * when the persona workspace files — SOUL/IDENTITY/USER/AGENTS/MEMORY.md —
+   * change) plus a fast live compression of the caller's recent messages with a
+   * spoken-language instruction. Both are injected into the realtime
+   * instructions so the front-end knows who it is and who is calling without
+   * delaying pickup.
    */
   contextBrief?: {
     /** Master switch. Default: false. */
@@ -48,9 +51,9 @@ export type SignalVoiceCallConfig = {
     /** Compressor model ref (e.g. "sonnet"). Falls back to the agent default when unset. */
     model?: string;
     provider?: string;
-    /** Target size of the injected briefing. Default: 1500. */
+    /** Target size of the combined injected briefing. Default: 1500. */
     maxTokens?: number;
-    /** Skip the brief (proceed with generic instructions) if it exceeds this. Default: 4000. */
+    /** Per-stage compressor timeout; exceeding it fails call setup (fail-closed). Default: 4000. */
     timeoutMs?: number;
   };
   /** Optional overrides for the PulseAudio helper binaries used by the transport. */

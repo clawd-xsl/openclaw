@@ -31,7 +31,10 @@ import { sendMessageSignalTs } from "../signal-ts-outbound.js";
 import { isAllowedSignalCaller } from "./allowlist.js";
 import { registerSignalCallManager, unregisterSignalCallManager } from "./call-registry.js";
 import type { SignalVoiceCallConfig } from "./config.js";
-import { generateSignalVoiceContextBrief } from "./context-brief.js";
+import {
+  generateSignalVoiceContextBrief,
+  refreshSignalVoicePersonaBrief,
+} from "./context-brief.js";
 import { createSignalRealtimeVoiceSession, type SignalRealtimeVoiceSession } from "./realtime.js";
 
 const log = createSubsystemLogger("signal/voice");
@@ -98,6 +101,27 @@ export function startSignalVoiceRuntime(params: StartSignalVoiceRuntimeParams): 
       log.warn(`signal voice: session close failed: ${formatErrorMessage(err)}`);
     }
     activeSession = undefined;
+  };
+
+  // Warm the persona cache off the call path at voice-runtime start. The
+  // refresh reruns the compressor only when the persona workspace files
+  // changed; otherwise the cached brief stays as-is (no TTL, no periodic
+  // recompute) and call time just reads it.
+  const warmPersonaBrief = (): void => {
+    if (!voiceConfig.contextBrief?.enabled) {
+      return;
+    }
+    const pluginRuntime = getOptionalSignalRuntime();
+    if (!pluginRuntime) {
+      return;
+    }
+    const route = resolveAgentRoute({ cfg, channel: "signal", accountId });
+    refreshSignalVoicePersonaBrief({
+      cfg,
+      agentRuntime: pluginRuntime.agent,
+      voiceConfig,
+      route: { agentId: route.agentId, sessionKey: route.sessionKey },
+    });
   };
 
   // Pre-start the brief so it overlaps ringing; buildAndConnectSession awaits it.
@@ -407,6 +431,9 @@ export function startSignalVoiceRuntime(params: StartSignalVoiceRuntimeParams): 
     },
   };
   registerSignalCallManager(accountId, voiceRuntime);
+  // Warm the default route's persona cache so the first call doesn't pay the
+  // live persona composition.
+  warmPersonaBrief();
   log.info(`signal voice: runtime started account=${accountId}`);
   return voiceRuntime;
 
