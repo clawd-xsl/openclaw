@@ -1201,6 +1201,9 @@ const SignalVoiceCallSchema = z
       })
       .strict()
       .optional(),
+    // Provider-specific realtime voice config keyed by provider id (same shape
+    // as voicecall.realtime.providers): e.g. Qwen workspaceId/baseUrl/apiKey.
+    providers: z.record(z.string(), z.record(z.string(), z.unknown()).optional()).optional(),
     pulse: z
       .object({ pactlPath: z.string().optional(), pacatPath: z.string().optional() })
       .strict()

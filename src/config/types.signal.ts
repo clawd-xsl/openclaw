@@ -56,6 +56,13 @@ export type SignalVoiceCallConfig = {
     /** Per-stage compressor timeout; exceeding it fails call setup (fail-closed). Default: 4000. */
     timeoutMs?: number;
   };
+  /**
+   * Provider-specific realtime voice config keyed by provider id (same shape as
+   * `voicecall.realtime.providers`), e.g. Qwen's `workspaceId`/`baseUrl`/`wsUrl`
+   * and `apiKey`. Merged under the selected provider's own config resolution;
+   * `model`/`voice` above still win as per-call overrides.
+   */
+  providers?: Record<string, Record<string, unknown> | undefined>;
   /** Optional overrides for the PulseAudio helper binaries used by the transport. */
   pulse?: { pactlPath?: string; pacatPath?: string };
 };

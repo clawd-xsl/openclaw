@@ -286,6 +286,7 @@ describe("buildQwenRealtimeVoiceProvider", () => {
           threshold: 0.6,
           silence_duration_ms: 900,
         },
+        input_audio_transcription: { model: "qwen3-asr-flash-realtime" },
       });
     });
 
@@ -300,11 +301,11 @@ describe("buildQwenRealtimeVoiceProvider", () => {
       });
     });
 
-    it("maps tools into the session with tool_choice auto", () => {
+    it("maps tools into the session without tool_choice (unsupported by Qwen)", () => {
       const socket = openBridge({ tools: [SAMPLE_TOOL] });
       const update = sentEvents(socket).find((event) => event.type === "session.update");
       expect(update?.session?.tools).toEqual([SAMPLE_TOOL]);
-      expect(update?.session?.tool_choice).toBe("auto");
+      expect(update?.session?.tool_choice).toBeUndefined();
     });
 
     it("omits tools when none are provided", () => {

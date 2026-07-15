@@ -113,6 +113,9 @@ class SignalRealtimeVoiceSessionImpl implements SignalRealtimeVoiceSession {
     const contextBrief = this.params.contextBrief;
     const resolved = resolveConfiguredRealtimeVoiceProvider({
       configuredProviderId: voiceConfig.realtimeProvider,
+      // Provider-specific config (e.g. Qwen workspaceId/baseUrl/apiKey) comes
+      // from voiceCall.providers; model/voice stay thin per-call overrides.
+      providerConfigs: voiceConfig.providers,
       providerConfigOverrides: buildSignalProviderConfigOverrides(voiceConfig),
       cfg: this.params.cfg,
       defaultModel: voiceConfig.model,

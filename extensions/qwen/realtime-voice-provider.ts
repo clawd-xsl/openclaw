@@ -37,6 +37,8 @@ const QWEN_REALTIME_DEFAULT_REGION = "cn-beijing";
 const QWEN_REALTIME_DEFAULT_VOICE = "Ethan";
 const QWEN_REALTIME_DEFAULT_VAD_THRESHOLD = 0.5;
 const QWEN_REALTIME_DEFAULT_SILENCE_MS = 800;
+// DashScope realtime input-transcription model (per the Model Studio realtime docs).
+const QWEN_REALTIME_TRANSCRIPTION_MODEL = "qwen3-asr-flash-realtime";
 const QWEN_REALTIME_WS_PATH = "/api-ws/v1/realtime";
 // DashScope Qwen-Omni-Realtime speaks/hears fixed sample rates regardless of the
 // OpenClaw sink format, so the bridge always transcodes to/from these.
@@ -85,8 +87,8 @@ type QwenRealtimeSessionUpdate = {
       threshold: number;
       silence_duration_ms: number;
     };
+    input_audio_transcription: { model: string };
     tools?: RealtimeVoiceTool[];
-    tool_choice?: string;
   };
 };
 
@@ -543,7 +545,12 @@ class QwenRealtimeVoiceBridge implements RealtimeVoiceBridge {
           threshold: cfg.vadThreshold ?? QWEN_REALTIME_DEFAULT_VAD_THRESHOLD,
           silence_duration_ms: cfg.silenceDurationMs ?? QWEN_REALTIME_DEFAULT_SILENCE_MS,
         },
-        ...(cfg.tools && cfg.tools.length > 0 ? { tools: cfg.tools, tool_choice: "auto" } : {}),
+        // Without this the server never emits input transcription events and
+        // call logs/consults lose the caller's words (model per DashScope docs).
+        input_audio_transcription: { model: QWEN_REALTIME_TRANSCRIPTION_MODEL },
+        // No tool_choice: Qwen Omni Realtime does not support it; the server
+        // currently ignores the field but it is outside the documented contract.
+        ...(cfg.tools && cfg.tools.length > 0 ? { tools: cfg.tools } : {}),
       },
     };
   }
