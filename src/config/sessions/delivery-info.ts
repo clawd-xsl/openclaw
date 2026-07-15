@@ -39,6 +39,24 @@ function hasRoutableDeliveryContext(context?: {
   return Boolean(context?.channel && context?.to);
 }
 
+// Persisted routes mix bare targets (inbound) with channel-prefixed ones that
+// older outbound announces wrote (e.g. origin.to "signal:<uuid>"). Fold the
+// channel prefix before route-identity comparison so owner identity restore
+// keeps working for entries written by either spelling.
+function stripChannelPrefixFromTarget(
+  to: string | undefined,
+  channel: string | undefined,
+): string | undefined {
+  const target = to?.trim();
+  const prefix = normalizeLowercaseStringOrEmpty(channel ?? "");
+  if (!target || !prefix) {
+    return target;
+  }
+  return normalizeLowercaseStringOrEmpty(target).startsWith(`${prefix}:`)
+    ? target.slice(prefix.length + 1).trim()
+    : target;
+}
+
 /**
  * Extracts the routable delivery context and thread id for a persisted session key.
  *
@@ -87,12 +105,13 @@ export function extractDeliveryInfo(
       );
       const originRouteKey = channelRouteDedupeKey({
         channel: entry?.origin?.provider,
-        to: entry?.origin?.to,
+        to: stripChannelPrefixFromTarget(entry?.origin?.to, entry?.origin?.provider),
         accountId: entry?.origin?.accountId,
         threadId: entry?.origin?.threadId,
       });
       const deliveryRouteKey = channelRouteDedupeKey({
         ...storedDeliveryContext,
+        to: stripChannelPrefixFromTarget(storedDeliveryContext.to, storedDeliveryContext.channel),
         threadId: threadId ?? storedDeliveryContext.threadId,
       });
       // Origin owns the sender identity. Require its complete route to match the

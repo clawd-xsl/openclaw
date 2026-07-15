@@ -50,6 +50,11 @@ export function resolveSignalOutboundTarget(target: string): ResolvedSignalOutbo
     peer: { kind: "direct", id: peerId },
     chatType: "direct",
     from: `signal:${displayRecipient}`,
-    to: `signal:${displayRecipient}`,
+    // Canonical bare target, matching the inbound normalizeSignalMessagingTarget
+    // spelling. Origin/delivery route comparisons (owner identity restore for
+    // system-event turns) require both sides to agree; a signal:-prefixed `to`
+    // here overwrote origin.to on outbound announces and made subsequent
+    // automation turns drop the owner sender and its owner-only tools.
+    to: displayRecipient,
   };
 }

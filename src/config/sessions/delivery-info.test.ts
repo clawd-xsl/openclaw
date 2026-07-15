@@ -157,6 +157,27 @@ describe("extractDeliveryInfo", () => {
     });
   });
 
+  it("restores the sender when an outbound announce wrote a channel-prefixed origin target", () => {
+    // Regression: Signal outbound announces persisted origin.to as
+    // "signal:<uuid>" while the inbound delivery route stayed bare, so the
+    // strict route comparison dropped the owner sender for system-event turns.
+    const sessionKey = "agent:main:main";
+    storeState.store[sessionKey] = {
+      ...buildEntry({ channel: "signal", to: "0d3a7c42-1111-4222-8333-444455556666" }),
+      origin: {
+        provider: "signal",
+        from: "signal:0d3a7c42-1111-4222-8333-444455556666",
+        to: "signal:0d3a7c42-1111-4222-8333-444455556666",
+      },
+    };
+
+    expect(extractDeliveryInfo(sessionKey)).toEqual({
+      deliveryContext: { channel: "signal", to: "0d3a7c42-1111-4222-8333-444455556666" },
+      threadId: undefined,
+      senderId: "signal:0d3a7c42-1111-4222-8333-444455556666",
+    });
+  });
+
   it("omits a sender whose persisted origin does not own the delivery domain", () => {
     const sessionKey = "agent:main:main";
     storeState.store[sessionKey] = {
