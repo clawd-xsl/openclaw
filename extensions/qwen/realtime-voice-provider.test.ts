@@ -97,7 +97,10 @@ type BridgeOverrides = {
   audioFormat?: typeof REALTIME_VOICE_AUDIO_FORMAT_PCM16_24KHZ;
 };
 
-function openBridge(overrides: BridgeOverrides = {}): FakeWebSocketInstance {
+function openBridgeWith(overrides: BridgeOverrides & { onToolCall?: (e: unknown) => void } = {}): {
+  socket: FakeWebSocketInstance;
+  bridge: ReturnType<ReturnType<typeof buildQwenRealtimeVoiceProvider>["createBridge"]>;
+} {
   const provider = buildQwenRealtimeVoiceProvider();
   const bridge = provider.createBridge({
     providerConfig: overrides.providerConfig ?? {
@@ -108,6 +111,7 @@ function openBridge(overrides: BridgeOverrides = {}): FakeWebSocketInstance {
     tools: overrides.tools,
     onAudio: vi.fn(),
     onClearAudio: vi.fn(),
+    ...(overrides.onToolCall ? { onToolCall: overrides.onToolCall } : {}),
   });
   void bridge.connect();
   const socket = FakeWebSocket.instances.at(-1);
@@ -116,7 +120,15 @@ function openBridge(overrides: BridgeOverrides = {}): FakeWebSocketInstance {
   }
   socket.readyState = FakeWebSocket.OPEN;
   socket.emit("open");
-  return socket;
+  return { socket, bridge };
+}
+
+function openBridge(overrides: BridgeOverrides = {}): FakeWebSocketInstance {
+  return openBridgeWith(overrides).socket;
+}
+
+function emitServer(socket: FakeWebSocketInstance, event: Record<string, unknown>): void {
+  socket.emit("message", Buffer.from(JSON.stringify(event)));
 }
 
 function sentEvents(socket: FakeWebSocketInstance): SentEvent[] {
@@ -313,6 +325,28 @@ describe("buildQwenRealtimeVoiceProvider", () => {
       const update = sentEvents(socket).find((event) => event.type === "session.update");
       expect(update?.session?.tools).toBeUndefined();
       expect(update?.session?.tool_choice).toBeUndefined();
+    });
+  });
+
+  describe("tool-result response lifecycle", () => {
+    it("defers a tool-result response.create while a response is active, then flushes on done", () => {
+      // Repro of the silent-hang: a tool result submitted mid-response (e.g. a
+      // malformed tool call rejected immediately) must not drop its
+      // response.create; it flushes once the active response finishes.
+      const { socket, bridge } = openBridgeWith({ tools: [SAMPLE_TOOL] });
+      emitServer(socket, { type: "session.updated" });
+      emitServer(socket, { type: "response.created" });
+      const before = socket.sent.length;
+
+      bridge.submitToolResult("call-1", { error: "empty tool arguments" });
+      // Response still active: no response.create yet, but the tool output is sent.
+      const afterSubmit = sentEvents(socket).slice(before);
+      expect(afterSubmit.some((e) => e.type === "conversation.item.create")).toBe(true);
+      expect(afterSubmit.some((e) => e.type === "response.create")).toBe(false);
+
+      emitServer(socket, { type: "response.done" });
+      const afterDone = sentEvents(socket).slice(before);
+      expect(afterDone.some((e) => e.type === "response.create")).toBe(true);
     });
   });
 

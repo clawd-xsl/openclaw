@@ -249,6 +249,12 @@ class QwenRealtimeVoiceBridge implements RealtimeVoiceBridge {
   private reconnectAttempts = 0;
   private pendingAudio: Buffer[] = [];
   private responseActive = false;
+  // A response.create requested while a response is still active is deferred,
+  // then flushed on response.done/cancelled. Qwen requires the prior response
+  // to finish before the next one; without this a tool result submitted mid-
+  // response (e.g. a malformed tool call OpenClaw rejects immediately) drops
+  // its response.create and the call goes silent.
+  private responseCreatePending = false;
   private continuingToolCallIds = new Set<string>();
   private toolCallBuffers = new Map<string, { name: string; callId: string; args: string }>();
   private connectionUrl = "";
@@ -642,6 +648,7 @@ class QwenRealtimeVoiceBridge implements RealtimeVoiceBridge {
       case "response.cancelled":
       case "response.done":
         this.responseActive = false;
+        this.flushPendingResponseCreate();
         return;
 
       // Function calling path is undocumented by Alibaba but the event schema is
@@ -703,13 +710,25 @@ class QwenRealtimeVoiceBridge implements RealtimeVoiceBridge {
 
   private requestResponseCreate(): void {
     if (this.responseActive || this.continuingToolCallIds.size > 0) {
+      // Defer instead of dropping; flushed when the active response finishes.
+      this.responseCreatePending = true;
       return;
     }
+    this.responseCreatePending = false;
     this.sendEvent({ type: "response.create" });
+  }
+
+  private flushPendingResponseCreate(): void {
+    if (!this.responseCreatePending) {
+      return;
+    }
+    this.responseCreatePending = false;
+    this.requestResponseCreate();
   }
 
   private resetSessionState(): void {
     this.responseActive = false;
+    this.responseCreatePending = false;
     this.continuingToolCallIds.clear();
     this.toolCallBuffers.clear();
   }
