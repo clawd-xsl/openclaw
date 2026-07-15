@@ -4,15 +4,18 @@
 import { parseModelCatalogRef } from "@openclaw/model-catalog-core/model-catalog-refs";
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
+import type { SessionEntry } from "../config/sessions.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   isCliRuntimeModelBackendForProvider,
+  isRuntimeRegisteredCliBackend,
   listCliRuntimeModelBackendBindings,
   listCliRuntimeProviderIds,
   resolveCliRuntimeCanonicalProvider,
   resolveCliRuntimeModelBackendBinding,
 } from "./cli-backends.js";
 import { resolveModelRuntimePolicy } from "./model-runtime-policy.js";
+import { isCliProvider } from "./model-selection-cli.js";
 import { resolveProviderIdForAuth } from "./provider-auth-aliases.js";
 
 /** True for CLI runtime provider ids such as `claude-cli` and `google-gemini-cli`. */
@@ -249,4 +252,112 @@ export function resolveCliRuntimeExecutionProvider(params: {
     provider: effectiveProvider,
     runtime,
   })?.runtime;
+}
+
+/** Resolves the runtime provider override stored on a session entry. */
+export function resolveSessionRuntimeOverrideForProvider(params: {
+  provider: string;
+  entry?: Pick<SessionEntry, "agentRuntimeOverride">;
+  cfg?: OpenClawConfig;
+}): string | undefined {
+  const provider = normalizeProviderId(params.provider);
+  const runtime = normalizeOptionalLowercaseString(params.entry?.agentRuntimeOverride) ?? "";
+  if (!runtime || runtime === "auto" || runtime === "default") {
+    return undefined;
+  }
+  if (provider === "openai" && runtime === "codex") {
+    return "codex";
+  }
+  if (isCliRuntimeAliasForProvider({ provider, runtime, cfg: params.cfg })) {
+    return runtime;
+  }
+  return undefined;
+}
+
+/**
+ * Single decision seam for CLI-backend execution dispatch, shared by the
+ * main-turn, followup, memory-flush, cron, command, and embedded runners.
+ * Returns the CLI execution provider (backend id, e.g. "claude-cli") when the
+ * run must execute through a CLI harness, or undefined for the embedded/API
+ * path. Precedence: validated session runtime override, then the configured
+ * agentRuntime binding / auth-profile inference (an explicit "openclaw" policy
+ * pins embedded), then standalone CLI backends' own provider-prefixed refs.
+ *
+ * Provider-prefixed refs of runtime-ALIAS backends (model refs like
+ * claude-cli/<model>, whose backend serves a canonical model provider) are
+ * retired input and THROW: the canonical config is the API provider ref plus
+ * the agentRuntime binding. "claude-cli" stays valid everywhere else — as this
+ * seam's OUTPUT, as a session-binding/auth key, and as an agentRuntime id.
+ */
+export function resolveCliExecutionDispatch(params: {
+  provider: string;
+  cfg?: OpenClawConfig;
+  agentId?: string | undefined;
+  modelId?: string | undefined;
+  authProfileId?: string | undefined;
+  /** Session override, already validated by resolveSessionRuntimeOverrideForProvider. */
+  runtimeOverride?: string | undefined;
+}): string | undefined {
+  const override = normalizeProviderId(params.runtimeOverride ?? "");
+  if (override && isCliProvider(override, params.cfg)) {
+    return override;
+  }
+  const bound = resolveCliRuntimeExecutionProvider({
+    provider: params.provider,
+    cfg: params.cfg,
+    agentId: params.agentId,
+    modelId: params.modelId,
+    ...(params.authProfileId !== undefined ? { authProfileId: params.authProfileId } : {}),
+  });
+  if (bound) {
+    return isCliProvider(bound, params.cfg) ? bound : undefined;
+  }
+  const provider = normalizeProviderId(params.provider);
+  if (!provider || !isCliProvider(provider, params.cfg)) {
+    return undefined;
+  }
+  // Loaded surfaces first (registry bindings are in-memory): only fall back to
+  // the setup registry when neither the runtime registry nor config owns the
+  // backend — its per-call register()/fs probes are hot-path poison, and this
+  // tail runs per fallback candidate.
+  const canonical = resolveCliRuntimeCanonicalProvider({ runtime: provider, config: params.cfg });
+  if (canonical && canonical !== provider) {
+    throw buildRetiredCliRefError(provider, canonical, params.cfg);
+  }
+  const ownedByLoadedSurface =
+    Object.keys(params.cfg?.agents?.defaults?.cliBackends ?? {}).some(
+      (key) => normalizeProviderId(key) === provider,
+    ) || isRuntimeRegisteredCliBackend(provider);
+  if (ownedByLoadedSurface) {
+    // Standalone CLI backend without a canonical model provider: direct
+    // <backend>/<model> refs are its only spelling — dispatch as-is.
+    return provider;
+  }
+  const setupCanonical = resolveCliRuntimeCanonicalProvider({
+    runtime: provider,
+    config: params.cfg,
+    includeSetupRegistry: true,
+  });
+  if (setupCanonical && setupCanonical !== provider) {
+    throw buildRetiredCliRefError(provider, setupCanonical, params.cfg);
+  }
+  return provider;
+}
+
+function buildRetiredCliRefError(provider: string, canonical: string, cfg?: OpenClawConfig): Error {
+  // Only claim the auth-profile recovery path when the backend id actually
+  // aliases to the canonical provider's auth key (claude-cli -> anthropic
+  // does; google-gemini-cli does not, so that profile can never auto-bind).
+  const authAliasWorks =
+    resolveProviderIdForAuth(provider, { config: cfg }) ===
+    resolveProviderIdForAuth(canonical, { config: cfg });
+  const authHint = authAliasWorks
+    ? ` (or keep a "${provider}" auth profile for automatic binding)`
+    : "";
+  return new Error(
+    `Model refs with the CLI runtime provider "${provider}" are retired. ` +
+      `Use the canonical "${canonical}/<model>" ref and configure the agentRuntime binding${authHint}. ` +
+      `Run \`openclaw doctor --fix\` to migrate model config, and reset session or cron ` +
+      `model overrides that still use "${provider}/..." manually.`,
+  );
 }

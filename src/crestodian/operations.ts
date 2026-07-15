@@ -127,7 +127,9 @@ const PLUGIN_UNINSTALL_RE =
 
 const OPENAI_API_DEFAULT_MODEL_REF = `${DEFAULT_PROVIDER}/${DEFAULT_MODEL}`;
 const ANTHROPIC_API_DEFAULT_MODEL_REF = "anthropic/claude-opus-4-8";
-const CLAUDE_CLI_DEFAULT_MODEL_REF = "claude-cli/claude-opus-4-8";
+// Canonical API ref; Claude Code CLI execution binds via the claude-cli auth
+// profile that setup/external-cli sync creates (claude-cli/<model> is retired).
+const CLAUDE_CLI_DEFAULT_MODEL_REF = "anthropic/claude-opus-4-8";
 const CODEX_APP_SERVER_DEFAULT_MODEL_REF = "openai/gpt-5.5";
 
 /** Parse one user command into Crestodian's closed operation union. */
@@ -652,6 +654,21 @@ export async function executeCrestodianOperation(
             field: "model",
           });
         }
+        // Claude-Code-only setups have no API key and no auth profile yet, so
+        // the canonical anthropic ref needs an explicit agentRuntime binding
+        // or dispatch would take the embedded API path and fail auth.
+        const claudeCliModels =
+          setupModel.source === "Claude Code CLI" && setupModel.model
+            ? {
+                models: {
+                  ...next.agents?.defaults?.models,
+                  [setupModel.model]: {
+                    ...next.agents?.defaults?.models?.[setupModel.model],
+                    agentRuntime: { id: "claude-cli" },
+                  },
+                },
+              }
+            : {};
         next = {
           ...next,
           agents: {
@@ -659,6 +676,7 @@ export async function executeCrestodianOperation(
             defaults: {
               ...next.agents?.defaults,
               workspace,
+              ...claudeCliModels,
             },
           },
         };

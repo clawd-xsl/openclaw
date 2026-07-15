@@ -24,6 +24,7 @@ import {
 } from "../../agents/agent-tools.policy.js";
 import { runAgentHarnessBeforeMessageWriteHook } from "../../agents/harness/hook-helpers.js";
 import { selectAgentHarness } from "../../agents/harness/selection.js";
+import { resolveSessionRuntimeOverrideForProvider } from "../../agents/model-runtime-aliases.js";
 import {
   buildModelAliasIndex,
   resolveDefaultModelForAgent,
@@ -127,7 +128,6 @@ import {
 } from "../reply-payload.js";
 import type { FinalizedMsgContext } from "../templating.js";
 import { normalizeVerboseLevel } from "../thinking.js";
-import { resolveSessionRuntimeOverrideForProvider } from "./agent-runner-execution.js";
 import {
   takeCommandSessionMetadataChanges,
   type CommandSessionMetadataChange,

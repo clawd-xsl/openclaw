@@ -22,12 +22,12 @@ type CrestodianLocalPlannerBackend = {
 
 const CLAUDE_CLI_BACKEND: CrestodianLocalPlannerBackend = {
   kind: "claude-cli",
-  label: `claude-cli/${CRESTODIAN_CLAUDE_CLI_MODEL}`,
+  label: `anthropic/${CRESTODIAN_CLAUDE_CLI_MODEL} via claude-cli`,
   runner: "cli",
   provider: "claude-cli",
   model: CRESTODIAN_CLAUDE_CLI_MODEL,
   buildConfig: (workspaceDir) =>
-    buildCliPlannerConfig(workspaceDir, `claude-cli/${CRESTODIAN_CLAUDE_CLI_MODEL}`),
+    buildCliPlannerConfig(workspaceDir, `anthropic/${CRESTODIAN_CLAUDE_CLI_MODEL}`),
 };
 
 const CODEX_APP_SERVER_BACKEND: CrestodianLocalPlannerBackend = {
@@ -59,6 +59,9 @@ function buildCliPlannerConfig(workspaceDir: string, modelRef: string): OpenClaw
       defaults: {
         workspace: workspaceDir,
         model: { primary: modelRef },
+        // Planner hosts have no auth profile; bind the canonical ref to the
+        // Claude CLI runtime explicitly so dispatch stays on the local CLI.
+        models: { [modelRef]: { agentRuntime: { id: "claude-cli" } } },
       },
     },
   };

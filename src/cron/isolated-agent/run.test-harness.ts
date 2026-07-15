@@ -146,6 +146,13 @@ vi.mock("../../agents/model-runtime-aliases.js", async () => ({
     "../../agents/model-runtime-aliases.js",
   )),
   resolveCliRuntimeExecutionProvider: resolveCliRuntimeExecutionProviderMock,
+  // Mirror the seam over the harness's existing mocks: binding result (or the
+  // raw provider) dispatches when the isCliProvider mock accepts it.
+  resolveCliExecutionDispatch: (params: { provider: string; cfg?: unknown }) => {
+    const bound =
+      (resolveCliRuntimeExecutionProviderMock(params) as string | undefined) ?? params.provider;
+    return isCliProviderMock(bound, params.cfg) ? bound : undefined;
+  },
 }));
 
 vi.mock("./run-external-content.runtime.js", () => ({
@@ -279,6 +286,27 @@ vi.mock("../../agents/model-runtime-aliases.js", () => ({
       ? cfg?.agents?.defaults?.models?.[key]?.agentRuntime?.id?.trim()
       : undefined;
     return runtime || provider;
+  },
+  // Same shape as the real seam, driven by the harness mocks: the configured
+  // runtime (or raw provider) dispatches when the isCliProvider mock accepts it.
+  resolveCliExecutionDispatch: (params: {
+    provider: string;
+    cfg?: {
+      agents?: {
+        defaults?: {
+          models?: Record<string, { agentRuntime?: { id?: string } }>;
+        };
+      };
+    };
+    modelId?: string;
+  }) => {
+    const key =
+      params.provider && params.modelId ? `${params.provider}/${params.modelId}` : undefined;
+    const runtime = key
+      ? params.cfg?.agents?.defaults?.models?.[key]?.agentRuntime?.id?.trim()
+      : undefined;
+    const bound = runtime || params.provider;
+    return isCliProviderMock(bound, params.cfg) ? bound : undefined;
   },
 }));
 

@@ -16,7 +16,10 @@ import { runEmbeddedAgent } from "../../agents/embedded-agent.js";
 import type { FastModeAutoProgressState } from "../../agents/fast-mode.js";
 import { ensureSelectedAgentHarnessPlugin } from "../../agents/harness/runtime-plugin.js";
 import { runWithModelFallback } from "../../agents/model-fallback.js";
-import { resolveCliRuntimeExecutionProvider } from "../../agents/model-runtime-aliases.js";
+import {
+  resolveCliExecutionDispatch,
+  resolveSessionRuntimeOverrideForProvider,
+} from "../../agents/model-runtime-aliases.js";
 import { isCliProvider } from "../../agents/model-selection-cli.js";
 import {
   isAgentRunRestartAbortReason,
@@ -61,7 +64,6 @@ import {
   buildCommandOutputFromToolResultEvent,
   buildPreflightCompactionFailureText,
   resolveRunAfterAutoFallbackPrimaryProbeRecheck,
-  resolveSessionRuntimeOverrideForProvider,
 } from "./agent-runner-execution.js";
 import { runPreflightCompactionIfNeeded } from "./agent-runner-memory.js";
 import { appendUsageLine, resolveResponseUsageLine } from "./agent-runner-usage-line.js";
@@ -925,18 +927,14 @@ export function createFollowupRunner(params: {
               entry: activeSessionEntry,
               cfg: runtimeConfig,
             });
-            const cliExecutionProvider =
-              (sessionRuntimeOverride && isCliProvider(sessionRuntimeOverride, runtimeConfig)
-                ? sessionRuntimeOverride
-                : undefined) ??
-              resolveCliRuntimeExecutionProvider({
-                provider,
-                cfg: runtimeConfig,
-                agentId: run.agentId,
-                modelId: model,
-                authProfileId: selectedAuthProfile.authProfileId,
-              }) ??
-              provider;
+            const cliExecutionProvider = resolveCliExecutionDispatch({
+              provider,
+              cfg: runtimeConfig,
+              agentId: run.agentId,
+              modelId: model,
+              authProfileId: selectedAuthProfile.authProfileId,
+              runtimeOverride: sessionRuntimeOverride,
+            });
             let attemptCompactionCount = 0;
             const userTurnTranscriptRecorder =
               effectiveQueued.userTurnTranscriptRecorder ?? opts?.userTurnTranscriptRecorder;
@@ -972,7 +970,7 @@ export function createFollowupRunner(params: {
                 }
               });
             try {
-              if (isCliProvider(cliExecutionProvider, runtimeConfig)) {
+              if (cliExecutionProvider !== undefined) {
                 const cliSessionBinding = getCliSessionBinding(
                   activeSessionEntry,
                   cliExecutionProvider,

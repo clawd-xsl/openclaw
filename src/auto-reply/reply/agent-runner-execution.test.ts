@@ -6,6 +6,7 @@ import { formatBillingErrorMessage } from "../../agents/embedded-agent-helpers.j
 import { FailoverError } from "../../agents/failover-error.js";
 import { LiveSessionModelSwitchError } from "../../agents/live-model-switch-error.js";
 import { MissingProviderAuthError } from "../../agents/model-auth.js";
+import { resolveSessionRuntimeOverrideForProvider } from "../../agents/model-runtime-aliases.js";
 import { createAgentRunRestartAbortError } from "../../agents/run-termination.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import type { ModelDefinitionConfig } from "../../config/types.models.js";
@@ -28,7 +29,6 @@ import {
   buildContextOverflowRecoveryText,
   computeContextAwareReserveTokensFloor,
   MAX_LIVE_SWITCH_RETRIES,
-  resolveSessionRuntimeOverrideForProvider,
   resolveRunAfterAutoFallbackPrimaryProbeRecheck,
 } from "./agent-runner-execution.js";
 import { HEARTBEAT_EXTERNAL_RUN_FAILURE_TEXT } from "./agent-runner-failure-copy.js";
@@ -152,6 +152,23 @@ vi.mock("../../agents/model-selection.js", async () => {
   return {
     ...actual,
     isCliProvider: (provider: unknown) => state.isCliProviderMock(provider),
+  };
+});
+
+// CLI-branch tests drive the dispatch seam through the same switch the old
+// isCliProvider gate used: a mocked-true provider dispatches as itself. The
+// seam's own semantics (bindings, retired-spelling throw) are unit-tested in
+// model-runtime-aliases.test.ts.
+vi.mock("../../agents/model-runtime-aliases.js", async () => {
+  const actual = await vi.importActual<typeof import("../../agents/model-runtime-aliases.js")>(
+    "../../agents/model-runtime-aliases.js",
+  );
+  return {
+    ...actual,
+    resolveCliExecutionDispatch: (params: { provider: string; runtimeOverride?: string }) =>
+      state.isCliProviderMock(params.runtimeOverride ?? params.provider)
+        ? (params.runtimeOverride ?? params.provider)
+        : undefined,
   };
 });
 

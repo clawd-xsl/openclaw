@@ -9,6 +9,7 @@ import {
 import {
   areRuntimeModelRefsEquivalent,
   isCliRuntimeProvider,
+  resolveCliExecutionDispatch,
   resolveCliRuntimeExecutionProvider,
 } from "./model-runtime-aliases.js";
 
@@ -263,5 +264,149 @@ describe("areRuntimeModelRefsEquivalent", () => {
         },
       }),
     ).toBe(true);
+  });
+});
+
+describe("resolveCliExecutionDispatch", () => {
+  const cliBackendsCfg = {
+    agents: {
+      defaults: {
+        cliBackends: {
+          "claude-cli": { command: "claude" },
+          "acme-cli": { command: "acme" },
+        },
+      },
+    },
+  } as OpenClawConfig;
+
+  beforeEach(() => {
+    cliBackendsTesting.setDepsForTest({
+      resolvePluginSetupRegistry: () => ({
+        providers: [],
+        cliBackends: [],
+        configMigrations: [],
+        autoEnableProbes: [],
+        diagnostics: [],
+      }),
+      resolveRuntimeCliBackends: () => [
+        {
+          id: "claude-cli",
+          modelProvider: "anthropic",
+          pluginId: "anthropic",
+          config: { command: "claude" },
+        },
+      ],
+    });
+  });
+
+  afterEach(() => {
+    cliBackendsTesting.resetDepsForTest();
+  });
+
+  it("prefers a validated CLI session runtime override", () => {
+    expect(
+      resolveCliExecutionDispatch({
+        provider: "anthropic",
+        cfg: cliBackendsCfg,
+        runtimeOverride: "claude-cli",
+      }),
+    ).toBe("claude-cli");
+  });
+
+  it("ignores non-CLI runtime overrides (codex stays embedded)", () => {
+    expect(
+      resolveCliExecutionDispatch({
+        provider: "openai",
+        cfg: cliBackendsCfg,
+        runtimeOverride: "codex",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("dispatches an API provider ref through its auth-profile CLI binding", () => {
+    expect(
+      resolveCliExecutionDispatch({
+        provider: "anthropic",
+        cfg: createAnthropicAuthConfig({ order: ["anthropic:claude-cli"] }),
+        modelId: "opus-4.7",
+      }),
+    ).toBe("claude-cli");
+  });
+
+  it("keeps an explicit openclaw runtime policy on the embedded path", () => {
+    expect(
+      resolveCliExecutionDispatch({
+        provider: "anthropic",
+        cfg: createAnthropicAuthConfig({
+          order: ["anthropic:claude-cli"],
+          models: { "anthropic/opus-4.7": { agentRuntime: { id: "openclaw" } } },
+        }),
+        modelId: "opus-4.7",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("returns undefined for canonical refs with no CLI binding", () => {
+    expect(resolveCliExecutionDispatch({ provider: "anthropic", cfg: cliBackendsCfg })).toBe(
+      undefined,
+    );
+  });
+
+  it("dispatches standalone CLI backends' own provider-prefixed refs", () => {
+    // acme-cli has no canonical modelProvider: direct acme-cli/<model> refs are
+    // its only spelling and must keep dispatching.
+    expect(resolveCliExecutionDispatch({ provider: "acme-cli", cfg: cliBackendsCfg })).toBe(
+      "acme-cli",
+    );
+  });
+
+  it("throws for retired runtime-alias provider refs like claude-cli/<model>", () => {
+    expect(() =>
+      resolveCliExecutionDispatch({
+        provider: "claude-cli",
+        cfg: cliBackendsCfg,
+        modelId: "claude-opus-4-8",
+      }),
+    ).toThrowError(/retired[\s\S]*anthropic\/<model>[\s\S]*doctor --fix/);
+  });
+
+  it("offers the auth-profile recovery hint only when the backend aliases the auth key", () => {
+    // claude-cli aliases to anthropic's auth key -> hint applies.
+    expect(() =>
+      resolveCliExecutionDispatch({ provider: "claude-cli", cfg: cliBackendsCfg }),
+    ).toThrowError(/keep a "claude-cli" auth profile/);
+  });
+
+  it("omits the auth-profile hint for a runtime-alias backend without an auth alias", () => {
+    cliBackendsTesting.setDepsForTest({
+      resolvePluginSetupRegistry: () => ({
+        providers: [],
+        cliBackends: [],
+        configMigrations: [],
+        autoEnableProbes: [],
+        diagnostics: [],
+      }),
+      resolveRuntimeCliBackends: () => [
+        {
+          id: "acme-cli",
+          modelProvider: "acme",
+          pluginId: "acme",
+          config: { command: "acme" },
+        },
+      ],
+    });
+    let caught: Error | undefined;
+    try {
+      resolveCliExecutionDispatch({
+        provider: "acme-cli",
+        cfg: {
+          agents: { defaults: { cliBackends: { "acme-cli": { command: "acme" } } } },
+        } as OpenClawConfig,
+      });
+    } catch (err) {
+      caught = err as Error;
+    }
+    expect(caught?.message).toMatch(/retired/);
+    expect(caught?.message).not.toMatch(/auth profile/);
   });
 });

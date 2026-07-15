@@ -75,9 +75,10 @@ command path:
 }
 ```
 
-No API key is needed beyond the Claude Code login itself. Legacy refs such as
-`claude-cli/claude-sonnet-5` remain supported for compatibility, but new config
-should use `anthropic/claude-sonnet-5` plus `agentRuntime.id: "claude-cli"`.
+No API key is needed beyond the Claude Code login itself. Provider-prefixed
+refs such as `claude-cli/claude-sonnet-5` are retired and fail at run time with
+a pointer to `openclaw doctor --fix`; config must use `anthropic/claude-sonnet-5`
+plus `agentRuntime.id: "claude-cli"` (or rely on the claude-cli auth profile).
 
 If you use a bundled CLI backend as the **primary message provider** on a
 gateway host, OpenClaw now auto-loads the owning bundled plugin when your config
@@ -129,9 +130,10 @@ CLI backends can use that id as the left side of a model ref:
 <backend>/<model>
 ```
 
-For Claude Code, prefer the canonical `anthropic/<model>` ref and select the
+For Claude Code, use the canonical `anthropic/<model>` ref and select the
 backend with `agents.defaults.models["anthropic/<model>"].agentRuntime.id =
-"claude-cli"`. The `claude-cli/<model>` form is a compatibility shorthand.
+"claude-cli"`. The `claude-cli/<model>` form is retired: execution rejects it
+and `openclaw doctor --fix` migrates existing config.
 
 ### Example configuration
 
@@ -175,8 +177,9 @@ backend with `agents.defaults.models["anthropic/<model>"].agentRuntime.id =
 
 ## How it works
 
-1. **Selects a backend** from model-scoped `agentRuntime` policy. Legacy
-   `claude-cli/...` refs still select the same backend.
+1. **Selects a backend** from model-scoped `agentRuntime` policy (or the
+   backend's auth profile when no policy is set). Retired `claude-cli/...`
+   refs are rejected at dispatch; run `openclaw doctor --fix` to migrate.
 2. **Builds a system prompt** using the same OpenClaw prompt + workspace context.
 3. **Executes the CLI** with a session id (if supported) so history stays consistent.
    The bundled `claude-cli` backend keeps a Claude stdio process alive per

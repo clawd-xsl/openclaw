@@ -423,13 +423,11 @@ function normalizeLegacyRuntimeAllowlistModels(
   }> = [];
   for (const [rawKey, entry] of Object.entries(rawModels)) {
     const migrated = migrateLegacyRuntimeModelRef(rawKey);
-    if (
-      migrated &&
-      (migrated.runtime === selectedRuntime ||
-        migrated.legacyProvider === LEGACY_CODEX_CLI_RUNTIME_ID)
-    ) {
+    // Migrate every legacy runtime-alias key unconditionally and DROP the raw
+    // key: keeping it selectable persisted providerOverride values the dispatch
+    // seam now rejects, with no later migration owner.
+    if (migrated) {
       changed = true;
-      next[rawKey] = mergeModelEntry(entry, next[rawKey]);
       legacyEntries.push({
         migratedKey: migrated.ref,
         entry,
@@ -728,7 +726,123 @@ export function normalizeLegacyRuntimeModelRefs(
         agents: nextAgents as OpenClawConfig["agents"],
       }
     : cfgWithProviders;
-  return nextCfg;
+  return normalizeLegacyRuntimeScatteredModelRefs(nextCfg, changes);
+}
+
+// Model-ref config surfaces outside agents.*.model/models that historically
+// accepted legacy runtime-alias refs (claude-cli/<m>, ...). Dispatch now
+// rejects that spelling, so doctor must canonicalize every execution surface,
+// not just the agent model config.
+const SCATTERED_LEGACY_MODEL_REF_PATHS: readonly (readonly string[])[] = [
+  ["agents", "defaults", "voiceModel"],
+  ["agents", "defaults", "heartbeat", "model"],
+  ["agents", "defaults", "compaction", "memoryFlush", "model"],
+  ["messages", "tts", "summaryModel"],
+  ["plugins", "entries", "memory-core", "config", "summaries", "model"],
+];
+
+/**
+ * Rewrites legacy runtime-alias model refs on scattered config surfaces
+ * (channel overrides, heartbeat, memory flush, TTS/memory summaries, hook
+ * mappings, per-agent copies) to canonical provider refs, and records the
+ * runtime policy on agents.defaults.models so CLI dispatch keeps selecting
+ * the same backend after the rewrite.
+ */
+function normalizeLegacyRuntimeScatteredModelRefs(
+  cfg: OpenClawConfig,
+  changes: string[],
+): OpenClawConfig {
+  const policyRefs: SelectedRuntimeRef[] = [];
+  let changed = false;
+  const migrateValue = (value: unknown, path: string): unknown => {
+    if (typeof value !== "string") {
+      return value;
+    }
+    const migrated = migrateLegacyRuntimeModelRef(value);
+    if (!migrated) {
+      return value;
+    }
+    changed = true;
+    policyRefs.push({
+      ref: migrated.ref,
+      runtime: migrated.runtime,
+      requiresRuntimePolicy: migratedRuntimeRequiresPolicy(migrated.legacyProvider),
+    });
+    changes.push(`Moved ${path} legacy runtime ref to ${migrated.ref}.`);
+    return migrated.ref;
+  };
+
+  const root = structuredClone(cfg) as Record<string, unknown>;
+  const updateAt = (path: readonly string[]): void => {
+    let parent: Record<string, unknown> | undefined = root;
+    for (const key of path.slice(0, -1)) {
+      parent = isRecord(parent?.[key]) ? (parent[key] as Record<string, unknown>) : undefined;
+      if (!parent) {
+        return;
+      }
+    }
+    const leaf = path[path.length - 1]!;
+    parent[leaf] = migrateValue(parent[leaf], path.join("."));
+  };
+
+  for (const path of SCATTERED_LEGACY_MODEL_REF_PATHS) {
+    updateAt(path);
+  }
+  // Per-agent copies of the same surfaces.
+  const agentList = isRecord(root.agents) ? (root.agents as Record<string, unknown>).list : null;
+  if (Array.isArray(agentList)) {
+    for (const [index, entry] of agentList.entries()) {
+      if (!isRecord(entry)) {
+        continue;
+      }
+      const base = `agents.list[${index}]`;
+      entry.voiceModel = migrateValue(entry.voiceModel, `${base}.voiceModel`);
+      if (isRecord(entry.heartbeat)) {
+        entry.heartbeat.model = migrateValue(entry.heartbeat.model, `${base}.heartbeat.model`);
+      }
+      if (isRecord(entry.compaction) && isRecord(entry.compaction.memoryFlush)) {
+        entry.compaction.memoryFlush.model = migrateValue(
+          entry.compaction.memoryFlush.model,
+          `${base}.compaction.memoryFlush.model`,
+        );
+      }
+    }
+  }
+  // channels.modelByChannel.<channel>.<peer>
+  const channels = isRecord(root.channels) ? (root.channels as Record<string, unknown>) : null;
+  if (channels && isRecord(channels.modelByChannel)) {
+    for (const [channelId, byPeer] of Object.entries(channels.modelByChannel)) {
+      if (!isRecord(byPeer)) {
+        continue;
+      }
+      for (const [peer, ref] of Object.entries(byPeer)) {
+        byPeer[peer] = migrateValue(ref, `channels.modelByChannel.${channelId}.${peer}`);
+      }
+    }
+  }
+  // hooks.mappings[].model
+  const hooks = isRecord(root.hooks) ? (root.hooks as Record<string, unknown>) : null;
+  if (hooks && Array.isArray(hooks.mappings)) {
+    for (const [index, mapping] of hooks.mappings.entries()) {
+      if (isRecord(mapping)) {
+        mapping.model = migrateValue(mapping.model, `hooks.mappings[${index}].model`);
+      }
+    }
+  }
+
+  if (!changed) {
+    return cfg;
+  }
+  // Persist the runtime bindings the rewritten refs relied on.
+  const agents = isRecord(root.agents) ? (root.agents as Record<string, unknown>) : {};
+  const defaults = isRecord(agents.defaults) ? (agents.defaults as Record<string, unknown>) : {};
+  const policies = ensureSelectedModelRuntimePolicies(defaults.models, policyRefs);
+  if (policies.changed) {
+    defaults.models = policies.value;
+    agents.defaults = defaults;
+    root.agents = agents;
+  }
+  return root as OpenClawConfig;
 }
 
 /** Add missing metadata source markers to legacy OpenAI Codex model catalog entries. */

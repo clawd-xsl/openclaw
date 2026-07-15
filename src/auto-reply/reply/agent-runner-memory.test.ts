@@ -949,7 +949,6 @@ describe("runMemoryFlushIfNeeded", () => {
   });
 
   it.each([
-    ["direct CLI provider", "provider"],
     ["session runtime pin", "session"],
     ["model runtime policy", "model-policy"],
     ["selected CLI auth profile", "auth-profile"],
@@ -1004,7 +1003,7 @@ describe("runMemoryFlushIfNeeded", () => {
       ...(selectionSource === "session" ? { agentRuntimeOverride: "claude-cli" } : {}),
     };
     await writeTestSessionStore(storePath, "main", sessionEntry);
-    const provider = selectionSource === "provider" ? "claude-cli" : "anthropic";
+    const provider = "anthropic";
     const followupRun = createTestFollowupRun({
       provider,
       model: "claude-opus-4-6",
@@ -1141,10 +1140,21 @@ describe("runMemoryFlushIfNeeded", () => {
   ])(
     "projects fresh CLI final-call output across the $contextWindow-token context threshold",
     async ({ contextWindow, threshold }) => {
+      cliBackendsTesting.setDepsForTest({
+        resolveRuntimeCliBackends: () => [
+          {
+            id: "claude-cli",
+            modelProvider: "anthropic",
+            pluginId: "anthropic",
+            config: { command: "claude" },
+          },
+        ],
+      });
       const cfg = {
         agents: {
           defaults: {
             cliBackends: { "claude-cli": { command: "claude" } },
+            models: { "anthropic/claude-opus-4-6": { agentRuntime: { id: "claude-cli" } } },
             compaction: { memoryFlush: {} },
           },
         },
@@ -1172,7 +1182,7 @@ describe("runMemoryFlushIfNeeded", () => {
       await runMemoryFlushIfNeeded({
         cfg,
         followupRun: createTestFollowupRun({
-          provider: "claude-cli",
+          provider: "anthropic",
           model: "claude-opus-4-6",
           sessionId: sessionEntry.sessionId,
           sessionFile,
@@ -1196,6 +1206,16 @@ describe("runMemoryFlushIfNeeded", () => {
   );
 
   it("does not project aggregate tool-loop output as final-call context growth", async () => {
+    cliBackendsTesting.setDepsForTest({
+      resolveRuntimeCliBackends: () => [
+        {
+          id: "claude-cli",
+          modelProvider: "anthropic",
+          pluginId: "anthropic",
+          config: { command: "claude" },
+        },
+      ],
+    });
     registerMemoryFlushPlanResolverForTest(() => ({
       softThresholdTokens: 0,
       forceFlushTranscriptBytes: 1_000_000_000,
@@ -1208,6 +1228,7 @@ describe("runMemoryFlushIfNeeded", () => {
       agents: {
         defaults: {
           cliBackends: { "claude-cli": { command: "claude" } },
+          models: { "anthropic/claude-opus-4-7": { agentRuntime: { id: "claude-cli" } } },
           compaction: { memoryFlush: {} },
         },
       },
@@ -1228,7 +1249,7 @@ describe("runMemoryFlushIfNeeded", () => {
     await runMemoryFlushIfNeeded({
       cfg,
       followupRun: createTestFollowupRun({
-        provider: "claude-cli",
+        provider: "anthropic",
         model: "claude-opus-4-7",
         sessionId: sessionEntry.sessionId,
         sessionFile,

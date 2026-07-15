@@ -54,11 +54,10 @@ import { LiveSessionModelSwitchError } from "../../agents/live-model-switch-erro
 import { isMissingProviderAuthError } from "../../agents/model-auth.js";
 import { runWithModelFallback, isFallbackSummaryError } from "../../agents/model-fallback.js";
 import {
-  isCliRuntimeAliasForProvider,
-  resolveCliRuntimeExecutionProvider,
+  resolveCliExecutionDispatch,
+  resolveSessionRuntimeOverrideForProvider,
 } from "../../agents/model-runtime-aliases.js";
 import {
-  isCliProvider,
   resolveModelRefFromString,
   resolvePersistedOverrideModelRef,
 } from "../../agents/model-selection.js";
@@ -1515,26 +1514,6 @@ function emitModelFallbackStepLifecycle(params: {
   });
 }
 
-/** Resolves runtime provider override stored on the session entry. */
-export function resolveSessionRuntimeOverrideForProvider(params: {
-  provider: string;
-  entry?: Pick<SessionEntry, "agentRuntimeOverride">;
-  cfg?: OpenClawConfig;
-}): string | undefined {
-  const provider = normalizeLowercaseStringOrEmpty(params.provider);
-  const runtime = normalizeLowercaseStringOrEmpty(params.entry?.agentRuntimeOverride);
-  if (!runtime || runtime === "auto" || runtime === "default") {
-    return undefined;
-  }
-  if (provider === "openai" && runtime === "codex") {
-    return "codex";
-  }
-  if (isCliRuntimeAliasForProvider({ provider, runtime, cfg: params.cfg })) {
-    return runtime;
-  }
-  return undefined;
-}
-
 /** Decides whether to retry after rechecking auto-fallback primary probe state. */
 export function resolveRunAfterAutoFallbackPrimaryProbeRecheck(params: {
   run: FollowupRun["run"];
@@ -2289,27 +2268,21 @@ async function runAgentTurnWithFallbackInternal(
                 const resolvedSelectedAuthProfile = resolveRunAuthProfile(candidateRun, provider, {
                   config: runtimeConfig,
                 });
-                const resolvedCliExecutionProvider =
-                  (resolvedSessionRuntimeOverride &&
-                  isCliProvider(resolvedSessionRuntimeOverride, runtimeConfig)
-                    ? resolvedSessionRuntimeOverride
-                    : undefined) ??
-                  resolveCliRuntimeExecutionProvider({
+                return {
+                  sessionRuntimeOverride: resolvedSessionRuntimeOverride,
+                  cliExecutionProvider: resolveCliExecutionDispatch({
                     provider,
                     cfg: runtimeConfig,
                     agentId: params.followupRun.run.agentId,
                     modelId: model,
                     authProfileId: resolvedSelectedAuthProfile.authProfileId,
-                  }) ??
-                  provider;
-                return {
-                  sessionRuntimeOverride: resolvedSessionRuntimeOverride,
-                  cliExecutionProvider: resolvedCliExecutionProvider,
+                    runtimeOverride: resolvedSessionRuntimeOverride,
+                  }),
                 };
               },
             );
 
-            if (isCliProvider(cliExecutionProvider, runtimeConfig)) {
+            if (cliExecutionProvider !== undefined) {
               const cliSessionBinding = getCliSessionBinding(
                 params.getActiveSessionEntry(),
                 cliExecutionProvider,

@@ -250,6 +250,17 @@ export function listCliRuntimeProviderIds(
   ].toSorted();
 }
 
+/** True when a loaded runtime plugin registers this CLI backend id. */
+export function isRuntimeRegisteredCliBackend(id: string): boolean {
+  const normalized = normalizeBackendKey(id);
+  if (!normalized) {
+    return false;
+  }
+  return cliBackendsDeps
+    .resolveRuntimeCliBackends()
+    .some((backend) => normalizeBackendKey(backend.id) === normalized);
+}
+
 /** Resolves the canonical model provider served by a CLI runtime id. */
 export function resolveCliRuntimeCanonicalProvider(params: {
   runtime: string | undefined;

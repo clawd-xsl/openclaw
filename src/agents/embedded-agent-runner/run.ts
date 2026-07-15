@@ -110,8 +110,7 @@ import {
   resolveAuthProfileOrder,
   shouldPreferExplicitConfigApiKeyAuth,
 } from "../model-auth.js";
-import { resolveCliRuntimeExecutionProvider } from "../model-runtime-aliases.js";
-import { isCliProvider } from "../model-selection-cli.js";
+import { resolveCliExecutionDispatch } from "../model-runtime-aliases.js";
 import {
   buildModelAliasIndex,
   resolveDefaultModelForAgent,
@@ -677,15 +676,14 @@ async function runEmbeddedAgentInternal(
     provider: params.provider,
     model: params.model,
   });
-  const cliExecutionProvider =
-    resolveCliRuntimeExecutionProvider({
-      provider: initialModelForCliDispatch.provider,
-      cfg: params.config,
-      agentId: params.agentId,
-      modelId: initialModelForCliDispatch.modelId,
-      ...(params.authProfileId ? { authProfileId: params.authProfileId } : {}),
-    }) ?? initialModelForCliDispatch.provider;
-  if (isCliProvider(cliExecutionProvider, params.config)) {
+  const cliExecutionProvider = resolveCliExecutionDispatch({
+    provider: initialModelForCliDispatch.provider,
+    cfg: params.config,
+    agentId: params.agentId,
+    modelId: initialModelForCliDispatch.modelId,
+    authProfileId: params.authProfileId,
+  });
+  if (cliExecutionProvider !== undefined) {
     return await runEmbeddedRunViaCliBackend({
       params,
       provider: cliExecutionProvider,

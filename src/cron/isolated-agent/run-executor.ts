@@ -4,7 +4,7 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import type { BootstrapContextMode } from "../../agents/bootstrap-files.js";
 import type { FastModeAutoProgressState } from "../../agents/fast-mode.js";
 import { runAgentHarnessBeforeMessageWriteHook } from "../../agents/harness/hook-helpers.js";
-import { resolveCliRuntimeExecutionProvider } from "../../agents/model-runtime-aliases.js";
+import { resolveCliExecutionDispatch } from "../../agents/model-runtime-aliases.js";
 import { wrapUntrustedPromptDataBlock } from "../../agents/sanitize-for-prompt.js";
 import { normalizeToolName } from "../../agents/tool-policy.js";
 import type { ThinkLevel, VerboseLevel } from "../../auto-reply/thinking.js";
@@ -27,7 +27,6 @@ import { resolveCronPayloadOutcome } from "./helpers.js";
 import {
   ensureSelectedAgentHarnessPlugin,
   getCliSessionBinding,
-  isCliProvider,
   LiveSessionModelSwitchError,
   logWarn,
   normalizeVerboseLevel,
@@ -345,18 +344,17 @@ export function createCronPromptExecutor(params: {
         if (params.abortSignal?.aborted) {
           throw new Error(params.abortReason());
         }
-        const executionProvider =
-          resolveCliRuntimeExecutionProvider({
-            provider: providerOverride,
-            cfg: params.cfgWithAgentDefaults,
-            agentId: params.agentId,
-            modelId: modelOverride,
-          }) ?? providerOverride;
+        const executionProvider = resolveCliExecutionDispatch({
+          provider: providerOverride,
+          cfg: params.cfgWithAgentDefaults,
+          agentId: params.agentId,
+          modelId: modelOverride,
+        });
         const bootstrapPromptWarningSignature =
           bootstrapPromptWarningSignaturesSeen[bootstrapPromptWarningSignaturesSeen.length - 1];
         // CLI providers can resume provider-native sessions; embedded providers
         // use OpenClaw's transcript/session file plus prompt-cache affinity.
-        if (isCliProvider(executionProvider, params.cfgWithAgentDefaults)) {
+        if (executionProvider !== undefined) {
           const cliSessionBinding = params.cronSession.isNewSession
             ? undefined
             : await getCliSessionBinding(params.cronSession.sessionEntry, executionProvider);

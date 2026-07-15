@@ -40,7 +40,7 @@ import { runEmbeddedAgent, type EmbeddedAgentRunResult } from "../embedded-agent
 import { FailoverError } from "../failover-error.js";
 import { runAgentHarnessBeforeMessageWriteHook } from "../harness/hook-helpers.js";
 import { resolveAvailableAgentHarnessPolicy } from "../harness/selection.js";
-import { resolveCliRuntimeExecutionProvider } from "../model-runtime-aliases.js";
+import { resolveCliExecutionDispatch } from "../model-runtime-aliases.js";
 import { isCliProvider } from "../model-selection.js";
 import { resolveOpenAIRuntimeProvider } from "../openai-routing.js";
 import { resolveAgentRunAbortLifecycleFields } from "../run-termination.js";
@@ -544,16 +544,20 @@ export function runAgentAttempt(params: {
   const bootstrapPromptWarningSignature =
     bootstrapPromptWarningSignaturesSeen[bootstrapPromptWarningSignaturesSeen.length - 1];
   const requestedAgentHarnessId = isRawModelRun ? "openclaw" : undefined;
-  const cliExecutionProvider = isRawModelRun
-    ? params.providerOverride
-    : (resolveCliRuntimeExecutionProvider({
+  // Raw model runs bypass runtime resolution and execute providerOverride as-is.
+  const resolvedCliDispatch = isRawModelRun
+    ? undefined
+    : resolveCliExecutionDispatch({
         provider: params.providerOverride,
         cfg: params.cfg,
         agentId: params.sessionAgentId,
         modelId: params.modelOverride,
         authProfileId: params.sessionEntry?.authProfileOverride,
-      }) ?? params.providerOverride);
-  const isCliExecutionProvider = isCliProvider(cliExecutionProvider, params.cfg);
+      });
+  const cliExecutionProvider = resolvedCliDispatch ?? params.providerOverride;
+  const isCliExecutionProvider = isRawModelRun
+    ? isCliProvider(cliExecutionProvider, params.cfg)
+    : resolvedCliDispatch !== undefined;
   const allowCliAuthProfileForwarding =
     isCliExecutionProvider &&
     cliBackendAcceptsAuthProfileForwarding({

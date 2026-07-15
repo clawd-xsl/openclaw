@@ -18,10 +18,9 @@ import { resolveAgentHarnessPolicy } from "../../agents/harness/policy.js";
 import { ensureSelectedAgentHarnessPlugin } from "../../agents/harness/runtime-plugin.js";
 import { runWithModelFallback } from "../../agents/model-fallback.js";
 import {
-  isCliRuntimeAliasForProvider,
-  resolveCliRuntimeExecutionProvider,
+  resolveCliExecutionDispatch,
+  resolveSessionRuntimeOverrideForProvider,
 } from "../../agents/model-runtime-aliases.js";
-import { isCliProvider } from "../../agents/model-selection.js";
 import { resolveContextConfigProviderForRuntime } from "../../agents/openai-routing.js";
 import type { AgentMessage } from "../../agents/runtime/index.js";
 import { resolveSandboxConfigForAgent, resolveSandboxRuntimeStatus } from "../../agents/sandbox.js";
@@ -287,38 +286,13 @@ function resolveMemoryFlushModelFallbackOptions(
   };
 }
 
-function resolveMemoryFlushRuntimeOverrideForProvider(params: {
-  provider: string;
-  entry?: Pick<SessionEntry, "agentRuntimeOverride">;
-  cfg: OpenClawConfig;
-}): string | undefined {
-  const provider = normalizeLowercaseStringOrEmpty(params.provider);
-  const runtime = normalizeLowercaseStringOrEmpty(params.entry?.agentRuntimeOverride);
-  if (!runtime || runtime === "auto" || runtime === "default") {
-    return undefined;
-  }
-  if (provider === "openai" && runtime === "codex") {
-    return "codex";
-  }
-  if (
-    isCliRuntimeAliasForProvider({
-      provider,
-      runtime,
-      cfg: params.cfg,
-    })
-  ) {
-    return runtime;
-  }
-  return undefined;
-}
-
 function resolveFollowupCliRuntimeId(params: {
   cfg: OpenClawConfig;
   followupRun: FollowupRun;
   sessionEntry?: Pick<SessionEntry, "agentRuntimeOverride">;
 }): string | undefined {
   const provider = params.followupRun.run.provider;
-  const sessionRuntimeOverride = resolveMemoryFlushRuntimeOverrideForProvider({
+  const sessionRuntimeOverride = resolveSessionRuntimeOverrideForProvider({
     provider,
     entry: params.sessionEntry,
     cfg: params.cfg,
@@ -326,19 +300,17 @@ function resolveFollowupCliRuntimeId(params: {
   const selectedAuthProfile = resolveRunAuthProfile(params.followupRun.run, provider, {
     config: params.cfg,
   });
-  const executionProvider =
-    (sessionRuntimeOverride && isCliProvider(sessionRuntimeOverride, params.cfg)
-      ? sessionRuntimeOverride
-      : undefined) ??
-    resolveCliRuntimeExecutionProvider({
-      provider,
-      cfg: params.cfg,
-      agentId: params.followupRun.run.agentId,
-      modelId: params.followupRun.run.model,
-      authProfileId: selectedAuthProfile.authProfileId,
-    }) ??
-    provider;
-  return isCliProvider(executionProvider, params.cfg)
+  const executionProvider = resolveCliExecutionDispatch({
+    provider,
+    cfg: params.cfg,
+    agentId: params.followupRun.run.agentId,
+    modelId: params.followupRun.run.model,
+    authProfileId: selectedAuthProfile.authProfileId,
+    runtimeOverride: sessionRuntimeOverride,
+  });
+  // Normalized-lowercase id: it is embedded verbatim in persisted memory-flush
+  // fingerprints, so the exact string is part of the stored watermark identity.
+  return executionProvider !== undefined
     ? normalizeLowercaseStringOrEmpty(executionProvider)
     : undefined;
 }
@@ -1872,7 +1844,7 @@ export async function runMemoryFlushIfNeeded(params: {
       lane: CommandLane.Main,
       abortSignal: params.replyOperation.abortSignal,
       resolveAgentHarnessRuntimeOverride: (provider) =>
-        resolveMemoryFlushRuntimeOverrideForProvider({
+        resolveSessionRuntimeOverrideForProvider({
           provider,
           entry: activeSessionEntry,
           cfg: params.cfg,
@@ -1912,7 +1884,7 @@ export async function runMemoryFlushIfNeeded(params: {
           ...(isCli
             ? {
                 allowGatewaySubagentBinding: false,
-                agentHarnessRuntimeOverride: resolveMemoryFlushRuntimeOverrideForProvider({
+                agentHarnessRuntimeOverride: resolveSessionRuntimeOverrideForProvider({
                   provider,
                   entry: activeSessionEntry,
                   cfg: params.cfg,

@@ -142,7 +142,7 @@ describe("Crestodian assistant", () => {
     }
     expect(result.command).toBe("status");
     expect(result.reply).toBe("Checking the shell.");
-    expect(result.modelLabel).toBe("claude-cli/claude-opus-4-8");
+    expect(result.modelLabel).toBe("anthropic/claude-opus-4-8 via claude-cli");
 
     expect(runCliAgent).toHaveBeenCalledTimes(1);
     const firstCliCall = firstMockArg(runCliAgent);
