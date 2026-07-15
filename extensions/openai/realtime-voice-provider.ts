@@ -1094,6 +1094,14 @@ class OpenAIRealtimeVoiceBridge implements RealtimeVoiceBridge {
           this.flushPendingResponseCreate();
           return;
         }
+        // Any other failed request never gets its response.created/cancelled
+        // ack, so stuck in-flight flags would gate every future
+        // response.create and wedge the call silent (observed after a failed
+        // tool output raced a barge-in). Reset them; the next VAD/tool trigger
+        // re-requests normally. Deliberately no flush here: retrying the same
+        // failing request immediately would spin error -> create -> error.
+        this.responseCreateInFlight = false;
+        this.responseCancelInFlight = false;
         this.config.onError?.(new Error(detail));
       }
 
