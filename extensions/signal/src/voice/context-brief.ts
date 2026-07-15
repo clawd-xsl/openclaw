@@ -13,9 +13,10 @@
 // Both stages run as fully isolated one-shot embedded agents: a fresh randomUUID
 // session on a throwaway session file (never the caller's session, no store
 // entry, no pollution). The compressor model is config-selected
-// (contextBrief.model) — an anthropic/* ref is a lean API call, a claude-cli/*
-// ref spawns a separate throwaway CLI process; either way it is isolated from
-// the caller's warm process (distinct sessionId => distinct live-session key).
+// (contextBrief.model, canonical provider refs like anthropic/*); whether it
+// executes as a lean API call or a throwaway CLI process is decided by the
+// configured agent runtime binding, and either way it is isolated from the
+// caller's warm process (distinct sessionId => distinct live-session key).
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";

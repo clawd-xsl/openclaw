@@ -13,10 +13,12 @@ const baseParams: RunEmbeddedAgentParams & { sessionFile: string } = {
 
 describe("buildCliRunParamsFromEmbedded", () => {
   it("maps required fields and overrides provider/model with the resolved pair", () => {
+    // Canonical request shape: an API provider/model ref whose configured agent
+    // runtime binding resolved to the claude-cli execution provider.
     const cli = buildCliRunParamsFromEmbedded({
-      params: { ...baseParams, provider: "claude-cli", model: "claude-cli/sonnet" },
+      params: { ...baseParams, provider: "anthropic", model: "anthropic/claude-sonnet-4-5" },
       provider: "claude-cli",
-      modelId: "sonnet",
+      modelId: "claude-sonnet-4-5",
     });
     expect(cli).toMatchObject({
       sessionId: "sess-1",
@@ -24,7 +26,7 @@ describe("buildCliRunParamsFromEmbedded", () => {
       workspaceDir: "/tmp/ws",
       prompt: "hello",
       provider: "claude-cli",
-      model: "sonnet",
+      model: "claude-sonnet-4-5",
       timeoutMs: 30_000,
       runId: "run-1",
     });
@@ -44,7 +46,7 @@ describe("buildCliRunParamsFromEmbedded", () => {
         cleanupCliLiveSessionOnRunEnd: true,
       },
       provider: "claude-cli",
-      modelId: "sonnet",
+      modelId: "claude-sonnet-4-5",
     });
     expect(cli.agentId).toBe("main");
     expect(cli.sessionKey).toBe("agent:main:signal:direct:abc");
@@ -65,14 +67,14 @@ describe("runEmbeddedRunViaCliBackend", () => {
     const out = await runEmbeddedRunViaCliBackend({
       params: baseParams,
       provider: "claude-cli",
-      modelId: "sonnet",
+      modelId: "claude-sonnet-4-5",
       runCliAgent,
     });
     expect(out).toBe(result);
     expect(runCliAgent).toHaveBeenCalledTimes(1);
     expect(runCliAgent.mock.calls[0]?.[0]).toMatchObject({
       provider: "claude-cli",
-      model: "sonnet",
+      model: "claude-sonnet-4-5",
       prompt: "hello",
     });
   });
