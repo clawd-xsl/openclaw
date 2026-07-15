@@ -63,6 +63,18 @@ export type SignalVoiceCallConfig = {
    * `model`/`voice` above still win as per-call overrides.
    */
   providers?: Record<string, Record<string, unknown> | undefined>;
+  /**
+   * Tuning for the agent consult the voice front-end delegates to. Voice
+   * consults want a brief spoken answer fast, so reasoning defaults low (not
+   * the agent's default). Point `model`/`provider` at a faster model to cut
+   * consult latency further.
+   */
+  consult?: {
+    model?: string;
+    provider?: string;
+    /** Reasoning effort for consults. Default: "low". */
+    thinkLevel?: "off" | "low" | "medium" | "high" | "xhigh";
+  };
   /** Optional overrides for the PulseAudio helper binaries used by the transport. */
   pulse?: { pactlPath?: string; pacatPath?: string };
 };

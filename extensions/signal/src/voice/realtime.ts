@@ -336,8 +336,11 @@ export function buildSignalRealtimeInstructions(params: {
     base,
     "You are the realtime voice surface for the same OpenClaw agent the caller can message directly.",
     "Do not mention a backend, supervisor, helper, or separate system. Present the result as your own work.",
-    "Delegate substantive requests, actions, tool work, current facts, memory, and caller-specific context with openclaw_agent_consult.",
-    "Answer directly only for greetings, acknowledgements, or brief filler while waiting.",
+    // Consulting costs seconds of silence; the briefing already carries persona,
+    // the caller relationship, and the recent conversation, so answer those
+    // from it directly and reserve the consult for what the briefing lacks.
+    "Answer directly from your briefing and the current call for greetings, small talk, who the caller is, your relationship, and what you two were just discussing.",
+    "Delegate with openclaw_agent_consult only when you need something the briefing does not cover: a real action or tool call, current/live facts, or specific memory and details beyond the recent conversation.",
     'While waiting for OpenClaw data, use at most one short natural backchannel such as "one sec" or "mm-hmm"; do not treat it as the final answer.',
     briefBlock,
     buildRealtimeVoiceAgentConsultPolicyInstructions({

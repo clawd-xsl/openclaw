@@ -308,6 +308,10 @@ export function startSignalVoiceRuntime(params: StartSignalVoiceRuntimeParams): 
         SIGNAL_VOICE_DEFAULT_TOOL_POLICY,
       ),
     );
+    // Voice consults want a brief spoken answer fast; default reasoning low
+    // (the consult runtime would otherwise use "high", the dominant latency
+    // cost on a live call) and let config point at a faster consult model.
+    const consultConfig = voiceConfig.consult;
     return async ({ message }) => {
       const result = await consultRealtimeVoiceAgent({
         cfg,
@@ -324,6 +328,9 @@ export function startSignalVoiceRuntime(params: StartSignalVoiceRuntimeParams): 
         userLabel: "Caller",
         assistantLabel: "Agent",
         questionSourceLabel: "caller",
+        thinkLevel: consultConfig?.thinkLevel ?? "low",
+        ...(consultConfig?.model ? { model: consultConfig.model } : {}),
+        ...(consultConfig?.provider ? { provider: consultConfig.provider } : {}),
         ...(toolsAllow !== undefined ? { toolsAllow } : {}),
       });
       return result.text;

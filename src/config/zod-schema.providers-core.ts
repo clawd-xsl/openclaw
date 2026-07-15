@@ -1204,6 +1204,16 @@ const SignalVoiceCallSchema = z
     // Provider-specific realtime voice config keyed by provider id (same shape
     // as voicecall.realtime.providers): e.g. Qwen workspaceId/baseUrl/apiKey.
     providers: z.record(z.string(), z.record(z.string(), z.unknown()).optional()).optional(),
+    // Consult tuning: reasoning defaults low for a fast spoken answer; model
+    // override lets deployments pick a faster consult model.
+    consult: z
+      .object({
+        model: z.string().optional(),
+        provider: z.string().optional(),
+        thinkLevel: z.enum(["off", "low", "medium", "high", "xhigh"]).optional(),
+      })
+      .strict()
+      .optional(),
     pulse: z
       .object({ pactlPath: z.string().optional(), pacatPath: z.string().optional() })
       .strict()
