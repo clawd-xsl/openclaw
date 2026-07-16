@@ -523,4 +523,36 @@ describe("realtime voice agent consult runtime", () => {
     expect(call.currentChannelId).toBe("channel:123");
     expect(call.currentThreadTs).toBe("thread-456");
   });
+
+  it("primes the session with a suppressed warm-up run without persisting a turn", async () => {
+    const { runtime, runEmbeddedAgent } = createAgentRuntime();
+    const result = await consultRealtimeVoiceAgent({
+      cfg: {} as never,
+      agentRuntime: runtime as never,
+      logger: { warn: vi.fn() },
+      sessionKey: "voice:15550001234",
+      messageProvider: "voice",
+      lane: "voice",
+      runIdPrefix: "voice-realtime-consult-warmup:call-1",
+      args: { question: "" },
+      transcript: [],
+      surface: "a live phone call",
+      userLabel: "Caller",
+      warmUp: true,
+      thinkLevel: "low",
+      toolsAllow: ["read"],
+    });
+
+    // Warm-up returns empty text and does not need a speakable answer.
+    expect(result.text).toBe("");
+    const call = requireEmbeddedAgentCall(runEmbeddedAgent);
+    // Minimal prompt, matching tools/reasoning so the real consult reuses the
+    // same live session, and persistence suppressed.
+    expect(call.prompt).toMatch(/warm-up/i);
+    expect(call.thinkLevel).toBe("low");
+    expect(call.toolsAllow).toEqual(["read"]);
+    expect(call.silentExpected).toBe(true);
+    expect(call.suppressNextUserMessagePersistence).toBe(true);
+    expect(call.suppressTranscriptOnlyAssistantPersistence).toBe(true);
+  });
 });

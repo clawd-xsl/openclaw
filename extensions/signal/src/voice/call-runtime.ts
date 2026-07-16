@@ -153,6 +153,57 @@ export function startSignalVoiceRuntime(params: StartSignalVoiceRuntimeParams): 
     pendingBrief = promise;
   };
 
+  // One consult warm-up per call. Spawns the consult session's CLI live session
+  // off the call-setup path (parallel with ringing/ICE/brief/greeting) so the
+  // first real consult reuses a warm process instead of paying the cold start.
+  let consultWarmedForPeer: string | undefined;
+  const kickOffConsultWarmUp = (peer: SignalCallPeer): void => {
+    if (consultWarmedForPeer === peer.aci) {
+      return;
+    }
+    consultWarmedForPeer = peer.aci;
+    const pluginRuntime = getOptionalSignalRuntime();
+    if (!pluginRuntime) {
+      return;
+    }
+    const route = resolveAgentRoute({
+      cfg,
+      channel: "signal",
+      accountId,
+      peer: { kind: "direct", id: peer.aci },
+    });
+    const consultConfig = voiceConfig.consult;
+    const toolsAllow = resolveRealtimeVoiceAgentConsultToolsAllow(
+      resolveRealtimeVoiceAgentConsultToolPolicy(
+        voiceConfig.toolPolicy,
+        SIGNAL_VOICE_DEFAULT_TOOL_POLICY,
+      ),
+    );
+    // Identical model/provider/thinkLevel/tools to the real consult so the
+    // warmed CLI live session's fingerprint matches and gets reused.
+    void consultRealtimeVoiceAgent({
+      cfg,
+      agentRuntime: pluginRuntime.agent,
+      logger: log,
+      agentId: route.agentId,
+      sessionKey: route.sessionKey,
+      messageProvider: "signal",
+      lane: "signal-voice",
+      runIdPrefix: `signal-voice-consult-warmup:${peer.aci}`,
+      args: { question: "" },
+      transcript: [],
+      surface: "a live Signal voice call",
+      userLabel: "Caller",
+      warmUp: true,
+      thinkLevel: consultConfig?.thinkLevel ?? "low",
+      ...(consultConfig?.model ? { model: consultConfig.model } : {}),
+      ...(consultConfig?.provider ? { provider: consultConfig.provider } : {}),
+      ...(toolsAllow !== undefined ? { toolsAllow } : {}),
+    }).catch((err: unknown) => {
+      log.debug?.(`signal voice: consult warm-up failed: ${formatErrorMessage(err)}`);
+    });
+  };
+
   const manager = createSignalCallManager({
     client,
     account: accountState.account,
@@ -179,6 +230,9 @@ export function startSignalVoiceRuntime(params: StartSignalVoiceRuntimeParams): 
     lastCallError = undefined;
     callerNotified = false;
     pickedUp = false;
+    // Each call attempt re-warms once; a process reaped since the last call
+    // from this peer must respawn.
+    consultWarmedForPeer = undefined;
   };
 
   // Surface a call-setup failure to the caller as a normal user-facing message
@@ -346,6 +400,8 @@ export function startSignalVoiceRuntime(params: StartSignalVoiceRuntimeParams): 
           // Start the brief immediately; do NOT answer until the whole
           // instruction is built and the voice model is connected.
           kickOffContextBrief(event.peer);
+          // Warm the consult CLI in parallel so the first consult isn't cold.
+          kickOffConsultWarmUp(event.peer);
           void prepareInboundThenAccept(event.peer, event.callId);
         } else {
           log.info(
@@ -364,6 +420,7 @@ export function startSignalVoiceRuntime(params: StartSignalVoiceRuntimeParams): 
         // Agent-placed call: start the brief now so it overlaps ringing.
         beginCallAttempt(event.peer);
         kickOffContextBrief(event.peer);
+        kickOffConsultWarmUp(event.peer);
         break;
       }
       case "connected": {

@@ -232,6 +232,13 @@ export async function consultRealtimeVoiceAgent(params: {
   toolsAllow?: string[];
   extraSystemPrompt?: string;
   fallbackText?: string;
+  /**
+   * Warm-up run: spawn/prime the consult session's backend (CLI live session +
+   * prompt cache) off the call-setup path so the first real consult is not
+   * cold. Uses a minimal prompt with persistence suppressed and identical
+   * model/tools/system-prompt so the real consult reuses the same live session.
+   */
+  warmUp?: boolean;
 }): Promise<RealtimeVoiceAgentConsultResult> {
   const agentId = params.agentId ?? "main";
   const agentDir = params.agentRuntime.resolveAgentDir(params.cfg, agentId);
@@ -289,14 +296,16 @@ export async function consultRealtimeVoiceAgent(params: {
         : undefined,
     workspaceDir,
     config: params.cfg,
-    prompt: buildRealtimeVoiceAgentConsultPrompt({
-      args: params.args,
-      transcript: params.transcript,
-      surface: params.surface,
-      userLabel: params.userLabel,
-      assistantLabel: params.assistantLabel,
-      questionSourceLabel: params.questionSourceLabel,
-    }),
+    prompt: params.warmUp
+      ? "Warm-up ping to prime this session. Reply with only the single word: ready."
+      : buildRealtimeVoiceAgentConsultPrompt({
+          args: params.args,
+          transcript: params.transcript,
+          surface: params.surface,
+          userLabel: params.userLabel,
+          assistantLabel: params.assistantLabel,
+          questionSourceLabel: params.questionSourceLabel,
+        }),
     provider: params.provider,
     model: params.model,
     thinkLevel: params.thinkLevel ?? "high",
@@ -312,7 +321,22 @@ export async function consultRealtimeVoiceAgent(params: {
       params.extraSystemPrompt ??
       "You are the configured OpenClaw agent receiving delegated requests from a live voice bridge. Act on behalf of the user, use available tools when appropriate, and return a brief speakable result.",
     agentDir,
+    // Warm-up must not leave a turn in the consult transcript; it only exists to
+    // spawn the live session the real consult reuses.
+    ...(params.warmUp
+      ? {
+          silentExpected: true,
+          suppressNextUserMessagePersistence: true,
+          suppressTranscriptOnlyAssistantPersistence: true,
+          suppressAssistantErrorPersistence: true,
+        }
+      : {}),
   });
+
+  if (params.warmUp) {
+    // The warm run's output is irrelevant; the live session it spawned is the point.
+    return { text: "" };
+  }
 
   const text = collectRealtimeVoiceAgentConsultVisibleText(result.payloads ?? []);
   if (!text) {
