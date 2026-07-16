@@ -1,6 +1,8 @@
 // Agent consult runtime starts agent consultation flows from talk sessions.
 import { randomUUID } from "node:crypto";
 import type { RunEmbeddedAgentParams } from "../agents/embedded-agent-runner/run/params.js";
+import { resolveCliExecutionDispatch } from "../agents/model-runtime-aliases.js";
+import { resolveDefaultModelForAgent } from "../agents/model-selection.js";
 import { forkSessionEntryFromParent } from "../auto-reply/reply/session-fork.js";
 import { parseSessionThreadInfoFast } from "../config/sessions/thread-info.js";
 import type { SessionEntry } from "../config/sessions/types.js";
@@ -17,6 +19,38 @@ import {
   collectRealtimeVoiceAgentConsultVisibleText,
   type RealtimeVoiceAgentConsultTranscriptEntry,
 } from "./agent-consult-tool.js";
+
+/** True when the consult's effective provider/model runs through a CLI backend. */
+function consultResolvesToCliBackend(params: {
+  cfg: OpenClawConfig;
+  agentId: string;
+  provider?: string;
+  model?: string;
+}): boolean {
+  let provider = params.provider;
+  let modelId = params.model;
+  if (!provider || !modelId) {
+    const fallback = resolveDefaultModelForAgent({ cfg: params.cfg, agentId: params.agentId });
+    provider = provider ?? fallback.provider;
+    modelId = modelId ?? fallback.model;
+  }
+  if (!provider) {
+    return false;
+  }
+  try {
+    return (
+      resolveCliExecutionDispatch({
+        provider,
+        cfg: params.cfg,
+        agentId: params.agentId,
+        modelId,
+      }) !== undefined
+    );
+  } catch {
+    // A retired ref throws; the real consult surfaces that, warm-up just skips.
+    return false;
+  }
+}
 
 /**
  * Agent runtime surface used by realtime voice consults.
@@ -241,6 +275,20 @@ export async function consultRealtimeVoiceAgent(params: {
   warmUp?: boolean;
 }): Promise<RealtimeVoiceAgentConsultResult> {
   const agentId = params.agentId ?? "main";
+  // Warm-up only pays off for CLI backends, whose process cold start it hides.
+  // An API backend has no persistent process to spawn — a warm-up would just
+  // burn a billed turn for a marginal prompt-cache prime — so skip it entirely.
+  if (
+    params.warmUp &&
+    !consultResolvesToCliBackend({
+      cfg: params.cfg,
+      agentId,
+      provider: params.provider,
+      model: params.model,
+    })
+  ) {
+    return { text: "" };
+  }
   const agentDir = params.agentRuntime.resolveAgentDir(params.cfg, agentId);
   const workspaceDir = params.agentRuntime.resolveAgentWorkspaceDir(params.cfg, agentId);
   await params.agentRuntime.ensureAgentWorkspace({ dir: workspaceDir });

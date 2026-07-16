@@ -524,10 +524,12 @@ describe("realtime voice agent consult runtime", () => {
     expect(call.currentThreadTs).toBe("thread-456");
   });
 
-  it("primes the session with a suppressed warm-up run without persisting a turn", async () => {
+  it("primes a CLI-backed session with a suppressed warm-up run", async () => {
     const { runtime, runEmbeddedAgent } = createAgentRuntime();
+    // A standalone CLI backend so the warm-up gate resolves to CLI dispatch.
+    const cfg = { agents: { defaults: { cliBackends: { "acme-cli": { command: "acme" } } } } };
     const result = await consultRealtimeVoiceAgent({
-      cfg: {} as never,
+      cfg: cfg as never,
       agentRuntime: runtime as never,
       logger: { warn: vi.fn() },
       sessionKey: "voice:15550001234",
@@ -539,6 +541,8 @@ describe("realtime voice agent consult runtime", () => {
       surface: "a live phone call",
       userLabel: "Caller",
       warmUp: true,
+      provider: "acme-cli",
+      model: "acme-cli/fast",
       thinkLevel: "low",
       toolsAllow: ["read"],
     });
@@ -554,5 +558,29 @@ describe("realtime voice agent consult runtime", () => {
     expect(call.silentExpected).toBe(true);
     expect(call.suppressNextUserMessagePersistence).toBe(true);
     expect(call.suppressTranscriptOnlyAssistantPersistence).toBe(true);
+  });
+
+  it("skips the warm-up run for a non-CLI (API) backend", async () => {
+    const { runtime, runEmbeddedAgent } = createAgentRuntime();
+    const result = await consultRealtimeVoiceAgent({
+      cfg: {} as never,
+      agentRuntime: runtime as never,
+      logger: { warn: vi.fn() },
+      sessionKey: "voice:15550001234",
+      messageProvider: "voice",
+      lane: "voice",
+      runIdPrefix: "voice-realtime-consult-warmup:call-1",
+      args: { question: "" },
+      transcript: [],
+      surface: "a live phone call",
+      userLabel: "Caller",
+      warmUp: true,
+      provider: "anthropic",
+      model: "anthropic/claude-opus-4-8",
+    });
+
+    // No process to warm on an API backend: no embedded run at all.
+    expect(result.text).toBe("");
+    expect(runEmbeddedAgent).not.toHaveBeenCalled();
   });
 });
