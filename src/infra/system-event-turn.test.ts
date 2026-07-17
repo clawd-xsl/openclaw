@@ -106,6 +106,35 @@ describe("system event turn", () => {
     expect(dispatch?.ctx).not.toHaveProperty("Surface");
   });
 
+  it("preserves the owner sender when a hook event omits the account id", async () => {
+    // Regression: a wake/hook event route "signal:<uuid>" with no accountId must
+    // still match the persisted session route (accountId=default) so the owner
+    // sender — and its owner-only tools — survive.
+    const sessionKey = "agent:main:main";
+    enqueueTurnEvent("Process the wake", {
+      sessionKey,
+      deliveryContext: { channel: "signal", to: "owner-uuid" },
+    });
+    runtimeMocks.extractDeliveryInfo.mockReturnValue({
+      deliveryContext: { channel: "signal", to: "owner-uuid", accountId: "default" },
+      threadId: undefined,
+      senderId: "signal-owner",
+    });
+
+    await runSystemEventTurn({ sessionKey, reason: "hook:wake" });
+
+    const dispatch = runtimeMocks.dispatchInboundMessageWithDispatcher.mock.calls[0]?.[0] as
+      | MockDispatchParams
+      | undefined;
+    expect(dispatch?.ctx).toEqual(
+      expect.objectContaining({
+        AccountId: "default",
+        SenderId: "signal-owner",
+        From: "signal-owner",
+      }),
+    );
+  });
+
   it("falls back to the persisted session delivery route", async () => {
     const sessionKey = "agent:main:main";
     enqueueTurnEvent("Process the wake", { sessionKey });

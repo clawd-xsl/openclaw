@@ -94,16 +94,47 @@ type SystemEventDeliveryRoute = {
   senderId?: string;
 };
 
+// Route dedupe key ignoring accountId — used to decide whether an event route
+// that omits accountId is the same route as the fallback.
+function routeKeyWithoutAccount(delivery: DeliveryContext | undefined): string {
+  return channelRouteDedupeKey({
+    channel: delivery?.channel,
+    to: delivery?.to,
+    threadId: delivery?.threadId,
+  });
+}
+
+// Hooks/cron announces can persist an event delivery route with no accountId
+// (e.g. `channel=signal, to=<uuid>`) while the session that established the
+// owner sender stored `accountId=default`. Backfill the fallback's accountId
+// when the event omits it and the routes are otherwise identical, so the strict
+// dedupe comparison still recognizes the same route and preserves the owner.
+function reconcileEventDeliveryAccountId(
+  event: DeliveryContext,
+  fallback: DeliveryContext | undefined,
+): DeliveryContext {
+  if (event.accountId || !fallback?.accountId) {
+    return event;
+  }
+  return routeKeyWithoutAccount(event) === routeKeyWithoutAccount(fallback)
+    ? { ...event, accountId: fallback.accountId }
+    : event;
+}
+
 function resolveEventDeliveryRoute(
   event: SystemEvent,
   fallback: SystemEventDeliveryRoute,
 ): SystemEventDeliveryRoute {
   const hasEventDelivery = Boolean(event.deliveryContext?.channel && event.deliveryContext.to);
+  const reconciledDelivery =
+    hasEventDelivery && event.deliveryContext
+      ? reconcileEventDeliveryAccountId(event.deliveryContext, fallback.delivery)
+      : undefined;
   const reusesFallbackDelivery =
     !hasEventDelivery ||
-    channelRouteDedupeKey(event.deliveryContext) === channelRouteDedupeKey(fallback.delivery);
+    channelRouteDedupeKey(reconciledDelivery) === channelRouteDedupeKey(fallback.delivery);
   return {
-    delivery: hasEventDelivery ? event.deliveryContext : fallback.delivery,
+    delivery: hasEventDelivery ? reconciledDelivery : fallback.delivery,
     chatType: event.chatType ?? (reusesFallbackDelivery ? fallback.chatType : undefined),
     // Sender identity participates in command authorization, so it can cross
     // only with the exact channel/account/target/thread route that established it.
