@@ -270,6 +270,9 @@ export interface SignalTsClient {
   // Archives our session with a peer device so the next send re-establishes it,
   // recovering after the peer reports it could not decrypt one of our messages.
   archiveSessionForPeer(params: Record<string, unknown>): Promise<void>;
+  // Last time the server proved this connection alive (a delivered envelope or a
+  // successful app-level keepalive). Feeds the gateway stale-socket health check.
+  getLastTransportActivityAt(): number | undefined;
   sendMessage(params: Record<string, unknown>): SignalSendResult;
   sendStickerMessage(params: Record<string, unknown>): SignalSendResult;
   sendReactionMessage(params: Record<string, unknown>): SignalSendResult;

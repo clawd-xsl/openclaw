@@ -120,6 +120,10 @@ vi.mock("@openclaw/signal-ts", () => {
       await mocks.archiveSessionForPeer(...args);
     }
 
+    getLastTransportActivityAt(): number | undefined {
+      return Date.now();
+    }
+
     async sendReactionMessage(...args: unknown[]): Promise<{ timestamp: number }> {
       return await mocks.sendReactionMessage(...args);
     }

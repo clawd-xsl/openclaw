@@ -79,6 +79,8 @@ export type MonitorSignalOpts = {
   mediaMaxMb?: number;
   reconnectPolicy?: Partial<BackoffPolicy>;
   waitForTransportReady?: typeof waitForTransportReady;
+  // Gateway channel-status setter; used to publish signal-ts connection liveness.
+  setStatus?: (snapshot: { accountId: string } & Record<string, unknown>) => void;
 };
 
 function resolveRuntime(opts: MonitorSignalOpts): RuntimeEnv {
@@ -657,6 +659,12 @@ export async function monitorSignalProvider(opts: MonitorSignalOpts = {}): Promi
         onEvent: async (event) => {
           await handleEvent(event);
         },
+        ...(opts.setStatus
+          ? {
+              setTransportStatus: (status) =>
+                opts.setStatus?.({ accountId: accountInfo.accountId, ...status }),
+            }
+          : {}),
       });
       return;
     }

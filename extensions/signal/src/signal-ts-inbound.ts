@@ -61,7 +61,19 @@ export type SignalTsMonitorParams = {
   abortSignal?: AbortSignal;
   reconnectPolicy?: Partial<BackoffPolicy>;
   onEvent: (event: { event: "receive"; data: string }) => Promise<void>;
+  // Reports connection liveness to the gateway channel-health snapshot so the
+  // stale-socket check can run for signal-ts (it never did without this).
+  setTransportStatus?: (status: {
+    connected?: boolean;
+    lastConnectedAt?: number;
+    lastTransportActivityAt?: number;
+  }) => void;
 };
+
+// Push the connection's proven-alive timestamp to the gateway health snapshot
+// at least this often so a genuinely quiet-but-healthy connection (kept alive
+// by keepalive with no inbound traffic) is not misjudged as a stale socket.
+const SIGNAL_TS_TRANSPORT_STATUS_PUSH_MS = 60_000;
 
 export type SignalTsFetchAttachmentParams = {
   accountInfo: ResolvedSignalAccount;
@@ -198,8 +210,21 @@ async function runSignalTsMonitorConnection(params: SignalTsMonitorParams): Prom
         })
       : undefined;
   let latestDiagnosticEnvelope: SignalEnvelope | undefined;
+  const pushTransportStatus = (status: {
+    connected?: boolean;
+    lastConnectedAt?: number;
+    lastTransportActivityAt?: number;
+  }): void => {
+    try {
+      params.setTransportStatus?.(status);
+    } catch {
+      // Health reporting must never break the receive loop.
+    }
+  };
   const inFlightIncoming = new Set<Promise<void>>();
   const offIncoming = client.on("incoming", (incoming) => {
+    // Inbound delivery proves the socket is live; refresh the health snapshot.
+    pushTransportStatus({ lastTransportActivityAt: Date.now() });
     const task = (async () => {
       try {
         logSignalTsInfo(
@@ -341,9 +366,22 @@ async function runSignalTsMonitorConnection(params: SignalTsMonitorParams): Prom
     inFlightIncoming.add(task);
   });
   const disconnected = waitForSignalTsDisconnect(client, params.abortSignal);
+  let transportStatusTimer: ReturnType<typeof setInterval> | undefined;
   try {
     await client.connect(params.abortSignal);
     registerSignalTsActiveClient(params.accountInfo, context);
+    const connectedAt = Date.now();
+    pushTransportStatus({
+      connected: true,
+      lastConnectedAt: connectedAt,
+      lastTransportActivityAt: client.getLastTransportActivityAt() ?? connectedAt,
+    });
+    // Keepalive proves the socket alive without inbound traffic; surface its
+    // freshness so a quiet connection is not flagged stale.
+    transportStatusTimer = setInterval(() => {
+      pushTransportStatus({ lastTransportActivityAt: client.getLastTransportActivityAt() });
+    }, SIGNAL_TS_TRANSPORT_STATUS_PUSH_MS);
+    transportStatusTimer.unref?.();
     await Promise.race([waitForAbort(params.abortSignal), disconnected]);
     return { diagnosticEnvelope: latestDiagnosticEnvelope };
   } catch (err) {
@@ -356,6 +394,10 @@ async function runSignalTsMonitorConnection(params: SignalTsMonitorParams): Prom
     }
     return { error: err, diagnosticEnvelope: latestDiagnosticEnvelope };
   } finally {
+    if (transportStatusTimer) {
+      clearInterval(transportStatusTimer);
+    }
+    pushTransportStatus({ connected: false });
     unregisterSignalTsActiveClient(params.accountInfo, context);
     offIncoming();
     await Promise.allSettled(inFlightIncoming);
