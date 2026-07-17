@@ -1188,6 +1188,22 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
       return;
     }
 
+    // Clients send an empty DataMessage after reading our reply (a read marker).
+    // It carries no visible content, so it must not open a new turn or start
+    // typing — which previously started below and, hitting the empty-body return
+    // further down, was never stopped (a lingering typing indicator plus an
+    // extra session encrypt that could race inbound decryption). This mirrors
+    // exactly when bodyText below resolves empty: no text, quote, media, or
+    // sticker.
+    const hasVisibleContent =
+      Boolean(messageText) ||
+      Boolean(visibleQuoteText) ||
+      (dataMessage.attachments?.length ?? 0) > 0 ||
+      Boolean(dataMessage.sticker);
+    if (!hasVisibleContent) {
+      return;
+    }
+
     const replyAbortController = new AbortController();
     const previousReplyState = activeReplyStates.get(route.sessionKey);
     previousReplyState?.controller.abort(
