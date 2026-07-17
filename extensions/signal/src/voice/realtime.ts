@@ -41,6 +41,16 @@ const SIGNAL_REALTIME_TRANSCRIPT_PREVIEW_CHARS = 200;
 const SIGNAL_REALTIME_DEFAULT_TOOL_POLICY: RealtimeVoiceAgentConsultToolPolicy = "owner";
 const SIGNAL_REALTIME_DEFAULT_CONSULT_POLICY = "always" as const;
 
+// Provider PCM arrives faster than real time; drain it into the Pulse mic sink
+// at real-time pace (one ~20ms chunk per tick) so barge-in can drop everything
+// still queued instead of playing seconds of already-buffered audio. 48kHz
+// stereo s16 => 48000 * 2ch * 2B * 0.02s = 3840 bytes / 20ms.
+const PLAYBACK_TICK_MS = 20;
+const PLAYBACK_CHUNK_BYTES = 3840;
+// Safety un-suppress: if no new response starts after a barge-in, stop dropping
+// assistant audio so the call can never wedge silent.
+const AUDIO_SUPPRESS_MAX_MS = 3_000;
+
 export type SignalRealtimeVoiceSession = {
   // Connect the provider socket with the (already-built) instructions. Runs
   // BEFORE the call is answered so the voice model is fully prepared; no audio
@@ -86,6 +96,13 @@ class SignalRealtimeVoiceSessionImpl implements SignalRealtimeVoiceSession {
   // Sub-frame remainders carried across arbitrarily-chunked stream reads/writes.
   private earResidual: Buffer = Buffer.alloc(0);
   private micResidual: Buffer = Buffer.alloc(0);
+  // Real-time-paced playback queue (48k stereo s16) feeding the Pulse mic sink.
+  private playbackQueue: Buffer = Buffer.alloc(0);
+  private playbackTimer: ReturnType<typeof setInterval> | undefined;
+  // True from barge-in until the next response starts: drop the interrupted
+  // response's late audio deltas so they don't resume playing over the caller.
+  private audioSuppressed = false;
+  private audioSuppressTimer: ReturnType<typeof setTimeout> | undefined;
   // Bound once so the same reference detaches cleanly on close().
   private readonly earListener = (chunk: unknown): void => {
     if (this.stopped || !this.bridge || !Buffer.isBuffer(chunk)) {
@@ -148,11 +165,7 @@ class SignalRealtimeVoiceSessionImpl implements SignalRealtimeVoiceSession {
       audioSink: {
         isOpen: () => !this.stopped,
         sendAudio: (audio) => this.writeMicAudio(audio),
-        clearAudio: () => {
-          // No per-frame clear on the Pulse mic sink: RingRTC captures a continuous
-          // stream and the model's VAD owns barge-in. Dropping bytes here would
-          // desync the 48k pacat playback pipeline mid-utterance.
-        },
+        clearAudio: () => this.handleBargeIn(),
       },
       onTranscript: (role, text, isFinal) => this.handleTranscript(role, text, isFinal),
       onToolCall: (event, session) => this.handleToolCall(event, session),
@@ -160,6 +173,11 @@ class SignalRealtimeVoiceSessionImpl implements SignalRealtimeVoiceSession {
       // boundaries, tool submits) for diagnosing wedged calls. Per-frame audio
       // appends and streaming deltas are noise and skipped.
       onEvent: (event) => {
+        // A new response means the interrupted one is fully superseded; let its
+        // audio play again.
+        if (event.type === "response.created") {
+          this.resumeAudioAfterBargeIn();
+        }
         if (event.type === "input_audio_buffer.append" || event.type.includes(".delta")) {
           return;
         }
@@ -192,6 +210,9 @@ class SignalRealtimeVoiceSessionImpl implements SignalRealtimeVoiceSession {
     // Attach the ear pump only now: the provider socket + instructions are ready,
     // and the RingRTC audio path exists, so caller audio can start flowing.
     audio.ear.on("data", this.earListener);
+    // Start real-time-paced playback: enqueued provider audio drains one chunk
+    // per tick so barge-in can drop the rest.
+    this.playbackTimer = setInterval(() => this.drainPlaybackChunk(), PLAYBACK_TICK_MS);
     const greeting = this.params.voiceConfig.greeting?.trim();
     if (greeting) {
       this.bridge?.triggerGreeting(greeting);
@@ -208,15 +229,66 @@ class SignalRealtimeVoiceSessionImpl implements SignalRealtimeVoiceSession {
     this.audio = undefined;
     this.earResidual = Buffer.alloc(0);
     this.micResidual = Buffer.alloc(0);
+    if (this.playbackTimer) {
+      clearInterval(this.playbackTimer);
+      this.playbackTimer = undefined;
+    }
+    if (this.audioSuppressTimer) {
+      clearTimeout(this.audioSuppressTimer);
+      this.audioSuppressTimer = undefined;
+    }
+    this.playbackQueue = Buffer.alloc(0);
     this.bridge?.close();
     this.bridge = null;
   }
 
-  private writeMicAudio(realtimePcm24kMono: Buffer): void {
+  // Barge-in: drop everything still queued and stop accepting the interrupted
+  // response's late audio until the next response starts.
+  private handleBargeIn(): void {
+    this.playbackQueue = Buffer.alloc(0);
+    this.audioSuppressed = true;
+    if (this.audioSuppressTimer) {
+      clearTimeout(this.audioSuppressTimer);
+    }
+    this.audioSuppressTimer = setTimeout(() => {
+      this.audioSuppressed = false;
+      this.audioSuppressTimer = undefined;
+    }, AUDIO_SUPPRESS_MAX_MS);
+  }
+
+  private resumeAudioAfterBargeIn(): void {
+    this.audioSuppressed = false;
+    if (this.audioSuppressTimer) {
+      clearTimeout(this.audioSuppressTimer);
+      this.audioSuppressTimer = undefined;
+    }
+  }
+
+  // Writes at most one real-time chunk from the playback queue to the mic sink.
+  private drainPlaybackChunk(): void {
     const mic = this.audio?.mic;
-    if (this.stopped || !mic) {
+    if (this.stopped || !mic || !mic.writable || this.playbackQueue.length === 0) {
+      return;
+    }
+    const take = Math.min(PLAYBACK_CHUNK_BYTES, this.playbackQueue.length);
+    const chunk = this.playbackQueue.subarray(0, take);
+    this.playbackQueue = this.playbackQueue.subarray(take);
+    try {
+      mic.write(chunk);
+    } catch (error) {
+      logger.warn(`signal voice: mic write failed: ${formatErrorMessage(error)}`);
+    }
+  }
+
+  private writeMicAudio(realtimePcm24kMono: Buffer): void {
+    if (this.stopped || !this.audio) {
       // Model output before the audio path is wired (pre-answer) is dropped: the
       // model has no input yet, so this should not carry real speech.
+      return;
+    }
+    if (this.audioSuppressed) {
+      // Interrupted response's late audio: drop instead of queueing it behind
+      // the caller's speech.
       return;
     }
     const { frames, residual } = takeAlignedFrames(
@@ -232,14 +304,8 @@ class SignalRealtimeVoiceSessionImpl implements SignalRealtimeVoiceSession {
     if (signalPcm.length === 0) {
       return;
     }
-    if (!mic.writable) {
-      return;
-    }
-    try {
-      mic.write(signalPcm);
-    } catch (error) {
-      logger.warn(`signal voice: mic write failed: ${formatErrorMessage(error)}`);
-    }
+    // Enqueue for real-time-paced playback; drainPlaybackChunk feeds the sink.
+    this.playbackQueue = Buffer.concat([this.playbackQueue, signalPcm]);
   }
 
   private handleTranscript(role: RealtimeVoiceRole, text: string, isFinal: boolean): void {
