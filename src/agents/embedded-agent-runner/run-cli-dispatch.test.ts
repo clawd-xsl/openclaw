@@ -78,4 +78,51 @@ describe("runEmbeddedRunViaCliBackend", () => {
       prompt: "hello",
     });
   });
+
+  describe("CLI session binding round-trip", () => {
+    it("passes a prior binding into the CLI run params", () => {
+      const cli = buildCliRunParamsFromEmbedded(
+        { params: baseParams, provider: "claude-cli", modelId: "sonnet" },
+        { sessionId: "claude-abc" },
+      );
+      expect(cli.cliSessionBinding).toEqual({ sessionId: "claude-abc" });
+    });
+
+    it("reads the prior binding and persists the new one after the run", async () => {
+      const write = vi.fn(async () => {});
+      const bindingStore = {
+        read: vi.fn(() => ({ sessionId: "warm-1" })),
+        write,
+      };
+      const runCliAgent = vi.fn().mockResolvedValue({
+        payloads: [],
+        meta: { agentMeta: { cliSessionBinding: { sessionId: "warm-2" } } },
+      } as never);
+
+      await runEmbeddedRunViaCliBackend({
+        params: { ...baseParams, sessionKey: "agent:main:signal:direct:abc", agentId: "main" },
+        provider: "claude-cli",
+        modelId: "sonnet",
+        runCliAgent,
+        bindingStore,
+      });
+
+      // Prior binding was resumed.
+      expect(bindingStore.read).toHaveBeenCalledWith(
+        expect.any(String),
+        "agent:main:signal:direct:abc",
+        "main",
+        "claude-cli",
+      );
+      expect(runCliAgent.mock.calls[0]?.[0]?.cliSessionBinding).toEqual({ sessionId: "warm-1" });
+      // New binding was persisted.
+      expect(write).toHaveBeenCalledWith(
+        expect.any(String),
+        "agent:main:signal:direct:abc",
+        "main",
+        "claude-cli",
+        { sessionId: "warm-2" },
+      );
+    });
+  });
 });

@@ -564,6 +564,9 @@ export async function loadRunOverflowCompactionHarness(): Promise<{
         : undefined;
       return runtime || undefined;
     },
+    // These harness tests exercise the embedded API path; a configured-runtime
+    // CLI binding isn't set up, so dispatch resolves to embedded (undefined).
+    resolveCliExecutionDispatch: () => undefined,
   }));
 
   vi.doMock("../../plugins/provider-runtime.js", () => ({
