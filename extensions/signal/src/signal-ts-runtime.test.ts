@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => {
     connectCount: 0,
     decodeSignalEnvelope: vi.fn(() => ({})),
     decryptIncomingEnvelope: vi.fn(),
+    archiveSessionForPeer: vi.fn(async () => undefined),
     disconnect: vi.fn(async () => undefined),
     disconnectError: undefined as Error | undefined,
     downloadSignalAttachment: vi.fn(),
@@ -107,6 +108,16 @@ vi.mock("@openclaw/signal-ts", () => {
 
     async sendMessage(...args: unknown[]): Promise<{ timestamp: number }> {
       return await mocks.sendMessage(...args);
+    }
+
+    async decryptIncoming(params: unknown): Promise<unknown> {
+      // Delegates to the same decrypt mock so existing decrypt assertions hold;
+      // the client method wraps it under the session-state lock in production.
+      return await mocks.decryptIncomingEnvelope(params);
+    }
+
+    async archiveSessionForPeer(...args: unknown[]): Promise<void> {
+      await mocks.archiveSessionForPeer(...args);
     }
 
     async sendReactionMessage(...args: unknown[]): Promise<{ timestamp: number }> {

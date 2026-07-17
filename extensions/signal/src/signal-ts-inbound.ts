@@ -5,7 +5,6 @@ import {
   createLibsignalStores,
   createSignalLocalAddress,
   decodeSignalEnvelope,
-  decryptIncomingEnvelope,
   downloadSignalAttachment,
   normalizeDecryptedIncomingMessage,
   signalAttachmentFetch,
@@ -210,7 +209,10 @@ async function runSignalTsMonitorConnection(params: SignalTsMonitorParams): Prom
             incoming.timestamp,
           )}`,
         );
-        const decrypted = await decryptIncomingEnvelope({
+        // Decrypt under signal-ts's session-state lock (shared with outbound
+        // sends) so it cannot race a concurrent typing/reply encrypt and corrupt
+        // the ratchet — which left the peer unable to decrypt our next message.
+        const decrypted = await client.decryptIncoming({
           envelope: incoming.envelope,
           localAddress,
           sealedSender: {
@@ -230,6 +232,24 @@ async function runSignalTsMonitorConnection(params: SignalTsMonitorParams): Prom
             params.runtime,
             `signal-ts inbound normalized ${describeSignalTsIncomingMessage(message)}`,
           );
+          if (message.kind === "decryption-error") {
+            // The peer could not decrypt one of our messages: our session with
+            // that device diverged, so archive it — the next send re-establishes
+            // a fresh session and the peer stops seeing delivery failures.
+            const aci = message.sender.serviceId;
+            const deviceId = message.decryptionError.deviceId ?? message.sender.deviceId;
+            if (aci && deviceId !== undefined) {
+              await client
+                .archiveSessionForPeer({ serviceId: aci, deviceId, stores })
+                .catch((err: unknown) => {
+                  logSignalTsInfo(
+                    params.runtime,
+                    `signal-ts inbound decryption-error session archive failed: ${String(err)}`,
+                  );
+                });
+            }
+            continue;
+          }
           if (message.kind === "call") {
             // Call signaling never becomes a signal-cli envelope; feed it straight
             // to the manager (which owns RingRTC + ring/answer) and skip dispatch.

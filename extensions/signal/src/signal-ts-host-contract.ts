@@ -263,6 +263,13 @@ export interface SignalTsClient {
   on(event: "incoming", handler: (incoming: SignalIncomingEnvelope) => void): () => void;
   on(event: "disconnected", handler: (error: Error | null) => void): () => void;
   on(event: "queueEmpty", handler: () => void): () => void;
+  // Decrypts one inbound envelope under the same session-state lock as outbound
+  // sends, so concurrent inbound decrypt + outbound encrypt cannot corrupt the
+  // libsignal ratchet. Use instead of the standalone decryptIncomingEnvelope.
+  decryptIncoming(params: Record<string, unknown>): Promise<unknown>;
+  // Archives our session with a peer device so the next send re-establishes it,
+  // recovering after the peer reports it could not decrypt one of our messages.
+  archiveSessionForPeer(params: Record<string, unknown>): Promise<void>;
   sendMessage(params: Record<string, unknown>): SignalSendResult;
   sendStickerMessage(params: Record<string, unknown>): SignalSendResult;
   sendReactionMessage(params: Record<string, unknown>): SignalSendResult;
