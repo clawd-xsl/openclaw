@@ -14,7 +14,7 @@ const mocks = vi.hoisted(() => {
     connectCount: 0,
     decodeSignalEnvelope: vi.fn(() => ({})),
     decryptIncomingEnvelope: vi.fn(),
-    archiveSessionForPeer: vi.fn(async () => undefined),
+    archiveSessionForPeer: vi.fn(async (..._args: unknown[]) => undefined),
     disconnect: vi.fn(async () => undefined),
     disconnectError: undefined as Error | undefined,
     downloadSignalAttachment: vi.fn(),
