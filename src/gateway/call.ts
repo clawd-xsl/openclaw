@@ -90,6 +90,8 @@ type CallGatewayBaseOptions = {
   useStoredDeviceAuth?: boolean;
   requiredStoredDeviceAuthScopes?: OperatorScope[];
   requireLocalBackendSharedAuth?: boolean;
+  /** Target the configured local gateway with authenticated operator scopes. */
+  requireLocalBackendOperatorAuth?: boolean;
   deviceIdentity?: DeviceIdentity | null;
   instanceId?: string;
   minProtocol?: number;
@@ -682,8 +684,10 @@ async function resolveGatewayCallContext(
 ): Promise<ResolvedGatewayCallContext> {
   const cliUrlOverride = trimToUndefined(opts.url);
   const explicitAuth = resolveExplicitGatewayAuth({ token: opts.token, password: opts.password });
+  const requiresConfiguredLocalGateway =
+    opts.requireLocalBackendSharedAuth === true || opts.requireLocalBackendOperatorAuth === true;
   const envUrlOverride =
-    cliUrlOverride || opts.localPortOverride !== undefined
+    cliUrlOverride || opts.localPortOverride !== undefined || requiresConfiguredLocalGateway
       ? undefined
       : trimToUndefined(process.env.OPENCLAW_GATEWAY_URL);
   const urlOverride = cliUrlOverride ?? envUrlOverride;
@@ -1113,14 +1117,16 @@ async function callGatewayWithScopes<T = Record<string, unknown>>(
     opts.timeoutMs,
     context.config.gateway?.handshakeTimeoutMs,
   );
-  if (opts.requireLocalBackendSharedAuth && (context.urlOverride || context.isRemoteMode)) {
+  const requiresConfiguredLocalGateway =
+    opts.requireLocalBackendSharedAuth === true || opts.requireLocalBackendOperatorAuth === true;
+  if (requiresConfiguredLocalGateway && (context.urlOverride || context.isRemoteMode)) {
     throw new GatewayLocalBackendSharedAuthUnavailableError(
-      "local backend shared auth is limited to the configured local gateway",
+      "local backend auth is limited to the configured local gateway",
     );
   }
-  const useStoredDeviceAuth = opts.useStoredDeviceAuth === true;
+  const explicitlyUseStoredDeviceAuth = opts.useStoredDeviceAuth === true;
   if (
-    useStoredDeviceAuth &&
+    explicitlyUseStoredDeviceAuth &&
     (context.urlOverride ||
       context.explicitAuth.token ||
       context.explicitAuth.password ||
@@ -1130,7 +1136,19 @@ async function callGatewayWithScopes<T = Record<string, unknown>>(
       "stored device auth is limited to the configured local gateway",
     );
   }
-  const resolvedCredentials = useStoredDeviceAuth ? {} : await resolveGatewayCredentials(context);
+  const resolvedCredentials = explicitlyUseStoredDeviceAuth
+    ? {}
+    : await resolveGatewayCredentials(context);
+  const resolvedGatewayAuth = resolveGatewayCallAuth(context.config);
+  // Trusted-proxy auth has no direct loopback credential unless the operator
+  // configures its optional password fallback. Use the paired local device in
+  // that one mode so internal operator handoffs remain authenticated.
+  const useStoredDeviceAuth =
+    explicitlyUseStoredDeviceAuth ||
+    (opts.requireLocalBackendOperatorAuth === true &&
+      resolvedGatewayAuth.mode === "trusted-proxy" &&
+      !resolvedCredentials.token &&
+      !resolvedCredentials.password);
   ensureExplicitGatewayAuth({
     urlOverride: context.urlOverride,
     urlOverrideSource: context.urlOverrideSource,
@@ -1144,7 +1162,7 @@ async function callGatewayWithScopes<T = Record<string, unknown>>(
     config: context.config,
     url: context.urlOverride,
     urlSource: context.urlOverrideSource,
-    ignoreEnvUrlOverride: opts.localPortOverride !== undefined,
+    ignoreEnvUrlOverride: opts.localPortOverride !== undefined || requiresConfiguredLocalGateway,
     localPortOverride: opts.localPortOverride,
     ...(opts.configPath ? { configPath: opts.configPath } : {}),
   });
@@ -1152,9 +1170,7 @@ async function callGatewayWithScopes<T = Record<string, unknown>>(
   const tlsFingerprint = await resolveGatewayTlsFingerprint({ opts, context, url });
   const token = useStoredDeviceAuth ? undefined : resolvedCredentials.token;
   const password = useStoredDeviceAuth ? undefined : resolvedCredentials.password;
-  const allowAuthNone =
-    opts.requireLocalBackendSharedAuth === true &&
-    resolveGatewayCallAuth(context.config).mode === "none";
+  const allowAuthNone = requiresConfiguredLocalGateway && resolvedGatewayAuth.mode === "none";
   const omitDeviceIdentity = shouldOmitDeviceIdentityForGatewayCall({
     opts,
     url,
@@ -1165,6 +1181,15 @@ async function callGatewayWithScopes<T = Record<string, unknown>>(
   if (opts.requireLocalBackendSharedAuth && !omitDeviceIdentity) {
     throw new GatewayLocalBackendSharedAuthUnavailableError(
       "local backend shared auth requires a loopback gateway with token/password credentials or auth mode none",
+    );
+  }
+  if (
+    opts.requireLocalBackendOperatorAuth === true &&
+    !omitDeviceIdentity &&
+    !useStoredDeviceAuth
+  ) {
+    throw new GatewayLocalBackendSharedAuthUnavailableError(
+      "local backend operator auth requires loopback shared auth, auth mode none, or stored device auth",
     );
   }
   const deviceIdentity =
@@ -1181,11 +1206,14 @@ async function callGatewayWithScopes<T = Record<string, unknown>>(
         configPath: context.configPath,
       });
     }
+    const requiredStoredDeviceAuthScopes =
+      opts.requiredStoredDeviceAuthScopes ??
+      (opts.requireLocalBackendOperatorAuth === true ? scopes : undefined);
     if (
-      Array.isArray(opts.requiredStoredDeviceAuthScopes) &&
+      Array.isArray(requiredStoredDeviceAuthScopes) &&
       !roleScopesAllow({
         role: "operator",
-        requestedScopes: opts.requiredStoredDeviceAuthScopes,
+        requestedScopes: requiredStoredDeviceAuthScopes,
         allowedScopes: storedAuth.scopes,
       })
     ) {
@@ -1216,6 +1244,7 @@ async function callGatewayWithScopes<T = Record<string, unknown>>(
     surfaceGatewayClientRequestErrors:
       useStoredDeviceAuth ||
       opts.requireLocalBackendSharedAuth === true ||
+      opts.requireLocalBackendOperatorAuth === true ||
       Boolean(opts.agentRuntimeIdentityToken),
   });
 }

@@ -943,6 +943,100 @@ describe("callGateway url resolution", () => {
     expect(lastClientOptions?.deviceIdentity).toBeNull();
   });
 
+  it("uses configured local operator auth instead of an ambient gateway URL", async () => {
+    process.env.OPENCLAW_GATEWAY_URL = "ws://remote.example.test:18789";
+    getRuntimeConfig.mockReturnValue({
+      gateway: { mode: "local", bind: "loopback", auth: { mode: "none" } },
+    });
+    setGatewayNetworkDefaults();
+
+    await callGateway({
+      method: "agent",
+      scopes: ["operator.admin"],
+      requireLocalBackendOperatorAuth: true,
+    });
+
+    expect(lastClientOptions?.url).toBe("ws://127.0.0.1:18789");
+    expect(lastClientOptions?.scopes).toEqual(["operator.admin"]);
+    expect(lastClientOptions?.deviceIdentity).toBeNull();
+  });
+
+  it("uses the trusted-proxy local password for configured local operator auth", async () => {
+    getRuntimeConfig.mockReturnValue({
+      gateway: {
+        mode: "local",
+        bind: "loopback",
+        auth: { mode: "trusted-proxy", password: "local-password" },
+      },
+    });
+    setGatewayNetworkDefaults();
+
+    await callGateway({
+      method: "agent",
+      scopes: ["operator.admin"],
+      requireLocalBackendOperatorAuth: true,
+    });
+
+    expect(lastClientOptions?.password).toBe("local-password");
+    expect(lastClientOptions?.scopes).toEqual(["operator.admin"]);
+    expect(lastClientOptions?.deviceIdentity).toBeNull();
+  });
+
+  it("uses stored device auth for trusted-proxy local operator auth without a password", async () => {
+    getRuntimeConfig.mockReturnValue({
+      gateway: {
+        mode: "local",
+        bind: "loopback",
+        auth: { mode: "trusted-proxy" },
+      },
+    });
+    setGatewayNetworkDefaults();
+    loadDeviceAuthTokenMock.mockReturnValue({
+      token: "paired-device-token",
+      role: "operator",
+      scopes: ["operator.admin"],
+      updatedAtMs: 123,
+    });
+
+    await callGateway({
+      method: "agent",
+      scopes: ["operator.admin"],
+      requireLocalBackendOperatorAuth: true,
+    });
+
+    expect(lastClientOptions?.token).toBeUndefined();
+    expect(lastClientOptions?.password).toBeUndefined();
+    expect(lastClientOptions?.scopes).toBeUndefined();
+    expect(lastClientOptions?.deviceIdentity).toEqual(deviceIdentityState.value);
+  });
+
+  it("rejects trusted-proxy stored device auth without the requested operator scope", async () => {
+    getRuntimeConfig.mockReturnValue({
+      gateway: {
+        mode: "local",
+        bind: "loopback",
+        auth: { mode: "trusted-proxy" },
+      },
+    });
+    setGatewayNetworkDefaults();
+    loadDeviceAuthTokenMock.mockReturnValue({
+      token: "paired-device-token",
+      role: "operator",
+      scopes: ["operator.read"],
+      updatedAtMs: 123,
+    });
+
+    await expect(
+      callGateway({
+        method: "agent",
+        scopes: ["operator.admin"],
+        requireLocalBackendOperatorAuth: true,
+      }),
+    ).rejects.toMatchObject({ name: "GatewayStoredDeviceAuthUnavailableError" });
+
+    expect(lastClientOptions).toBeNull();
+  });
+
   it("rejects required local backend shared auth for remote targets", async () => {
     await expect(
       callGateway({
