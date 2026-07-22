@@ -64,10 +64,17 @@ too large, in which case only that first candidate can be truncated to fit. If
 an older candidate would exceed the remaining budget after one summary has been
 accepted, injection stops without partially including that candidate. When no
 completed summary can be injected and the direct predecessor is pending or
-processing, memory-core can temporarily use a small sanitized transcript tail.
-A failed summary never falls back to raw transcript content. Set
-`autoInject: false` to keep stored summaries available through the tool and
-Control UI without adding them to prompts.
+processing, memory-core temporarily injects a small sanitized transcript tail.
+Any injection made while the direct predecessor's summary is still generating
+is provisional: it upgrades to the full summary chain on a later turn once
+generation settles, and the watch closes if generation terminally fails. The
+finalized injection is terminal for that session. A failed summary
+never falls back to raw transcript content. For backends that keep a native
+session (such as the Claude CLI backend), continuity is re-injected whenever
+the backend rebuilds that native session from the transcript, because injected
+context is not part of the transcript. Set `autoInject: false` to keep stored
+summaries available through the tool and Control UI without adding them to
+prompts.
 
 ```json5
 {

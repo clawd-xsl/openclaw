@@ -290,7 +290,12 @@ Use the phase-specific hooks for new plugins:
   `prependContext` or `appendContext`.
 - `before_prompt_build`: receives the current prompt and session messages.
   Return `prependContext`, `appendContext`, `systemPrompt`,
-  `prependSystemContext`, or `appendSystemContext`.
+  `prependSystemContext`, or `appendSystemContext`. Backends that keep a native
+  session (such as the Claude CLI backend) set `nativeSessionRebuild: true` on
+  the context for turns that seed or reseed that native session from the
+  OpenClaw transcript. Injected context is not part of the transcript, so hooks
+  that inject once-per-session continuity should re-supply it on those turns or
+  the rebuilt session loses it.
 - `heartbeat_prompt_contribution`: runs only for heartbeat turns and returns
   `prependContext` or `appendContext`. It is intended for background monitors
   that need to summarize current state without changing user-initiated turns.

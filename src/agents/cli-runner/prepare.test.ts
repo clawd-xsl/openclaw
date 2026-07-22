@@ -1359,6 +1359,7 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
             messageProvider?: string;
             trigger?: string;
             channelId?: string;
+            nativeSessionRebuild?: boolean;
           }
         | undefined;
       expect(hookContext?.runId).toBe("run-test");
@@ -1371,6 +1372,9 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
       expect(hookContext?.messageProvider).toBe("acp");
       expect(hookContext?.trigger).toBe("user");
       expect(hookContext?.channelId).toBe("telegram");
+      // No reusable native session here: hooks must see the rebuild signal so
+      // transcript-absent continuity is re-supplied.
+      expect(hookContext?.nativeSessionRebuild).toBe(true);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

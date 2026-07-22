@@ -52,15 +52,27 @@ const SESSION_SUMMARY_CONTEXT_PREFIX = [
 
 type ReadBoundedTranscriptEvents = typeof readBoundedSessionTranscriptEvents;
 
+// `provisional` marks an injection made while the direct predecessor's summary
+// could still change (a transcript tail, or a chain missing that summary); it
+// upgrades once the predecessor settles. `final` is terminal for reused sessions.
+type SessionSummaryInjectionKind = "provisional" | "final";
+
 type SessionSummaryInjectionRecord = {
-  version: 1;
+  version: 2;
   predecessorSessionId: string;
   injectedAt: number;
+  kind: SessionSummaryInjectionKind;
 };
+
+// `claim` registers only if absent so concurrent first-turn injections dedupe;
+// `upsert` overwrites to promote a tail or to re-supply continuity after a
+// native-session rebuild.
+type SessionSummaryInjectionCommitMode = "claim" | "upsert";
 
 type PreparedSessionSummaryInjection = {
   prependContext: string;
   record: SessionSummaryInjectionRecord;
+  commitMode: SessionSummaryInjectionCommitMode;
 };
 
 type PendingSessionSummaryInjection = {
@@ -439,6 +451,31 @@ export function registerSessionSummaries(
     maxEntries: SESSION_SUMMARY_STORE_MAX_ENTRIES,
   });
   const pendingInjections = new Map<string, PendingSessionSummaryInjection>();
+  const persistInjectionRecord = async (
+    injectionKey: string,
+    prepared: PreparedSessionSummaryInjection,
+  ): Promise<boolean> => {
+    const { record, commitMode } = prepared;
+    if (commitMode === "claim") {
+      return injectionStore.registerIfAbsent(injectionKey, record);
+    }
+    if (record.kind === "final") {
+      await injectionStore.register(injectionKey, record);
+      return true;
+    }
+    // Upsert commits settle after reply dispatch; a stale provisional commit
+    // must not regress a final record that landed in the meantime.
+    if (injectionStore.update) {
+      await injectionStore.update(injectionKey, (current) =>
+        current?.kind === "final" ? current : record,
+      );
+      return true;
+    }
+    // Without update support, fail closed on the record (never overwrite) but
+    // still deliver the upsert injection.
+    await injectionStore.registerIfAbsent(injectionKey, record);
+    return true;
+  };
   const commitPendingInjection = async (
     injectionKey: string,
     pending: PendingSessionSummaryInjection,
@@ -450,7 +487,7 @@ export function registerSessionSummaries(
       }
       return;
     }
-    await injectionStore.registerIfAbsent(injectionKey, prepared.record);
+    await persistInjectionRecord(injectionKey, prepared);
     if (pendingInjections.get(injectionKey) === pending) {
       pendingInjections.delete(injectionKey);
     }
@@ -549,6 +586,10 @@ export function registerSessionSummaries(
     }
     const injectionKey = buildSessionSummaryPredecessorIndexKey(agentId, currentSessionId);
     const runId = ctx.runId?.trim();
+    // Read the record before the pending-claim check: the span from that check
+    // to registering a pending entry must stay synchronous, or overlapping
+    // turns could drop each other's commit tracking.
+    const existingRecord = await injectionStore.lookup(injectionKey);
     const pending = pendingInjections.get(injectionKey);
     if (pending) {
       if (runId) {
@@ -566,15 +607,33 @@ export function registerSessionSummaries(
       }
       pendingInjections.delete(injectionKey);
     }
-    // Continuity bridges only an empty new session. Once history exists, its
-    // native transcript carries the bridge; reinjection would pollute every turn.
-    if (event.messages.length > 0) {
+    // A native-session rebuild reseeds from the transcript, which never carried
+    // the continuity block, so it must be re-injected regardless of prior state.
+    const nativeSessionRebuild = ctx.nativeSessionRebuild === true;
+    // A provisional injection may still be promoted once the direct
+    // predecessor's summary settles; final records (and legacy kind-less
+    // records) are terminal on reused sessions.
+    const canUpgrade = existingRecord?.kind === "provisional";
+    // First-turn bridge for backends that do not report native rebuilds (e.g.
+    // API backends), which get full history every turn: inject only into an
+    // untouched new session.
+    const firstTurnBridge = !existingRecord && event.messages.length === 0;
+    if (!nativeSessionRebuild && !canUpgrade && !firstTurnBridge) {
       return undefined;
     }
+    // A rebuild must always re-supply continuity; an upgrade must overwrite the
+    // prior provisional record. Both bypass the register-if-absent claim used
+    // to dedupe concurrent first-turn injections.
+    const commitMode: SessionSummaryInjectionCommitMode =
+      nativeSessionRebuild || canUpgrade ? "upsert" : "claim";
+    // Ends the per-turn upgrade watch when the summary can never arrive
+    // (predecessor purged, aged out, or terminally failed).
+    const closeProvisionalRecord = async (): Promise<void> => {
+      await injectionStore.update?.(injectionKey, (current) =>
+        current?.kind === "provisional" ? { ...current, kind: "final" } : current,
+      );
+    };
     const prepare = async (): Promise<PreparedSessionSummaryInjection | undefined> => {
-      if (await injectionStore.lookup(injectionKey)) {
-        return undefined;
-      }
       const predecessor = await repository.findDirectPredecessor({
         agentId,
         currentSessionId,
@@ -589,6 +648,20 @@ export function registerSessionSummaries(
           predecessorSessionKey: predecessor.sessionKey,
         }))
       ) {
+        if (canUpgrade) {
+          await closeProvisionalRecord();
+        }
+        return undefined;
+      }
+      // Settled means the direct predecessor's summary can no longer change:
+      // complete, or failed with no retry scheduled.
+      const predecessorSettled =
+        predecessor.status === "complete" ||
+        (predecessor.status === "failed" && predecessor.nextAttemptAt === null);
+      // An upgrade waits for its own predecessor to settle; promoting an older
+      // ancestor's summary now would terminally close the record while the
+      // direct predecessor's summary is still coming.
+      if (canUpgrade && !nativeSessionRebuild && !predecessorSettled) {
         return undefined;
       }
       const chain = await repository.findPredecessorChain({
@@ -611,44 +684,63 @@ export function registerSessionSummaries(
           summary: record.summary,
         });
       }
-      let prependContext = injectable.length > 0 ? buildAutoInjectContext(injectable) : undefined;
-      if (
-        !prependContext &&
-        (predecessor.status === "pending" || predecessor.status === "processing")
-      ) {
-        let transcript: Awaited<ReturnType<ReadBoundedTranscriptEvents>>;
-        try {
-          transcript = await readBoundedTranscriptEvents({
-            agentId: predecessor.agentId,
-            sessionId: predecessor.sessionId,
-            sessionKey: predecessor.sessionKey,
-            ...(predecessor.sessionFile ? { sessionFile: predecessor.sessionFile } : {}),
-            maxBytes: SESSION_SUMMARY_TAIL_MAX_BYTES,
-            maxEvents: SESSION_SUMMARY_TAIL_MAX_EVENTS,
-          });
-        } catch (error) {
-          api.logger.warn(
-            `memory-core: failed to read predecessor session tail for ${predecessor.agentId}/${predecessor.sessionId}: ${formatErrorMessage(error)}`,
-          );
-          return undefined;
-        }
-        if (transcript.available) {
-          prependContext = buildAutoInjectTailContext({
-            endedAt: predecessor.endedAt,
-            messages: extractSessionSummaryMessages(transcript.events),
-            sessionId: predecessor.sessionId,
-            truncated: transcript.truncated,
-          });
-        }
+      const summaryContext = injectable.length > 0 ? buildAutoInjectContext(injectable) : undefined;
+      if (summaryContext) {
+        return {
+          prependContext: summaryContext,
+          record: {
+            version: 2,
+            predecessorSessionId: predecessor.sessionId,
+            injectedAt: now(),
+            kind: predecessorSettled ? "final" : "provisional",
+          },
+          commitMode,
+        };
       }
-      return prependContext
+      // Upgrade turn with a settled predecessor and nothing injectable: the
+      // watch can never produce more, so close it.
+      if (canUpgrade && !nativeSessionRebuild) {
+        await closeProvisionalRecord();
+        return undefined;
+      }
+      if (predecessor.status !== "pending" && predecessor.status !== "processing") {
+        return undefined;
+      }
+      let transcript: Awaited<ReturnType<ReadBoundedTranscriptEvents>>;
+      try {
+        transcript = await readBoundedTranscriptEvents({
+          agentId: predecessor.agentId,
+          sessionId: predecessor.sessionId,
+          sessionKey: predecessor.sessionKey,
+          ...(predecessor.sessionFile ? { sessionFile: predecessor.sessionFile } : {}),
+          maxBytes: SESSION_SUMMARY_TAIL_MAX_BYTES,
+          maxEvents: SESSION_SUMMARY_TAIL_MAX_EVENTS,
+        });
+      } catch (error) {
+        api.logger.warn(
+          `memory-core: failed to read predecessor session tail for ${predecessor.agentId}/${predecessor.sessionId}: ${formatErrorMessage(error)}`,
+        );
+        return undefined;
+      }
+      if (!transcript.available) {
+        return undefined;
+      }
+      const tailContext = buildAutoInjectTailContext({
+        endedAt: predecessor.endedAt,
+        messages: extractSessionSummaryMessages(transcript.events),
+        sessionId: predecessor.sessionId,
+        truncated: transcript.truncated,
+      });
+      return tailContext
         ? {
-            prependContext,
+            prependContext: tailContext,
             record: {
-              version: 1,
+              version: 2,
               predecessorSessionId: predecessor.sessionId,
               injectedAt: now(),
+              kind: "provisional",
             },
+            commitMode,
           }
         : undefined;
     };
@@ -658,7 +750,7 @@ export function registerSessionSummaries(
       if (!prepared) {
         return undefined;
       }
-      const claimed = await injectionStore.registerIfAbsent(injectionKey, prepared.record);
+      const claimed = await persistInjectionRecord(injectionKey, prepared);
       return claimed ? { prependContext: prepared.prependContext } : undefined;
     }
 

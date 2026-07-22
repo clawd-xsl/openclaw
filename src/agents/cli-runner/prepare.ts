@@ -898,6 +898,10 @@ export async function prepareCliRunContext(
             modelProviderId: params.provider,
             modelId,
             trigger: params.trigger,
+            // No reusable native session id means this turn seeds the native
+            // session from the transcript (first turn or reseed), so hooks must
+            // re-supply any transcript-absent continuity now.
+            nativeSessionRebuild: !reusableCliSessionId,
             ...buildAgentHookContextChannelFields(params),
           },
           hookRunner,

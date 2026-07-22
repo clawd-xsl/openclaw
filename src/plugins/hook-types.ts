@@ -261,6 +261,12 @@ export type PluginHookAgentContext = {
   senderId?: string;
   trigger?: string;
   channelId?: string;
+  /**
+   * True when the backend seeds/reseeds its native session from the OpenClaw
+   * transcript this run. Hook-injected context is not in the transcript, so
+   * re-supply it on these turns. Set only by native-session (CLI) backends.
+   */
+  nativeSessionRebuild?: boolean;
   /** Resolved effective context-token budget after model/config/agent caps. */
   contextTokenBudget?: number;
   /** Source that supplied the resolved context-token budget. */

@@ -69,7 +69,13 @@ function createMemoryStore<T>(): PluginStateKeyedStore<T> {
 
 type BeforePromptBuildHook = (
   event: { prompt: string; messages: unknown[] },
-  ctx: { runId?: string; agentId?: string; sessionId?: string; sessionKey?: string },
+  ctx: {
+    runId?: string;
+    agentId?: string;
+    sessionId?: string;
+    sessionKey?: string;
+    nativeSessionRebuild?: boolean;
+  },
 ) => Promise<{ prependContext?: string } | void> | { prependContext?: string } | void;
 
 type AgentEndHook = (
@@ -115,6 +121,25 @@ type SessionEndHook = (
   ctx: { agentId?: string; sessionId: string; sessionKey?: string },
 ) => Promise<void> | void;
 
+async function completeQueuedSummary(
+  service: ReturnType<typeof registerSessionSummaries>,
+  key: string,
+  params: { sessionId: string; summary: string },
+) {
+  const claimed = await service.repository.claim(key);
+  if (!claimed) {
+    throw new Error("expected queued summary claim");
+  }
+  await service.repository.markComplete(key, {
+    extractedMessageCount: 3,
+    expectedRevision: claimed.revision,
+    fingerprint: params.sessionId.padEnd(64, "0").slice(0, 64),
+    generatedAt: Date.now(),
+    model: "openai/gpt-5.4-mini",
+    summary: params.summary,
+  });
+}
+
 function createCompletionResult(text: string, agentId = "main") {
   return {
     text,
@@ -129,6 +154,7 @@ function createCompletionResult(text: string, agentId = "main") {
 function registerTestSessionSummaries(params: {
   cfg: OpenClawConfig;
   complete?: OpenClawPluginApi["runtime"]["llm"]["complete"];
+  now?: NonNullable<RegisterSessionSummariesOptions["now"]>;
   readBoundedTranscriptEvents?: NonNullable<
     RegisterSessionSummariesOptions["readBoundedTranscriptEvents"]
   >;
@@ -177,6 +203,7 @@ function registerTestSessionSummaries(params: {
   const service = registerSessionSummaries(api, {
     predecessorIndexStore,
     readBoundedTranscriptEvents,
+    ...(params.now ? { now: params.now } : {}),
     ...(params.resolveBackfillCandidates
       ? { resolveBackfillCandidates: params.resolveBackfillCandidates }
       : {}),
@@ -838,6 +865,451 @@ describe("session summaries plugin registration", () => {
       ),
     ).toBeUndefined();
     expect(await harness.service.repository.readAllRecords()).toEqual([]);
+  });
+
+  it("upgrades a provisional tail injection to the formal summary once generation finishes", async () => {
+    const cfg = {
+      agents: { list: [{ id: "main", default: true }] },
+      plugins: {
+        entries: {
+          "memory-core": {
+            config: {
+              summaries: {
+                enabled: true,
+                autoInject: true,
+                lookbackDays: 30,
+                maxPromptTokens: 4_000,
+                minMessages: 2,
+              },
+            },
+          },
+        },
+      },
+    } satisfies OpenClawConfig;
+    const readBoundedTranscriptEvents = vi.fn(async () => ({
+      available: true,
+      events: [
+        { type: "message", message: { role: "user", content: "Keep the rollout staged" } },
+        {
+          type: "message",
+          message: { role: "assistant", content: "The next step is the canary" },
+        },
+      ],
+      truncated: false,
+    }));
+    const harness = registerTestSessionSummaries({ cfg, readBoundedTranscriptEvents });
+    const beforePromptBuild = harness.hooks.get("before_prompt_build") as BeforePromptBuildHook;
+
+    // Predecessor is enqueued but its summary has not generated yet (pending).
+    const enqueued = await harness.service.repository.enqueue({
+      agentId: "main",
+      sessionId: "previous",
+      sessionKey: "agent:main:main",
+      nextSessionId: "current",
+      endedAt: Date.now(),
+      messageCount: 3,
+    });
+
+    // The empty new session gets a provisional tail while the summary is pending.
+    const tail = await beforePromptBuild(
+      { prompt: "continue", messages: [] },
+      { agentId: "main", sessionId: "current", sessionKey: "agent:main:main" },
+    );
+    expect(tail?.prependContext).toContain("previous_session_tail");
+    expect(tail?.prependContext).toContain("Keep the rollout staged");
+    await expect(harness.injectionStore.entries()).resolves.toMatchObject([
+      { value: { kind: "provisional" } },
+    ]);
+
+    // The formal summary finishes generating.
+    await completeQueuedSummary(harness.service, enqueued.key, {
+      sessionId: "previous",
+      summary: "Formal recap: the canary rollout is the next milestone",
+    });
+
+    // A later, now non-empty turn upgrades the tail to the formal summary.
+    const upgraded = await beforePromptBuild(
+      { prompt: "continue", messages: [{ role: "user", content: "resume" }] },
+      { agentId: "main", sessionId: "current", sessionKey: "agent:main:main" },
+    );
+    expect(upgraded?.prependContext).toContain("previous_session_summary");
+    expect(upgraded?.prependContext).toContain("Formal recap");
+    expect(upgraded?.prependContext).not.toContain("previous_session_tail");
+    await expect(harness.injectionStore.entries()).resolves.toMatchObject([
+      { value: { kind: "final" } },
+    ]);
+
+    // The finalized summary injection is terminal: no further reinjection.
+    await expect(
+      beforePromptBuild(
+        { prompt: "continue", messages: [{ role: "user", content: "resume" }] },
+        { agentId: "main", sessionId: "current", sessionKey: "agent:main:main" },
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it("re-injects continuity on a native-session rebuild after the transcript-free session grows", async () => {
+    const cfg = {
+      agents: { list: [{ id: "main", default: true }] },
+      plugins: {
+        entries: {
+          "memory-core": {
+            config: {
+              summaries: {
+                enabled: true,
+                autoInject: true,
+                lookbackDays: 30,
+                maxPromptTokens: 4_000,
+                minMessages: 2,
+              },
+            },
+          },
+        },
+      },
+    } satisfies OpenClawConfig;
+    const harness = registerTestSessionSummaries({ cfg });
+    const beforePromptBuild = harness.hooks.get("before_prompt_build") as BeforePromptBuildHook;
+
+    // Seed a completed predecessor summary.
+    const enqueued = await harness.service.repository.enqueue({
+      agentId: "main",
+      sessionId: "previous",
+      sessionKey: "agent:main:main",
+      nextSessionId: "current",
+      endedAt: Date.now(),
+      messageCount: 3,
+    });
+    await completeQueuedSummary(harness.service, enqueued.key, {
+      sessionId: "previous",
+      summary: "Durable recap: staged rollout, canary next",
+    });
+
+    // First turn seeds the native session with the formal summary.
+    const first = await beforePromptBuild(
+      { prompt: "continue", messages: [] },
+      {
+        agentId: "main",
+        sessionId: "current",
+        sessionKey: "agent:main:main",
+        nativeSessionRebuild: true,
+      },
+    );
+    expect(first?.prependContext).toContain("previous_session_summary");
+    expect(first?.prependContext).toContain("Durable recap");
+    await expect(harness.injectionStore.entries()).resolves.toMatchObject([
+      { value: { kind: "final" } },
+    ]);
+
+    // A normal reused turn must not re-inject once the session is non-empty.
+    await expect(
+      beforePromptBuild(
+        { prompt: "continue", messages: [{ role: "user", content: "resume" }] },
+        { agentId: "main", sessionId: "current", sessionKey: "agent:main:main" },
+      ),
+    ).resolves.toBeUndefined();
+
+    // A reseed rebuilds the native session from the continuity-free transcript,
+    // so it must re-supply the summary even though the session is non-empty and
+    // already recorded as injected.
+    const reseed = await beforePromptBuild(
+      { prompt: "continue", messages: [{ role: "user", content: "resume" }] },
+      {
+        agentId: "main",
+        sessionId: "current",
+        sessionKey: "agent:main:main",
+        nativeSessionRebuild: true,
+      },
+    );
+    expect(reseed?.prependContext).toContain("previous_session_summary");
+    expect(reseed?.prependContext).toContain("Durable recap");
+  });
+
+  it("holds a tail upgrade until the direct predecessor settles instead of closing on an ancestor", async () => {
+    const cfg = {
+      agents: { list: [{ id: "main", default: true }] },
+      plugins: {
+        entries: {
+          "memory-core": {
+            config: {
+              summaries: {
+                enabled: true,
+                autoInject: true,
+                lookbackDays: 30,
+                maxPromptTokens: 4_000,
+                minMessages: 2,
+              },
+            },
+          },
+        },
+      },
+    } satisfies OpenClawConfig;
+    const readBoundedTranscriptEvents = vi.fn(async () => ({
+      available: true,
+      events: [{ type: "message", message: { role: "user", content: "direct tail content" } }],
+      truncated: false,
+    }));
+    const harness = registerTestSessionSummaries({ cfg, readBoundedTranscriptEvents });
+    const beforePromptBuild = harness.hooks.get("before_prompt_build") as BeforePromptBuildHook;
+
+    // Chain ancestor→previous→current with both summaries still pending.
+    const ancestor = await harness.service.repository.enqueue({
+      agentId: "main",
+      sessionId: "ancestor",
+      sessionKey: "agent:main:main",
+      nextSessionId: "previous",
+      endedAt: Date.now(),
+      messageCount: 3,
+    });
+    const previous = await harness.service.repository.enqueue({
+      agentId: "main",
+      sessionId: "previous",
+      sessionKey: "agent:main:main",
+      nextSessionId: "current",
+      endedAt: Date.now(),
+      messageCount: 3,
+    });
+
+    const tail = await beforePromptBuild(
+      { prompt: "continue", messages: [] },
+      { agentId: "main", sessionId: "current", sessionKey: "agent:main:main" },
+    );
+    expect(tail?.prependContext).toContain("previous_session_tail");
+
+    // Only the ancestor's summary completes; the direct predecessor is still
+    // generating, so the upgrade must wait rather than terminally close on the
+    // ancestor's summary alone.
+    await completeQueuedSummary(harness.service, ancestor.key, {
+      sessionId: "ancestor",
+      summary: "Ancestor recap only",
+    });
+    await expect(
+      beforePromptBuild(
+        { prompt: "continue", messages: [{ role: "user", content: "resume" }] },
+        { agentId: "main", sessionId: "current", sessionKey: "agent:main:main" },
+      ),
+    ).resolves.toBeUndefined();
+    await expect(harness.injectionStore.entries()).resolves.toMatchObject([
+      { value: { kind: "provisional" } },
+    ]);
+
+    await completeQueuedSummary(harness.service, previous.key, {
+      sessionId: "previous",
+      summary: "Direct predecessor recap",
+    });
+    const upgraded = await beforePromptBuild(
+      { prompt: "continue", messages: [{ role: "user", content: "resume" }] },
+      { agentId: "main", sessionId: "current", sessionKey: "agent:main:main" },
+    );
+    expect(upgraded?.prependContext).toContain("Direct predecessor recap");
+    expect(upgraded?.prependContext).toContain("Ancestor recap only");
+    await expect(harness.injectionStore.entries()).resolves.toMatchObject([
+      { value: { kind: "final" } },
+    ]);
+  });
+
+  it("upgrades a provisional injection after an overnight idle gap", async () => {
+    const cfg = {
+      agents: { list: [{ id: "main", default: true }] },
+      plugins: {
+        entries: {
+          "memory-core": {
+            config: {
+              summaries: {
+                enabled: true,
+                autoInject: true,
+                lookbackDays: 30,
+                maxPromptTokens: 4_000,
+                minMessages: 2,
+              },
+            },
+          },
+        },
+      },
+    } satisfies OpenClawConfig;
+    let clock = Date.now();
+    const readBoundedTranscriptEvents = vi.fn(async () => ({
+      available: true,
+      events: [{ type: "message", message: { role: "user", content: "overnight tail content" } }],
+      truncated: false,
+    }));
+    const harness = registerTestSessionSummaries({
+      cfg,
+      now: () => clock,
+      readBoundedTranscriptEvents,
+    });
+    const beforePromptBuild = harness.hooks.get("before_prompt_build") as BeforePromptBuildHook;
+    const enqueued = await harness.service.repository.enqueue({
+      agentId: "main",
+      sessionId: "previous",
+      sessionKey: "agent:main:main",
+      nextSessionId: "current",
+      endedAt: clock,
+      messageCount: 3,
+    });
+
+    const tail = await beforePromptBuild(
+      { prompt: "continue", messages: [] },
+      { agentId: "main", sessionId: "current", sessionKey: "agent:main:main" },
+    );
+    expect(tail?.prependContext).toContain("previous_session_tail");
+
+    // The summary completes shortly after, but the user only returns hours
+    // later; elapsed wall time must not forfeit the upgrade.
+    await completeQueuedSummary(harness.service, enqueued.key, {
+      sessionId: "previous",
+      summary: "Overnight recap",
+    });
+    clock += 11 * 60 * 60 * 1000;
+    const upgraded = await beforePromptBuild(
+      { prompt: "continue", messages: [{ role: "user", content: "resume" }] },
+      { agentId: "main", sessionId: "current", sessionKey: "agent:main:main" },
+    );
+    expect(upgraded?.prependContext).toContain("Overnight recap");
+    await expect(harness.injectionStore.entries()).resolves.toMatchObject([
+      { value: { kind: "final" } },
+    ]);
+  });
+
+  it("keeps an ancestor-only chain injection provisional until the direct predecessor completes", async () => {
+    const cfg = {
+      agents: { list: [{ id: "main", default: true }] },
+      plugins: {
+        entries: {
+          "memory-core": {
+            config: {
+              summaries: {
+                enabled: true,
+                autoInject: true,
+                lookbackDays: 30,
+                maxPromptTokens: 4_000,
+                minMessages: 2,
+              },
+            },
+          },
+        },
+      },
+    } satisfies OpenClawConfig;
+    const harness = registerTestSessionSummaries({ cfg });
+    const beforePromptBuild = harness.hooks.get("before_prompt_build") as BeforePromptBuildHook;
+
+    // The ancestor's summary is already complete; the direct predecessor's is
+    // still generating when the new session starts.
+    const ancestor = await harness.service.repository.enqueue({
+      agentId: "main",
+      sessionId: "ancestor",
+      sessionKey: "agent:main:main",
+      nextSessionId: "previous",
+      endedAt: Date.now(),
+      messageCount: 3,
+    });
+    await completeQueuedSummary(harness.service, ancestor.key, {
+      sessionId: "ancestor",
+      summary: "Ancestor recap",
+    });
+    const previous = await harness.service.repository.enqueue({
+      agentId: "main",
+      sessionId: "previous",
+      sessionKey: "agent:main:main",
+      nextSessionId: "current",
+      endedAt: Date.now(),
+      messageCount: 3,
+    });
+
+    const first = await beforePromptBuild(
+      { prompt: "continue", messages: [] },
+      { agentId: "main", sessionId: "current", sessionKey: "agent:main:main" },
+    );
+    expect(first?.prependContext).toContain("Ancestor recap");
+    await expect(harness.injectionStore.entries()).resolves.toMatchObject([
+      { value: { kind: "provisional" } },
+    ]);
+
+    await completeQueuedSummary(harness.service, previous.key, {
+      sessionId: "previous",
+      summary: "Direct predecessor recap",
+    });
+    const upgraded = await beforePromptBuild(
+      { prompt: "continue", messages: [{ role: "user", content: "resume" }] },
+      { agentId: "main", sessionId: "current", sessionKey: "agent:main:main" },
+    );
+    expect(upgraded?.prependContext).toContain("Direct predecessor recap");
+    await expect(harness.injectionStore.entries()).resolves.toMatchObject([
+      { value: { kind: "final" } },
+    ]);
+  });
+
+  it("closes the upgrade watch once the predecessor summary terminally fails", async () => {
+    const cfg = {
+      agents: { list: [{ id: "main", default: true }] },
+      plugins: {
+        entries: {
+          "memory-core": {
+            config: {
+              summaries: {
+                enabled: true,
+                autoInject: true,
+                lookbackDays: 30,
+                maxPromptTokens: 4_000,
+                minMessages: 2,
+              },
+            },
+          },
+        },
+      },
+    } satisfies OpenClawConfig;
+    const readBoundedTranscriptEvents = vi.fn(async () => ({
+      available: true,
+      events: [{ type: "message", message: { role: "user", content: "doomed tail content" } }],
+      truncated: false,
+    }));
+    const harness = registerTestSessionSummaries({ cfg, readBoundedTranscriptEvents });
+    const beforePromptBuild = harness.hooks.get("before_prompt_build") as BeforePromptBuildHook;
+    const enqueued = await harness.service.repository.enqueue({
+      agentId: "main",
+      sessionId: "previous",
+      sessionKey: "agent:main:main",
+      nextSessionId: "current",
+      endedAt: Date.now(),
+      messageCount: 3,
+    });
+
+    const tail = await beforePromptBuild(
+      { prompt: "continue", messages: [] },
+      { agentId: "main", sessionId: "current", sessionKey: "agent:main:main" },
+    );
+    expect(tail?.prependContext).toContain("previous_session_tail");
+
+    const claimed = await harness.service.repository.claim(enqueued.key);
+    if (!claimed) {
+      throw new Error("expected failed predecessor claim");
+    }
+    await harness.service.repository.markFailed(
+      enqueued.key,
+      "generation exploded",
+      Date.now(),
+      claimed.revision,
+      { retryable: false },
+    );
+
+    // Observing the terminal failure finalizes the record so later turns skip
+    // the repository entirely.
+    await expect(
+      beforePromptBuild(
+        { prompt: "continue", messages: [{ role: "user", content: "resume" }] },
+        { agentId: "main", sessionId: "current", sessionKey: "agent:main:main" },
+      ),
+    ).resolves.toBeUndefined();
+    await expect(harness.injectionStore.entries()).resolves.toMatchObject([
+      { value: { kind: "final" } },
+    ]);
+    const predecessorSpy = vi.spyOn(harness.service.repository, "findDirectPredecessor");
+    await expect(
+      beforePromptBuild(
+        { prompt: "continue", messages: [{ role: "user", content: "resume" }] },
+        { agentId: "main", sessionId: "current", sessionKey: "agent:main:main" },
+      ),
+    ).resolves.toBeUndefined();
+    expect(predecessorSpy).not.toHaveBeenCalled();
   });
 
   it.each([
