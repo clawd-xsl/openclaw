@@ -1188,6 +1188,7 @@ export async function executePreparedCliRun(
           const replyBackendHandle = params.replyOperation
             ? {
                 kind: "cli" as const,
+                senderIsOwner: params.senderIsOwner === true,
                 cancel: () => {
                   managedRun.cancel("manual-cancel");
                 },

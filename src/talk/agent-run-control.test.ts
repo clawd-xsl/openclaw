@@ -144,6 +144,7 @@ describe("controlRealtimeVoiceAgentRun", () => {
       "session-active",
       "use the safer path",
       { steeringMode: "all", debounceMs: 0 },
+      { kind: "trusted_internal" },
     );
   });
 

@@ -683,6 +683,32 @@ describe("reply run registry", () => {
     expect(queueMessage).toHaveBeenCalledWith("hello");
   });
 
+  it("rejects sender steering when reply-run owner admission differs", () => {
+    const queueMessage = vi.fn(async () => {});
+    const operation = createReplyOperation({
+      sessionKey: "agent:main:main",
+      sessionId: "session-running",
+      resetTriggered: false,
+    });
+
+    operation.attachBackend({
+      kind: "embedded",
+      senderIsOwner: true,
+      cancel: vi.fn(),
+      isStreaming: () => true,
+      queueMessage,
+    });
+    operation.setPhase("running");
+
+    expect(
+      queueReplyRunMessage("session-running", "hello", {
+        kind: "sender",
+        senderIsOwner: false,
+      }),
+    ).toBe(false);
+    expect(queueMessage).not.toHaveBeenCalled();
+  });
+
   it("queues messages through active non-streaming backends with live stopped state", () => {
     const queueMessage = vi.fn(async () => {});
     const operation = createReplyOperation({

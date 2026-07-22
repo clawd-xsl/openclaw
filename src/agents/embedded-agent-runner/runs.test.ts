@@ -401,6 +401,49 @@ describe("embedded-agent runner run registry", () => {
     });
   });
 
+  it("rejects sender steering when active-run owner admission differs", async () => {
+    const queueMessage = vi.fn(async () => {});
+    setActiveEmbeddedRun("session-owner", {
+      ...createRunHandle(),
+      senderIsOwner: true,
+      queueMessage,
+    });
+
+    const outcome = await queueEmbeddedAgentMessageWithOutcomeAsync(
+      "session-owner",
+      "continue",
+      undefined,
+      { kind: "sender", senderIsOwner: false },
+    );
+
+    expect(outcome).toEqual({
+      queued: false,
+      sessionId: "session-owner",
+      reason: "sender_owner_mismatch",
+      gatewayHealth: "live",
+    });
+    expect(queueMessage).not.toHaveBeenCalled();
+  });
+
+  it("allows trusted internal steering into owner runs", async () => {
+    const queueMessage = vi.fn(async () => {});
+    setActiveEmbeddedRun("session-owner-internal", {
+      ...createRunHandle(),
+      senderIsOwner: true,
+      queueMessage,
+    });
+
+    const outcome = await queueEmbeddedAgentMessageWithOutcomeAsync(
+      "session-owner-internal",
+      "continue",
+      undefined,
+      { kind: "trusted_internal" },
+    );
+
+    expect(outcome.queued).toBe(true);
+    expect(queueMessage).toHaveBeenCalledWith("continue", { steeringMode: "all" });
+  });
+
   it("rejects message-tool-only steering for active runs created without that mode", () => {
     const queueMessage = vi.fn(async () => {});
     setActiveEmbeddedRun("session-automatic-source-reply", {

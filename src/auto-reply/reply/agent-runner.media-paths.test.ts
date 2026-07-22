@@ -432,6 +432,7 @@ describe("runReplyAgent media path normalization", () => {
       {
         steeringMode: "all",
       },
+      { kind: "sender", senderIsOwner: false },
     );
     expect(enqueueFollowupRunMock).not.toHaveBeenCalled();
   });

@@ -1286,6 +1286,7 @@ export async function runReplyAgent(params: {
         steeringMode: "all",
         ...(resolvedQueue.debounceMs !== undefined ? { debounceMs: resolvedQueue.debounceMs } : {}),
       },
+      { kind: "sender", senderIsOwner: followupRun.run.senderIsOwner === true },
     );
     if (steerOutcome.queued) {
       await touchActiveSessionEntry();

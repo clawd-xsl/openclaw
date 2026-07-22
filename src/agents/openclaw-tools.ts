@@ -509,6 +509,7 @@ export function createOpenClawTools(
           createSessionsSendTool({
             agentSessionKey: options?.agentSessionKey,
             agentChannel: options?.agentChannel,
+            senderIsOwner: options?.senderIsOwner,
             sandboxed: options?.sandboxed,
             config: resolvedConfig,
             callGateway: openClawToolsDeps.callGateway,

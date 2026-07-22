@@ -3808,6 +3808,7 @@ export async function runEmbeddedAttempt(
       } = {
         kind: "embedded",
         runId: params.runId,
+        senderIsOwner: params.senderIsOwner === true,
         queueMessage: async (text: string, options) => {
           if (options?.steeringMode) {
             activeSession.agent.steeringMode = options.steeringMode;

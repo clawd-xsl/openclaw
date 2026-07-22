@@ -1694,6 +1694,59 @@ describe("sessions tools", () => {
     expect(agentParams(agentCalls[0] ?? {}).sessionKey).toBe(ordinaryActiveKey);
   });
 
+  it("sessions_send starts an authenticated turn instead of steering an active run", async () => {
+    const calls: Array<{
+      method?: string;
+      params?: unknown;
+      scopes?: string[];
+      requireLocalBackendOperatorAuth?: boolean;
+    }> = [];
+    const runScopedTargetKey = "agent:leasing-ops:slack:channel:c-room:run:run-fast";
+    const queueMessage = vi.fn(async () => {});
+    setActiveEmbeddedRun(
+      "non-owner-active-session",
+      {
+        queueMessage,
+        isStreaming: () => true,
+        isCompacting: () => false,
+        supportsTranscriptCommitWait: true,
+        sourceReplyDeliveryMode: "message_tool_only",
+        abort: () => {},
+      },
+      runScopedTargetKey,
+    );
+    callGatewayMock.mockImplementation(async (opts: unknown) => {
+      const request = opts as (typeof calls)[number];
+      calls.push(request);
+      if (request.method === "agent") {
+        return { runId: "owner-agent-run", status: "accepted", acceptedAt: 2000 };
+      }
+      return {};
+    });
+
+    const tool = createSessionsSendTool({
+      agentSessionKey: "agent:re-portal:main",
+      agentChannel: "telegram",
+      senderIsOwner: true,
+      config: TEST_CONFIG,
+      callGateway: callGatewayMock,
+    });
+    const result = await tool.execute("call-owner-handoff", {
+      sessionKey: runScopedTargetKey,
+      message: "continue with owner permissions",
+      timeoutSeconds: 0,
+    });
+
+    expect(sessionsSendDetails(result.details).status).toBe("accepted");
+    expect(queueMessage).not.toHaveBeenCalled();
+    const agentCall = calls.find((call) => call.method === "agent");
+    expect(agentCall).toMatchObject({
+      scopes: ["operator.admin"],
+      requireLocalBackendOperatorAuth: true,
+      params: expect.objectContaining({ sessionKey: runScopedTargetKey }),
+    });
+  });
+
   it("sessions_send falls back from stranded cron run key to durable cron parent", async () => {
     const calls: Array<{ method?: string; params?: unknown }> = [];
     const requesterKey = "agent:main:cron:source-job:run:source-run";

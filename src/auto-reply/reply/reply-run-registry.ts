@@ -1,10 +1,10 @@
 // Tracks active reply runs so stop, queue, and status commands can coordinate.
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import { createAbortError } from "../../infra/abort-signal.js";
 import {
   createAgentRunRestartAbortError,
   isAgentRunRestartAbortReason,
 } from "../../agents/run-termination.js";
+import { createAbortError } from "../../infra/abort-signal.js";
 import {
   markDiagnosticEmbeddedRunEnded,
   markDiagnosticEmbeddedRunStarted,
@@ -21,6 +21,8 @@ export type ReplyBackendCancelReason = "user_abort" | "restart" | "superseded";
 
 export type ReplyBackendHandle = {
   readonly kind: ReplyBackendKind;
+  /** Host-admitted owner state retained by this active turn. */
+  readonly senderIsOwner?: boolean;
   cancel(reason?: ReplyBackendCancelReason): void;
   isStreaming(): boolean;
   isStopped?: () => boolean;
@@ -790,17 +792,52 @@ export function isReplyRunStreamingForSessionId(sessionId: string): boolean {
   return getAttachedBackend(operation)?.isStreaming() ?? false;
 }
 
-export function queueReplyRunMessage(sessionId: string, text: string): boolean {
+export type ReplyRunQueueAuthorization =
+  | { kind: "sender"; senderIsOwner: boolean }
+  | { kind: "trusted_internal" };
+export type ReplyRunQueueMessageOutcome = "queued" | "unavailable" | "sender_owner_mismatch";
+
+function canQueueIntoReplyBackend(
+  backend: ReplyBackendHandle,
+  authorization?: ReplyRunQueueAuthorization,
+): boolean {
+  if (authorization?.kind === "trusted_internal") {
+    return true;
+  }
+  if (authorization?.kind === "sender") {
+    return (backend.senderIsOwner === true) === authorization.senderIsOwner;
+  }
+  // Legacy/plugin callers carry no sender admission. They may continue to
+  // steer ordinary runs, but must not inject into an owner-authorized turn.
+  return backend.senderIsOwner !== true;
+}
+
+export function queueReplyRunMessage(
+  sessionId: string,
+  text: string,
+  authorization?: ReplyRunQueueAuthorization,
+): boolean {
+  return queueReplyRunMessageWithOutcome(sessionId, text, authorization) === "queued";
+}
+
+export function queueReplyRunMessageWithOutcome(
+  sessionId: string,
+  text: string,
+  authorization?: ReplyRunQueueAuthorization,
+): ReplyRunQueueMessageOutcome {
   const operation = resolveReplyRunForCurrentSessionId(sessionId);
   const backend = operation ? getAttachedBackend(operation) : undefined;
   if (!operation || operation.phase !== "running" || !backend?.queueMessage) {
-    return false;
+    return "unavailable";
+  }
+  if (!canQueueIntoReplyBackend(backend, authorization)) {
+    return "sender_owner_mismatch";
   }
   if (!isReplyBackendMessageInjectable(backend)) {
-    return false;
+    return "unavailable";
   }
   void backend.queueMessage(text);
-  return true;
+  return "queued";
 }
 
 export function abortReplyRunBySessionId(sessionId: string): boolean {

@@ -812,6 +812,7 @@ describe("deliverSubagentAnnouncement active requester steering", () => {
         waitForTranscriptCommit: true,
         deliveryTimeoutMs: 120_000,
       },
+      { kind: "trusted_internal" },
     );
     expect(queueEmbeddedAgentMessageWithOutcome).toHaveBeenNthCalledWith(
       2,
@@ -822,6 +823,7 @@ describe("deliverSubagentAnnouncement active requester steering", () => {
         debounceMs: 0,
         deliveryTimeoutMs: 120_000,
       },
+      { kind: "trusted_internal" },
     );
   });
 
@@ -1112,6 +1114,7 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
         waitForTranscriptCommit: true,
         deliveryTimeoutMs: 120_000,
       },
+      { kind: "trusted_internal" },
     );
     expect(callGateway).not.toHaveBeenCalled();
   });
@@ -1756,6 +1759,7 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
       expect.objectContaining({
         waitForTranscriptCommit: true,
       }),
+      { kind: "trusted_internal" },
     );
     expectInProcessAgentParams(dispatchGatewayMethodInProcess, {
       deliver: false,
@@ -2161,6 +2165,7 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
         steeringMode: "all",
         waitForTranscriptCommit: true,
       },
+      { kind: "trusted_internal" },
     );
     expect(queueEmbeddedAgentMessageWithOutcome).toHaveBeenNthCalledWith(
       2,
@@ -2171,6 +2176,7 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
         deliveryTimeoutMs: 120_000,
         steeringMode: "all",
       },
+      { kind: "trusted_internal" },
     );
     expect(sendMessage).not.toHaveBeenCalled();
   });
@@ -2400,6 +2406,7 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
         waitForTranscriptCommit: true,
         deliveryTimeoutMs: 10,
       },
+      { kind: "trusted_internal" },
     );
     expect(callGateway).toHaveBeenCalledTimes(1);
     expect(sendMessage).not.toHaveBeenCalled();
@@ -4008,6 +4015,7 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
         waitForTranscriptCommit: true,
         deliveryTimeoutMs: 120_000,
       },
+      { kind: "trusted_internal" },
     );
     expect(callGateway).not.toHaveBeenCalled();
     expect(sendMessage).not.toHaveBeenCalled();

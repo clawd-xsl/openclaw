@@ -170,10 +170,15 @@ export const handleSteerCommand: CommandHandler = async (params, allowTextComman
     );
   }
 
-  const queueOutcome = await queueEmbeddedAgentMessageWithOutcomeAsync(sessionId, message, {
-    steeringMode: "all",
-    debounceMs: 0,
-  }).catch((err: unknown): CommandHandlerResult => {
+  const queueOutcome = await queueEmbeddedAgentMessageWithOutcomeAsync(
+    sessionId,
+    message,
+    {
+      steeringMode: "all",
+      debounceMs: 0,
+    },
+    { kind: "sender", senderIsOwner: params.command.senderIsOwner },
+  ).catch((err: unknown): CommandHandlerResult => {
     return continueWithSteerFallback(
       params,
       message,

@@ -46,6 +46,7 @@ type RealtimeVoiceAgentControlDeps = {
     sessionId: string,
     text: string,
     options?: { steeringMode?: "all"; debounceMs?: number },
+    authorization?: { kind: "trusted_internal" },
   ) => Promise<EmbeddedAgentQueueMessageOutcome>;
   getDiagnosticSessionActivitySnapshot: (params: {
     sessionId?: string;
@@ -154,10 +155,15 @@ export async function controlRealtimeVoiceAgentRun(
   // Steering and follow-up both enqueue to the active run; follow-up is wrapped
   // so the runner treats it as deferred context instead of an immediate pivot.
   const steerText = mode === "followup" ? buildRealtimeVoiceAgentFollowupSteeringText(text) : text;
-  const outcome = await deps.queueEmbeddedAgentMessageWithOutcomeAsync(sessionId, steerText, {
-    steeringMode: "all",
-    debounceMs: 0,
-  });
+  const outcome = await deps.queueEmbeddedAgentMessageWithOutcomeAsync(
+    sessionId,
+    steerText,
+    {
+      steeringMode: "all",
+      debounceMs: 0,
+    },
+    { kind: "trusted_internal" },
+  );
   if (!outcome.queued) {
     return {
       ok: false,

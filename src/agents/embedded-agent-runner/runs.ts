@@ -9,7 +9,8 @@ import {
   isReplyRunAbortableForCompaction,
   isReplyRunStreamingForSessionId,
   listActiveReplyRunSessionIds,
-  queueReplyRunMessage,
+  queueReplyRunMessageWithOutcome,
+  type ReplyRunQueueAuthorization,
   waitForReplyRunEndBySessionId,
 } from "../../auto-reply/reply/reply-run-registry.js";
 import {
@@ -57,6 +58,7 @@ export type EmbeddedAgentQueueFailureReason =
   | "no_active_run"
   | "not_streaming"
   | "compacting"
+  | "sender_owner_mismatch"
   | "source_reply_delivery_mode_mismatch"
   | "transcript_commit_wait_unsupported"
   | "runtime_rejected";
@@ -77,6 +79,8 @@ export type EmbeddedAgentQueueMessageOutcome =
       gatewayHealth: "live";
       errorMessage?: string;
     };
+
+export type EmbeddedAgentQueueAuthorization = ReplyRunQueueAuthorization;
 
 type PreparedEmbeddedAgentQueueMessage =
   | {
@@ -310,8 +314,9 @@ export function queueEmbeddedAgentMessageWithOutcome(
   sessionId: string,
   text: string,
   options?: EmbeddedAgentQueueMessageOptions,
+  authorization?: EmbeddedAgentQueueAuthorization,
 ): EmbeddedAgentQueueMessageOutcome {
-  const prepared = prepareEmbeddedAgentQueueMessage(sessionId, text, options);
+  const prepared = prepareEmbeddedAgentQueueMessage(sessionId, text, options, authorization);
   if (prepared.kind === "complete") {
     return prepared.outcome;
   }
@@ -409,8 +414,9 @@ export async function queueEmbeddedAgentMessageWithOutcomeAsync(
   sessionId: string,
   text: string,
   options?: EmbeddedAgentQueueMessageOptions,
+  authorization?: EmbeddedAgentQueueAuthorization,
 ): Promise<EmbeddedAgentQueueMessageOutcome> {
-  const prepared = prepareEmbeddedAgentQueueMessage(sessionId, text, options);
+  const prepared = prepareEmbeddedAgentQueueMessage(sessionId, text, options, authorization);
   if (prepared.kind === "complete") {
     return prepared.outcome;
   }
@@ -438,11 +444,12 @@ function prepareEmbeddedAgentQueueMessage(
   sessionId: string,
   text: string,
   options?: EmbeddedAgentQueueMessageOptions,
+  authorization?: EmbeddedAgentQueueAuthorization,
 ): PreparedEmbeddedAgentQueueMessage {
   const handle = ACTIVE_EMBEDDED_RUNS.get(sessionId);
   if (!handle) {
-    const queuedReplyRunMessage = queueReplyRunMessage(sessionId, text);
-    if (queuedReplyRunMessage) {
+    const replyRunQueueOutcome = queueReplyRunMessageWithOutcome(sessionId, text, authorization);
+    if (replyRunQueueOutcome === "queued") {
       logMessageQueued({ sessionId, source: "embedded-agent-runner" });
       return {
         kind: "complete",
@@ -453,6 +460,13 @@ function prepareEmbeddedAgentQueueMessage(
           gatewayHealth: "live",
           enqueuedAtMs: Date.now(),
         },
+      };
+    }
+    if (replyRunQueueOutcome === "sender_owner_mismatch") {
+      diag.debug(`queue message failed: sessionId=${sessionId} reason=sender_owner_mismatch`);
+      return {
+        kind: "complete",
+        outcome: createQueueFailureOutcome(sessionId, "sender_owner_mismatch"),
       };
     }
     if (options?.waitForTranscriptCommit === true) {
@@ -466,6 +480,18 @@ function prepareEmbeddedAgentQueueMessage(
     }
     diag.debug(`queue message failed: sessionId=${sessionId} reason=no_active_run`);
     return { kind: "complete", outcome: createQueueFailureOutcome(sessionId, "no_active_run") };
+  }
+  const senderOwnerMatches =
+    authorization?.kind === "trusted_internal" ||
+    (authorization?.kind === "sender"
+      ? (handle.senderIsOwner === true) === authorization.senderIsOwner
+      : handle.senderIsOwner !== true);
+  if (!senderOwnerMatches) {
+    diag.debug(`queue message failed: sessionId=${sessionId} reason=sender_owner_mismatch`);
+    return {
+      kind: "complete",
+      outcome: createQueueFailureOutcome(sessionId, "sender_owner_mismatch"),
+    };
   }
   if (!isEmbeddedQueueHandleMessageInjectable(sessionId, handle)) {
     diag.debug(`queue message failed: sessionId=${sessionId} reason=not_streaming`);

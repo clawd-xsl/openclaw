@@ -47,6 +47,7 @@ import {
 } from "./embedded-agent-runner/delivery-evidence.js";
 import type { EmbeddedAgentQueueMessageOptions } from "./embedded-agent-runner/run-state.js";
 import type { EmbeddedAgentQueueMessageOutcome } from "./embedded-agent-runner/runs.js";
+import type { EmbeddedAgentQueueAuthorization } from "./embedded-agent-runner/runs.js";
 import { mediaUrlsFromGeneratedAttachments } from "./generated-attachments.js";
 import type { AgentInternalEvent } from "./internal-events.js";
 import { isSessionWriteLockAcquireError } from "./session-write-lock-error.js";
@@ -91,6 +92,7 @@ type SubagentAnnounceDeliveryDeps = {
     sessionId: string,
     text: string,
     options?: EmbeddedAgentQueueMessageOptions,
+    authorization?: EmbeddedAgentQueueAuthorization,
   ) => EmbeddedAgentQueueMessageOutcome | Promise<EmbeddedAgentQueueMessageOutcome>;
   sendMessage: typeof sendMessage;
 };
@@ -125,6 +127,7 @@ async function resolveQueueEmbeddedAgentMessageOutcome(
     sessionId,
     text,
     options,
+    { kind: "trusted_internal" },
   );
 }
 

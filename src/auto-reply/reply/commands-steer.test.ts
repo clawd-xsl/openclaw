@@ -63,6 +63,7 @@ describe("handleSteerCommand", () => {
         steeringMode: "all",
         debounceMs: 0,
       },
+      { kind: "sender", senderIsOwner: false },
     );
   });
 
@@ -86,6 +87,7 @@ describe("handleSteerCommand", () => {
         steeringMode: "all",
         debounceMs: 0,
       },
+      { kind: "sender", senderIsOwner: false },
     );
   });
 
@@ -108,6 +110,7 @@ describe("handleSteerCommand", () => {
         steeringMode: "all",
         debounceMs: 0,
       },
+      { kind: "sender", senderIsOwner: false },
     );
   });
 
@@ -146,6 +149,7 @@ describe("handleSteerCommand", () => {
         steeringMode: "all",
         debounceMs: 0,
       },
+      { kind: "sender", senderIsOwner: false },
     );
   });
 
@@ -174,6 +178,7 @@ describe("handleSteerCommand", () => {
         steeringMode: "all",
         debounceMs: 0,
       },
+      { kind: "sender", senderIsOwner: false },
     );
   });
 

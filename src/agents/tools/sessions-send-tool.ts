@@ -235,7 +235,10 @@ function shouldFallbackCronRunScopedActiveDelivery(
   outcome: EmbeddedAgentQueueMessageOutcome,
 ): boolean {
   return (
-    !outcome.queued && (outcome.reason === "not_streaming" || outcome.reason === "no_active_run")
+    !outcome.queued &&
+    (outcome.reason === "not_streaming" ||
+      outcome.reason === "no_active_run" ||
+      outcome.reason === "sender_owner_mismatch")
   );
 }
 
@@ -244,6 +247,7 @@ async function startAgentRun(params: {
   runId: string;
   sendParams: Record<string, unknown>;
   sessionKey: string;
+  senderIsOwner?: boolean;
   deliveryTimeoutMs?: number;
   allowActiveRunQueueDelivery?: boolean;
 }): Promise<
@@ -276,10 +280,15 @@ async function startAgentRun(params: {
         waitForTranscriptCommit: true,
         ...(sourceReplyDeliveryMode ? { sourceReplyDeliveryMode } : {}),
       };
+      const authorization = {
+        kind: "sender" as const,
+        senderIsOwner: params.senderIsOwner === true,
+      };
       let queueOutcome = await queueEmbeddedAgentMessageWithOutcomeAsync(
         activeRunSessionId,
         messageText,
         queueOptions,
+        authorization,
       );
       if (!queueOutcome.queued && queueOutcome.reason === "transcript_commit_wait_unsupported") {
         const bestEffortQueueOptions = { ...queueOptions };
@@ -288,6 +297,7 @@ async function startAgentRun(params: {
           activeRunSessionId,
           messageText,
           bestEffortQueueOptions,
+          authorization,
         );
       }
       if (queueOutcome.queued) {
@@ -302,6 +312,12 @@ async function startAgentRun(params: {
             sessionKey: fallbackSessionKey,
             idempotencyKey: crypto.randomUUID(),
           },
+          ...(params.senderIsOwner === true
+            ? {
+                scopes: ["operator.admin" as const],
+                requireLocalBackendOperatorAuth: true,
+              }
+            : {}),
           timeoutMs: 10_000,
         });
         return {
@@ -312,13 +328,25 @@ async function startAgentRun(params: {
           a2aDisplayKey: fallbackSessionKey,
         };
       }
-      const queueSummary =
-        formatEmbeddedAgentQueueFailureSummary(queueOutcome) ?? "active run queue rejected";
-      throw new Error(queueSummary);
+      if (queueOutcome.reason !== "sender_owner_mismatch") {
+        const queueSummary =
+          formatEmbeddedAgentQueueFailureSummary(queueOutcome) ?? "active run queue rejected";
+        throw new Error(queueSummary);
+      }
+      // A non-cron ownership mismatch cannot reuse the target run's tool
+      // authority. Continue below with a separately authenticated turn.
     }
     const response = await params.callGateway<{ runId: string }>({
       method: "agent",
       params: params.sendParams,
+      // A separate gateway turn must preserve host-admitted owner identity;
+      // otherwise the device-less loopback connection loses owner-only tools.
+      ...(params.senderIsOwner === true
+        ? {
+            scopes: ["operator.admin" as const],
+            requireLocalBackendOperatorAuth: true,
+          }
+        : {}),
       timeoutMs: 10_000,
     });
     return {
@@ -343,6 +371,8 @@ async function startAgentRun(params: {
 export function createSessionsSendTool(opts?: {
   agentSessionKey?: string;
   agentChannel?: GatewayMessageChannel;
+  /** Trusted sender identity admitted by the host for this run. */
+  senderIsOwner?: boolean;
   sandboxed?: boolean;
   config?: OpenClawConfig;
   callGateway?: GatewayCaller;
@@ -693,6 +723,7 @@ export function createSessionsSendTool(opts?: {
           runId,
           sendParams,
           sessionKey: displayKey,
+          senderIsOwner: opts?.senderIsOwner,
           deliveryTimeoutMs: announceTimeoutMs,
           allowActiveRunQueueDelivery: true,
         });
@@ -716,6 +747,7 @@ export function createSessionsSendTool(opts?: {
         runId,
         sendParams,
         sessionKey: displayKey,
+        senderIsOwner: opts?.senderIsOwner,
         deliveryTimeoutMs: announceTimeoutMs,
       });
       if (!start.ok) {

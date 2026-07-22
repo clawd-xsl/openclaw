@@ -1680,6 +1680,7 @@ export async function runClaudeLiveSessionTurn(params: {
   const replyBackendHandle: ReplyBackendHandle | undefined = params.context.params.replyOperation
     ? {
         kind: "cli",
+        senderIsOwner: params.context.params.senderIsOwner === true,
         cancel: abort,
         isStreaming: () => !replyBackendCompleted,
       }

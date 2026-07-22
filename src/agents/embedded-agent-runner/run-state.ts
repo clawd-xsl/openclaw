@@ -19,6 +19,8 @@ import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 export type EmbeddedAgentQueueHandle = {
   kind?: "embedded";
   runId?: string;
+  /** Host-admitted owner state retained by this active turn. */
+  senderIsOwner?: boolean;
   queueMessage: (text: string, options?: EmbeddedAgentQueueMessageOptions) => Promise<void>;
   isStreaming: () => boolean;
   isStopped?: () => boolean;

@@ -893,6 +893,46 @@ describe("sessions_send gating", () => {
     ]);
   });
 
+  it("preserves owner authorization across an internal agent handoff", async () => {
+    const tool = createSessionsSendTool({
+      agentSessionKey: MAIN_AGENT_SESSION_KEY,
+      senderIsOwner: true,
+    });
+
+    await tool.execute("call-owner-handoff", {
+      sessionKey: MAIN_AGENT_SESSION_KEY,
+      message: "continue as owner",
+      timeoutSeconds: 0,
+    });
+
+    expect(callGatewayMock.mock.calls).toContainEqual([
+      expect.objectContaining({
+        method: "agent",
+        scopes: ["operator.admin"],
+        requireLocalBackendOperatorAuth: true,
+      }),
+    ]);
+  });
+
+  it("does not elevate non-owner internal agent handoffs", async () => {
+    const tool = createSessionsSendTool({
+      agentSessionKey: MAIN_AGENT_SESSION_KEY,
+      senderIsOwner: false,
+    });
+
+    await tool.execute("call-non-owner-handoff", {
+      sessionKey: MAIN_AGENT_SESSION_KEY,
+      message: "continue without elevation",
+      timeoutSeconds: 0,
+    });
+
+    const agentCall = callGatewayMock.mock.calls.find(
+      ([request]) => (request as { method?: string }).method === "agent",
+    )?.[0] as { scopes?: string[]; requireLocalBackendOperatorAuth?: boolean } | undefined;
+    expect(agentCall?.scopes).toBeUndefined();
+    expect(agentCall?.requireLocalBackendOperatorAuth).toBeUndefined();
+  });
+
   it("does not disclose a resolved session key when sessionId access is denied", async () => {
     const tool = createSessionsSendTool({
       agentSessionKey: MAIN_AGENT_SESSION_KEY,
