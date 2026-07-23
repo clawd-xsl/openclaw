@@ -185,7 +185,6 @@ export function buildCliRunParamsFromEmbedded(
       "currentInboundContext",
       "userTurnTranscriptRecorder",
       "suppressNextUserMessagePersistence",
-      "cleanupBundleMcpOnRunEnd",
       "cleanupCliLiveSessionOnRunEnd",
       "oneShotCliRun",
     ]),

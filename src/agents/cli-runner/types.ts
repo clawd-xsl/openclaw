@@ -151,12 +151,6 @@ export type RunCliAgentParams = {
    * handles alive after returning.
    */
   cleanupCliLiveSessionOnRunEnd?: boolean;
-  /**
-   * Close process-wide bundle MCP resources after this run. Intended for
-   * one-shot local CLI calls where the loopback server should not keep Node
-   * alive after the JSON response is emitted.
-   */
-  cleanupBundleMcpOnRunEnd?: boolean;
   /** Mark explicit one-shot local CLI runs so plugin tools can release resources promptly. */
   oneShotCliRun?: boolean;
 };

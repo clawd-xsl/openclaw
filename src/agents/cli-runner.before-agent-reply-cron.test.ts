@@ -307,35 +307,14 @@ describe("runCliAgent cron before_agent_reply seam", () => {
     );
   });
 
-  it("can close temporary bundle MCP loopback resources after a run", async () => {
+  it("never closes the shared MCP loopback server during run cleanup", async () => {
     executePreparedCliRunMock.mockResolvedValue({ text: "real reply" });
 
-    await runCliAgent({ ...baseRunParams, cleanupBundleMcpOnRunEnd: true });
+    // The loopback server is a process-wide singleton shared by concurrent CLI
+    // sessions; even a fully cleaned-up one-shot run must leave it running.
+    await runCliAgent({ ...baseRunParams, cleanupCliLiveSessionOnRunEnd: true });
 
     expect(executePreparedCliRunMock).toHaveBeenCalledTimes(1);
-    expect(closeMcpLoopbackServerMock).toHaveBeenCalledTimes(1);
-  });
-
-  it("preserves confirmed delivery when bundle MCP cleanup fails", async () => {
-    executePreparedCliRunMock.mockResolvedValue({
-      text: "",
-      didSendViaMessagingTool: true,
-    });
-    closeMcpLoopbackServerMock.mockRejectedValue(new Error("loopback cleanup failed"));
-
-    await expect(
-      runCliAgent({ ...baseRunParams, cleanupBundleMcpOnRunEnd: true }),
-    ).resolves.toMatchObject({
-      didSendViaMessagingTool: true,
-    });
-  });
-
-  it("surfaces bundle MCP cleanup failures when nothing was delivered", async () => {
-    executePreparedCliRunMock.mockResolvedValue({ text: "real reply" });
-    closeMcpLoopbackServerMock.mockRejectedValue(new Error("loopback cleanup failed"));
-
-    await expect(runCliAgent({ ...baseRunParams, cleanupBundleMcpOnRunEnd: true })).rejects.toThrow(
-      "loopback cleanup failed",
-    );
+    expect(closeMcpLoopbackServerMock).not.toHaveBeenCalled();
   });
 });

@@ -410,6 +410,10 @@ export async function startMcpLoopbackServer(port = 0): Promise<{
   // Register tokens only after the TCP listener is live so clients never learn
   // a bearer token for a server that failed to bind.
   setActiveMcpLoopbackRuntime({ port: address.port, ownerToken, nonOwnerToken });
+  // The loopback server is a process-wide singleton shared by every live CLI
+  // session; runs never close it. Unref the listener so one-shot CLI processes
+  // can exit; the gateway closes it explicitly on shutdown.
+  httpServer.unref();
   logDebug(`mcp loopback listening on 127.0.0.1:${address.port}`);
 
   const server: McpLoopbackServer = {

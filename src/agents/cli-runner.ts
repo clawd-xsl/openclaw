@@ -523,14 +523,9 @@ async function runCliAgentInternal(params: RunCliAgentParams): Promise<EmbeddedA
       recordCleanupError(error);
     }
   }
-  if (params.cleanupBundleMcpOnRunEnd === true) {
-    try {
-      const { closeMcpLoopbackServer } = await import("../gateway/mcp-http.js");
-      await closeMcpLoopbackServer();
-    } catch (error) {
-      recordCleanupError(error);
-    }
-  }
+  // Run-end cleanup must never close the MCP loopback server: it is a
+  // process-wide singleton and closing it here severs tools for every other
+  // live CLI session. Its lifecycle belongs to gateway shutdown/process exit.
   if (cleanupError) {
     if (runError || result?.didSendViaMessagingTool === true) {
       log.warn(`cli run cleanup failed after completion: ${formatErrorMessage(cleanupError)}`);
