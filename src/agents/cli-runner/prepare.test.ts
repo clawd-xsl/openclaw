@@ -1944,12 +1944,6 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
         requireExplicitMessageTarget: true,
         cliSessionBinding: {
           sessionId: "cli-session",
-          messageToolPolicyHash: hashCliSessionText(
-            JSON.stringify({
-              sourceReplyDeliveryMode: "message_tool_only",
-              requireExplicitMessageTarget: false,
-            }),
-          ),
         },
         config: createCliBackendConfig(),
       });
@@ -1959,6 +1953,35 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
         mode: "invalidate",
         invalidatedReason: "message-policy",
       });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reuses the CLI session when only the per-turn delivery mode differs", async () => {
+    const { dir, sessionFile } = createSessionFile();
+    try {
+      // sessions_send injections force message_tool_only for one turn; binding
+      // identity must stay session-stable so the next direct chat stays warm.
+      const context = await prepareCliRunContext({
+        sessionId: "session-test",
+        sessionFile,
+        workspaceDir: dir,
+        prompt: "latest ask",
+        provider: "test-cli",
+        model: "test-model",
+        timeoutMs: 1_000,
+        runId: "run-test-delivery-mode-neutral",
+        sourceReplyDeliveryMode: "message_tool_only",
+        cliSessionBinding: {
+          sessionId: "cli-session",
+        },
+        config: createCliBackendConfig(),
+      });
+
+      expect(context.messageToolPolicyHash).toBeUndefined();
+      expect(context.reusableCliSession).toMatchObject({ sessionId: "cli-session" });
+      expect(context.reusableCliSession.mode).not.toBe("invalidate");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -1985,7 +2008,6 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
       expect(context.messageToolPolicyHash).toBe(
         hashCliSessionText(
           JSON.stringify({
-            sourceReplyDeliveryMode: "message_tool_only",
             requireExplicitMessageTarget: true,
           }),
         ),
@@ -2250,7 +2272,9 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
         });
 
         expect(first.extraSystemPromptHash).toBe(hashCliSessionText(staticPrompt));
-        expect(first.messageToolPolicyHash).toBeDefined();
+        // Delivery mode no longer participates in binding identity; only an
+        // active explicit-message-target contract defines the policy hash.
+        expect(first.messageToolPolicyHash).toBeUndefined();
         expect(second.extraSystemPromptHash).toBe(first.extraSystemPromptHash);
         expect(second.messageToolPolicyHash).toBe(first.messageToolPolicyHash);
         expect(second.promptToolNamesHash).toBe(first.promptToolNamesHash);

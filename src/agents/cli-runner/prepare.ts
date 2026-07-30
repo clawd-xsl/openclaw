@@ -423,25 +423,19 @@ export async function prepareCliRunContext(
       : hashCliSessionText(extraSystemPrompt);
   const requireExplicitMessageTarget =
     params.requireExplicitMessageTarget ?? isSubagentSessionKey(params.sessionKey);
-  const hasCliSessionBindingFacts = bindingFacts !== undefined;
   const bindingRequireExplicitMessageTarget =
     bindingFacts?.requireExplicitMessageTarget ?? requireExplicitMessageTarget;
-  const bindingSourceReplyDeliveryMode = hasCliSessionBindingFacts
-    ? bindingFacts.sourceReplyDeliveryMode
-    : params.sourceReplyDeliveryMode;
-  const hasBindingMessageToolPolicy =
-    bindingSourceReplyDeliveryMode !== undefined ||
-    (hasCliSessionBindingFacts
-      ? bindingFacts.requireExplicitMessageTarget !== undefined ||
-        bindingRequireExplicitMessageTarget
-      : params.requireExplicitMessageTarget !== undefined || bindingRequireExplicitMessageTarget);
-  const messageToolPolicyHash = hasBindingMessageToolPolicy
-    ? hashCliSessionText(
-        JSON.stringify({
-          sourceReplyDeliveryMode: bindingSourceReplyDeliveryMode,
-          requireExplicitMessageTarget: bindingRequireExplicitMessageTarget,
-        }),
-      )
+  const bindingSourceReplyDeliveryMode =
+    bindingFacts !== undefined
+      ? bindingFacts.sourceReplyDeliveryMode
+      : params.sourceReplyDeliveryMode;
+  // Binding identity must stay session-stable: per-turn delivery-mode overrides
+  // (sessions_send injections, room events) resume the same native session under
+  // the drift contract (#99372). Hashing the mode let one internal injection
+  // restamp the binding and cold-restart the next direct chat; only the
+  // explicit-message-target contract splits identity.
+  const messageToolPolicyHash = bindingRequireExplicitMessageTarget
+    ? hashCliSessionText(JSON.stringify({ requireExplicitMessageTarget: true }))
     : undefined;
 
   const modelId = (params.model ?? "default").trim() || "default";
