@@ -187,6 +187,11 @@ export type SpawnSubagentContext = {
   agentSessionKey?: string;
   /** Separate key used only for completion routing, not sandbox policy. */
   completionOwnerKey?: string;
+  /**
+   * Host-admitted owner state of the spawning run. Never model-supplied: the
+   * child gateway turn must inherit it or the subagent loses owner-only tools.
+   */
+  senderIsOwner?: boolean;
   agentChannel?: string;
   agentAccountId?: string;
   agentTo?: string;
@@ -1551,6 +1556,15 @@ export async function spawnSubagentDirect(
     } = spawnedMetadata;
     const response = await callSubagentGateway({
       method: "agent",
+      // The child run's owner state derives from this connection's scopes; an
+      // owner-authorized parent must hand its authority down or the subagent
+      // silently loses owner-only tools (exec/read/write) on the loopback.
+      ...(ctx.senderIsOwner === true
+        ? {
+            scopes: ["operator.admin" as const],
+            requireLocalBackendOperatorAuth: true,
+          }
+        : {}),
       params: {
         message: childTaskMessage,
         sessionKey: childSessionKey,

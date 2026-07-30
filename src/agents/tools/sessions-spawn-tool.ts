@@ -255,6 +255,8 @@ export function createSessionsSpawnTool(
     agentSessionKey?: string;
     /** Separate key used only for completion routing (registerSubagentRun requesterSessionKey). */
     completionOwnerKey?: string;
+    /** Host-admitted owner state of the spawning run; inherited by the child. */
+    senderIsOwner?: boolean;
     agentChannel?: GatewayMessageChannel;
     agentAccountId?: string;
     agentTo?: string;
@@ -496,6 +498,7 @@ export function createSessionsSpawnTool(
         {
           agentSessionKey: opts?.agentSessionKey,
           completionOwnerKey: opts?.completionOwnerKey,
+          senderIsOwner: opts?.senderIsOwner,
           agentChannel: opts?.agentChannel,
           agentAccountId: opts?.agentAccountId,
           agentTo: opts?.agentTo,

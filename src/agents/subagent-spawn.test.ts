@@ -316,6 +316,28 @@ describe("spawnSubagentDirect seam flow", () => {
     expect(agentParams.sessionKey).toBe(childSessionKey);
     expect(agentParams.cleanupBundleMcpOnRunEnd).toBe(true);
     expect(agentParams.cleanupCliLiveSessionOnRunEnd).toBe(true);
+    // Non-owner spawns must not escalate the child connection.
+    expect(agentRequest.scopes).toBeUndefined();
+    expect(agentRequest.requireLocalBackendOperatorAuth).toBeUndefined();
+  });
+
+  it("hands owner authority down to the spawned child's gateway turn", async () => {
+    const result = await spawnSubagentDirect(
+      {
+        task: "inherit owner tools",
+      },
+      {
+        agentSessionKey: "agent:main:main",
+        senderIsOwner: true,
+      },
+    );
+
+    expect(result.status).toBe("accepted");
+    // The child run's senderIsOwner derives from the connection's admin scope;
+    // without it the subagent loses owner-only tools (exec/read/write).
+    const agentRequest = gatewayRequest("agent");
+    expect(agentRequest.scopes).toEqual(["operator.admin"]);
+    expect(agentRequest.requireLocalBackendOperatorAuth).toBe(true);
   });
 
   it("dispatches spawned agent runs in process when a gateway context is available", async () => {
