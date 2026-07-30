@@ -2267,6 +2267,45 @@ describe("initSessionState reset policy", () => {
     }
   });
 
+  it("keeps a terminal main row reusable while its session id has an active writer", async () => {
+    vi.setSystemTime(new Date(2026, 0, 18, 5, 30, 0));
+    const root = await makeCaseDir("openclaw-reset-terminal-entry-");
+    const storePath = path.join(root, "sessions.json");
+    const sessionKey = "agent:main:main";
+    const existingSessionId = "terminal-entry-live";
+    const now = Date.now();
+    // Rotation-triggering signature: terminal row whose transcript mtime
+    // outruns updatedAt. A live writer explains it, so the row must be reused.
+    await writeTerminalTranscriptSessionStore({
+      storePath,
+      sessionKey,
+      sessionId: existingSessionId,
+      updatedAt: now - 10_000,
+      endedAt: now - 11_000,
+      transcriptMtimeMs: now,
+    });
+    const { setActiveEmbeddedRun, clearActiveEmbeddedRun } =
+      await import("../../agents/embedded-agent-runner/runs.js");
+    const activeHandle = {
+      queueMessage: async () => {},
+      isStreaming: () => true,
+    };
+    setActiveEmbeddedRun(existingSessionId, activeHandle, sessionKey);
+    try {
+      const cfg = { session: { store: storePath } } as OpenClawConfig;
+      const result = await initSessionState({
+        ctx: { Body: "hello", SessionKey: sessionKey },
+        cfg,
+        commandAuthorized: true,
+      });
+
+      expect(result.isNewSession).toBe(false);
+      expect(result.sessionId).toBe(existingSessionId);
+    } finally {
+      clearActiveEmbeddedRun(existingSessionId, activeHandle, sessionKey);
+    }
+  });
+
   it("recovers failed group sessions without rotating the transcript", async () => {
     vi.setSystemTime(new Date(2026, 0, 18, 5, 30, 0));
     const root = await makeCaseDir("openclaw-reset-failed-entry-");

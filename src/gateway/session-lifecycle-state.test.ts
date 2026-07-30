@@ -135,6 +135,64 @@ describe("session lifecycle state", () => {
     });
   });
 
+  it("never rewinds the updatedAt marker when a terminal persist lands late", () => {
+    // updatedAt is the transcript-write marker terminal-main reuse compares
+    // against; a queued lifecycle persist landing after newer registry touches
+    // must keep the newer marker or healthy live sessions rotate.
+    expect(
+      deriveGatewaySessionLifecycleSnapshot({
+        session: {
+          updatedAt: 2_500,
+          status: "running",
+          startedAt: 1_200,
+        },
+        event: {
+          ts: 2_000,
+          data: {
+            phase: "end",
+            startedAt: 1_200,
+            endedAt: 1_900,
+          },
+        },
+      }),
+    ).toEqual({
+      updatedAt: 2_500,
+      status: "done",
+      startedAt: 1_200,
+      endedAt: 1_900,
+      runtimeMs: 700,
+      abortedLastRun: false,
+    });
+  });
+
+  it("never rewinds the updatedAt marker when a start persist lands late", () => {
+    expect(
+      deriveGatewaySessionLifecycleSnapshot({
+        session: {
+          updatedAt: 1_200,
+          status: "done",
+          startedAt: 100,
+          endedAt: 400,
+          runtimeMs: 300,
+        },
+        event: {
+          ts: 1_000,
+          data: {
+            phase: "start",
+            startedAt: 900,
+          },
+        },
+      }),
+    ).toEqual({
+      updatedAt: 1_200,
+      status: "running",
+      startedAt: 900,
+      endedAt: undefined,
+      runtimeMs: undefined,
+      abortedLastRun: false,
+    });
+  });
+
   it("maps aborted stop reasons to killed", () => {
     expectPersistedLifecyclePatch({
       entry: { startedAt: 1_100 },

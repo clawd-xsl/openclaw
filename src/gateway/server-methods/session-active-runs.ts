@@ -17,6 +17,7 @@ type TrackedActiveSessionRun = {
 
 function collectTrackedActiveSessionRuns(
   context: Partial<Pick<GatewayRequestContext, "chatAbortControllers">>,
+  options?: { includeHidden?: boolean },
 ): TrackedActiveSessionRun[] {
   const runs: TrackedActiveSessionRun[] = [];
   if (!(context.chatAbortControllers instanceof Map)) {
@@ -24,8 +25,8 @@ function collectTrackedActiveSessionRuns(
   }
   for (const active of context.chatAbortControllers.values()) {
     if (
-      active.projectSessionActive !== false &&
-      active.controlUiVisible !== false &&
+      (options?.includeHidden === true ||
+        (active.projectSessionActive !== false && active.controlUiVisible !== false)) &&
       typeof active.sessionKey === "string" &&
       active.sessionKey.trim()
     ) {
@@ -95,6 +96,25 @@ export function hasVisibleActiveSessionRun(params: {
   defaultAgentId?: string;
 }): boolean {
   if (hasTrackedActiveSessionRun(params)) {
+    return true;
+  }
+  const sessionId = params.sessionId?.trim();
+  return sessionId ? isEmbeddedAgentRunActive(sessionId) : false;
+}
+
+/**
+ * Returns true when any tracked run — including Control UI-hidden internal
+ * runs — is writing under the session key or the row's session id. Session
+ * reconciliation uses this: a live writer keeps transcript mtime ahead of the
+ * registry marker, so terminal-row checks are only meaningful on quiet rows.
+ */
+export function hasAnyActiveSessionRunWriter(params: {
+  context: Partial<Pick<GatewayRequestContext, "chatAbortControllers">>;
+  sessionKey: string;
+  sessionId?: string;
+}): boolean {
+  const activeRuns = collectTrackedActiveSessionRuns(params.context, { includeHidden: true });
+  if (activeRuns.some((active) => active.sessionKey === params.sessionKey)) {
     return true;
   }
   const sessionId = params.sessionId?.trim();

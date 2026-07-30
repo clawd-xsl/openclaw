@@ -9,6 +9,7 @@ import { retireSessionMcpRuntime } from "../../agents/agent-bundle-mcp-tools.js"
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
 import { clearBootstrapSnapshotOnSessionRollover } from "../../agents/bootstrap-cache.js";
 import { getCliSessionBinding } from "../../agents/cli-session.js";
+import { isEmbeddedAgentRunActive } from "../../agents/embedded-agent-runner/runs.js";
 import { resetRegisteredAgentHarnessSessions } from "../../agents/harness/registry.js";
 import { cleanupBrowserSessionsForLifecycleEnd } from "../../browser-lifecycle-cleanup.js";
 import { normalizeChatType } from "../../channels/chat-type.js";
@@ -543,8 +544,20 @@ async function initSessionStateAttemptLocked(
         skipConfiguredFallbackWhenActiveSessionNonAcp: false,
       }) ?? "",
     );
+  const activeReplyOperation = replyRunRegistry.get(sessionKey);
+  // A live writer keeps transcript mtime ahead of the registry marker (mid-run
+  // appends touch the store only afterwards), so the terminal-transcript
+  // signature is only diagnosable on quiet rows; rotating here would split an
+  // active session and drop continuity lineage.
+  const entrySessionId = entry?.sessionId?.trim();
+  const terminalMainRowHasActiveWriter = Boolean(
+    entrySessionId &&
+    (activeReplyOperation?.sessionId === entrySessionId ||
+      isEmbeddedAgentRunActive(entrySessionId)),
+  );
   const terminalMainTranscriptNewerThanRegistry =
     !isSystemEvent &&
+    !terminalMainRowHasActiveWriter &&
     (await hasTerminalMainSessionTranscriptNewerThanRegistry({
       entry,
       sessionScope,
@@ -566,7 +579,6 @@ async function initSessionStateAttemptLocked(
       (entryFreshness?.fresh ?? false) ||
       (softResetAllowed && canReuseExistingEntry)) &&
       !terminalMainTranscriptNewerThanRegistry);
-  const activeReplyOperation = replyRunRegistry.get(sessionKey);
   const deferImplicitRolloverForActiveRun =
     !resetTriggered &&
     !freshEntry &&

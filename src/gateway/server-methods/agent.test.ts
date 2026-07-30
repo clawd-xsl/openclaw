@@ -893,6 +893,60 @@ describe("gateway agent handler", () => {
     },
   );
 
+  it("defers terminal main rotation while the row's session id has an active writer", async () => {
+    const now = Date.parse("2026-05-18T09:47:00.000Z");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    dateOnlyFakeClockActive = true;
+    vi.setSystemTime(now);
+
+    await withTempDir({ prefix: "openclaw-gateway-terminal-main-active-writer-" }, async (root) => {
+      const sessionsDir = `${root}/sessions`;
+      await fs.mkdir(sessionsDir, { recursive: true });
+      const sessionFile = "terminal-main-session.jsonl";
+      const transcriptPath = `${sessionsDir}/${sessionFile}`;
+      await fs.writeFile(
+        transcriptPath,
+        `${JSON.stringify({ type: "session", id: "terminal-main-session" })}\n`,
+        "utf8",
+      );
+      await fs.utimes(transcriptPath, new Date(now - 1_000), new Date(now - 1_000));
+      mocks.loadSessionEntry.mockReturnValue({
+        cfg: {},
+        storePath: `${sessionsDir}/sessions.json`,
+        entry: {
+          sessionId: "terminal-main-session",
+          sessionFile,
+          status: "done",
+          updatedAt: now - 10_000,
+          startedAt: now - 20_000,
+          endedAt: now - 15_000,
+          runtimeMs: 5_000,
+        },
+        canonicalKey: "agent:main:main",
+      });
+      // A concurrent run still writing this session id keeps transcript
+      // mtime ahead of the registry marker; the terminal-transcript gate
+      // must not rotate a live session (it would drop continuity lineage).
+      const { setActiveEmbeddedRun, clearActiveEmbeddedRun } =
+        await import("../../agents/embedded-agent-runner/runs.js");
+      const activeHandle = {
+        queueMessage: async () => {},
+        isStreaming: () => true,
+      };
+      setActiveEmbeddedRun("terminal-main-session", activeHandle, "agent:main:main");
+      try {
+        const capturedEntry = await runMainAgentAndCaptureEntry(
+          "test-idem-terminal-main-active-writer",
+        );
+        const call = await waitForAgentCommandCall<{ sessionId?: string }>();
+        expect(call.sessionId).toBe("terminal-main-session");
+        expect(capturedEntry?.sessionId).toBe("terminal-main-session");
+      } finally {
+        clearActiveEmbeddedRun("terminal-main-session", activeHandle, "agent:main:main");
+      }
+    });
+  });
+
   it("reuses terminal main sessions when the fresh store row has the transcript marker", async () => {
     const now = Date.parse("2026-05-18T09:47:30.000Z");
     vi.useFakeTimers({ toFake: ["Date"] });

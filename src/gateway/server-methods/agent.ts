@@ -175,6 +175,7 @@ import {
   waitForTerminalGatewayDedupe,
 } from "./agent-wait-dedupe.js";
 import { normalizeRpcAttachmentsToChatAttachments } from "./attachment-normalize.js";
+import { hasAnyActiveSessionRunWriter } from "./session-active-runs.js";
 import { emitSessionsChanged } from "./session-change-event.js";
 import type {
   GatewayRequestContext,
@@ -1943,8 +1944,17 @@ export const agentHandlers: GatewayRequestHandlers = {
         const requestedSessionMatchesEntry = Boolean(
           requestedSessionId && entry?.sessionId?.trim() === requestedSessionId,
         );
+        // A live writer (including hidden hook runs) keeps transcript mtime
+        // ahead of the registry marker, so the terminal-transcript signature is
+        // only diagnosable on quiet rows; rotating here would split an active
+        // session and drop continuity lineage.
+        const terminalMainRowHasActiveWriter = hasAnyActiveSessionRunWriter({
+          context,
+          sessionKey: canonicalKey,
+          sessionId: entry?.sessionId,
+        });
         const terminalMainTranscriptCheck =
-          isSystemGatewayRun || requestedSessionMatchesEntry
+          isSystemGatewayRun || requestedSessionMatchesEntry || terminalMainRowHasActiveWriter
             ? undefined
             : resolveTerminalMainSessionTranscriptRegistryCheck({
                 entry,
@@ -2108,8 +2118,15 @@ export const agentHandlers: GatewayRequestHandlers = {
           const freshRequestedSessionMatchesEntry = Boolean(
             requestedSessionId && freshEntry?.sessionId?.trim() === requestedSessionId,
           );
+          const freshTerminalMainRowHasActiveWriter = hasAnyActiveSessionRunWriter({
+            context,
+            sessionKey: canonicalKey,
+            sessionId: freshEntry?.sessionId,
+          });
           const freshTerminalMainTranscriptNewerThanRegistry =
-            isSystemGatewayRun || freshRequestedSessionMatchesEntry
+            isSystemGatewayRun ||
+            freshRequestedSessionMatchesEntry ||
+            freshTerminalMainRowHasActiveWriter
               ? false
               : hasTerminalMainSessionTranscriptNewerThanRegistrySync({
                   entry: freshEntry,

@@ -138,11 +138,21 @@ export function deriveGatewaySessionLifecycleSnapshot(params: {
   }
 
   const existing = params.session ?? undefined;
+  // updatedAt is the transcript-write marker session reuse compares against
+  // (terminal main rows rotate when transcript mtime outruns it). Lifecycle
+  // persists are queued and can land late; they must never rewind the marker.
+  const monotonicUpdatedAt = (candidate: number | undefined): number | undefined => {
+    const current = typeof existing?.updatedAt === "number" ? existing.updatedAt : undefined;
+    if (candidate === undefined) {
+      return current;
+    }
+    return current === undefined ? candidate : Math.max(candidate, current);
+  };
   if (phase === "start") {
     // A start event clears terminal fields from the previous run so UI rows do
     // not show stale runtime/end state while the new run is active.
     const startedAt = resolveLifecycleStartedAt(existing?.startedAt, params.event);
-    const updatedAt = startedAt ?? existing?.updatedAt;
+    const updatedAt = monotonicUpdatedAt(startedAt);
     return {
       updatedAt,
       status: "running",
@@ -155,7 +165,7 @@ export function deriveGatewaySessionLifecycleSnapshot(params: {
 
   const startedAt = resolveLifecycleStartedAt(existing?.startedAt, params.event);
   const endedAt = resolveLifecycleEndedAt(params.event);
-  const updatedAt = endedAt ?? existing?.updatedAt;
+  const updatedAt = monotonicUpdatedAt(endedAt);
   return {
     updatedAt,
     status: resolveTerminalStatus(params.event),
