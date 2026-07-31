@@ -603,6 +603,11 @@ export async function steerControlledSubagentRun(params: {
   try {
     const response = await subagentControlDeps.callGateway<{ runId: string }>({
       method: "agent",
+      // Re-dispatch with the authority the run was registered under (stored
+      // host-side; never model-supplied).
+      ...(params.entry.requesterSenderIsOwner === true
+        ? { scopes: ["operator.admin" as const], requireLocalBackendOperatorAuth: true }
+        : {}),
       params: {
         message: params.message,
         sessionKey: params.entry.childSessionKey,
@@ -716,6 +721,10 @@ export async function sendControlledSubagentMessage(params: {
 
     const response = await subagentControlDeps.callGateway<{ runId: string }>({
       method: "agent",
+      // Follow-up runs must keep the run record's stored authority.
+      ...(params.entry.requesterSenderIsOwner === true
+        ? { scopes: ["operator.admin" as const], requireLocalBackendOperatorAuth: true }
+        : {}),
       params: {
         message: params.message,
         sessionKey: targetSessionKey,

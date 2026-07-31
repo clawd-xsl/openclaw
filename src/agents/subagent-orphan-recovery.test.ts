@@ -32,6 +32,11 @@ vi.mock("../gateway/call.js", () => ({
   callGateway: vi.fn(async () => ({ runId: "test-run-id" })),
 }));
 
+vi.mock("../gateway/server-plugins.js", () => ({
+  hasInProcessGatewayContext: vi.fn(() => false),
+  dispatchGatewayMethodInProcess: vi.fn(async () => ({ runId: "test-run-id" })),
+}));
+
 vi.mock("../gateway/session-transcript-readers.js", () => ({
   readSessionMessagesAsync: vi.fn(async () => []),
 }));
@@ -168,6 +173,9 @@ describe("subagent-orphan-recovery", () => {
       "gateway resume params",
     );
     expect(opts.method).toBe("agent");
+    // Non-owner-registered runs must not escalate the resume connection.
+    expect(opts.scopes).toBeUndefined();
+    expect(opts.requireLocalBackendOperatorAuth).toBeUndefined();
     const params = opts.params as Record<string, unknown>;
     expect(params.sessionKey).toBe("agent:main:subagent:test-session-1");
     expect(params.message).toContain("gateway reload");
@@ -189,6 +197,25 @@ describe("subagent-orphan-recovery", () => {
     expect(replaceParams.transcriptFile).not.toBe(
       resolveInternalSessionEffectsTranscriptPath(params.idempotencyKey as string),
     );
+  });
+
+  it("resumes owner-registered runs with the stored owner authority", async () => {
+    mockSingleAbortedSession();
+    const run = createTestRunRecord({ requesterSenderIsOwner: true });
+
+    const result = await recoverOrphanedSubagentSessions({
+      getActiveRuns: () => createActiveRuns(run),
+    });
+
+    expect(result.recovered).toBe(1);
+    const opts = requireRecord(
+      firstCallParam(vi.mocked(gateway.callGateway).mock.calls, "gateway resume"),
+      "gateway resume params",
+    );
+    // The resumed run's senderIsOwner derives from this connection's scopes;
+    // without the stored bit an owner-spawned child restarts without owner tools.
+    expect(opts.scopes).toEqual(["operator.admin"]);
+    expect(opts.requireLocalBackendOperatorAuth).toBe(true);
   });
 
   it("skips sessions that are not aborted", async () => {

@@ -269,6 +269,59 @@ describe("sendControlledSubagentMessage", () => {
     expect(result.error).toBe("gateway unavailable");
   });
 
+  it("sends follow-up runs with the stored owner authority", async () => {
+    addSubagentRunForTests({
+      runId: "run-owner-send",
+      childSessionKey: "agent:main:subagent:owner-worker",
+      controllerSessionKey: "agent:main:main",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      task: "continue owner work",
+      cleanup: "keep",
+      createdAt: Date.now() - 5_000,
+      startedAt: Date.now() - 4_000,
+    });
+    const captured: CallGatewayOptions[] = [];
+    setSubagentControlDepsForTest({
+      callGateway: async <T = Record<string, unknown>>(request: CallGatewayOptions) => {
+        captured.push(request);
+        return { runId: "run-owner-send-next" } as T;
+      },
+    });
+
+    const result = await sendControlledSubagentMessage({
+      cfg: {
+        channels: { whatsapp: { allowFrom: ["*"] } },
+      } as OpenClawConfig,
+      controller: {
+        controllerSessionKey: "agent:main:main",
+        callerSessionKey: "agent:main:main",
+        callerIsSubagent: false,
+        controlScope: "children",
+      },
+      entry: {
+        runId: "run-owner-send",
+        childSessionKey: "agent:main:subagent:owner-worker",
+        requesterSessionKey: "agent:main:main",
+        requesterSenderIsOwner: true,
+        requesterDisplayKey: "main",
+        controllerSessionKey: "agent:main:main",
+        task: "continue owner work",
+        cleanup: "keep",
+        createdAt: Date.now() - 5_000,
+        startedAt: Date.now() - 4_000,
+      },
+      message: "continue",
+    });
+
+    expect(result.status).toBe("ok");
+    const agentRequest = captured.find((request) => request.method === "agent");
+    // Follow-up runs re-enter gateway admission; the stored record authority
+    // must ride the connection or the run downgrades to non-owner tools.
+    expect(agentRequest?.scopes).toEqual(["operator.admin"]);
+    expect(agentRequest?.requireLocalBackendOperatorAuth).toBe(true);
+  });
+
   it("does not send to a newer live run when the caller passes a stale run entry", async () => {
     addSubagentRunForTests({
       runId: "run-current-send",

@@ -129,25 +129,49 @@ async function resumeOrphanedSession(params: {
 
   try {
     const idempotencyKey = crypto.randomUUID();
-    const result = await callGateway<{ runId: string }>({
-      method: "agent",
-      params: {
-        message: resumeMessage,
-        sessionKey: params.sessionKey,
-        idempotencyKey,
-        deliver: false,
-        lane: "subagent",
-        inputProvenance: {
-          kind: "inter_session",
-          sourceSessionKey: params.originalRun.requesterSessionKey,
-          sourceChannel: "internal",
-          sourceTool: "subagent_interrupted_resume",
-        },
-        sessionEffects: "internal",
-        suppressPromptPersistence: true,
+    // Resume with the authority the run was registered under, or an
+    // owner-spawned child restarts after a gateway restart without
+    // owner-only tools.
+    const ownerAuthority = params.originalRun.requesterSenderIsOwner === true;
+    const resumeAgentParams = {
+      message: resumeMessage,
+      sessionKey: params.sessionKey,
+      idempotencyKey,
+      deliver: false,
+      lane: "subagent",
+      inputProvenance: {
+        kind: "inter_session",
+        sourceSessionKey: params.originalRun.requesterSessionKey,
+        sourceChannel: "internal",
+        sourceTool: "subagent_interrupted_resume",
       },
-      timeoutMs: 10_000,
-    });
+      sessionEffects: "internal",
+      suppressPromptPersistence: true,
+    };
+    // Recovery runs inside the gateway at boot: in-process dispatch mints the
+    // scoped synthetic client directly, while a WS self-connect under strict
+    // local operator auth can fail (pairing/stored-device scope) and kill the
+    // resume for exactly the owner-registered runs.
+    const { hasInProcessGatewayContext, dispatchGatewayMethodInProcess } =
+      await import("../gateway/server-plugins.js");
+    const result = hasInProcessGatewayContext()
+      ? ((await dispatchGatewayMethodInProcess("agent", resumeAgentParams, {
+          timeoutMs: 10_000,
+          ...(ownerAuthority
+            ? { forceSyntheticClient: true, syntheticScopes: ["operator.admin"] }
+            : {}),
+        })) as { runId: string })
+      : await callGateway<{ runId: string }>({
+          method: "agent",
+          ...(ownerAuthority
+            ? {
+                scopes: ["operator.admin" as const],
+                requireLocalBackendOperatorAuth: true,
+              }
+            : {}),
+          params: resumeAgentParams,
+          timeoutMs: 10_000,
+        });
     const remapped = replaceSubagentRunAfterSteer({
       previousRunId: params.originalRunId,
       nextRunId: result.runId,
