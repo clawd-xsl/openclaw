@@ -51,6 +51,8 @@ export type MediaGenerationTaskHandle = {
   runId: string;
   requesterSessionKey: string;
   requesterOrigin?: DeliveryContext;
+  /** Host-admitted owner authority of the requesting run; the wake turn inherits it. */
+  requesterSenderIsOwner?: boolean;
   taskLabel: string;
 };
 
@@ -80,6 +82,8 @@ type MediaGenerationExecutionResult = {
 type CreateMediaGenerationTaskRunParams = {
   sessionKey?: string;
   requesterOrigin?: DeliveryContext;
+  /** Host-admitted owner authority of the requesting run; never model-supplied. */
+  requesterSenderIsOwner?: boolean;
   prompt: string;
   providerId?: string;
 };
@@ -133,6 +137,7 @@ function touchMediaGenerationTaskRunContext(handle: MediaGenerationTaskHandle) {
 function createMediaGenerationTaskRun(params: {
   sessionKey?: string;
   requesterOrigin?: DeliveryContext;
+  requesterSenderIsOwner?: boolean;
   prompt: string;
   providerId?: string;
   toolName: string;
@@ -178,6 +183,7 @@ function createMediaGenerationTaskRun(params: {
       runId,
       requesterSessionKey: sessionKey,
       requesterOrigin,
+      ...(params.requesterSenderIsOwner === true ? { requesterSenderIsOwner: true } : {}),
       taskLabel: params.prompt,
     };
     touchMediaGenerationTaskRunContext(handle);
@@ -566,6 +572,7 @@ async function wakeMediaGenerationTaskCompletion(params: {
     `A ${params.completionLabel} generation task finished. Process the completion update now.`;
   const delivery = await deliverSubagentAnnouncement({
     requesterSessionKey: params.handle.requesterSessionKey,
+    requesterSenderIsOwner: params.handle.requesterSenderIsOwner === true,
     targetRequesterSessionKey: params.handle.requesterSessionKey,
     announceId,
     triggerMessage,

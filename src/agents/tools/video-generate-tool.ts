@@ -929,6 +929,8 @@ async function executeVideoGenerationJob(params: {
 
 export function createVideoGenerateTool(options?: {
   config?: OpenClawConfig;
+  /** Host-admitted owner state of the requesting run; completion wakes inherit it. */
+  senderIsOwner?: boolean;
   agentDir?: string;
   authProfileStore?: AuthProfileStore;
   agentSessionKey?: string;
@@ -1180,6 +1182,7 @@ export function createVideoGenerateTool(options?: {
       const taskHandle = createVideoGenerationTaskRun({
         sessionKey: options?.agentSessionKey,
         requesterOrigin: options?.requesterOrigin,
+        requesterSenderIsOwner: options?.senderIsOwner,
         prompt,
         providerId: selectedProvider?.id,
       });

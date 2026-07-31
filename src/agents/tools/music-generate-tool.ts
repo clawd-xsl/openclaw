@@ -573,6 +573,8 @@ async function executeMusicGenerationJob(params: {
 
 export function createMusicGenerateTool(options?: {
   config?: OpenClawConfig;
+  /** Host-admitted owner state of the requesting run; completion wakes inherit it. */
+  senderIsOwner?: boolean;
   agentDir?: string;
   authProfileStore?: AuthProfileStore;
   agentSessionKey?: string;
@@ -728,6 +730,7 @@ export function createMusicGenerateTool(options?: {
       const taskHandle = createMusicGenerationTaskRun({
         sessionKey: options?.agentSessionKey,
         requesterOrigin: options?.requesterOrigin,
+        requesterSenderIsOwner: options?.senderIsOwner,
         prompt,
         providerId: selectedProvider?.id ?? selectedModelRef?.provider,
       });

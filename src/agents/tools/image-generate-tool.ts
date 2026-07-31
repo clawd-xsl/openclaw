@@ -891,6 +891,8 @@ async function executeImageGenerationJob(params: {
 
 export function createImageGenerateTool(options?: {
   config?: OpenClawConfig;
+  /** Host-admitted owner state of the requesting run; completion wakes inherit it. */
+  senderIsOwner?: boolean;
   agentDir?: string;
   authProfileStore?: AuthProfileStore;
   agentSessionKey?: string;
@@ -1091,6 +1093,7 @@ export function createImageGenerateTool(options?: {
       const taskHandle = createImageGenerationTaskRun({
         sessionKey: options?.agentSessionKey,
         requesterOrigin: options?.requesterOrigin,
+        requesterSenderIsOwner: options?.senderIsOwner,
         prompt,
         providerId: selectedProvider?.id,
       });
