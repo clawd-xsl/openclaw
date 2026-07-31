@@ -223,6 +223,7 @@ export async function deliverAgentHarnessTaskCompletion(params: {
   const prompt = formatAgentInternalEventsForPrompt(internalEvents);
   return await deliverSubagentAnnouncement({
     requesterSessionKey,
+    requesterSenderIsOwner: scope.requesterSenderIsOwner === true,
     announceId: params.announceId,
     triggerMessage: prompt,
     steerMessage: prompt,

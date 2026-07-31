@@ -2205,6 +2205,7 @@ async function runEmbeddedAgentInternal(
               ? {
                   agentHarnessTaskRuntimeScope: createAgentHarnessTaskRuntimeScope({
                     requesterSessionKey: params.sessionKey,
+                    requesterSenderIsOwner: params.senderIsOwner === true,
                   }),
                 }
               : {}),

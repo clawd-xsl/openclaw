@@ -24,12 +24,15 @@ function getScopeRegistry(): ScopeRegistry {
 export type AgentHarnessTaskRuntimeScope = {
   readonly requesterSessionKey: string;
   readonly requesterOrigin?: DeliveryContext;
+  /** Host-admitted owner authority of the requesting run; wake turns inherit it. */
+  readonly requesterSenderIsOwner?: boolean;
 };
 
 /** Creates a host-issued task runtime scope for agent harness task execution. */
 export function createAgentHarnessTaskRuntimeScope(params: {
   requesterSessionKey: string;
   requesterOrigin?: DeliveryContext;
+  requesterSenderIsOwner?: boolean;
 }): AgentHarnessTaskRuntimeScope {
   const requesterSessionKey = params.requesterSessionKey.trim();
   if (!requesterSessionKey) {
@@ -39,6 +42,7 @@ export function createAgentHarnessTaskRuntimeScope(params: {
   const scope: AgentHarnessTaskRuntimeScope = {
     requesterSessionKey,
     ...(requesterOrigin ? { requesterOrigin } : {}),
+    ...(params.requesterSenderIsOwner === true ? { requesterSenderIsOwner: true } : {}),
   };
   getScopeRegistry().hostIssuedScopes.add(scope);
   return scope;
