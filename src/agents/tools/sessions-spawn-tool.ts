@@ -447,6 +447,7 @@ export function createSessionsSpawnTool(
               controllerSessionKey: ownership.controllerSessionKey,
               requesterSessionKey: ownership.completionRequesterSessionKey,
               requesterOrigin,
+              requesterSenderIsOwner: opts?.senderIsOwner === true,
               requesterDisplayKey: ownership.completionRequesterDisplayKey,
               task,
               taskName,

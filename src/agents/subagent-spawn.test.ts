@@ -338,6 +338,9 @@ describe("spawnSubagentDirect seam flow", () => {
     const agentRequest = gatewayRequest("agent");
     expect(agentRequest.scopes).toEqual(["operator.admin"]);
     expect(agentRequest.requireLocalBackendOperatorAuth).toBe(true);
+    // Stored on the run record so completion wakes and post-restart resumes
+    // re-dispatch with the same authority.
+    expect(firstRegisteredSubagentRun().requesterSenderIsOwner).toBe(true);
   });
 
   it("dispatches spawned agent runs in process when a gateway context is available", async () => {

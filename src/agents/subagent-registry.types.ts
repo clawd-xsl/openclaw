@@ -12,6 +12,8 @@ export type PendingFinalDeliveryPayload = {
   requesterSessionKey: string;
   requesterOrigin?: DeliveryContext;
   requesterDisplayKey: string;
+  /** Host-admitted owner authority of the registering turn; wake turns inherit it. */
+  requesterSenderIsOwner?: boolean;
   childSessionKey: string;
   childRunId: string;
   task: string;
@@ -91,6 +93,12 @@ export type SubagentRunRecord = {
   requesterSessionKey: string;
   requesterOrigin?: DeliveryContext;
   requesterDisplayKey: string;
+  /**
+   * Host-admitted owner authority captured at registration. Completion wakes
+   * and post-restart resumes re-dispatch with it so owner tools survive; it is
+   * never model-supplied.
+   */
+  requesterSenderIsOwner?: boolean;
   task: string;
   taskName?: string;
   cleanup: "delete" | "keep";

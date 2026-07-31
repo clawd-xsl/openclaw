@@ -145,6 +145,8 @@ export type RegisterSubagentRunParams = {
   requesterSessionKey: string;
   requesterOrigin?: DeliveryContext;
   requesterDisplayKey: string;
+  /** Host-admitted owner authority of the registering turn; never model-supplied. */
+  requesterSenderIsOwner?: boolean;
   task: string;
   taskName?: string;
   agentId?: string;
@@ -658,6 +660,7 @@ export function createSubagentRunManager(params: {
       controllerSessionKey,
       requesterSessionKey,
       requesterOrigin,
+      requesterSenderIsOwner: registerParams.requesterSenderIsOwner === true || undefined,
       requesterDisplayKey: registerParams.requesterDisplayKey,
       task: registerParams.task,
       taskName: registerParams.taskName,

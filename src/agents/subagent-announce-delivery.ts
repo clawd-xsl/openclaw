@@ -135,16 +135,22 @@ async function runAnnounceAgentCall(params: {
   agentParams: Record<string, unknown>;
   expectFinal?: boolean;
   timeoutMs?: number;
+  requesterSenderIsOwner?: boolean;
 }): Promise<unknown> {
   return await subagentAnnounceDeliveryDeps.dispatchGatewayMethodInProcess(
     "agent",
     params.agentParams,
     {
       expectFinal: params.expectFinal,
-      forceSyntheticClient: shouldPreserveUserFacingSessionStateForInputProvenance(
-        params.agentParams.inputProvenance,
-      ),
+      forceSyntheticClient:
+        shouldPreserveUserFacingSessionStateForInputProvenance(
+          params.agentParams.inputProvenance,
+        ) || params.requesterSenderIsOwner === true,
       timeoutMs: params.timeoutMs,
+      // The wake turn's senderIsOwner derives from this synthetic connection's
+      // scopes; an owner-registered task must hand the stored authority back or
+      // the woken session loses owner-only tools until the next real message.
+      ...(params.requesterSenderIsOwner === true ? { syntheticScopes: ["operator.admin"] } : {}),
     },
   );
 }
@@ -1318,6 +1324,7 @@ function stripNonDeliverableChannelForCompletionOrigin(
 
 async function sendSubagentAnnounceDirectly(params: {
   requesterSessionKey: string;
+  requesterSenderIsOwner?: boolean;
   targetRequesterSessionKey: string;
   triggerMessage: string;
   internalEvents?: AgentInternalEvent[];
@@ -1578,6 +1585,7 @@ async function sendSubagentAnnounceDirectly(params: {
             agentParams: directAgentParams,
             expectFinal: true,
             timeoutMs: announceTimeoutMs,
+            requesterSenderIsOwner: params.requesterSenderIsOwner === true,
           }),
       });
     } catch (err) {
@@ -1780,6 +1788,8 @@ async function sendSubagentAnnounceDirectly(params: {
 
 export async function deliverSubagentAnnouncement(params: {
   requesterSessionKey: string;
+  /** Host-admitted owner authority stored when the task was registered. */
+  requesterSenderIsOwner?: boolean;
   announceId?: string;
   triggerMessage: string;
   steerMessage: string;
@@ -1814,6 +1824,7 @@ export async function deliverSubagentAnnouncement(params: {
     direct: async () =>
       await sendSubagentAnnounceDirectly({
         requesterSessionKey: params.requesterSessionKey,
+        requesterSenderIsOwner: params.requesterSenderIsOwner === true,
         targetRequesterSessionKey: params.targetRequesterSessionKey,
         triggerMessage: params.triggerMessage,
         internalEvents: params.internalEvents,

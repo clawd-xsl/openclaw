@@ -171,6 +171,8 @@ async function wakeSubagentRunAfterDescendants(params: {
   taskLabel: string;
   findings: string;
   announceId: string;
+  /** Authority the paused run was admitted with; the wake turn must match it. */
+  requesterSenderIsOwner?: boolean;
   signal?: AbortSignal;
 }): Promise<boolean> {
   if (params.signal?.aborted) {
@@ -211,6 +213,11 @@ async function wakeSubagentRunAfterDescendants(params: {
           },
           {
             timeoutMs: announceTimeoutMs,
+            // Wake the paused run with the authority it was admitted with, or
+            // an owner-spawned subagent resumes without owner-only tools.
+            ...(params.requesterSenderIsOwner === true
+              ? { forceSyntheticClient: true, syntheticScopes: ["operator.admin"] }
+              : {}),
           },
         ),
     });
@@ -239,6 +246,8 @@ export async function runSubagentAnnounceFlow(params: {
   childRunId: string;
   requesterSessionKey: string;
   requesterOrigin?: DeliveryContext;
+  /** Host-admitted owner authority stored on the run record at registration. */
+  requesterSenderIsOwner?: boolean;
   requesterDisplayKey: string;
   task: string;
   timeoutMs: number;
@@ -383,6 +392,7 @@ export async function runSubagentAnnounceFlow(params: {
         taskLabel: params.label || params.task || "task",
         findings: childCompletionFindings,
         announceId: wakeAnnounceId,
+        requesterSenderIsOwner: params.requesterSenderIsOwner === true,
         signal: params.signal,
       });
       if (woke) {
@@ -574,6 +584,7 @@ export async function runSubagentAnnounceFlow(params: {
     const directIdempotencyKey = buildAnnounceIdempotencyKey(announceId);
     const delivery = await deliverSubagentAnnouncement({
       requesterSessionKey: targetRequesterSessionKey,
+      requesterSenderIsOwner: params.requesterSenderIsOwner === true,
       announceId,
       triggerMessage,
       steerMessage: triggerMessage,

@@ -524,6 +524,8 @@ export function createSubagentRegistryLifecycleController(params: {
       requesterSessionKey:
         entry.delivery?.payload?.requesterSessionKey ?? entry.requesterSessionKey,
       requesterOrigin: entry.delivery?.payload?.requesterOrigin ?? entry.requesterOrigin,
+      requesterSenderIsOwner:
+        entry.delivery?.payload?.requesterSenderIsOwner ?? entry.requesterSenderIsOwner,
       requesterDisplayKey:
         entry.delivery?.payload?.requesterDisplayKey ?? entry.requesterDisplayKey,
       childSessionKey: entry.delivery?.payload?.childSessionKey ?? entry.childSessionKey,
@@ -1047,6 +1049,7 @@ export function createSubagentRegistryLifecycleController(params: {
         childRunId: pendingPayload.childRunId,
         requesterSessionKey: pendingPayload.requesterSessionKey,
         requesterOrigin,
+        requesterSenderIsOwner: pendingPayload.requesterSenderIsOwner === true,
         requesterDisplayKey: pendingPayload.requesterDisplayKey,
         task: pendingPayload.task,
         timeoutMs: params.subagentAnnounceTimeoutMs,

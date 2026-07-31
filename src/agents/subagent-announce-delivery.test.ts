@@ -1519,6 +1519,54 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
       forceSyntheticClient: true,
       timeoutMs: 120_000,
     });
+    // Non-owner-registered tasks must not escalate the wake connection.
+    expect(mockCallArg(dispatchGatewayMethodInProcess, 0, 2)).not.toHaveProperty("syntheticScopes");
+  });
+
+  it("hands stored owner authority to the completion wake dispatch", async () => {
+    const callGateway = createGatewayMock();
+    const dispatchGatewayMethodInProcess = createInProcessGatewayMock({
+      result: {
+        payloads: [{ text: "requester voice completion" }],
+      },
+    });
+    testing.setDepsForTest({
+      callGateway,
+      dispatchGatewayMethodInProcess,
+      getRequesterSessionActivity: () => ({
+        sessionId: "requester-session-local",
+        isActive: false,
+      }),
+      getRuntimeConfig: () => ({}) as never,
+    });
+
+    const result = await deliverSubagentAnnouncement({
+      requesterSessionKey: "agent:main:slack:channel:C123:thread:171.222",
+      requesterSenderIsOwner: true,
+      targetRequesterSessionKey: "agent:main:slack:channel:C123:thread:171.222",
+      triggerMessage: "child done",
+      steerMessage: "child done",
+      requesterOrigin: slackThreadOrigin,
+      requesterSessionOrigin: slackThreadOrigin,
+      completionDirectOrigin: slackThreadOrigin,
+      directOrigin: slackThreadOrigin,
+      requesterIsSubagent: false,
+      expectsCompletionMessage: true,
+      bestEffortDeliver: true,
+      directIdempotencyKey: "announce-owner-dispatch",
+    });
+
+    expectRecordFields(result, {
+      delivered: true,
+      path: "direct",
+    });
+    // The wake turn's senderIsOwner derives from the synthetic connection's
+    // scopes; an owner-registered task hands its stored authority back.
+    expect(mockCallArg(dispatchGatewayMethodInProcess, 0, 2)).toMatchObject({
+      expectFinal: true,
+      forceSyntheticClient: true,
+      syntheticScopes: ["operator.admin"],
+    });
   });
 
   it.each([

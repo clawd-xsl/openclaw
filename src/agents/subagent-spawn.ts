@@ -1669,6 +1669,7 @@ export async function spawnSubagentDirect(
       controllerSessionKey: ownership.controllerSessionKey,
       requesterSessionKey: ownership.completionRequesterSessionKey,
       requesterOrigin,
+      requesterSenderIsOwner: ctx.senderIsOwner === true,
       requesterDisplayKey: ownership.completionRequesterDisplayKey,
       task,
       taskName,

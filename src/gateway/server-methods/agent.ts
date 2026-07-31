@@ -708,6 +708,7 @@ async function registerPluginSubagentRunFromGateway(params: {
   childSessionKey: string;
   task: string;
   requesterOrigin?: DeliveryContext;
+  requesterSenderIsOwner?: boolean;
   pluginId?: string;
 }): Promise<void> {
   const childSessionKey = params.childSessionKey.trim();
@@ -725,6 +726,7 @@ async function registerPluginSubagentRunFromGateway(params: {
     controllerSessionKey: ownerSessionKey,
     requesterSessionKey: ownerSessionKey,
     requesterOrigin: params.requesterOrigin,
+    requesterSenderIsOwner: params.requesterSenderIsOwner === true,
     requesterDisplayKey: "main",
     task: params.task,
     cleanup: "keep",
@@ -2721,6 +2723,7 @@ export const agentHandlers: GatewayRequestHandlers = {
               accountId: resolvedAccountId,
               threadId: resolvedThreadId,
             }),
+            requesterSenderIsOwner: clientHasAdminScope(client),
             pluginId: normalizeOptionalString(client?.internal?.pluginRuntimeOwnerId),
           });
         } catch (err) {
