@@ -2,6 +2,7 @@
 import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
 import {
   DEFAULT_AGENT_ID,
+  buildAgentMainSessionKey,
   normalizeAgentId,
   resolveAgentIdFromSessionKey,
 } from "../../routing/session-key.js";
@@ -26,13 +27,24 @@ export function normalizeCronLaneSegment(value: string | undefined, fallback: st
   return normalized || fallback;
 }
 
-/** Builds the main-session child key used to isolate one cron run's task transcript. */
-export function resolveMainSessionCronRunSessionKey(job: CronJob, startedAt: number): string {
+/**
+ * Resolves the canonical main-session key a sessionTarget:"main" job runs on.
+ * Main jobs execute directly on the agent's main session so the turn carries
+ * the full conversation context and its output stays in main's transcript.
+ */
+export function resolveCronMainSessionKey(state: CronServiceState, job: CronJob): string {
   const explicitAgentId = job.agentId?.trim();
-  const agentId = normalizeAgentId(explicitAgentId || resolveAgentIdFromSessionKey(job.sessionKey));
-  const jobSegment = normalizeCronLaneSegment(job.id, "job");
-  const runSegment = normalizeCronLaneSegment(String(Math.max(0, Math.floor(startedAt))), "run");
-  return `agent:${agentId}:cron:${jobSegment}:run:${runSegment}`;
+  const agentId = normalizeAgentId(
+    explicitAgentId ||
+      resolveAgentIdFromSessionKey(job.sessionKey) ||
+      state.deps.defaultAgentId ||
+      DEFAULT_AGENT_ID,
+  );
+  return (
+    // Prod wiring injects the config-aware resolver (session.mainKey/scope);
+    // the canonical builder covers deps-injected test environments.
+    state.deps.resolveMainSessionKeyForAgent?.(agentId) ?? buildAgentMainSessionKey({ agentId })
+  );
 }
 
 function resolveCronTaskChildSessionKey(params: {
@@ -41,7 +53,7 @@ function resolveCronTaskChildSessionKey(params: {
   startedAt: number;
 }): string | undefined {
   if (params.job.sessionTarget === "main") {
-    return resolveMainSessionCronRunSessionKey(params.job, params.startedAt);
+    return resolveCronMainSessionKey(params.state, params.job);
   }
   const explicitSessionKey = params.job.sessionKey?.trim();
   if (explicitSessionKey) {

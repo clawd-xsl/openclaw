@@ -67,7 +67,7 @@ describe("cron main job wake routing", () => {
     expect(requestSystemEventTurn).toHaveBeenCalledWith({
       reason: "cron:test-main-delivery",
       agentId: undefined,
-      sessionKey: expect.stringMatching(/^agent:main:cron:test-main-delivery:run:\d+$/),
+      sessionKey: "agent:main:main",
       abortSignal: expect.objectContaining({ aborted: false }),
     });
     const enqueueOptions = enqueueSystemEvent.mock.calls[0]?.[1] as { sessionKey?: string };
@@ -95,7 +95,7 @@ describe("cron main job wake routing", () => {
       intent: "event",
       reason: "cron:test-next-heartbeat",
       agentId: undefined,
-      sessionKey: expect.stringMatching(/^agent:main:cron:test-next-heartbeat:run:\d+$/),
+      sessionKey: "agent:main:main",
       heartbeat: { target: "last" },
     });
     const enqueueOptions = enqueueSystemEvent.mock.calls[0]?.[1] as { sessionKey?: string };

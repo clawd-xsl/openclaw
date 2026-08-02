@@ -78,7 +78,7 @@ import type {
 } from "./state.js";
 import { ensureLoaded, persist } from "./store.js";
 import {
-  resolveMainSessionCronRunSessionKey,
+  resolveCronMainSessionKey,
   tryCreateCronTaskRun,
   tryFinishCronTaskRun,
 } from "./task-runs.js";
@@ -1941,16 +1941,17 @@ async function executeMainSessionCronJob(
           : 'main job requires payload.kind="systemEvent"',
     };
   }
-  const cronStartedAt =
-    typeof job.state.runningAtMs === "number" ? job.state.runningAtMs : state.deps.nowMs();
-  const cronRunSessionKey = resolveMainSessionCronRunSessionKey(job, cronStartedAt);
+  const mainSessionKey = resolveCronMainSessionKey(state, job);
   const deliveryRoute = resolveMainSessionCronDeliveryRoute(state, job);
-  // Main-session jobs enqueue text into a per-run child session so each cron
-  // execution has its own transcript and task drill-down target.
+  // Main-session jobs run directly on the agent's main session: the turn sees
+  // the full conversation context and its output stays in main's transcript.
+  // The system-event turn waits behind the lane at background priority and
+  // mid-run user messages steer into the active run, so it cannot preempt or
+  // block queued user work.
   const queuedSystemEvent = normalizeQueuedSystemEventHandle(
     state.deps.enqueueSystemEvent(text, {
       agentId: job.agentId,
-      sessionKey: cronRunSessionKey,
+      sessionKey: mainSessionKey,
       contextKey: `cron:${job.id}`,
       ...(deliveryRoute?.deliveryContext ? { deliveryContext: deliveryRoute.deliveryContext } : {}),
       ...(deliveryRoute?.chatType ? { chatType: deliveryRoute.chatType } : {}),
@@ -1968,17 +1969,17 @@ async function executeMainSessionCronJob(
       await state.deps.requestSystemEventTurn({
         reason,
         agentId: job.agentId,
-        sessionKey: cronRunSessionKey,
+        sessionKey: mainSessionKey,
         abortSignal,
       });
-      return { status: "ok", summary: text, sessionKey: cronRunSessionKey };
+      return { status: "ok", summary: text, sessionKey: mainSessionKey };
     } catch (error) {
       removeQueuedSystemEventHandle(state, job, queuedSystemEvent);
       return {
         status: "error",
         error: abortSignal?.aborted ? timeoutErrorMessage() : formatErrorMessage(error),
         summary: text,
-        sessionKey: cronRunSessionKey,
+        sessionKey: mainSessionKey,
       };
     }
   }
@@ -1987,10 +1988,10 @@ async function executeMainSessionCronJob(
     intent: "event",
     reason,
     agentId: job.agentId,
-    sessionKey: cronRunSessionKey,
+    sessionKey: mainSessionKey,
     heartbeat: { target: "last" },
   });
-  return { status: "ok", summary: text, sessionKey: cronRunSessionKey };
+  return { status: "ok", summary: text, sessionKey: mainSessionKey };
 }
 
 async function executeDetachedCronJob(

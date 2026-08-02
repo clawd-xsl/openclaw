@@ -118,6 +118,11 @@ export type CronServiceDeps = {
     sessionKey?: string;
     agentId?: string;
   }) => CronOriginDeliveryRoute | undefined;
+  /**
+   * Resolve the config-aware canonical main session key for an agent
+   * (session.mainKey/scope). sessionTarget:"main" jobs run directly on it.
+   */
+  resolveMainSessionKeyForAgent?: (agentId: string) => string | undefined;
   requestHeartbeat: (opts: HeartbeatWakeRequest) => void;
   requestSystemEventTurn: (opts: {
     reason?: string;

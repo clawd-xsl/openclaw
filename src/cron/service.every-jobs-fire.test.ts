@@ -13,8 +13,9 @@ const noopLogger = createNoopLogger();
 const { makeStorePath } = createCronStoreHarness();
 installCronTestHooks({ logger: noopLogger });
 
-function expectCronRunSessionKey(value: unknown, jobId: string) {
-  expect(value).toMatch(new RegExp(`^agent:main:cron:${jobId}:run:\\d+$`));
+function expectCronRunSessionKey(value: unknown, _jobId: string) {
+  // Main-targeted jobs run directly on the agent's main session.
+  expect(value).toBe("agent:main:main");
 }
 
 describe("CronService interval/cron jobs fire on time", () => {

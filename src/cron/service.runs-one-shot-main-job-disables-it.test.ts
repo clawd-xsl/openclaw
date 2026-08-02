@@ -16,8 +16,9 @@ const { makeStorePath } = createCronStoreHarness({
   prefix: "openclaw-cron-runs-one-shot-",
 });
 
-function expectCronRunSessionKey(value: unknown, jobId: string) {
-  expect(value).toMatch(new RegExp(`^agent:main:cron:${jobId}:run:\\d+$`));
+function expectCronRunSessionKey(value: unknown, _jobId: string) {
+  // Main-targeted jobs run directly on the agent's main session.
+  expect(value).toBe("agent:main:main");
 }
 
 function createCronEventHarness() {

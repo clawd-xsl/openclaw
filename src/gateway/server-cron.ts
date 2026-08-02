@@ -412,6 +412,7 @@ export function buildGatewayCronService(params: {
       }
       return resolveCronStoredDeliveryRoute({ cfg: runtimeConfig, sessionKey });
     },
+    resolveMainSessionKeyForAgent: (agentId) => resolveCronTarget({ agentId }).sessionKey,
     requestHeartbeat: (opts) => {
       const { agentId, sessionKey } = resolveCronTarget({ ...opts, preserveUntargeted: true });
       requestHeartbeat({

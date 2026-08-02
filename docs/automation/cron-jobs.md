@@ -87,16 +87,16 @@ This fires ~5–6 times per month instead of 0–1 times per month. OpenClaw use
 
 ## Execution styles
 
-| Style           | `--session` value   | Runs in                   | Best for                        |
-| --------------- | ------------------- | ------------------------- | ------------------------------- |
-| Main session    | `main`              | Dedicated cron event turn | Reminders, system events        |
-| Isolated        | `isolated`          | Dedicated `cron:<jobId>`  | Reports, background chores      |
-| Current session | `current`           | Bound at creation time    | Context-aware recurring work    |
-| Custom session  | `session:custom-id` | Persistent named session  | Workflows that build on history |
+| Style           | `--session` value   | Runs in                  | Best for                        |
+| --------------- | ------------------- | ------------------------ | ------------------------------- |
+| Main session    | `main`              | The agent's main session | Reminders, system events        |
+| Isolated        | `isolated`          | Dedicated `cron:<jobId>` | Reports, background chores      |
+| Current session | `current`           | Bound at creation time   | Context-aware recurring work    |
+| Custom session  | `session:custom-id` | Persistent named session | Workflows that build on history |
 
 <AccordionGroup>
   <Accordion title="Main session vs isolated vs custom">
-    **Main session** jobs enqueue a system event into a cron-owned run lane. `--wake now` starts a non-heartbeat system-event turn immediately, even when periodic heartbeat is disabled with `heartbeat.every: "0s"`. `--wake next-heartbeat` leaves the event queued for the next scheduled heartbeat instead. Event turns can use the target main session's last delivery context for replies, but they do not append routine cron turns to the human chat lane and do not extend daily/idle reset freshness for the target session. **Isolated** jobs run a dedicated agent turn with a fresh session. **Custom sessions** (`session:xxx`) persist context across runs, enabling workflows like daily standups that build on previous summaries.
+    **Main session** jobs enqueue a system event directly into the agent's main session, so the turn sees the full conversation context and its output stays in main's transcript, like a message sent to main. The event turn waits behind the session lane at background priority (it never preempts queued user messages), and mid-run user messages steer into the active turn. `--wake now` starts a non-heartbeat system-event turn immediately, even when periodic heartbeat is disabled with `heartbeat.every: "0s"`. `--wake next-heartbeat` leaves the event queued for the next scheduled heartbeat instead. Event turns can use the target main session's last delivery context for replies, and they do not extend daily/idle reset freshness for the target session. **Isolated** jobs run a dedicated agent turn with a fresh session. **Custom sessions** (`session:xxx`) persist context across runs, enabling workflows like daily standups that build on previous summaries.
 
     Main-session cron events are self-contained system-event reminders. They do
     not automatically include the default heartbeat prompt's "Read

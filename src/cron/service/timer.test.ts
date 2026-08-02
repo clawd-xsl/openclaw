@@ -77,7 +77,7 @@ describe("cron service timer seam coverage", () => {
       sessionKey: "agent:main-pr-router:main",
       state: { runningAtMs: now },
     };
-    const cronRunSessionKey = `agent:main-pr-router:cron:main-heartbeat-job:run:${now}`;
+    const cronRunSessionKey = "agent:main-pr-router:main";
     const resolveOriginDeliveryRoute = vi.fn(() => ({
       deliveryContext: { channel: "discord", to: "channel-1", accountId: "default" },
       senderId: "discord:user-1",
@@ -207,7 +207,7 @@ describe("cron service timer seam coverage", () => {
 
     await onTimer(state);
 
-    const cronRunSessionKey = `agent:main:cron:main-heartbeat-job:run:${now}`;
+    const cronRunSessionKey = "agent:main:main";
     expect(enqueueSystemEvent).toHaveBeenCalledWith("heartbeat seam tick", {
       agentId: undefined,
       sessionKey: cronRunSessionKey,
@@ -415,7 +415,7 @@ describe("cron service timer seam coverage", () => {
       { jobId: "main-heartbeat-job", error: ledgerError },
       "cron: failed to create task ledger record",
     );
-    const cronRunSessionKey = `agent:main:cron:main-heartbeat-job:run:${now}`;
+    const cronRunSessionKey = "agent:main:main";
     expect(enqueueSystemEvent).toHaveBeenCalledWith("heartbeat seam tick", {
       agentId: undefined,
       sessionKey: cronRunSessionKey,
