@@ -552,7 +552,7 @@ describe("updateSessionStoreAfterAgentRun", () => {
           cliSessionBindings: {
             "claude-cli": {
               sessionId: "stale-cli-session",
-              authEpoch: "old-epoch",
+              extraSystemPromptHash: "old-prompt-hash",
             },
             "codex-cli": {
               sessionId: "codex-session",
@@ -814,7 +814,7 @@ describe("updateSessionStoreAfterAgentRun", () => {
               sessionId: "claude-cli-session-1",
               cliSessionBinding: {
                 sessionId: "claude-cli-session-1",
-                authEpoch: "auth-epoch-1",
+                extraSystemPromptHash: "prompt-hash-1",
               },
             },
           },
@@ -829,7 +829,7 @@ describe("updateSessionStoreAfterAgentRun", () => {
       expect(second.sessionKey).toBe(first.sessionKey);
       expect(second.sessionEntry?.cliSessionBindings?.["claude-cli"]).toEqual({
         sessionId: "claude-cli-session-1",
-        authEpoch: "auth-epoch-1",
+        extraSystemPromptHash: "prompt-hash-1",
       });
 
       const persisted = readSessionEntry(resolveStorePath(storePath), first.sessionKey!, {
@@ -837,7 +837,7 @@ describe("updateSessionStoreAfterAgentRun", () => {
       });
       expect(persisted?.cliSessionBindings?.["claude-cli"]).toEqual({
         sessionId: "claude-cli-session-1",
-        authEpoch: "auth-epoch-1",
+        extraSystemPromptHash: "prompt-hash-1",
       });
     });
   });
@@ -2451,7 +2451,7 @@ describe("clearCliSessionInStore", () => {
         cliSessionBindings: {
           "claude-cli": {
             sessionId: "claude-session-1",
-            authEpoch: "epoch-1",
+            extraSystemPromptHash: "prompt-hash-1",
           },
           "codex-cli": {
             sessionId: "codex-session-1",
@@ -2531,7 +2531,7 @@ describe("clearCliSessionInStore", () => {
         cliSessionBindings: {
           "claude-cli": {
             sessionId: "claude-session-1",
-            authEpoch: "epoch-1",
+            extraSystemPromptHash: "prompt-hash-1",
           },
           "codex-cli": {
             sessionId: "codex-session-1",

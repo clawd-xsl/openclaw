@@ -54,9 +54,8 @@ export type CliSessionBinding = {
   sessionId: string;
   /** Trust an explicitly attached CLI session even when auth, prompt, or MCP fingerprints drift. */
   forceReuse?: boolean;
+  /** Profile the session last ran under; gates reuse only for backends with per-profile session state (gemini). */
   authProfileId?: string;
-  authEpoch?: string;
-  authEpochVersion?: number;
   extraSystemPromptHash?: string;
   messageToolPolicyHash?: string;
   promptToolNamesHash?: string;

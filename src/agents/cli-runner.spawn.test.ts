@@ -247,7 +247,6 @@ function buildPreparedCliRunContext(params: {
     systemPrompt: params.systemPrompt ?? "You are a helpful assistant.",
     systemPromptReport: {} as PreparedCliRunContext["systemPromptReport"],
     bootstrapPromptWarningLines: [],
-    authEpochVersion: 2,
     ...(params.mcpDeliveryCapture ? { mcpDeliveryCapture: true } : {}),
   };
 }
@@ -447,7 +446,6 @@ describe("runCliAgent spawn path", () => {
       systemPrompt: "You are a helpful assistant.",
       systemPromptReport: {} as PreparedCliRunContext["systemPromptReport"],
       bootstrapPromptWarningLines: [],
-      authEpochVersion: 2,
     };
     await executePreparedCliRun(context);
 
@@ -3783,6 +3781,9 @@ ${JSON.stringify({
           liveSession: "claude-stdio",
           resumeArgs: ["-p", "--output-format", "stream-json", "--resume", "{sessionId}"],
         },
+        // Stage the test env: only deliberately staged env participates in the
+        // live fingerprint, inherited host env does not.
+        preparedEnv: env,
         mcpDeliveryCapture: true,
       });
       const result = await runClaudeLiveSessionTurn({

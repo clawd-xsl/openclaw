@@ -77,8 +77,6 @@ export function getCliSessionBinding(
       sessionId: bindingSessionId,
       ...(fromBindings?.forceReuse === true ? { forceReuse: true } : {}),
       authProfileId: normalizeOptionalString(fromBindings?.authProfileId),
-      authEpoch: normalizeOptionalString(fromBindings?.authEpoch),
-      authEpochVersion: fromBindings?.authEpochVersion,
       extraSystemPromptHash: normalizeOptionalString(fromBindings?.extraSystemPromptHash),
       messageToolPolicyHash: normalizeOptionalString(fromBindings?.messageToolPolicyHash),
       promptToolNamesHash: normalizeOptionalString(fromBindings?.promptToolNamesHash),

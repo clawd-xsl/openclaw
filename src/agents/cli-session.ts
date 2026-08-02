@@ -51,12 +51,6 @@ export function setCliSessionBinding(
       ...(normalizeOptionalString(binding.authProfileId)
         ? { authProfileId: normalizeOptionalString(binding.authProfileId) }
         : {}),
-      ...(normalizeOptionalString(binding.authEpoch)
-        ? { authEpoch: normalizeOptionalString(binding.authEpoch) }
-        : {}),
-      ...(typeof binding.authEpochVersion === "number" && Number.isFinite(binding.authEpochVersion)
-        ? { authEpochVersion: binding.authEpochVersion }
-        : {}),
       ...(normalizeOptionalString(binding.extraSystemPromptHash)
         ? { extraSystemPromptHash: normalizeOptionalString(binding.extraSystemPromptHash) }
         : {}),
@@ -208,14 +202,13 @@ export function clearAllCliCompactionOverlays(
   entry.cliCompactionOverlays = undefined;
 }
 
-export type CliSessionInvalidatedReason =
-  | "auth-profile"
-  | "auth-epoch"
-  | "message-policy"
-  | "cwd"
-  | "mcp";
+export type CliSessionInvalidatedReason = "auth-profile" | "cwd";
 
-export type CliSessionContentDriftReason = "system-prompt" | "prompt-tools";
+export type CliSessionContentDriftReason =
+  | "system-prompt"
+  | "prompt-tools"
+  | "message-policy"
+  | "mcp";
 
 export type CliSessionReuseResult =
   | { mode: "none" }
@@ -227,12 +220,12 @@ export type CliSessionReuseResult =
     }
   | { mode: "invalidate"; invalidatedReason: CliSessionInvalidatedReason };
 
-/** Decide whether a stored CLI session can be reused for the current auth/prompt/cwd/MCP state. */
+/** Decide whether a stored CLI session can be reused for the current prompt/cwd/MCP state. */
 export function resolveCliSessionReuse(params: {
   binding?: CliSessionBinding;
   authProfileId?: string;
-  authEpoch?: string;
-  authEpochVersion: number;
+  /** True when the backend stages per-profile session state (gemini home). */
+  sessionBoundToAuthProfile?: boolean;
   extraSystemPromptHash?: string;
   messageToolPolicyHash?: string;
   promptToolNamesHash?: string;
@@ -248,62 +241,54 @@ export function resolveCliSessionReuse(params: {
   if (binding?.forceReuse === true) {
     return { mode: "reuse", sessionId };
   }
-  const currentAuthProfileId = normalizeOptionalString(params.authProfileId);
-  const currentAuthEpoch = normalizeOptionalString(params.authEpoch);
-  const currentExtraSystemPromptHash = normalizeOptionalString(params.extraSystemPromptHash);
-  const currentMessageToolPolicyHash = normalizeOptionalString(params.messageToolPolicyHash);
-  const currentPromptToolNamesHash = normalizeOptionalString(params.promptToolNamesHash);
-  const currentCwdHash = normalizeOptionalString(params.cwdHash);
-  const currentMcpConfigHash = normalizeOptionalString(params.mcpConfigHash);
-  const currentMcpResumeHash = normalizeOptionalString(params.mcpResumeHash);
-  const storedAuthProfileId = normalizeOptionalString(binding?.authProfileId);
-  const storedAuthEpoch = normalizeOptionalString(binding?.authEpoch);
-  const hasMatchingVersionedAuthEpoch =
-    binding?.authEpochVersion === params.authEpochVersion &&
-    storedAuthEpoch !== undefined &&
-    currentAuthEpoch !== undefined &&
-    storedAuthEpoch === currentAuthEpoch;
-  if (storedAuthProfileId !== currentAuthProfileId) {
-    if (!hasMatchingVersionedAuthEpoch) {
+  // Auth changes deliberately do not gate reuse for backends whose child
+  // authenticates from its own credential store (claude-cli): a resumed
+  // transcript keeps working across profile or credential changes, and gating
+  // on them cost a full reseed per rotation. The one exception is backends
+  // that stage per-profile session state: google-gemini-cli derives
+  // GEMINI_CLI_HOME from the auth profile id, so a session created under
+  // another profile physically does not exist for this turn's child.
+  if (params.sessionBoundToAuthProfile) {
+    const storedAuthProfileId = normalizeOptionalString(binding?.authProfileId);
+    if (storedAuthProfileId !== normalizeOptionalString(params.authProfileId)) {
       return { mode: "invalidate", invalidatedReason: "auth-profile" };
     }
   }
-  if (
-    binding?.authEpochVersion === params.authEpochVersion &&
-    storedAuthEpoch !== currentAuthEpoch
-  ) {
-    return { mode: "invalidate", invalidatedReason: "auth-epoch" };
-  }
-  const storedMessageToolPolicyHash = normalizeOptionalString(binding?.messageToolPolicyHash);
-  if (storedMessageToolPolicyHash !== currentMessageToolPolicyHash) {
-    return { mode: "invalidate", invalidatedReason: "message-policy" };
-  }
+  const currentCwdHash = normalizeOptionalString(params.cwdHash);
   const storedCwdHash = normalizeOptionalString(binding?.cwdHash);
   if (storedCwdHash !== undefined && storedCwdHash !== currentCwdHash) {
+    // Claude CLI keys transcripts by a cwd-derived project dir; resuming from
+    // another cwd cannot find the session file, so this spawn is doomed.
     return { mode: "invalidate", invalidatedReason: "cwd" };
-  }
-  const storedMcpResumeHash = normalizeOptionalString(binding?.mcpResumeHash);
-  if (storedMcpResumeHash && currentMcpResumeHash) {
-    // Resume hashes are stricter than raw MCP config hashes: a match proves the
-    // exact resumed CLI tool topology still belongs to this session.
-    if (storedMcpResumeHash !== currentMcpResumeHash) {
-      return { mode: "invalidate", invalidatedReason: "mcp" };
-    }
-  } else {
-    const storedMcpConfigHash = normalizeOptionalString(binding?.mcpConfigHash);
-    if (storedMcpConfigHash !== currentMcpConfigHash) {
-      return { mode: "invalidate", invalidatedReason: "mcp" };
-    }
   }
 
   const driftReasons: CliSessionContentDriftReason[] = [];
   const storedExtraSystemPromptHash = normalizeOptionalString(binding?.extraSystemPromptHash);
-  if (storedExtraSystemPromptHash !== currentExtraSystemPromptHash) {
+  if (storedExtraSystemPromptHash !== normalizeOptionalString(params.extraSystemPromptHash)) {
     driftReasons.push("system-prompt");
   }
   const storedPromptToolNamesHash = normalizeOptionalString(binding?.promptToolNamesHash);
-  if (storedPromptToolNamesHash !== currentPromptToolNamesHash) {
+  if (storedPromptToolNamesHash !== normalizeOptionalString(params.promptToolNamesHash)) {
     driftReasons.push("prompt-tools");
+  }
+  const storedMessageToolPolicyHash = normalizeOptionalString(binding?.messageToolPolicyHash);
+  if (storedMessageToolPolicyHash !== normalizeOptionalString(params.messageToolPolicyHash)) {
+    driftReasons.push("message-policy");
+  }
+  const storedMcpResumeHash = normalizeOptionalString(binding?.mcpResumeHash);
+  const currentMcpResumeHash = normalizeOptionalString(params.mcpResumeHash);
+  // Prefer the loopback-port-canonicalized resume hash so gateway restarts do
+  // not read as topology changes; raw config hashes cover legacy bindings.
+  const mcpChanged =
+    storedMcpResumeHash && currentMcpResumeHash
+      ? storedMcpResumeHash !== currentMcpResumeHash
+      : normalizeOptionalString(binding?.mcpConfigHash) !==
+        normalizeOptionalString(params.mcpConfigHash);
+  if (mcpChanged) {
+    // Every launch (resume included) passes a fresh --mcp-config and system
+    // prompt, so a changed MCP topology drifts the transcript; it cannot
+    // corrupt it. Invalidating here cost a full reseed for zero protection.
+    driftReasons.push("mcp");
   }
   if (driftReasons.length > 0) {
     // Content drift resumes by contract (#99729): the transcript remains usable.

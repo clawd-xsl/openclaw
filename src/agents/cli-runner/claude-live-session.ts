@@ -301,7 +301,6 @@ export function buildClaudeLiveArgs(params: {
 function buildClaudeLiveKey(context: PreparedCliRunContext): string {
   return `${context.backendResolved.id}:${buildClaudeOwnerKey({
     agentId: context.params.agentId,
-    authProfileId: context.effectiveAuthProfileId,
     sessionId: context.params.sessionId,
     sessionKey: context.params.sessionKey,
   })}`;
@@ -324,7 +323,6 @@ function resolvePinnedMainOwnerKey(context: PreparedCliRunContext): string | und
   const agentId = context.params.agentId ?? resolveAgentIdFromSessionKey(sessionKey);
   return `${context.backendResolved.id}:${buildClaudeOwnerKey({
     agentId,
-    authProfileId: context.effectiveAuthProfileId,
     sessionKey,
   })}`;
 }
@@ -351,6 +349,10 @@ function buildClaudeLiveFingerprint(params: {
   ]);
   const normalizeMcpConfigPath = Boolean(params.context.preparedBackend.mcpConfigHash);
   const skillSnapshot = params.context.params.skillsSnapshot;
+  // Content-derived fields only: the snapshot `version` is a watcher counter
+  // that bumps on any file event (touch, git ops, config reload) even when the
+  // rebuilt snapshot is byte-identical, and hashing it respawned warm
+  // processes for no behavior change.
   const skillsFingerprint = skillSnapshot
     ? sha256(
         JSON.stringify({
@@ -363,7 +365,6 @@ function buildClaudeLiveFingerprint(params: {
             filePath: skill.filePath,
             sourceInfo: skill.sourceInfo,
           })),
-          version: skillSnapshot.version,
         }),
       )
     : undefined;
@@ -416,10 +417,14 @@ function buildClaudeLiveFingerprint(params: {
     // fingerprint: a warm process owns its launch-time prompt until it
     // restarts for another reason. Killing it per drift costs a cold start
     // and the whole prompt cache each turn.
-    authProfileIdHash: params.context.effectiveAuthProfileId
-      ? sha256(params.context.effectiveAuthProfileId)
-      : undefined,
-    authEpochHash: params.context.authEpoch ? sha256(params.context.authEpoch) : undefined,
+    // Auth profile/epoch stay out too: the claude-cli child authenticates from
+    // its own credential store (OpenClaw clears ANTHROPIC_* from its env), so
+    // a warm process absorbs any credential change without a respawn.
+    // A changed tool topology MUST respawn: the CLI client refreshes MCP tools
+    // only on a tools/list_changed notification, which the loopback never
+    // emits, so a warm process would otherwise keep its launch-time tool list
+    // forever. The hash is session-stable (delivery facts are zeroed in
+    // prepare), so only real config/plugin tool changes flip it.
     promptToolNamesHash: params.context.promptToolNamesHash,
     // The loopback MCP port changes across gateway restarts; the resume hash is
     // port-canonicalized so a loopback rebind alone must not kill a warm
@@ -428,10 +433,22 @@ function buildClaudeLiveFingerprint(params: {
       params.context.preparedBackend.mcpResumeHash ?? params.context.preparedBackend.mcpConfigHash,
     skillsFingerprint,
     argv: stableArgv,
-    env: Object.keys(params.env)
-      .filter((key) => !perTurnMcpEnvKeys.has(key))
-      .toSorted()
-      .map((key) => [key, params.env[key] ? sha256(params.env[key]) : ""]),
+    // Only deliberately staged env participates (backend config env plus
+    // prepared launch env such as OPENCLAW_MCP_*): inherited host env is
+    // frozen for the gateway lifetime, and skill env overrides mutate
+    // process.env globally for a run's duration, so hashing every key let an
+    // overlapping run of another session leak temporary values into this
+    // snapshot and force a respawn.
+    env: (() => {
+      const stagedEnvKeys = new Set([
+        ...Object.keys(params.context.preparedBackend.backend.env ?? {}),
+        ...Object.keys(params.context.preparedBackend.env ?? {}),
+      ]);
+      return Object.keys(params.env)
+        .filter((key) => !perTurnMcpEnvKeys.has(key) && stagedEnvKeys.has(key))
+        .toSorted()
+        .map((key) => [key, params.env[key] ? sha256(params.env[key]) : ""]);
+    })(),
   });
 }
 

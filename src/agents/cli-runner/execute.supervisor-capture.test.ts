@@ -100,7 +100,6 @@ function buildPreparedCliRunContext(params: {
     systemPrompt: "system",
     systemPromptReport: {} as PreparedCliRunContext["systemPromptReport"],
     bootstrapPromptWarningLines: [],
-    authEpochVersion: 2,
   };
 }
 

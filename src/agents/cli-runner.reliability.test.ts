@@ -231,7 +231,6 @@ function buildPreparedContext(params?: {
     ...(params?.openClawHistoryPrompt
       ? { openClawHistoryPrompt: params.openClawHistoryPrompt }
       : {}),
-    authEpochVersion: 2,
   };
 }
 

@@ -190,7 +190,6 @@ async function prepareBundleMcpExecutionContext(params: {
     systemPromptReport: {} as PreparedCliRunContext["systemPromptReport"],
     claudeSkillsPluginArgs: [],
     bootstrapPromptWarningLines: [],
-    authEpochVersion: 1,
   };
 }
 

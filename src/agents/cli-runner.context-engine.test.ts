@@ -115,7 +115,6 @@ function buildPreparedContext(contextEngine: ContextEngine): PreparedCliRunConte
     systemPrompt: "You are a helpful assistant.",
     systemPromptReport: {} as PreparedCliRunContext["systemPromptReport"],
     bootstrapPromptWarningLines: [],
-    authEpochVersion: 2,
   };
 }
 

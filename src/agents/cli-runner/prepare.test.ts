@@ -25,7 +25,6 @@ import {
 import { captureEnv, setTestEnvValue } from "../../test-utils/env.js";
 import { resolveApiKeyForProfile as resolveApiKeyForProfileImpl } from "../auth-profiles/oauth.js";
 import { saveAuthProfileStore } from "../auth-profiles/store.js";
-import { resetCliAuthEpochTestDeps, setCliAuthEpochTestDeps } from "../cli-auth-epoch.js";
 import { testing as cliBackendsTesting } from "../cli-backends.js";
 import { hashCliSessionText } from "../cli-session.js";
 import { resetContextWindowCacheForTest } from "../context.js";
@@ -34,11 +33,7 @@ import { buildActiveMusicGenerationTaskPromptContextForSession } from "../music-
 import type { SandboxWorkspaceInfo } from "../sandbox/types.js";
 import { SYSTEM_PROMPT_CACHE_BOUNDARY } from "../system-prompt-cache-boundary.js";
 import { buildActiveVideoGenerationTaskPromptContextForSession } from "../video-generation-task-status.js";
-import {
-  prepareCliRunContext,
-  setCliRunnerPrepareTestDeps,
-  shouldSkipLocalCliCredentialEpoch,
-} from "./prepare.js";
+import { prepareCliRunContext, setCliRunnerPrepareTestDeps } from "./prepare.js";
 
 const getRuntimeConfigMock = vi.hoisted(() => vi.fn(() => ({})));
 const ensureSandboxWorkspaceForSessionMock = vi.hoisted(() =>
@@ -243,7 +238,7 @@ function appendTranscriptEntry(
   );
 }
 
-describe("shouldSkipLocalCliCredentialEpoch", () => {
+describe("profile-owned CLI preparation", () => {
   beforeEach(() => {
     // Install narrow test doubles for external runtime seams so preparation
     // remains about data flow, not bundled plugin or loopback startup cost.
@@ -282,7 +277,6 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
 
   afterEach(() => {
     cliBackendsTesting.resetDepsForTest();
-    resetCliAuthEpochTestDeps();
     getRuntimeConfigMock.mockReset();
     mockGetGlobalHookRunner.mockReset();
     mockBuildActiveImageGenerationTaskPromptContextForSession.mockReset();
@@ -295,38 +289,6 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
     vi.unstubAllEnvs();
     sessionFileEnvSnapshot?.restore();
     sessionFileEnvSnapshot = undefined;
-  });
-
-  it("skips local cli auth only when a profile-owned execution was prepared", () => {
-    expect(
-      shouldSkipLocalCliCredentialEpoch({
-        authEpochMode: "profile-only",
-        authProfileId: "openai:default",
-        authCredential: {
-          type: "oauth",
-          provider: "openai",
-          access: "access-token",
-          refresh: "refresh-token",
-          expires: Date.now() + 60_000,
-        },
-        preparedExecution: {
-          env: {
-            CODEX_HOME: "/tmp/codex-home",
-          },
-        },
-      }),
-    ).toBe(true);
-  });
-
-  it("keeps local cli auth in the epoch when the selected profile has no bridgeable execution", () => {
-    expect(
-      shouldSkipLocalCliCredentialEpoch({
-        authEpochMode: "profile-only",
-        authProfileId: "openai:default",
-        authCredential: undefined,
-        preparedExecution: null,
-      }),
-    ).toBe(false);
   });
 
   it("passes raw refreshed OAuth profile fields to profile-owned CLI preparation", async () => {
@@ -1028,61 +990,6 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
 
       expect(generatedSystemSettingsPath).toBeTruthy();
       expect(fs.existsSync(generatedSystemSettingsPath ?? "")).toBe(false);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("cleans prepared execution resources when auth epoch resolution fails", async () => {
-    const { dir, sessionFile } = createSessionFile();
-    const preparedExecutionCleanup = vi.fn(async () => undefined);
-    const prepareExecution = vi.fn(async () => ({ cleanup: preparedExecutionCleanup }));
-    setCliAuthEpochTestDeps({
-      loadAuthProfileStoreForRuntime: () => {
-        throw new Error("auth epoch read failed");
-      },
-    });
-    cliBackendsTesting.setDepsForTest({
-      resolvePluginSetupCliBackend: () => undefined,
-      resolveRuntimeCliBackends: () => [
-        {
-          id: "test-cli",
-          pluginId: "test",
-          bundleMcp: false,
-          authEpochMode: "profile-only",
-          prepareExecution,
-          config: {
-            command: "test-cli",
-            args: ["--print"],
-            systemPromptArg: "--system-prompt",
-            systemPromptWhen: "first",
-            output: "text",
-            input: "arg",
-            sessionMode: "existing",
-          },
-        },
-      ],
-    });
-
-    try {
-      await expect(
-        prepareCliRunContext({
-          sessionId: "session-test",
-          sessionKey: "agent:main:main",
-          sessionFile,
-          workspaceDir: dir,
-          prompt: "latest ask",
-          provider: "test-cli",
-          model: "test-model",
-          timeoutMs: 1_000,
-          runId: "run-test-prepare-execution-cleanup-on-auth-epoch-failure",
-          authProfileId: "test-cli:profile",
-          config: {},
-        }),
-      ).rejects.toThrow("auth epoch read failed");
-
-      expect(prepareExecution).toHaveBeenCalledOnce();
-      expect(preparedExecutionCleanup).toHaveBeenCalledOnce();
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -1928,7 +1835,7 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
     }
   });
 
-  it("invalidates CLI session reuse when explicit message-target policy changes", async () => {
+  it("resumes with drift when explicit message-target policy changes", async () => {
     const { dir, sessionFile } = createSessionFile();
     try {
       const context = await prepareCliRunContext({
@@ -1949,9 +1856,12 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
       });
 
       expect(context.messageToolPolicyHash).toBeDefined();
+      // The requirement is enforced per turn by the loopback and restated in
+      // the always-resent system prompt, so a policy flip only drifts.
       expect(context.reusableCliSession).toEqual({
-        mode: "invalidate",
-        invalidatedReason: "message-policy",
+        mode: "reuse-with-drift",
+        sessionId: "cli-session",
+        drift: { reasons: ["message-policy"] },
       });
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -3119,9 +3029,11 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
   it("keeps the loopback launch token stable across sender identities", async () => {
     const { dir, sessionFile } = createSessionFile();
     try {
-      const resolveMcpLoopbackBearerToken = vi.fn((runtime: { ownerToken: string }) => {
-        return runtime.ownerToken;
-      });
+      const resolveMcpLoopbackBearerToken = vi.fn(
+        (runtime: { ownerToken: string }, _senderIsOwner: boolean) => {
+          return runtime.ownerToken;
+        },
+      );
       setCliRunnerPrepareTestDeps({
         getActiveMcpLoopbackRuntime: vi.fn(() => ({
           port: 31783,
@@ -3303,13 +3215,13 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
     }
   });
 
-  it("keeps auth-boundary invalidation ahead of orphaned transcript checks", async () => {
+  it("ignores stale binding auth profiles and reuses the session", async () => {
     const { dir, sessionFile } = createSessionFile();
 
     try {
       setClaudeCliBackendForPrepareTest();
       const transcriptCheck = vi.fn(async () => true);
-      const orphanCheck = vi.fn(async () => true);
+      const orphanCheck = vi.fn(async () => false);
       setCliRunnerPrepareTestDeps({
         claudeCliSessionTranscriptHasContent: transcriptCheck,
         claudeCliSessionTranscriptHasOrphanedToolUse: orphanCheck,
@@ -3324,21 +3236,22 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
         provider: "claude-cli",
         model: "opus",
         timeoutMs: 1_000,
-        runId: "run-orphan-auth-boundary",
+        runId: "run-stale-auth-profile-reuse",
         cliSessionBinding: {
-          sessionId: "orphaned-claude-sid",
+          sessionId: "claude-sid",
           authProfileId: "anthropic:old-profile",
           cwdHash: hashCliSessionText(dir),
         },
-        cliSessionId: "orphaned-claude-sid",
+        cliSessionId: "claude-sid",
         config: createCliBackendConfig(),
       });
 
-      expect(transcriptCheck).not.toHaveBeenCalled();
-      expect(orphanCheck).not.toHaveBeenCalled();
-      expect(context.reusableCliSession).toEqual({
-        mode: "invalidate",
-        invalidatedReason: "auth-profile",
+      // The claude-cli child owns its credentials; a rotated auth profile in
+      // the stored binding must not cost the native session.
+      expect(transcriptCheck).toHaveBeenCalled();
+      expect(context.reusableCliSession).toMatchObject({
+        mode: "reuse",
+        sessionId: "claude-sid",
       });
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });

@@ -191,19 +191,19 @@ export function enqueueCliRun<T>(key: string, task: () => Promise<T>): Promise<T
 }
 
 /**
- * Hashes the (agent, auth-profile, session) tuple to a stable owner key shared
- * between the CLI run queue (`resolveCliRunQueueKey`) and the Claude live
- * session map (`buildClaudeLiveKey`). The two paths must agree byte-for-byte
- * within a single process so a fresh queued turn picks up the same live session
- * the registry already holds; the golden-hash test below pins the encoding.
- * The account id is a per-turn delivery fact and must stay out of this
- * identity: keying by account gave internal turns (no account) and channel
- * turns separate lanes/processes that both resumed one native session and
- * forked its transcript tree.
+ * Hashes the (agent, session) tuple to a stable owner key shared between the
+ * CLI run queue (`resolveCliRunQueueKey`) and the Claude live session map
+ * (`buildClaudeLiveKey`). The two paths must agree byte-for-byte within a
+ * single process so a fresh queued turn picks up the same live session the
+ * registry already holds; the golden-hash test below pins the encoding.
+ * Delivery facts (account id) and auth facts (profile id) must stay out of
+ * this identity: the claude-cli child authenticates from its own credential
+ * store, so keying by either gave turns from different origins separate
+ * lanes/processes that both resumed one native session and forked its
+ * transcript tree.
  */
 export function buildClaudeOwnerKey(input: {
   agentId?: string;
-  authProfileId?: string;
   sessionId?: string;
   sessionKey?: string;
 }): string {
@@ -212,7 +212,6 @@ export function buildClaudeOwnerKey(input: {
     .update(
       JSON.stringify({
         agentId: input.agentId,
-        authProfileId: input.authProfileId,
         sessionId: input.sessionId,
         sessionKey: input.sessionKey,
       }),

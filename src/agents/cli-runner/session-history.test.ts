@@ -728,44 +728,6 @@ describe("loadCliSessionReseedMessages", () => {
     }
   });
 
-  it("does not raw-reseed auth-boundary invalidations even when opted in", async () => {
-    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-cli-state-"));
-    const sessionFile = createSessionTranscript({
-      rootDir: stateDir,
-      sessionId: "session-auth-boundary",
-      messages: ["previous account context"],
-    });
-
-    try {
-      await withCliSessionState(stateDir, async () => {
-        // Auth changes are a hard boundary: old raw messages may belong to a
-        // different credential context and must not reseed a fresh CLI session.
-        await expect(
-          loadCliSessionReseedMessages({
-            sessionId: "session-auth-boundary",
-            sessionFile,
-            sessionKey: "agent:main:main",
-            agentId: "main",
-            allowRawTranscriptReseed: true,
-            rawTranscriptReseedReason: "auth-profile",
-          }),
-        ).resolves.toStrictEqual([]);
-        await expect(
-          loadCliSessionReseedMessages({
-            sessionId: "session-auth-boundary",
-            sessionFile,
-            sessionKey: "agent:main:main",
-            agentId: "main",
-            allowRawTranscriptReseed: true,
-            rawTranscriptReseedReason: "auth-epoch",
-          }),
-        ).resolves.toStrictEqual([]);
-      });
-    } finally {
-      fs.rmSync(stateDir, { recursive: true, force: true });
-    }
-  });
-
   it("reseeds fresh CLI sessions from the latest compaction summary and post-compaction tail", async () => {
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-cli-state-"));
     const sessionFile = createSessionTranscript({

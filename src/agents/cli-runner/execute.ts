@@ -518,7 +518,6 @@ export async function executePreparedCliRun(
 
   const claudeOwnerKey = buildClaudeOwnerKey({
     agentId: params.agentId,
-    authProfileId: context.effectiveAuthProfileId,
     sessionId: params.sessionId,
     sessionKey: params.sessionKey,
   });

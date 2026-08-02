@@ -76,8 +76,6 @@ describe("cli-session helpers", () => {
       sessionId: "cli-session-1",
       forceReuse: true,
       authProfileId: "anthropic:work",
-      authEpoch: "auth-epoch",
-      authEpochVersion: 2,
       extraSystemPromptHash: "prompt-hash",
       messageToolPolicyHash: "message-policy-hash",
       promptToolNamesHash: "prompt-tools-hash",
@@ -98,8 +96,6 @@ describe("cli-session helpers", () => {
       sessionId: "cli-session-1",
       forceReuse: true,
       authProfileId: "anthropic:work",
-      authEpoch: "auth-epoch",
-      authEpochVersion: 2,
       extraSystemPromptHash: "prompt-hash",
       messageToolPolicyHash: "message-policy-hash",
       promptToolNamesHash: "prompt-tools-hash",
@@ -134,8 +130,6 @@ describe("cli-session helpers", () => {
     expect(getCliSessionBinding(entry, "claude-cli")).toEqual({
       sessionId: "cli-session-1",
       authProfileId: undefined,
-      authEpoch: undefined,
-      authEpochVersion: undefined,
       extraSystemPromptHash: undefined,
       messageToolPolicyHash: undefined,
       promptToolNamesHash: undefined,
@@ -232,9 +226,6 @@ describe("cli-session helpers", () => {
     const binding = {
       sessionId: "cli-session-1",
       forceReuse: true,
-      authProfileId: "anthropic:work",
-      authEpoch: "auth-epoch-a",
-      authEpochVersion: 2,
       extraSystemPromptHash: "prompt-a",
       mcpConfigHash: "mcp-config-a",
       mcpResumeHash: "mcp-resume-a",
@@ -243,9 +234,6 @@ describe("cli-session helpers", () => {
     expect(
       resolveCliSessionReuse({
         binding,
-        authProfileId: "anthropic:personal",
-        authEpoch: "auth-epoch-b",
-        authEpochVersion: 2,
         extraSystemPromptHash: "prompt-b",
         mcpConfigHash: "mcp-config-b",
         mcpResumeHash: "mcp-resume-b",
@@ -264,13 +252,12 @@ describe("cli-session helpers", () => {
     expect(
       resolveCliSessionReuse({
         binding: getCliSessionBinding(entry, "claude-cli"),
-        authEpochVersion: 2,
         cwdHash: hashCliSessionText("/work/repo"),
       }),
     ).toEqual({ mode: "reuse", sessionId: "legacy-session" });
   });
 
-  it("invalidates legacy bindings on mechanical changes and resumes on content drift", () => {
+  it("resumes legacy bindings with drift on content changes", () => {
     const entry: SessionEntry = {
       sessionId: "openclaw-session",
       updatedAt: Date.now(),
@@ -282,14 +269,6 @@ describe("cli-session helpers", () => {
     expect(
       resolveCliSessionReuse({
         binding,
-        authEpochVersion: 2,
-        authProfileId: "anthropic:work",
-      }),
-    ).toEqual({ mode: "invalidate", invalidatedReason: "auth-profile" });
-    expect(
-      resolveCliSessionReuse({
-        binding,
-        authEpochVersion: 2,
         extraSystemPromptHash: "prompt-hash",
       }),
     ).toEqual({
@@ -300,18 +279,21 @@ describe("cli-session helpers", () => {
     expect(
       resolveCliSessionReuse({
         binding,
-        authEpochVersion: 2,
         mcpConfigHash: "mcp-hash",
       }),
-    ).toEqual({ mode: "invalidate", invalidatedReason: "mcp" });
+    ).toEqual({
+      mode: "reuse-with-drift",
+      sessionId: "legacy-session",
+      drift: { reasons: ["mcp"] },
+    });
   });
 
-  it("invalidates reuse when stored auth profile or prompt shape changes", () => {
+  it("ignores auth changes and resumes with drift on prompt or MCP shape changes", () => {
+    // Auth profile/epoch are not reuse identity: the CLI child owns its own
+    // credentials, and gating on them cost an empty reseed per rotation.
     const binding = {
       sessionId: "cli-session-1",
       authProfileId: "anthropic:work",
-      authEpoch: "auth-epoch-a",
-      authEpochVersion: 2,
       extraSystemPromptHash: "prompt-a",
       mcpConfigHash: "mcp-a",
     };
@@ -319,29 +301,13 @@ describe("cli-session helpers", () => {
     expect(
       resolveCliSessionReuse({
         binding,
-        authProfileId: "anthropic:personal",
-        authEpoch: "auth-epoch-b",
-        authEpochVersion: 2,
         extraSystemPromptHash: "prompt-a",
         mcpConfigHash: "mcp-a",
       }),
-    ).toEqual({ mode: "invalidate", invalidatedReason: "auth-profile" });
+    ).toEqual({ mode: "reuse", sessionId: "cli-session-1" });
     expect(
       resolveCliSessionReuse({
         binding,
-        authProfileId: "anthropic:work",
-        authEpoch: "auth-epoch-b",
-        authEpochVersion: 2,
-        extraSystemPromptHash: "prompt-a",
-        mcpConfigHash: "mcp-a",
-      }),
-    ).toEqual({ mode: "invalidate", invalidatedReason: "auth-epoch" });
-    expect(
-      resolveCliSessionReuse({
-        binding,
-        authProfileId: "anthropic:work",
-        authEpoch: "auth-epoch-a",
-        authEpochVersion: 2,
         extraSystemPromptHash: "prompt-b",
         mcpConfigHash: "mcp-a",
       }),
@@ -353,9 +319,6 @@ describe("cli-session helpers", () => {
     expect(
       resolveCliSessionReuse({
         binding,
-        authProfileId: "anthropic:work",
-        authEpoch: "auth-epoch-a",
-        authEpochVersion: 2,
         extraSystemPromptHash: "prompt-a",
         promptToolNamesHash: "prompt-tools-b",
         mcpConfigHash: "mcp-a",
@@ -368,25 +331,24 @@ describe("cli-session helpers", () => {
     expect(
       resolveCliSessionReuse({
         binding,
-        authProfileId: "anthropic:work",
-        authEpoch: "auth-epoch-a",
-        authEpochVersion: 2,
         extraSystemPromptHash: "prompt-a",
         mcpConfigHash: "mcp-b",
       }),
-    ).toEqual({ mode: "invalidate", invalidatedReason: "mcp" });
+    ).toEqual({
+      mode: "reuse-with-drift",
+      sessionId: "cli-session-1",
+      drift: { reasons: ["mcp"] },
+    });
   });
 
   it("keeps content-drift bindings reusable for queued turns until hashes refresh", () => {
     const binding = {
       sessionId: "cli-session-1",
-      authEpochVersion: 2,
       extraSystemPromptHash: "prompt-a",
       mcpConfigHash: "mcp-a",
     };
     const current = {
       binding,
-      authEpochVersion: 2,
       extraSystemPromptHash: "prompt-b",
       mcpConfigHash: "mcp-a",
     };
@@ -409,24 +371,50 @@ describe("cli-session helpers", () => {
     ).toEqual({ mode: "reuse", sessionId: "cli-session-1" });
   });
 
-  it("invalidates reuse when message-tool prompt policy changes", () => {
+  it("invalidates profile-scoped sessions when the auth profile changes", () => {
+    // google-gemini-cli stages a per-profile CLI home, so its native session
+    // physically lives under the profile that created it and cannot resume
+    // from another profile's home.
     const binding = {
       sessionId: "cli-session-1",
-      authEpochVersion: 2,
+      authProfileId: "google:personal",
+    };
+
+    expect(
+      resolveCliSessionReuse({
+        binding,
+        authProfileId: "google:work",
+        sessionBoundToAuthProfile: true,
+      }),
+    ).toEqual({ mode: "invalidate", invalidatedReason: "auth-profile" });
+    expect(
+      resolveCliSessionReuse({
+        binding,
+        authProfileId: "google:personal",
+        sessionBoundToAuthProfile: true,
+      }),
+    ).toEqual({ mode: "reuse", sessionId: "cli-session-1" });
+  });
+
+  it("resumes with drift when message-tool prompt policy changes", () => {
+    const binding = {
+      sessionId: "cli-session-1",
       messageToolPolicyHash: "message-policy-a",
     };
 
     expect(
       resolveCliSessionReuse({
         binding,
-        authEpochVersion: 2,
         messageToolPolicyHash: "message-policy-b",
       }),
-    ).toEqual({ mode: "invalidate", invalidatedReason: "message-policy" });
+    ).toEqual({
+      mode: "reuse-with-drift",
+      sessionId: "cli-session-1",
+      drift: { reasons: ["message-policy"] },
+    });
     expect(
       resolveCliSessionReuse({
         binding,
-        authEpochVersion: 2,
         messageToolPolicyHash: "message-policy-a",
       }),
     ).toEqual({ mode: "reuse", sessionId: "cli-session-1" });
@@ -435,21 +423,18 @@ describe("cli-session helpers", () => {
   it("invalidates reuse when the task cwd changes", () => {
     const binding = {
       sessionId: "cli-session-1",
-      authEpochVersion: 2,
       cwdHash: hashCliSessionText("/work/repo-a"),
     };
 
     expect(
       resolveCliSessionReuse({
         binding,
-        authEpochVersion: 2,
         cwdHash: hashCliSessionText("/work/repo-b"),
       }),
     ).toEqual({ mode: "invalidate", invalidatedReason: "cwd" });
     expect(
       resolveCliSessionReuse({
         binding,
-        authEpochVersion: 2,
         cwdHash: hashCliSessionText("/work/repo-a"),
       }),
     ).toEqual({ mode: "reuse", sessionId: "cli-session-1" });
@@ -459,122 +444,7 @@ describe("cli-session helpers", () => {
     expect(
       resolveCliSessionReuse({
         binding: { sessionId: "cli-session-1" },
-        authEpochVersion: 2,
         cwdHash: hashCliSessionText("/work/repo-a"),
-      }),
-    ).toEqual({ mode: "reuse", sessionId: "cli-session-1" });
-  });
-
-  it("reuses when auth profile ids rotate but the versioned auth epoch is stable", () => {
-    const binding = {
-      sessionId: "cli-session-1",
-      authProfileId: "anthropic:work",
-      authEpoch: "auth-epoch-a",
-      authEpochVersion: 2,
-      extraSystemPromptHash: "prompt-a",
-      mcpConfigHash: "mcp-a",
-    };
-
-    expect(
-      resolveCliSessionReuse({
-        binding,
-        authProfileId: "anthropic:work-alias",
-        authEpoch: "auth-epoch-a",
-        authEpochVersion: 2,
-        extraSystemPromptHash: "prompt-a",
-        mcpConfigHash: "mcp-a",
-      }),
-    ).toEqual({ mode: "reuse", sessionId: "cli-session-1" });
-  });
-
-  it("accepts unversioned auth epochs for binding upgrades", () => {
-    const binding = {
-      sessionId: "cli-session-1",
-      authProfileId: "anthropic:work",
-      authEpoch: "previous-auth-epoch",
-      extraSystemPromptHash: "prompt-a",
-      mcpConfigHash: "mcp-a",
-    };
-
-    expect(
-      resolveCliSessionReuse({
-        binding,
-        authProfileId: "anthropic:work",
-        authEpoch: "auth-epoch-a",
-        authEpochVersion: 2,
-        extraSystemPromptHash: "prompt-a",
-        mcpConfigHash: "mcp-a",
-      }),
-    ).toEqual({ mode: "reuse", sessionId: "cli-session-1" });
-  });
-
-  it("accepts older auth epoch versions for binding upgrades", () => {
-    const binding = {
-      sessionId: "cli-session-1",
-      authProfileId: "anthropic:work",
-      authEpoch: "refresh-token-auth-epoch",
-      authEpochVersion: 2,
-      extraSystemPromptHash: "prompt-a",
-      mcpConfigHash: "mcp-a",
-    };
-
-    expect(
-      resolveCliSessionReuse({
-        binding,
-        authProfileId: "anthropic:work",
-        authEpoch: "identity-auth-epoch",
-        authEpochVersion: 3,
-        extraSystemPromptHash: "prompt-a",
-        mcpConfigHash: "mcp-a",
-      }),
-    ).toEqual({ mode: "reuse", sessionId: "cli-session-1" });
-  });
-
-  it("accepts v3 bindings without authEpoch as binding upgrades to v4", () => {
-    // Pre-v4 google-gemini-cli sessions persisted with authEpochVersion: 3
-    // and no authEpoch (the local credential fingerprint returned undefined
-    // before id_token identity lifting). The version-gate must skip the
-    // epoch comparison for these so the next request after upgrade reuses
-    // the stored session instead of forcing a one-time invalidation.
-    const binding = {
-      sessionId: "cli-session-1",
-      authProfileId: undefined,
-      // authEpoch deliberately absent
-      authEpochVersion: 3,
-      extraSystemPromptHash: "prompt-a",
-      mcpConfigHash: "mcp-a",
-    };
-
-    expect(
-      resolveCliSessionReuse({
-        binding,
-        authProfileId: undefined,
-        authEpoch: "v4-identity-hash",
-        authEpochVersion: 4,
-        extraSystemPromptHash: "prompt-a",
-        mcpConfigHash: "mcp-a",
-      }),
-    ).toEqual({ mode: "reuse", sessionId: "cli-session-1" });
-  });
-
-  it("does not treat model changes as a session mismatch", () => {
-    const binding = {
-      sessionId: "cli-session-1",
-      authProfileId: "anthropic:work",
-      authEpoch: "auth-epoch-a",
-      authEpochVersion: 2,
-      extraSystemPromptHash: "prompt-a",
-      mcpConfigHash: "mcp-a",
-    };
-
-    expect(
-      resolveCliSessionReuse({
-        binding,
-        authProfileId: "anthropic:work",
-        authEpoch: "auth-epoch-a",
-        authEpochVersion: 2,
-        extraSystemPromptHash: "prompt-a",
-        mcpConfigHash: "mcp-a",
       }),
     ).toEqual({ mode: "reuse", sessionId: "cli-session-1" });
   });
@@ -582,9 +452,6 @@ describe("cli-session helpers", () => {
   it("prefers the stable MCP resume hash over the raw MCP config hash", () => {
     const binding = {
       sessionId: "cli-session-1",
-      authProfileId: "anthropic:work",
-      authEpoch: "auth-epoch-a",
-      authEpochVersion: 2,
       extraSystemPromptHash: "prompt-a",
       mcpConfigHash: "mcp-config-a",
       mcpResumeHash: "mcp-resume-a",
@@ -593,9 +460,6 @@ describe("cli-session helpers", () => {
     expect(
       resolveCliSessionReuse({
         binding,
-        authProfileId: "anthropic:work",
-        authEpoch: "auth-epoch-a",
-        authEpochVersion: 2,
         extraSystemPromptHash: "prompt-a",
         mcpConfigHash: "mcp-config-b",
         mcpResumeHash: "mcp-resume-a",
@@ -604,22 +468,20 @@ describe("cli-session helpers", () => {
     expect(
       resolveCliSessionReuse({
         binding,
-        authProfileId: "anthropic:work",
-        authEpoch: "auth-epoch-a",
-        authEpochVersion: 2,
         extraSystemPromptHash: "prompt-a",
         mcpConfigHash: "mcp-config-a",
         mcpResumeHash: "mcp-resume-b",
       }),
-    ).toEqual({ mode: "invalidate", invalidatedReason: "mcp" });
+    ).toEqual({
+      mode: "reuse-with-drift",
+      sessionId: "cli-session-1",
+      drift: { reasons: ["mcp"] },
+    });
   });
 
   it("falls back to legacy MCP config hashes when stored resume hashes are absent", () => {
     const binding = {
       sessionId: "cli-session-1",
-      authProfileId: "anthropic:work",
-      authEpoch: "auth-epoch-a",
-      authEpochVersion: 2,
       extraSystemPromptHash: "prompt-a",
       mcpConfigHash: "mcp-config-a",
     };
@@ -627,9 +489,6 @@ describe("cli-session helpers", () => {
     expect(
       resolveCliSessionReuse({
         binding,
-        authProfileId: "anthropic:work",
-        authEpoch: "auth-epoch-a",
-        authEpochVersion: 2,
         extraSystemPromptHash: "prompt-a",
         mcpConfigHash: "mcp-config-a",
         mcpResumeHash: "mcp-resume-a",
@@ -638,14 +497,15 @@ describe("cli-session helpers", () => {
     expect(
       resolveCliSessionReuse({
         binding,
-        authProfileId: "anthropic:work",
-        authEpoch: "auth-epoch-a",
-        authEpochVersion: 2,
         extraSystemPromptHash: "prompt-a",
         mcpConfigHash: "mcp-config-b",
         mcpResumeHash: "mcp-resume-a",
       }),
-    ).toEqual({ mode: "invalidate", invalidatedReason: "mcp" });
+    ).toEqual({
+      mode: "reuse-with-drift",
+      sessionId: "cli-session-1",
+      drift: { reasons: ["mcp"] },
+    });
   });
 
   it("clears provider-scoped and global CLI session state", () => {

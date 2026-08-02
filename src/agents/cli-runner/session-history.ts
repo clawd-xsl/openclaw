@@ -57,26 +57,16 @@ type HistoryEntry = {
   tokensAfter?: unknown;
 };
 
+// Every producible invalidation reason may replay raw transcript history; the
+// old auth-boundary exclusion protected cross-account privacy and is gone with
+// the auth reuse gates themselves.
 type RawTranscriptReseedReason =
   | "auth-profile"
-  | "auth-epoch"
-  | "message-policy"
   | "system-prompt"
   | "cwd"
-  | "mcp"
   | "missing-transcript"
   | "orphaned-tool-use"
   | "session-expired";
-
-const RAW_TRANSCRIPT_RESEED_ALLOWED_REASONS = new Set<RawTranscriptReseedReason>([
-  "missing-transcript",
-  "orphaned-tool-use",
-  "message-policy",
-  "system-prompt",
-  "cwd",
-  "mcp",
-  "session-expired",
-]);
 
 /** Resolves how much prior transcript text may reseed a fresh CLI session. */
 export function resolveAutoCliSessionReseedHistoryChars(contextWindowTokens: number): number {
@@ -577,11 +567,7 @@ export async function loadCliSessionReseedMessages(params: {
 }): Promise<unknown[]> {
   const entries = await loadCliSessionEntries(params);
   const loadRawTail = () => {
-    if (
-      params.allowRawTranscriptReseed !== true ||
-      !params.rawTranscriptReseedReason ||
-      !RAW_TRANSCRIPT_RESEED_ALLOWED_REASONS.has(params.rawTranscriptReseedReason)
-    ) {
+    if (params.allowRawTranscriptReseed !== true || !params.rawTranscriptReseedReason) {
       return [];
     }
     const rawTail = entries.flatMap((entry) => {

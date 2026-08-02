@@ -19,10 +19,6 @@ import {
 } from "../../gateway/mcp-http.loopback-runtime.js";
 import { resolveMcpLoopbackScopedTools } from "../../gateway/mcp-http.runtime.js";
 import { isClaudeCliProvider } from "../../plugin-sdk/anthropic-cli.js";
-import type {
-  CliBackendAuthEpochMode,
-  CliBackendPreparedExecution,
-} from "../../plugins/cli-backend.types.js";
 import { buildAgentHookContextChannelFields } from "../../plugins/hook-agent-context.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { isSubagentSessionKey } from "../../routing/session-key.js";
@@ -47,7 +43,6 @@ import {
   makeBootstrapWarn as makeBootstrapWarnImpl,
   resolveBootstrapContextForRun as resolveBootstrapContextForRunImpl,
 } from "../bootstrap-files.js";
-import { CLI_AUTH_EPOCH_VERSION, resolveCliAuthEpoch } from "../cli-auth-epoch.js";
 import { resolveCliBackendConfig } from "../cli-backends.js";
 import {
   getCliCompactionOverlay,
@@ -264,21 +259,6 @@ function resolveClaudeCliContextModelId(modelId: string): string {
 /** Overrides preparation dependencies for CLI runner tests. */
 export function setCliRunnerPrepareTestDeps(overrides: Partial<typeof prepareDeps>): void {
   Object.assign(prepareDeps, overrides);
-}
-
-/** Returns whether profile-owned prepared execution should skip local CLI epoch hashing. */
-export function shouldSkipLocalCliCredentialEpoch(params: {
-  authEpochMode?: CliBackendAuthEpochMode;
-  authProfileId?: string;
-  authCredential?: AuthProfileCredential;
-  preparedExecution?: CliBackendPreparedExecution | null;
-}): boolean {
-  return Boolean(
-    params.authEpochMode === "profile-only" &&
-    params.authProfileId &&
-    params.authCredential &&
-    params.preparedExecution,
-  );
 }
 
 function shouldRefreshAuthProfileForExecution(params: {
@@ -592,18 +572,6 @@ export async function prepareCliRunContext(
           }
         : undefined;
     cleanupPreparedResources = preparedBackendCleanup;
-    const skipLocalCredentialEpoch = shouldSkipLocalCliCredentialEpoch({
-      authEpochMode: backendResolved.authEpochMode,
-      authProfileId: effectiveAuthProfileId,
-      authCredential,
-      preparedExecution,
-    });
-    const authEpoch = await resolveCliAuthEpoch({
-      provider: params.provider,
-      agentDir,
-      authProfileId: effectiveAuthProfileId,
-      skipLocalCredential: skipLocalCredentialEpoch,
-    });
     const preparedBackendEnv =
       preparedExecution?.env && Object.keys(preparedExecution.env).length > 0
         ? { ...preparedBackend.env, ...preparedExecution.env }
@@ -712,13 +680,14 @@ export async function prepareCliRunContext(
         ? prepareDeps.resolveMcpLoopbackScopedTools({
             cfg: params.config ?? getRuntimeConfig(),
             sessionKey: params.sessionKey ?? "",
-            messageProvider: params.messageChannel ?? params.messageProvider,
-            currentChannelId: params.currentChannelId,
-            // CLI binding hashes must use session-stable prompt facts. Per-sender
-            // and per-message scope (including the delivery account) stays in
-            // the runtime MCP env/list-call path; a per-turn account here flips
-            // promptToolNamesHash between channel and internal turns and churns
-            // the warm process.
+            // CLI binding hashes must use session-stable prompt facts. Delivery
+            // scope (account, channel, thread, message, sender) stays in the
+            // runtime MCP env/list-call path, which is authoritative for what
+            // the model can actually call; any per-turn fact here flips
+            // promptToolNamesHash between channel and internal turns and spams
+            // drift notes into the session.
+            messageProvider: undefined,
+            currentChannelId: undefined,
             currentThreadTs: undefined,
             currentMessageId: undefined,
             currentInboundAudio: undefined,
@@ -743,8 +712,7 @@ export async function prepareCliRunContext(
         ? resolveCliSessionReuse({
             binding: params.cliSessionBinding,
             authProfileId: effectiveAuthProfileId,
-            authEpoch,
-            authEpochVersion: CLI_AUTH_EPOCH_VERSION,
+            sessionBoundToAuthProfile: backendResolved.authEpochMode === "profile-only",
             extraSystemPromptHash,
             messageToolPolicyHash,
             promptToolNamesHash,
@@ -1054,8 +1022,6 @@ export async function prepareCliRunContext(
         systemPromptReport,
         claudeSkillsPluginArgs: claudeSkillsPlugin.args,
         bootstrapPromptWarningLines: bootstrapPromptWarning.lines,
-        authEpoch,
-        authEpochVersion: CLI_AUTH_EPOCH_VERSION,
         extraSystemPromptHash,
         messageToolPolicyHash,
         promptToolNamesHash,
@@ -1123,8 +1089,6 @@ export async function prepareCliRunContext(
       bootstrapPromptWarningLines: bootstrapPromptWarning.lines,
       ...(openClawHistoryPrompt ? { openClawHistoryPrompt } : {}),
       heartbeatPrompt,
-      authEpoch,
-      authEpochVersion: CLI_AUTH_EPOCH_VERSION,
       extraSystemPromptHash,
       messageToolPolicyHash,
       promptToolNamesHash,

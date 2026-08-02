@@ -788,7 +788,6 @@ describe("buildClaudeOwnerKey", () => {
   it("is deterministic and distinguishes session keys", () => {
     const base = {
       agentId: "agent-main",
-      authProfileId: "profile-a",
       sessionId: "sess-1",
       sessionKey: "key-a",
     };
@@ -799,20 +798,18 @@ describe("buildClaudeOwnerKey", () => {
     expect(a1).not.toBe(b);
   });
 
-  it("ignores per-turn account identity so channel and internal turns share one owner", () => {
-    // Keying by account gave internal turns (no account) and channel turns
+  it("ignores per-turn account and auth-profile identity so all turns share one owner", () => {
+    // Keying by account or auth profile gave turns from different origins
     // separate lanes/processes that both resumed the same native session and
     // forked its transcript tree.
     const channelTurn = buildClaudeOwnerKey({
       agentId: "agent-main",
-      authProfileId: "profile-a",
       sessionId: "sess-1",
       sessionKey: "key-a",
-      ...({ agentAccountId: "signal-acct" } as Record<string, unknown>),
+      ...({ agentAccountId: "signal-acct", authProfileId: "profile-a" } as Record<string, unknown>),
     });
     const internalTurn = buildClaudeOwnerKey({
       agentId: "agent-main",
-      authProfileId: "profile-a",
       sessionId: "sess-1",
       sessionKey: "key-a",
     });
@@ -823,10 +820,9 @@ describe("buildClaudeOwnerKey", () => {
     expect(
       buildClaudeOwnerKey({
         agentId: "agent-main",
-        authProfileId: "profile-a",
         sessionId: "sess-1",
         sessionKey: "key-a",
       }),
-    ).toBe("f731d50990481a5068fa093487818a1e7233a222610cbaea83006ca4e4b12ab5");
+    ).toBe("dad82f976976d9a3bbacad06c22b2fc3a39ab52dc0266778195d72fd1c19ff92");
   });
 });

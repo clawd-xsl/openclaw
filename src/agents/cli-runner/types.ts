@@ -205,8 +205,6 @@ export type PreparedCliRunContext = {
   bootstrapPromptWarningLines: string[];
   openClawHistoryPrompt?: string;
   heartbeatPrompt?: string;
-  authEpoch?: string;
-  authEpochVersion: number;
   extraSystemPromptHash?: string;
   messageToolPolicyHash?: string;
   promptToolNamesHash?: string;
