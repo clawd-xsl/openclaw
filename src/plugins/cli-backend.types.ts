@@ -73,7 +73,7 @@ export type CliBackendResolveExecutionArgs = (
   ctx: CliBackendResolveExecutionArgsContext,
 ) => readonly string[] | null | undefined;
 
-export type CliBackendAuthEpochMode = "combined" | "profile-only";
+export type CliBackendAuthEpochMode = "profile-only";
 
 export type CliBackendNativeToolMode = "none" | "always-on";
 
@@ -185,11 +185,14 @@ export type CliBackendPlugin = {
    */
   defaultAuthProfileId?: string;
   /**
-   * Session/auth epoch source policy.
+   * Auth-profile ownership of native session state.
    *
-   * `combined` keeps the legacy "host credential + auth profile" fingerprint.
-   * `profile-only` treats the selected OpenClaw auth profile as the sole auth
-   * owner for session invalidation when one is present.
+   * `profile-only` marks backends whose prepared execution stages per-profile
+   * state (for example a profile-derived CLI home): it makes the default
+   * auth-profile resolution run and invalidates stored CLI sessions when the
+   * profile changes, because the native session physically lives under the
+   * profile that created it. Backends whose child owns its credentials
+   * (claude-cli) omit this and reuse sessions across auth changes.
    */
   authEpochMode?: CliBackendAuthEpochMode;
   /**
