@@ -3821,6 +3821,7 @@ ${JSON.stringify({
     await expect(
       runTurn("run-live-routing-change", resumeArgs, {
         ANTHROPIC_BASE_URL: "https://one.example",
+        OPENCLAW_MCP_ACCOUNT_ID: "acct-2",
         OPENCLAW_MCP_CURRENT_MESSAGE_ID: "message-2",
         OPENCLAW_MCP_CURRENT_THREAD_TS: "thread-2",
         OPENCLAW_MCP_SOURCE_REPLY_DELIVERY_MODE: "message_tool_only",

@@ -517,7 +517,6 @@ export async function executePreparedCliRun(
     claudeSkillsPluginArgs.length > 0 ? [...resolvedArgs, ...claudeSkillsPluginArgs] : resolvedArgs;
 
   const claudeOwnerKey = buildClaudeOwnerKey({
-    agentAccountId: params.agentAccountId,
     agentId: params.agentId,
     authProfileId: context.effectiveAuthProfileId,
     sessionId: params.sessionId,
@@ -872,6 +871,9 @@ export async function executePreparedCliRun(
             runtimeToolsAllow: context.params.toolsAllow,
             senderIsOwner: context.params.senderIsOwner,
             requestContext: {
+              // Account is a per-turn delivery fact: the launch env header goes
+              // stale once a warm process serves turns from another origin.
+              accountId: context.params.agentAccountId,
               messageProvider: context.params.messageChannel ?? context.params.messageProvider,
               currentChannelId: context.params.currentChannelId,
               currentThreadTs: context.params.currentThreadTs,

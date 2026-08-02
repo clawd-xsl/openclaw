@@ -300,7 +300,6 @@ export function buildClaudeLiveArgs(params: {
 
 function buildClaudeLiveKey(context: PreparedCliRunContext): string {
   return `${context.backendResolved.id}:${buildClaudeOwnerKey({
-    agentAccountId: context.params.agentAccountId,
     agentId: context.params.agentId,
     authProfileId: context.effectiveAuthProfileId,
     sessionId: context.params.sessionId,
@@ -324,7 +323,6 @@ function resolvePinnedMainOwnerKey(context: PreparedCliRunContext): string | und
   }
   const agentId = context.params.agentId ?? resolveAgentIdFromSessionKey(sessionKey);
   return `${context.backendResolved.id}:${buildClaudeOwnerKey({
-    agentAccountId: context.params.agentAccountId,
     agentId,
     authProfileId: context.effectiveAuthProfileId,
     sessionKey,
@@ -337,6 +335,10 @@ function buildClaudeLiveFingerprint(params: {
   env: Record<string, string>;
 }): string {
   const perTurnMcpEnvKeys = new Set([
+    // Account is a per-turn delivery fact like the channel fields below; an
+    // internal turn (no account) sharing the session's process must not
+    // respawn it via a fingerprint flip.
+    "OPENCLAW_MCP_ACCOUNT_ID",
     "OPENCLAW_MCP_MESSAGE_CHANNEL",
     "OPENCLAW_MCP_CURRENT_CHANNEL_ID",
     "OPENCLAW_MCP_CURRENT_THREAD_TS",

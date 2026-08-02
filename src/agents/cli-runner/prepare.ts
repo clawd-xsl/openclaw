@@ -715,11 +715,14 @@ export async function prepareCliRunContext(
             messageProvider: params.messageChannel ?? params.messageProvider,
             currentChannelId: params.currentChannelId,
             // CLI binding hashes must use session-stable prompt facts. Per-sender
-            // and per-message scope stays in the runtime MCP env/list-call path.
+            // and per-message scope (including the delivery account) stays in
+            // the runtime MCP env/list-call path; a per-turn account here flips
+            // promptToolNamesHash between channel and internal turns and churns
+            // the warm process.
             currentThreadTs: undefined,
             currentMessageId: undefined,
             currentInboundAudio: undefined,
-            accountId: params.agentAccountId,
+            accountId: undefined,
             inboundEventKind: undefined,
             sourceReplyDeliveryMode: bindingSourceReplyDeliveryMode,
             requireExplicitMessageTarget: bindingRequireExplicitMessageTarget,
