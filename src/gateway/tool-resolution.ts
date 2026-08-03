@@ -101,7 +101,16 @@ export function resolveGatewayScopedTools(params: {
     (params.inboundEventKind === "room_event" && messageProvider !== "webchat"
       ? "message_tool_only"
       : undefined);
-  const runtimeAlsoAllow = sourceReplyDeliveryMode === "message_tool_only" ? ["message"] : [];
+  // The loopback tool surface must stay session-stable: a CLI client fetches
+  // tools once per process (the loopback never emits tools/list_changed), and
+  // message_tool_only turns interleave with automatic ones on one warm
+  // session. Keying `message` on the per-turn mode flipped
+  // promptToolNamesHash (respawn churn) and could strand a warm process
+  // without its reply tool. Explicit denies still win over alsoAllow.
+  const runtimeAlsoAllow =
+    params.surface === "loopback" || sourceReplyDeliveryMode === "message_tool_only"
+      ? ["message"]
+      : [];
   const profilePolicyWithAlsoAllow = mergeAlsoAllowPolicy(profilePolicy, [
     ...(profileAlsoAllow ?? []),
     ...gatewayRequestedTools,

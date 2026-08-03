@@ -40,7 +40,13 @@ describe("resolveGatewayScopedTools", () => {
       surface: "loopback",
     });
 
-    expect(result.tools.some((tool) => tool.name === "message")).toBe(false);
+    // The message tool is always part of the loopback surface, but webchat
+    // room events must not be forced into message_tool_only source replies.
+    const messageTool = result.tools.find((tool) => tool.name === "message");
+    expect(messageTool).toBeDefined();
+    expect(messageTool?.description).not.toContain(
+      "visible replies to the current source conversation",
+    );
   });
 
   it("force-allows the message tool for routed webchat room-event turns", () => {
@@ -59,6 +65,27 @@ describe("resolveGatewayScopedTools", () => {
     );
   });
 
+  it("keeps a stable loopback tool surface across delivery-mode changes", () => {
+    // A CLI client fetches tools once per process and the loopback never
+    // notifies list changes, so system-event and channel turns sharing one
+    // warm session must resolve identical tool names regardless of the
+    // per-turn source delivery mode.
+    const resolve = (mode: "message_tool_only" | undefined) =>
+      resolveGatewayScopedTools({
+        cfg: { tools: { profile: "minimal" } } as OpenClawConfig,
+        sessionKey: "agent:main:signal:direct:owner",
+        inboundEventKind: "user_request",
+        sourceReplyDeliveryMode: mode,
+        surface: "loopback",
+      })
+        .tools.map((tool) => tool.name)
+        .toSorted();
+
+    const automaticNames = resolve(undefined);
+    expect(automaticNames).toContain("message");
+    expect(automaticNames).toEqual(resolve("message_tool_only"));
+  });
+
   it("keeps ordinary loopback turns under the configured profile", () => {
     const result = resolveGatewayScopedTools({
       cfg: { tools: { profile: "minimal" } } as OpenClawConfig,
@@ -68,7 +95,11 @@ describe("resolveGatewayScopedTools", () => {
       surface: "loopback",
     });
 
-    expect(result.tools.some((tool) => tool.name === "message")).toBe(false);
+    // The profile still restricts everything except the always-on loopback
+    // reply tool.
+    const names = result.tools.map((tool) => tool.name);
+    expect(names).toContain("message");
+    expect(names).not.toContain("cron");
   });
 
   it("intersects runtime toolsAllow with the resolved surface", () => {
@@ -150,10 +181,10 @@ describe("resolveGatewayScopedTools", () => {
       messageProvider: "telegram",
       inboundEventKind: "user_request",
       surface: "loopback",
-      runtimeToolsAllow: ["message"],
+      runtimeToolsAllow: ["cron"],
     });
 
-    expect(result.tools.some((tool) => tool.name === "message")).toBe(false);
+    expect(result.tools.some((tool) => tool.name === "cron")).toBe(false);
   });
 
   it("disables all tools for an explicit empty runtime toolsAllow", () => {
