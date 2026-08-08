@@ -8577,6 +8577,7 @@ describe("runAgentTurnWithFallback", () => {
   });
 
   it("latches queued user message persistence across main reply fallback candidates", async () => {
+    const onUserMessagePersisted = vi.fn();
     state.runWithModelFallbackMock.mockImplementationOnce(async (params: FallbackRunnerParams) => {
       await params.run("anthropic", "claude-opus-4-7").catch(() => undefined);
       return {
@@ -8606,7 +8607,9 @@ describe("runAgentTurnWithFallback", () => {
     });
 
     const runAgentTurnWithFallback = await getRunAgentTurnWithFallback();
-    await runAgentTurnWithFallback(createMinimalRunAgentTurnParams());
+    await runAgentTurnWithFallback(
+      createMinimalRunAgentTurnParams({ opts: { onUserMessagePersisted } }),
+    );
 
     expect(state.runEmbeddedAgentMock).toHaveBeenCalledTimes(2);
     expectMockCallArgFields(state.runEmbeddedAgentMock, 0, "primary candidate", {
@@ -8615,5 +8618,6 @@ describe("runAgentTurnWithFallback", () => {
     expectMockCallArgFields(state.runEmbeddedAgentMock, 1, "fallback candidate", {
       suppressNextUserMessagePersistence: true,
     });
+    expect(onUserMessagePersisted).toHaveBeenCalledOnce();
   });
 });

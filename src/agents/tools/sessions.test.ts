@@ -5,16 +5,52 @@ import path from "node:path";
 import { MAX_TIMER_TIMEOUT_MS } from "@openclaw/normalization-core/number-coercion";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChannelMessagingAdapter } from "../../channels/plugins/types.js";
+import { SystemEventTurnAttemptError } from "../../infra/system-event-turn.js";
+import type { SystemEventEnqueueResult } from "../../infra/system-events.js";
 import { createTestRegistry } from "../../test-utils/channel-plugins.js";
+import { createDeferred } from "../../test-utils/deferred.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import { extractAssistantText, sanitizeTextContent } from "./chat-history-text.js";
 
 const callGatewayMock = vi.fn();
+const systemEventMocks = vi.hoisted(() => ({
+  enqueueSystemEventEntryWithStatus: vi.fn(
+    (text: string): SystemEventEnqueueResult => ({
+      status: "enqueued",
+      event: {
+        text,
+        ts: 123,
+        consumer: "system-event-turn",
+      },
+    }),
+  ),
+  requestSystemEventTurn: vi.fn(),
+  runSystemEventTurn: vi.fn(async () => ({
+    status: "ran" as const,
+    eventCount: 1,
+    hasDeliveryTarget: true,
+    counts: { tool: 0, block: 0, final: 1 },
+  })),
+}));
 vi.mock("../../gateway/call.js", () => ({
   callGateway: (opts: unknown) => callGatewayMock(opts),
 }));
+vi.mock("../../infra/system-events.js", async () => ({
+  ...(await vi.importActual<typeof import("../../infra/system-events.js")>(
+    "../../infra/system-events.js",
+  )),
+  enqueueSystemEventEntryWithStatus: systemEventMocks.enqueueSystemEventEntryWithStatus,
+}));
+vi.mock("../../infra/system-event-turn.js", async () => ({
+  ...(await vi.importActual<typeof import("../../infra/system-event-turn.js")>(
+    "../../infra/system-event-turn.js",
+  )),
+  requestSystemEventTurn: systemEventMocks.requestSystemEventTurn,
+  runSystemEventTurn: systemEventMocks.runSystemEventTurn,
+}));
 
 type SessionsToolTestConfig = {
+  agents?: { list: Array<{ id: string; default?: boolean }> };
   session: { scope: "per-sender"; mainKey: string; agentToAgent?: { maxPingPongTurns: number } };
   tools: {
     agentToAgent: { enabled: boolean };
@@ -815,6 +851,9 @@ describe("sessions_list channel derivation", () => {
 describe("sessions_send gating", () => {
   beforeEach(() => {
     callGatewayMock.mockReset();
+    systemEventMocks.enqueueSystemEventEntryWithStatus.mockClear();
+    systemEventMocks.requestSystemEventTurn.mockReset();
+    systemEventMocks.runSystemEventTurn.mockClear();
   });
 
   it("returns an error when neither sessionKey nor label is provided", async () => {
@@ -911,6 +950,508 @@ describe("sessions_send gating", () => {
         scopes: ["operator.admin"],
         requireLocalBackendOperatorAuth: true,
       }),
+    ]);
+  });
+
+  it("routes hook handoffs through the target session's normal system-event turn", async () => {
+    const { runSessionsSendA2AFlow } = await import("./sessions-send-tool.a2a.js");
+    vi.mocked(runSessionsSendA2AFlow).mockClear();
+    loadConfigMock.mockReturnValue({
+      session: { scope: "per-sender", mainKey: "main", agentToAgent: { maxPingPongTurns: 5 } },
+      tools: {
+        agentToAgent: { enabled: true },
+        sessions: { visibility: "all" },
+      },
+    });
+    const tool = createSessionsSendTool({
+      agentSessionKey: "agent:main:hook:gmail:message-1",
+      agentChannel: "cron",
+      senderIsOwner: true,
+    });
+
+    const result = await tool.execute("call-hook-handoff", {
+      sessionKey: MAIN_AGENT_SESSION_KEY,
+      message: "Tell the user about this email",
+      timeoutSeconds: 0,
+    });
+
+    const details = requireDetails(result);
+    expect(details).toMatchObject({
+      status: "accepted",
+      sessionKey: MAIN_AGENT_SESSION_KEY,
+      delivery: { status: "pending", mode: "system-event" },
+    });
+    expect(details.handoffId).toEqual(expect.any(String));
+    expect(details.runId).toBeUndefined();
+    expect(systemEventMocks.enqueueSystemEventEntryWithStatus).toHaveBeenCalledWith(
+      "Tell the user about this email",
+      {
+        sessionKey: MAIN_AGENT_SESSION_KEY,
+        consumer: "system-event-turn",
+        inputProvenance: {
+          kind: "inter_session",
+          sourceSessionKey: "agent:main:hook:gmail:message-1",
+          sourceChannel: "cron",
+          sourceTool: "sessions_send",
+        },
+        sourceAuthority: { kind: "owner" },
+      },
+    );
+    expect(systemEventMocks.enqueueSystemEventEntryWithStatus.mock.calls[0]?.[0]).not.toContain(
+      "[Inter-session message]",
+    );
+    expect(systemEventMocks.requestSystemEventTurn).toHaveBeenCalledWith({
+      sessionKey: MAIN_AGENT_SESSION_KEY,
+      reason: "sessions_send:hook",
+    });
+    expect(callGatewayMock.mock.calls).not.toContainEqual([
+      expect.objectContaining({ method: "agent" }),
+    ]);
+    expect(runSessionsSendA2AFlow).not.toHaveBeenCalled();
+  });
+
+  it("routes an unscoped hook through the configured default agent main session", async () => {
+    const targetSessionKey = "agent:ops:main";
+    loadConfigMock.mockReturnValue({
+      agents: { list: [{ id: "ops", default: true }] },
+      session: { scope: "per-sender", mainKey: "main", agentToAgent: { maxPingPongTurns: 5 } },
+      tools: {
+        agentToAgent: { enabled: true },
+        sessions: { visibility: "all" },
+      },
+    });
+    callGatewayMock.mockImplementation(async (opts: unknown) => {
+      const request = opts as { method?: string };
+      if (request.method === "sessions.list") {
+        return { path: "/tmp/sessions.json", sessions: [{ key: targetSessionKey }] };
+      }
+      if (request.method === "sessions.resolve") {
+        return { key: targetSessionKey };
+      }
+      return {};
+    });
+    const tool = createSessionsSendTool({
+      agentSessionKey: "hook:gmail:message-unscoped",
+      agentChannel: "cron",
+      senderIsOwner: true,
+    });
+
+    const result = await tool.execute("call-unscoped-hook", {
+      sessionKey: targetSessionKey,
+      message: "Tell the user about this email",
+      timeoutSeconds: 0,
+    });
+
+    const details = requireDetails(result);
+    expect(details).toMatchObject({
+      status: "accepted",
+      sessionKey: targetSessionKey,
+      delivery: { status: "pending", mode: "system-event" },
+    });
+    expect(details.handoffId).toEqual(expect.any(String));
+    expect(details.runId).toBeUndefined();
+    expect(systemEventMocks.enqueueSystemEventEntryWithStatus).toHaveBeenCalledOnce();
+    expect(callGatewayMock.mock.calls).not.toContainEqual([
+      expect.objectContaining({ method: "agent" }),
+    ]);
+  });
+
+  it("reports backpressure instead of accepting a hook handoff that cannot be queued", async () => {
+    systemEventMocks.enqueueSystemEventEntryWithStatus.mockReturnValueOnce({
+      status: "skipped",
+      reason: "full",
+    });
+    loadConfigMock.mockReturnValue({
+      session: { scope: "per-sender", mainKey: "main", agentToAgent: { maxPingPongTurns: 5 } },
+      tools: {
+        agentToAgent: { enabled: true },
+        sessions: { visibility: "all" },
+      },
+    });
+    const tool = createSessionsSendTool({
+      agentSessionKey: "agent:main:hook:gmail:message-full",
+      agentChannel: "cron",
+      senderIsOwner: true,
+    });
+
+    const result = await tool.execute("call-hook-handoff-full", {
+      sessionKey: MAIN_AGENT_SESSION_KEY,
+      message: "Tell the user about this email",
+      timeoutSeconds: 0,
+    });
+
+    expect(requireDetails(result)).toMatchObject({
+      status: "error",
+      sessionKey: MAIN_AGENT_SESSION_KEY,
+      error: expect.stringContaining("queue is full"),
+    });
+    expect(systemEventMocks.requestSystemEventTurn).not.toHaveBeenCalled();
+    expect(systemEventMocks.runSystemEventTurn).not.toHaveBeenCalled();
+  });
+
+  it("waits for an owner hook handoff when timeoutSeconds is nonzero", async () => {
+    loadConfigMock.mockReturnValue({
+      session: { scope: "per-sender", mainKey: "main", agentToAgent: { maxPingPongTurns: 5 } },
+      tools: {
+        agentToAgent: { enabled: true },
+        sessions: { visibility: "all" },
+      },
+    });
+    const tool = createSessionsSendTool({
+      agentSessionKey: "agent:main:hook:gmail:message-2",
+      agentChannel: "cron",
+      senderIsOwner: true,
+    });
+
+    const result = await tool.execute("call-hook-handoff-wait", {
+      sessionKey: MAIN_AGENT_SESSION_KEY,
+      message: "Tell the user about this email",
+      timeoutSeconds: 5,
+    });
+
+    const details = requireDetails(result);
+    expect(details).toMatchObject({
+      status: "ok",
+      sessionKey: MAIN_AGENT_SESSION_KEY,
+      delivery: { status: "ran", mode: "system-event" },
+    });
+    expect(details.handoffId).toEqual(expect.any(String));
+    expect(details.runId).toBeUndefined();
+    expect(systemEventMocks.runSystemEventTurn).toHaveBeenCalledWith({
+      sessionKey: MAIN_AGENT_SESSION_KEY,
+      reason: "sessions_send:hook",
+      requestedEvents: [
+        {
+          text: expect.stringContaining("Tell the user about this email"),
+          ts: 123,
+          consumer: "system-event-turn",
+        },
+      ],
+    });
+    expect(systemEventMocks.requestSystemEventTurn).not.toHaveBeenCalled();
+  });
+
+  it("reports a completed hook turn whose channel delivery failed", async () => {
+    systemEventMocks.runSystemEventTurn.mockResolvedValueOnce({
+      status: "ran",
+      eventCount: 1,
+      hasDeliveryTarget: true,
+      counts: { tool: 0, block: 0, final: 1 },
+      failedCounts: { final: 1 },
+    });
+    loadConfigMock.mockReturnValue({
+      session: { scope: "per-sender", mainKey: "main", agentToAgent: { maxPingPongTurns: 5 } },
+      tools: {
+        agentToAgent: { enabled: true },
+        sessions: { visibility: "all" },
+      },
+    });
+    const tool = createSessionsSendTool({
+      agentSessionKey: "agent:main:hook:gmail:message-delivery-failed",
+      agentChannel: "cron",
+      senderIsOwner: true,
+    });
+
+    const result = await tool.execute("call-hook-delivery-failed", {
+      sessionKey: MAIN_AGENT_SESSION_KEY,
+      message: "Tell the user about this email",
+      timeoutSeconds: 5,
+    });
+
+    expect(requireDetails(result)).toMatchObject({
+      status: "error",
+      error: expect.stringContaining("channel replies failed"),
+      sessionKey: MAIN_AGENT_SESSION_KEY,
+      delivery: {
+        status: "failed",
+        mode: "system-event",
+        failedCounts: { final: 1 },
+      },
+    });
+    expect(systemEventMocks.requestSystemEventTurn).not.toHaveBeenCalled();
+  });
+
+  it("does not cancel or retry an owner hook turn when only the caller wait times out", async () => {
+    vi.useFakeTimers();
+    try {
+      const turn = createDeferred<{
+        status: "ran";
+        eventCount: number;
+        hasDeliveryTarget: boolean;
+        counts: { tool: number; block: number; final: number };
+      }>();
+      systemEventMocks.runSystemEventTurn.mockReturnValueOnce(turn.promise);
+      loadConfigMock.mockReturnValue({
+        session: { scope: "per-sender", mainKey: "main", agentToAgent: { maxPingPongTurns: 5 } },
+        tools: {
+          agentToAgent: { enabled: true },
+          sessions: { visibility: "all" },
+        },
+      });
+      const tool = createSessionsSendTool({
+        agentSessionKey: "agent:main:hook:gmail:message-timeout-success",
+        agentChannel: "cron",
+        senderIsOwner: true,
+      });
+
+      const resultPromise = tool.execute("call-hook-handoff-timeout-success", {
+        sessionKey: MAIN_AGENT_SESSION_KEY,
+        message: "Tell the user about this email",
+        timeoutSeconds: 1,
+      });
+      await vi.waitFor(() => expect(systemEventMocks.runSystemEventTurn).toHaveBeenCalledOnce());
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(requireDetails(await resultPromise)).toMatchObject({
+        status: "accepted",
+        delivery: { status: "pending", mode: "system-event" },
+      });
+      expect(systemEventMocks.runSystemEventTurn).toHaveBeenCalledWith({
+        sessionKey: MAIN_AGENT_SESSION_KEY,
+        reason: "sessions_send:hook",
+        requestedEvents: [expect.objectContaining({ consumer: "system-event-turn" })],
+      });
+      expect(systemEventMocks.requestSystemEventTurn).not.toHaveBeenCalled();
+
+      turn.resolve({
+        status: "ran",
+        eventCount: 1,
+        hasDeliveryTarget: true,
+        counts: { tool: 0, block: 0, final: 1 },
+      });
+      await turn.promise;
+      await vi.runAllTicks();
+      expect(systemEventMocks.requestSystemEventTurn).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries once when an owner hook turn fails after the caller wait times out", async () => {
+    vi.useFakeTimers();
+    try {
+      const turn = createDeferred<never>();
+      systemEventMocks.runSystemEventTurn.mockReturnValueOnce(turn.promise);
+      loadConfigMock.mockReturnValue({
+        session: { scope: "per-sender", mainKey: "main", agentToAgent: { maxPingPongTurns: 5 } },
+        tools: {
+          agentToAgent: { enabled: true },
+          sessions: { visibility: "all" },
+        },
+      });
+      const tool = createSessionsSendTool({
+        agentSessionKey: "agent:main:hook:gmail:message-timeout-failure",
+        agentChannel: "cron",
+        senderIsOwner: true,
+      });
+
+      const resultPromise = tool.execute("call-hook-handoff-timeout-failure", {
+        sessionKey: MAIN_AGENT_SESSION_KEY,
+        message: "Tell the user about this email",
+        timeoutSeconds: 1,
+      });
+      await vi.waitFor(() => expect(systemEventMocks.runSystemEventTurn).toHaveBeenCalledOnce());
+      await vi.advanceTimersByTimeAsync(1_000);
+      await resultPromise;
+      expect(systemEventMocks.requestSystemEventTurn).not.toHaveBeenCalled();
+
+      turn.reject(new SystemEventTurnAttemptError(new Error("late turn failure"), [], "restored"));
+      await vi.waitFor(() => {
+        expect(systemEventMocks.requestSystemEventTurn).toHaveBeenCalledTimes(1);
+      });
+      expect(systemEventMocks.requestSystemEventTurn).toHaveBeenCalledWith({
+        sessionKey: MAIN_AGENT_SESSION_KEY,
+        reason: "sessions_send:hook",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not retry a committed owner hook failure after the caller wait times out", async () => {
+    vi.useFakeTimers();
+    try {
+      const turn = createDeferred<never>();
+      systemEventMocks.runSystemEventTurn.mockReturnValueOnce(turn.promise);
+      loadConfigMock.mockReturnValue({
+        session: { scope: "per-sender", mainKey: "main", agentToAgent: { maxPingPongTurns: 5 } },
+        tools: {
+          agentToAgent: { enabled: true },
+          sessions: { visibility: "all" },
+        },
+      });
+      const tool = createSessionsSendTool({
+        agentSessionKey: "agent:main:hook:gmail:message-timeout-committed",
+        agentChannel: "cron",
+        senderIsOwner: true,
+      });
+
+      const resultPromise = tool.execute("call-hook-handoff-timeout-committed", {
+        sessionKey: MAIN_AGENT_SESSION_KEY,
+        message: "Tell the user about this email",
+        timeoutSeconds: 1,
+      });
+      await vi.waitFor(() => expect(systemEventMocks.runSystemEventTurn).toHaveBeenCalledOnce());
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(requireDetails(await resultPromise)).toMatchObject({
+        status: "accepted",
+        delivery: { status: "pending", mode: "system-event" },
+      });
+
+      turn.reject(
+        new SystemEventTurnAttemptError(
+          new Error("late post-persistence failure"),
+          [],
+          "committed",
+        ),
+      );
+      await vi.runAllTicks();
+      expect(systemEventMocks.requestSystemEventTurn).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports a restored owner hook handoff as pending retry", async () => {
+    systemEventMocks.runSystemEventTurn.mockRejectedValueOnce(
+      new SystemEventTurnAttemptError(new Error("turn failed"), [], "restored"),
+    );
+    loadConfigMock.mockReturnValue({
+      session: { scope: "per-sender", mainKey: "main", agentToAgent: { maxPingPongTurns: 5 } },
+      tools: {
+        agentToAgent: { enabled: true },
+        sessions: { visibility: "all" },
+      },
+    });
+    const tool = createSessionsSendTool({
+      agentSessionKey: "agent:main:hook:gmail:message-retry",
+      agentChannel: "cron",
+      senderIsOwner: true,
+    });
+
+    const result = await tool.execute("call-hook-handoff-retry", {
+      sessionKey: MAIN_AGENT_SESSION_KEY,
+      message: "Tell the user about this email",
+      timeoutSeconds: 5,
+    });
+
+    const details = requireDetails(result);
+    expect(details).toMatchObject({
+      status: "accepted",
+      sessionKey: MAIN_AGENT_SESSION_KEY,
+      delivery: { status: "pending", mode: "system-event" },
+      warning: "turn failed",
+    });
+    expect(details.handoffId).toEqual(expect.any(String));
+    expect(details.error).toBeUndefined();
+    expect(systemEventMocks.requestSystemEventTurn).toHaveBeenCalledWith({
+      sessionKey: MAIN_AGENT_SESSION_KEY,
+      reason: "sessions_send:hook",
+    });
+  });
+
+  it("reports a committed owner hook failure without scheduling an empty retry", async () => {
+    systemEventMocks.runSystemEventTurn.mockRejectedValueOnce(
+      new SystemEventTurnAttemptError(new Error("post-persistence failure"), [], "committed"),
+    );
+    loadConfigMock.mockReturnValue({
+      session: { scope: "per-sender", mainKey: "main", agentToAgent: { maxPingPongTurns: 5 } },
+      tools: {
+        agentToAgent: { enabled: true },
+        sessions: { visibility: "all" },
+      },
+    });
+    const tool = createSessionsSendTool({
+      agentSessionKey: "agent:main:hook:gmail:message-committed-failure",
+      agentChannel: "cron",
+      senderIsOwner: true,
+    });
+
+    const result = await tool.execute("call-hook-handoff-committed-failure", {
+      sessionKey: MAIN_AGENT_SESSION_KEY,
+      message: "Tell the user about this email",
+      timeoutSeconds: 5,
+    });
+
+    expect(requireDetails(result)).toMatchObject({
+      status: "error",
+      error: "post-persistence failure",
+      sessionKey: MAIN_AGENT_SESSION_KEY,
+      delivery: { status: "failed", mode: "system-event" },
+    });
+    expect(systemEventMocks.requestSystemEventTurn).not.toHaveBeenCalled();
+  });
+
+  it("keeps owner hook sends to non-main sessions on the normal A2A path", async () => {
+    loadConfigMock.mockReturnValue({
+      session: { scope: "per-sender", mainKey: "main", agentToAgent: { maxPingPongTurns: 5 } },
+      tools: {
+        agentToAgent: { enabled: true },
+        sessions: { visibility: "all" },
+      },
+    });
+    const targetSessionKey = "agent:main:subagent:child-1";
+    callGatewayMock.mockImplementation(async (opts: unknown) => {
+      const request = opts as { method?: string };
+      if (request.method === "sessions.list") {
+        return { path: "/tmp/sessions.json", sessions: [{ key: targetSessionKey }] };
+      }
+      if (request.method === "agent") {
+        return { runId: "run-hook-child", acceptedAt: 123 };
+      }
+      return {};
+    });
+    const tool = createSessionsSendTool({
+      agentSessionKey: "agent:main:hook:gmail:message-child",
+      agentChannel: "cron",
+      senderIsOwner: true,
+    });
+
+    const result = await tool.execute("call-hook-child", {
+      sessionKey: targetSessionKey,
+      message: "Send this only to the child",
+      timeoutSeconds: 0,
+    });
+
+    expect(requireDetails(result)).toMatchObject({
+      status: "accepted",
+      sessionKey: targetSessionKey,
+      delivery: { status: "pending", mode: "announce" },
+    });
+    expect(systemEventMocks.enqueueSystemEventEntryWithStatus).not.toHaveBeenCalled();
+    expect(callGatewayMock.mock.calls).toContainEqual([
+      expect.objectContaining({
+        method: "agent",
+        params: expect.objectContaining({ sessionKey: targetSessionKey }),
+      }),
+    ]);
+  });
+
+  it("does not elevate a non-owner hook-key requester into a system-event turn", async () => {
+    loadConfigMock.mockReturnValue({
+      session: { scope: "per-sender", mainKey: "main", agentToAgent: { maxPingPongTurns: 5 } },
+      tools: {
+        agentToAgent: { enabled: true },
+        sessions: { visibility: "all" },
+      },
+    });
+    const tool = createSessionsSendTool({
+      agentSessionKey: "agent:main:hook:untrusted:message-1",
+      agentChannel: "cron",
+      senderIsOwner: false,
+    });
+
+    await tool.execute("call-untrusted-hook-handoff", {
+      sessionKey: MAIN_AGENT_SESSION_KEY,
+      message: "untrusted handoff",
+      timeoutSeconds: 0,
+    });
+
+    expect(systemEventMocks.enqueueSystemEventEntryWithStatus).not.toHaveBeenCalled();
+    expect(systemEventMocks.requestSystemEventTurn).not.toHaveBeenCalled();
+    expect(systemEventMocks.runSystemEventTurn).not.toHaveBeenCalled();
+    expect(callGatewayMock.mock.calls).toContainEqual([
+      expect.objectContaining({ method: "agent" }),
     ]);
   });
 
@@ -1111,22 +1652,18 @@ describe("sessions_send gating", () => {
       timeoutSeconds: 1,
     });
 
-    expect(historyCalls).toBe(2);
+    expect(historyCalls).toBe(0);
     const details = requireDetails(result);
     expect(details.status).toBe("ok");
     expect(details.reply).toBeUndefined();
     expect(details.sessionKey).toBe(MAIN_AGENT_SESSION_KEY);
   });
 
-  it("passes a baseline into fire-and-forget same-session A2A delivery", async () => {
+  it("starts fire-and-forget A2A from the run id without reading session history", async () => {
     const { runSessionsSendA2AFlow } = await import("./sessions-send-tool.a2a.js");
     vi.mocked(runSessionsSendA2AFlow).mockClear();
     const tool = createMainSessionsSendTool();
-    const staleAssistantMessage = {
-      role: "assistant",
-      content: [{ type: "text", text: "older reply from a previous run" }],
-      timestamp: 20,
-    };
+    let historyCalls = 0;
 
     callGatewayMock.mockImplementation(async (opts: unknown) => {
       const request = opts as { method?: string };
@@ -1137,7 +1674,8 @@ describe("sessions_send gating", () => {
         };
       }
       if (request.method === "chat.history") {
-        return { messages: [staleAssistantMessage] };
+        historyCalls += 1;
+        return { messages: [] };
       }
       if (request.method === "agent") {
         return { runId: "run-fire-and-forget", acceptedAt: 123 };
@@ -1156,10 +1694,10 @@ describe("sessions_send gating", () => {
     expect(details.sessionKey).toBe(MAIN_AGENT_SESSION_KEY);
     const flowParams = vi.mocked(runSessionsSendA2AFlow).mock.calls[0]?.[0];
     expect(flowParams?.waitRunId).toBe("run-fire-and-forget");
-    expect(flowParams?.baseline?.text).toBe("older reply from a previous run");
+    expect(historyCalls).toBe(0);
   });
 
-  it("accepts fire-and-forget same-session sends when baseline history is unavailable", async () => {
+  it("accepts fire-and-forget same-session sends without consulting history", async () => {
     const { runSessionsSendA2AFlow } = await import("./sessions-send-tool.a2a.js");
     vi.mocked(runSessionsSendA2AFlow).mockClear();
     const tool = createMainSessionsSendTool();
@@ -1192,7 +1730,6 @@ describe("sessions_send gating", () => {
     expect(details.sessionKey).toBe(MAIN_AGENT_SESSION_KEY);
     const flowParams = vi.mocked(runSessionsSendA2AFlow).mock.calls[0]?.[0];
     expect(flowParams?.waitRunId).toBe("run-fire-and-forget");
-    expect(flowParams?.baseline).toBeUndefined();
   });
 
   it.each([

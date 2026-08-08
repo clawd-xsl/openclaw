@@ -69,9 +69,10 @@ async function emitLifecycleAssistantReply(params: {
   opts: unknown;
   defaultSessionId: string;
   includeTimestamp?: boolean;
-  resolveText: (extraSystemPrompt?: string) => string;
+  resolveText: (message: string, extraSystemPrompt?: string) => string;
 }) {
   const commandParams = params.opts as {
+    message?: string;
     sessionId?: string;
     sessionKey?: string;
     runId?: string;
@@ -98,7 +99,7 @@ async function emitLifecycleAssistantReply(params: {
     data: { phase: "start", startedAt },
   });
 
-  const text = params.resolveText(commandParams.extraSystemPrompt);
+  const text = params.resolveText(commandParams.message ?? "", commandParams.extraSystemPrompt);
   const message = {
     role: "assistant",
     content: [{ type: "text", text }],
@@ -111,6 +112,14 @@ async function emitLifecycleAssistantReply(params: {
     stream: "lifecycle",
     data: { phase: "end", startedAt, endedAt: Date.now() },
   });
+  return {
+    payloads: [{ text }],
+    meta: {
+      durationMs: Date.now() - startedAt,
+      finalAssistantVisibleText: text,
+      finalAssistantRawText: text,
+    },
+  };
 }
 
 beforeAll(async () => {
@@ -152,13 +161,13 @@ afterAll(async () => {
 
 describe("sessions_send gateway loopback", () => {
   it("returns reply when lifecycle ends before agent.wait", async () => {
-    const spy = agentCommand as unknown as Mock<(opts: unknown) => Promise<void>>;
+    const spy = agentCommand as unknown as Mock<(opts: unknown) => Promise<unknown>>;
     spy.mockImplementation(async (opts: unknown) =>
       emitLifecycleAssistantReply({
         opts,
         defaultSessionId: "main",
         includeTimestamp: true,
-        resolveText: (extraSystemPrompt) => {
+        resolveText: (_message, extraSystemPrompt) => {
           if (extraSystemPrompt?.includes("Agent-to-agent reply step")) {
             return "REPLY_SKIP";
           }
@@ -314,7 +323,7 @@ describe("sessions_send label lookup", () => {
         "utf-8",
       );
 
-      const spy = agentCommand as unknown as Mock<(opts: unknown) => Promise<void>>;
+      const spy = agentCommand as unknown as Mock<(opts: unknown) => Promise<unknown>>;
       spy.mockImplementation(async (opts: unknown) =>
         emitLifecycleAssistantReply({
           opts,
@@ -396,7 +405,7 @@ describe("sessions_send agent targeting", () => {
           },
         });
 
-        const spy = agentCommand as unknown as Mock<(opts: unknown) => Promise<void>>;
+        const spy = agentCommand as unknown as Mock<(opts: unknown) => Promise<unknown>>;
         spy.mockImplementation(async (opts: unknown) =>
           emitLifecycleAssistantReply({
             opts,

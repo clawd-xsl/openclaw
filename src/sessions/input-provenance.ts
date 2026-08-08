@@ -2,6 +2,7 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { AgentMessage } from "../../packages/agent-core/src/types.js";
 import { isStringOption } from "../utils/string-readers.js";
+import { isHookSessionKey } from "./session-key-utils.js";
 
 // Input provenance marks whether a user-role message actually came from an
 // external user, another session, or an internal system/tool handoff.
@@ -22,6 +23,7 @@ export type InputProvenance = {
 };
 
 export const INTER_SESSION_PROMPT_PREFIX_BASE = "[Inter-session message]";
+export const SESSIONS_SEND_REPLY_SKIP_TOKEN = "REPLY_SKIP";
 export const AGENT_MEDIATED_COMPLETION_SOURCE_TOOLS = [
   "agent_harness_task",
   "image_generate",
@@ -52,6 +54,22 @@ export function normalizeInputProvenance(value: unknown): InputProvenance | unde
   };
 }
 
+/** Returns a deterministic identity for queueing and deduping provenance-bearing events. */
+export function inputProvenanceIdentity(value: unknown): string {
+  const provenance = normalizeInputProvenance(value);
+  return JSON.stringify(
+    provenance
+      ? [
+          provenance.kind,
+          provenance.originSessionId ?? null,
+          provenance.sourceSessionKey ?? null,
+          provenance.sourceChannel ?? null,
+          provenance.sourceTool ?? null,
+        ]
+      : null,
+  );
+}
+
 // Only attach provenance to user messages that do not already carry it. Existing
 // provenance is preserved because upstream channel/runtime code owns that fact.
 export function applyInputProvenanceToUserMessage(
@@ -78,6 +96,14 @@ export function isInterSessionInputProvenance(value: unknown): boolean {
   return normalizeInputProvenance(value)?.kind === "inter_session";
 }
 
+/** Returns extra silent reply tokens owned by a trusted inter-session protocol. */
+export function resolveInputProvenanceSilentReplyTokens(value: unknown): readonly string[] {
+  const provenance = normalizeInputProvenance(value);
+  return provenance?.kind === "inter_session" && provenance.sourceTool === "sessions_send"
+    ? [SESSIONS_SEND_REPLY_SKIP_TOKEN]
+    : [];
+}
+
 const AGENT_MEDIATED_COMPLETION_SOURCE_TOOL_SET: ReadonlySet<string> = new Set(
   AGENT_MEDIATED_COMPLETION_SOURCE_TOOLS,
 );
@@ -99,6 +125,9 @@ export function shouldPreserveUserFacingSessionStateForInputProvenance(value: un
     return false;
   }
   const sourceTool = normalizeOptionalString(provenance.sourceTool)?.toLowerCase();
+  if (sourceTool === "sessions_send" && isHookSessionKey(provenance.sourceSessionKey)) {
+    return true;
+  }
   return sourceTool ? USER_FACING_SESSION_STATE_PRESERVING_SOURCE_TOOLS.has(sourceTool) : false;
 }
 

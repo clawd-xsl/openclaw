@@ -56,6 +56,60 @@ function expectAllowFromDecision(params: {
 }
 
 describe("resolveElevatedPermissions", () => {
+  it("authorizes internal operator admins without a channel identity", () => {
+    const result = resolveElevatedPermissions({
+      cfg: buildConfig(["+15550001111"]),
+      agentId: "main",
+      provider: "system-event",
+      ctx: buildContext({
+        Provider: "system-event",
+        SenderId: undefined,
+        From: undefined,
+        SenderE164: undefined,
+        GatewayClientScopes: ["operator.admin"],
+      }),
+    });
+
+    expect(result).toEqual({ enabled: true, allowed: true, failures: [] });
+  });
+
+  it("does not elevate a host-authorized system event without operator admin scope", () => {
+    const result = resolveElevatedPermissions({
+      cfg: buildConfig(["+15550001111"]),
+      agentId: "main",
+      provider: "system-event",
+      ctx: buildContext({
+        Provider: "system-event",
+        SenderId: undefined,
+        From: undefined,
+        SenderE164: undefined,
+        CommandAuthorized: true,
+        InputProvenance: {
+          kind: "inter_session",
+          sourceTool: "sessions_send",
+        },
+      }),
+    });
+
+    expect(result.allowed).toBe(false);
+    expect(result.failures).toEqual([
+      { gate: "allowFrom", key: "tools.elevated.allowFrom.system-event" },
+    ]);
+  });
+
+  it("does not trust operator scopes on external channel contexts", () => {
+    expectAllowFromDecision({
+      allowFrom: ["+15550001111"],
+      allowed: false,
+      ctx: {
+        SenderId: "+15550002222",
+        From: "whatsapp:+15550002222",
+        SenderE164: "+15550002222",
+        GatewayClientScopes: ["operator.admin"],
+      },
+    });
+  });
+
   it("authorizes when sender matches allowFrom", () => {
     expectAllowFromDecision({
       allowFrom: ["+15550001111"],

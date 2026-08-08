@@ -88,8 +88,12 @@ import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { CommandLaneClearedError, GatewayDrainingError } from "../../process/command-queue.js";
 import { CommandLane } from "../../process/lanes.js";
 import { defaultRuntime } from "../../runtime.js";
-import { shouldPreserveUserFacingSessionStateForInputProvenance } from "../../sessions/input-provenance.js";
+import {
+  resolveInputProvenanceSilentReplyTokens,
+  shouldPreserveUserFacingSessionStateForInputProvenance,
+} from "../../sessions/input-provenance.js";
 import { truncateUtf16Safe } from "../../shared/utf16-slice.js";
+import { parseInlineDirectives } from "../../utils/directive-tags.js";
 import {
   isMarkdownCapableMessageChannel,
   resolveMessageChannel,
@@ -101,6 +105,7 @@ import type { TemplateContext } from "../templating.js";
 import type { VerboseLevel } from "../thinking.js";
 import {
   HEARTBEAT_TOKEN,
+  isSilentReplyPayloadText,
   isSilentReplyPrefixText,
   isSilentReplyText,
   SILENT_REPLY_TOKEN,
@@ -1648,6 +1653,31 @@ async function runAgentTurnWithFallbackInternal(
   const preserveUserFacingSessionState = shouldPreserveUserFacingSessionStateForInputProvenance(
     effectiveRun.inputProvenance,
   );
+  const additionalSilentReplyTokens = resolveInputProvenanceSilentReplyTokens(
+    effectiveRun.inputProvenance,
+  );
+  const isAdditionalSilentReplyText = (
+    text: string | undefined,
+    options?: { allowPrefix?: boolean },
+  ): boolean => {
+    const parsed = text
+      ? parseInlineDirectives(text, { stripAudioTag: true, stripReplyTags: true })
+      : undefined;
+    const candidate = parsed?.hasReplyTag || parsed?.hasAudioTag ? parsed.text : text;
+    if (!candidate?.trim()) {
+      return false;
+    }
+    return additionalSilentReplyTokens.some((token) => {
+      if (isSilentReplyPayloadText(candidate, token)) {
+        return true;
+      }
+      if (!options?.allowPrefix) {
+        return false;
+      }
+      const trimmed = candidate.trimStart();
+      return trimmed === trimmed.toUpperCase() && token.toUpperCase().startsWith(trimmed);
+    });
+  };
   const resolveRunForFallbackCandidate = (provider: string, model: string): FollowupRun["run"] => {
     const probe = effectiveRun.autoFallbackPrimaryProbe;
     const isPrimaryProbeCandidate = probe && provider === probe.provider && model === probe.model;
@@ -2044,7 +2074,10 @@ async function runAgentTurnWithFallbackInternal(
 
   while (true) {
     try {
-      const normalizeStreamingText = (payload: ReplyPayload): { text?: string; skip: boolean } => {
+      const normalizeStreamingText = (
+        payload: ReplyPayload,
+        options?: { allowAdditionalSilentPrefix?: boolean },
+      ): { text?: string; skip: boolean } => {
         let text = payload.text;
         const reply = resolveSendableOutboundReplyParts(payload);
         if (params.followupRun.run.silentExpected) {
@@ -2064,6 +2097,13 @@ async function runAgentTurnWithFallbackInternal(
           text = stripped.text;
         }
         if (isSilentReplyText(text, SILENT_REPLY_TOKEN)) {
+          return { skip: true };
+        }
+        if (
+          isAdditionalSilentReplyText(text, {
+            allowPrefix: options?.allowAdditionalSilentPrefix,
+          })
+        ) {
           return { skip: true };
         }
         if (
@@ -2094,7 +2134,9 @@ async function runAgentTurnWithFallbackInternal(
         if (isSilentReplyPrefixText(payload.text, SILENT_REPLY_TOKEN)) {
           return undefined;
         }
-        const { text, skip } = normalizeStreamingText(payload);
+        const { text, skip } = normalizeStreamingText(payload, {
+          allowAdditionalSilentPrefix: true,
+        });
         if (skip || !text) {
           return undefined;
         }
@@ -2138,7 +2180,11 @@ async function runAgentTurnWithFallbackInternal(
       const userTurnTranscriptRecorder =
         params.followupRun.userTurnTranscriptRecorder ?? params.opts?.userTurnTranscriptRecorder;
       const notifyUserMessagePersisted = () => {
+        if (queuedUserMessagePersistedAcrossFallback) {
+          return;
+        }
         queuedUserMessagePersistedAcrossFallback = true;
+        params.opts?.onUserMessagePersisted?.();
       };
       const fastModeStartedAtMs = Date.now();
       const fastModeAutoProgressState: FastModeAutoProgressState = {
@@ -2356,7 +2402,10 @@ async function runAgentTurnWithFallbackInternal(
                   onAssistantText: async (text) => {
                     const textForTyping = cliAssistantBlockStreamer
                       ? (() => {
-                          const normalized = normalizeStreamingText({ text });
+                          const normalized = normalizeStreamingText(
+                            { text },
+                            { allowAdditionalSilentPrefix: true },
+                          );
                           return normalized.skip ? undefined : normalized.text;
                         })()
                       : await handlePartialForTyping({ text } as ReplyPayload);

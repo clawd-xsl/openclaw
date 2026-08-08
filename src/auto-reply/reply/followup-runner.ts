@@ -939,7 +939,11 @@ export function createFollowupRunner(params: {
             const userTurnTranscriptRecorder =
               effectiveQueued.userTurnTranscriptRecorder ?? opts?.userTurnTranscriptRecorder;
             const notifyUserMessagePersisted = () => {
+              if (queuedUserMessagePersistedAcrossFallback) {
+                return;
+              }
               queuedUserMessagePersistedAcrossFallback = true;
+              opts?.onUserMessagePersisted?.();
             };
             // Shared by the embedded onToolResult callback and the CLI tool
             // summary tracker so both runners deliver identical durable summaries.

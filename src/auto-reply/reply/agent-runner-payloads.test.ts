@@ -155,6 +155,31 @@ describe("buildReplyPayloads media filter integration", () => {
     expect(replyPayloads[0]?.text).toBe("Before\n\n\nAfter");
   });
 
+  it("suppresses an exact sessions_send reply token only when the protocol owns it", async () => {
+    const silent = await buildReplyPayloads({
+      ...baseParams,
+      payloads: [{ text: "REPLY_SKIP" }],
+      additionalSilentReplyTokens: ["REPLY_SKIP"],
+    });
+    const ordinary = await buildReplyPayloads({
+      ...baseParams,
+      payloads: [{ text: "REPLY_SKIP" }],
+    });
+
+    expect(silent.replyPayloads).toEqual([]);
+    expect(ordinary.replyPayloads).toEqual([expect.objectContaining({ text: "REPLY_SKIP" })]);
+  });
+
+  it("suppresses a sessions_send reply token after removing reply directives", async () => {
+    const silent = await buildReplyPayloads({
+      ...baseParams,
+      payloads: [{ text: "[[reply_to_current]] REPLY_SKIP" }],
+      additionalSilentReplyTokens: ["REPLY_SKIP"],
+    });
+
+    expect(silent.replyPayloads).toEqual([]);
+  });
+
   it("preserves internal delivery metadata through final payload normalization", async () => {
     const payload = markReplyPayloadForSourceSuppressionDelivery({
       text: "⚠️ API rate limit reached.\n[[reply_to_current]]",

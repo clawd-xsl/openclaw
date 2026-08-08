@@ -18,7 +18,7 @@ import {
   setReplyPayloadMetadata,
 } from "../reply-payload.js";
 import type { OriginatingChannelType } from "../templating.js";
-import { SILENT_REPLY_TOKEN } from "../tokens.js";
+import { isSilentReplyPayloadText, SILENT_REPLY_TOKEN } from "../tokens.js";
 import type { ReplyPayload, ReplyThreadingPolicy } from "../types.js";
 import { formatBunFetchSocketError, isBunFetchSocketError } from "./agent-runner-utils.js";
 import { createBlockReplyContentKey, type BlockReplyPipeline } from "./block-reply-pipeline.js";
@@ -190,6 +190,7 @@ export async function buildReplyPayloads(params: {
   accountId?: string;
   extractMarkdownImages?: boolean;
   normalizeMediaPaths?: (payload: ReplyPayload) => Promise<ReplyPayload>;
+  additionalSilentReplyTokens?: readonly string[];
 }): Promise<{ replyPayloads: ReplyPayload[]; didLogHeartbeatStrip: boolean }> {
   let didLogHeartbeatStrip = params.didLogHeartbeatStrip;
   const sanitizedPayloads: ReplyPayload[] = [];
@@ -251,10 +252,15 @@ export async function buildReplyPayloads(params: {
         parseMode: "always",
         extractMarkdownImages: params.extractMarkdownImages,
       });
+      const isAdditionalSilentReply = params.additionalSilentReplyTokens?.some((token) =>
+        isSilentReplyPayloadText(parsed.payload.text ?? "", token),
+      );
       const mediaNormalizedPayload = await normalizeReplyPayloadMedia({
-        payload: parsed.payload,
+        payload: isAdditionalSilentReply
+          ? copyReplyPayloadMetadata(parsed.payload, { ...parsed.payload, text: undefined })
+          : parsed.payload,
         normalizeMediaPaths: params.normalizeMediaPaths,
-        suppressMediaFailureWarning: parsed.isSilent,
+        suppressMediaFailureWarning: parsed.isSilent || isAdditionalSilentReply,
       });
       if (parsed.isSilent) {
         mediaNormalizedPayload.text = undefined;

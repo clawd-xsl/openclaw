@@ -4349,7 +4349,20 @@ describe("createFollowupRunner messaging delivery and dedupe", () => {
     persistSpy.mockRestore();
   });
 
-  it("preserves user-facing session model state for queued internal announce fallback", async () => {
+  it.each([
+    {
+      name: "subagent announce",
+      sourceSessionKey: "agent:codex:subagent:c34fca91",
+      sourceChannel: "__internal__",
+      sourceTool: "subagent_announce",
+    },
+    {
+      name: "hook worker handoff",
+      sourceSessionKey: "agent:main:hook:gmail:message-1",
+      sourceChannel: "cron",
+      sourceTool: "sessions_send",
+    },
+  ])("preserves user-facing session model state for queued $name fallback", async (provenance) => {
     const storePath = "/tmp/openclaw-followup-internal-announce-usage.json";
     const sessionKey = "main";
     const sessionEntry: SessionEntry = {
@@ -4397,9 +4410,9 @@ describe("createFollowupRunner messaging delivery and dedupe", () => {
           run: {
             inputProvenance: {
               kind: "inter_session",
-              sourceSessionKey: "agent:codex:subagent:c34fca91",
-              sourceChannel: "__internal__",
-              sourceTool: "subagent_announce",
+              sourceSessionKey: provenance.sourceSessionKey,
+              sourceChannel: provenance.sourceChannel,
+              sourceTool: provenance.sourceTool,
             },
           },
         }),
@@ -5153,6 +5166,7 @@ describe("createFollowupRunner agentDir forwarding", () => {
 
 describe("createFollowupRunner queued user message idempotency across fallback", () => {
   it("suppresses queued user message persistence after first fallback candidate persists it", async () => {
+    const onUserMessagePersisted = vi.fn();
     runEmbeddedAgentMock.mockClear();
     runWithModelFallbackMock.mockReset();
     runWithModelFallbackMock.mockImplementationOnce(
@@ -5185,6 +5199,7 @@ describe("createFollowupRunner queued user message idempotency across fallback",
     });
 
     const runner = createFollowupRunner({
+      opts: { onUserMessagePersisted },
       typing: createMockTypingController(),
       typingMode: "instant",
       defaultModel: "anthropic/claude-opus-4-7",
@@ -5205,6 +5220,7 @@ describe("createFollowupRunner queued user message idempotency across fallback",
     const secondAttempt = requireMockCallArg(runEmbeddedAgentMock, 1);
     expect(firstAttempt.suppressNextUserMessagePersistence).toBe(false);
     expect(secondAttempt.suppressNextUserMessagePersistence).toBe(true);
+    expect(onUserMessagePersisted).toHaveBeenCalledOnce();
   });
 
   it("only persists assistant error stub on the first fallback candidate", async () => {

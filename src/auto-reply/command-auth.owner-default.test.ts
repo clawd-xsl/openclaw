@@ -186,4 +186,46 @@ describe("senderIsOwner only reflects explicit owner authorization", () => {
 
     expect(auth.senderIsOwner).toBe(true);
   });
+
+  it("accepts explicitly propagated owner authority for system events", () => {
+    const auth = resolveCommandAuthorization({
+      ctx: {
+        Provider: "system-event",
+        OriginatingChannel: "signal",
+        InputProvenance: {
+          kind: "inter_session",
+          sourceTool: "sessions_send",
+        },
+      },
+      cfg: {} as OpenClawConfig,
+      commandAuthorized: true,
+    });
+
+    expect(auth.senderIsOwner).toBe(true);
+    expect(auth.isAuthorizedSender).toBe(true);
+  });
+
+  it("does not infer system-event owner authority from the delivery channel", () => {
+    const auth = resolveCommandAuthorization({
+      ctx: {
+        Provider: "system-event",
+        OriginatingChannel: "signal",
+        SenderId: "signal-owner",
+        InputProvenance: {
+          kind: "inter_session",
+          sourceTool: "sessions_send",
+        },
+      },
+      cfg: {
+        commands: {
+          ownerAllowFrom: ["*"],
+          allowFrom: { "*": ["*"] },
+        },
+      } as OpenClawConfig,
+      commandAuthorized: false,
+    });
+
+    expect(auth.senderIsOwner).toBe(false);
+    expect(auth.isAuthorizedSender).toBe(false);
+  });
 });

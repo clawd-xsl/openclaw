@@ -5,6 +5,7 @@ import { deriveSessionChatTypeFromKey } from "../sessions/session-chat-type-shar
 import {
   getSubagentDepth,
   isCronSessionKey,
+  isHookSessionKey,
   parseThreadSessionSuffix,
 } from "../sessions/session-key-utils.js";
 import {
@@ -113,7 +114,6 @@ describe("getSubagentDepth", () => {
     { key: "subagent:parent:subagent:child", expected: 2 },
   ] as const)("returns $expected for session key %j", ({ key, expected }) => {
     expect(getSubagentDepth(key)).toBe(expected);
-
   });
 });
 
@@ -128,6 +128,17 @@ describe("isCronSessionKey", () => {
     { key: undefined, expected: false },
   ] as const)("matches cron key %j => $expected", ({ key, expected }) => {
     expect(isCronSessionKey(key)).toBe(expected);
+  });
+});
+
+describe("isHookSessionKey", () => {
+  it.each([
+    ["hook:gmail:message-1", true],
+    ["agent:main:hook:gmail:message-1", true],
+    ["agent:main:cron:gmail:run:message-1", false],
+    ["agent:main:signal:default:direct:user", false],
+  ])("classifies %s", (key, expected) => {
+    expect(isHookSessionKey(key)).toBe(expected);
   });
 });
 

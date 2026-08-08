@@ -4,13 +4,25 @@ import type { ChatType } from "../channels/chat-type.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { channelRouteDedupeKey } from "../plugin-sdk/channel-route.js";
 import { enqueueCommandInLane } from "../process/command-queue.js";
+import {
+  annotateInterSessionPromptText,
+  inputProvenanceIdentity,
+  type InputProvenance,
+} from "../sessions/input-provenance.js";
+import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { createLazyImportLoader } from "../shared/lazy-promise.js";
 import type { DeliveryContext } from "../utils/delivery-context.types.js";
 import {
+  getAgentEventLifecycleGeneration,
+  withAgentRunLifecycleGeneration,
+} from "./agent-events.js";
+import {
+  claimSelectedSystemEventEntries,
+  completeSystemEventClaim,
   consumeSelectedSystemEventEntries,
   isSystemEventTurnOwned,
   peekSystemEventEntries,
-  restoreSystemEventEntries,
+  restoreSystemEventClaim,
   type SystemEvent,
 } from "./system-events.js";
 
@@ -34,10 +46,18 @@ type PendingSystemEventTurn = {
   retryEvents?: readonly SystemEvent[];
 };
 
-class SystemEventTurnAttemptError extends Error {
+type SystemEventTurnRuntimeState = {
+  pendingTurns: Map<string, PendingSystemEventTurn>;
+  tails: Map<string, Promise<void>>;
+};
+
+export type SystemEventTurnFailureDisposition = "restored" | "committed";
+
+export class SystemEventTurnAttemptError extends Error {
   constructor(
     cause: unknown,
     readonly events: readonly SystemEvent[],
+    readonly disposition: SystemEventTurnFailureDisposition,
   ) {
     super(cause instanceof Error ? cause.message : String(cause), { cause });
     this.name = "SystemEventTurnAttemptError";
@@ -51,9 +71,50 @@ export type SystemEventTurnResult =
       eventCount: number;
       hasDeliveryTarget: boolean;
       counts: { tool: number; block: number; final: number };
+      failedCounts?: Partial<Record<"tool" | "block" | "final", number>>;
     };
 
-const pendingTurns = new Map<string, PendingSystemEventTurn>();
+const SYSTEM_EVENT_TURN_RUNTIME_STATE_KEY = Symbol.for("openclaw.systemEventTurn.runtimeState");
+const systemEventTurnRuntimeState = resolveGlobalSingleton<SystemEventTurnRuntimeState>(
+  SYSTEM_EVENT_TURN_RUNTIME_STATE_KEY,
+  () => ({
+    pendingTurns: new Map<string, PendingSystemEventTurn>(),
+    tails: new Map<string, Promise<void>>(),
+  }),
+);
+const pendingTurns = systemEventTurnRuntimeState.pendingTurns;
+const systemEventTurnTails = systemEventTurnRuntimeState.tails;
+
+function waitForSystemEventTurn<T>(
+  promise: Promise<T>,
+  signal: AbortSignal | undefined,
+): Promise<T> {
+  if (!signal) {
+    return promise;
+  }
+  signal.throwIfAborted();
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener("abort", onAbort);
+      try {
+        signal.throwIfAborted();
+      } catch (error) {
+        reject(error);
+      }
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
 
 function isRunnableSystemEvent(event: SystemEvent): boolean {
   return isSystemEventTurnOwned(event);
@@ -71,6 +132,8 @@ function systemEventIdentity(event: SystemEvent): string {
     channelRouteDedupeKey(event.deliveryContext),
     event.chatType ?? null,
     event.senderId ?? null,
+    inputProvenanceIdentity(event.inputProvenance),
+    event.sourceAuthority?.kind ?? null,
     event.consumer ?? null,
   ]);
 }
@@ -151,7 +214,14 @@ function systemEventDeliveryRouteKey(route: SystemEventDeliveryRoute): string {
 function selectSystemEventBatch(params: {
   events: readonly SystemEvent[];
   fallbackRoute: SystemEventDeliveryRoute;
-}): { events: SystemEvent[]; route: SystemEventDeliveryRoute } | undefined {
+}):
+  | {
+      events: SystemEvent[];
+      route: SystemEventDeliveryRoute;
+      inputProvenance?: InputProvenance;
+      sourceAuthority?: SystemEvent["sourceAuthority"];
+    }
+  | undefined {
   const runnableEvents = params.events.filter(isRunnableSystemEvent);
   const first = runnableEvents[0];
   if (!first) {
@@ -159,20 +229,26 @@ function selectSystemEventBatch(params: {
   }
   const route = resolveEventDeliveryRoute(first, params.fallbackRoute);
   const deliveryKey = systemEventDeliveryRouteKey(route);
+  const provenanceKey = inputProvenanceIdentity(first.inputProvenance);
+  const sourceAuthorityKind = first.sourceAuthority?.kind;
   return {
     events: runnableEvents.filter(
       (event) =>
         systemEventDeliveryRouteKey(resolveEventDeliveryRoute(event, params.fallbackRoute)) ===
-        deliveryKey,
+          deliveryKey &&
+        inputProvenanceIdentity(event.inputProvenance) === provenanceKey &&
+        event.sourceAuthority?.kind === sourceAuthorityKind,
     ),
     route,
+    ...(first.inputProvenance ? { inputProvenance: first.inputProvenance } : {}),
+    ...(first.sourceAuthority ? { sourceAuthority: first.sourceAuthority } : {}),
   };
 }
 
 function buildSystemEventPrompt(events: readonly SystemEvent[]): string {
   const lines = events.flatMap((event) => {
     const timestamp = new Date(event.ts).toISOString();
-    return event.text
+    return annotateInterSessionPromptText(event.text, event.inputProvenance)
       .split("\n")
       .map((line, index) => (index === 0 ? `Event: [${timestamp}] ${line}` : `Event: ${line}`));
   });
@@ -185,16 +261,24 @@ function buildSystemEventContext(params: {
   delivery?: DeliveryContext;
   chatType?: MsgContext["ChatType"];
   senderId?: string;
+  inputProvenance?: InputProvenance;
+  sourceAuthority?: SystemEvent["sourceAuthority"];
 }): MsgContext {
   const delivery = params.delivery;
   const hasDeliveryTarget = Boolean(delivery?.channel && delivery.to);
-  // Provider marks the internal lifecycle, while OriginatingChannel remains the
-  // authorization surface. Setting Surface here would hide the real channel and
-  // incorrectly strip owner-only tools from routed automation turns.
+  const hasExplicitSourceAuthority = params.inputProvenance !== undefined;
+  const sourceIsOwner = params.sourceAuthority?.kind === "owner";
+  // Provider identifies the internal lifecycle; OriginatingChannel is delivery only.
+  // Provenance-bearing handoffs authorize from their verified source, never the target route.
   return {
     Body: buildSystemEventPrompt(params.events),
-    TranscriptBody: SYSTEM_EVENT_TRANSCRIPT,
-    ...(params.senderId ? { From: params.senderId, SenderId: params.senderId } : {}),
+    TranscriptBody:
+      params.inputProvenance?.kind === "inter_session"
+        ? params.events.map((event) => event.text).join("\n\n")
+        : SYSTEM_EVENT_TRANSCRIPT,
+    ...(!hasExplicitSourceAuthority && params.senderId
+      ? { From: params.senderId, SenderId: params.senderId }
+      : {}),
     ...(delivery?.to ? { To: delivery.to } : {}),
     ...(delivery?.channel
       ? {
@@ -205,9 +289,10 @@ function buildSystemEventContext(params: {
     ...(delivery?.accountId ? { AccountId: delivery.accountId } : {}),
     ...(delivery?.threadId != null ? { MessageThreadId: delivery.threadId } : {}),
     ...(params.chatType ? { ChatType: params.chatType } : {}),
+    ...(params.inputProvenance ? { InputProvenance: params.inputProvenance } : {}),
     Provider: "system-event",
     SessionKey: params.sessionKey,
-    CommandAuthorized: true,
+    CommandAuthorized: hasExplicitSourceAuthority ? sourceIsOwner : true,
     ExplicitDeliverRoute: hasDeliveryTarget,
     SuppressMessageReceivedHooks: true,
   };
@@ -227,6 +312,7 @@ type RunSystemEventTurnParams = {
   sessionKey: string;
   reason?: string;
   abortSignal?: AbortSignal;
+  requestedEvents?: readonly SystemEvent[];
 };
 
 async function runSystemEventTurnAttempt(
@@ -256,6 +342,8 @@ async function runSystemEventTurnAttempt(
   }
 
   let claimedEvents: readonly SystemEvent[] = [];
+  let claimId: string | undefined;
+  let userTurnPersisted = false;
   try {
     const runtime = await runtimeLoader.load();
     const cfg = runtime.getRuntimeConfig();
@@ -275,10 +363,14 @@ async function runSystemEventTurnAttempt(
     if (!batch) {
       return { status: "skipped", reason: "no-events" };
     }
-    claimedEvents = consumeSelectedSystemEventEntries(sessionKey, batch.events);
-    if (claimedEvents.length === 0) {
+    // Claims live in the shared queue singleton, so duplicate module instances cannot
+    // dispatch the same retained event while it remains reserved against capacity.
+    const claim = claimSelectedSystemEventEntries(sessionKey, batch.events);
+    if (!claim) {
       return { status: "skipped", reason: "no-events" };
     }
+    claimId = claim.claimId;
+    claimedEvents = claim.events;
     const delivery = batch.route.delivery;
     const chatType =
       batch.route.chatType ??
@@ -302,6 +394,8 @@ async function runSystemEventTurnAttempt(
         delivery,
         chatType,
         senderId: batch.route.senderId,
+        inputProvenance: batch.inputProvenance,
+        sourceAuthority: batch.sourceAuthority,
       }),
       cfg,
       dispatcherOptions: {
@@ -316,13 +410,22 @@ async function runSystemEventTurnAttempt(
       replyOptions: {
         abortSignal: params.abortSignal,
         isHeartbeat: false,
+        onUserMessagePersisted: () => {
+          userTurnPersisted = true;
+        },
         suppressSystemEventDrain: true,
         typingPolicy: "system_event",
         suppressTyping: true,
       },
     });
+    completeSystemEventClaim(sessionKey, claimId);
+    claimId = undefined;
     if (hasSystemEventDeliveryFailure(result)) {
-      throw new Error("system event reply delivery failed");
+      log.warn("system event turn reply delivery failed after the turn completed", {
+        reason: params.reason,
+        sessionKey,
+        failedCounts: result.failedCounts,
+      });
     }
     log.info("system event turn completed", {
       reason: params.reason,
@@ -337,23 +440,70 @@ async function runSystemEventTurnAttempt(
       eventCount: claimedEvents.length,
       hasDeliveryTarget,
       counts: result.counts,
+      ...(result.failedCounts ? { failedCounts: result.failedCounts } : {}),
     };
   } catch (error) {
-    restoreSystemEventEntries(sessionKey, claimedEvents);
+    if (claimId) {
+      if (userTurnPersisted) {
+        completeSystemEventClaim(sessionKey, claimId);
+      } else {
+        restoreSystemEventClaim(sessionKey, claimId);
+      }
+    }
     log.warn("system event turn failed", {
       reason: params.reason,
       sessionKey,
       error: String(error),
     });
-    throw new SystemEventTurnAttemptError(error, claimedEvents.length > 0 ? claimedEvents : events);
+    throw new SystemEventTurnAttemptError(
+      error,
+      claimedEvents.length > 0 ? claimedEvents : events,
+      userTurnPersisted ? "committed" : "restored",
+    );
   }
+}
+
+/** Runs one non-heartbeat agent turn for the pending events of an explicit session. */
+async function runSystemEventTurnInLifecycle(
+  params: RunSystemEventTurnParams,
+): Promise<SystemEventTurnResult> {
+  const sessionKey = params.sessionKey.trim();
+  if (!sessionKey) {
+    throw new Error("system event turns require a sessionKey");
+  }
+  const previous = systemEventTurnTails.get(sessionKey) ?? Promise.resolve();
+  const admitted = previous.then(() => undefined);
+  const queued = admitted.then(async () => {
+    params.abortSignal?.throwIfAborted();
+    return await runSystemEventTurnAttempt(params, params.requestedEvents);
+  });
+  const tail = queued.then(
+    () => undefined,
+    () => undefined,
+  );
+  systemEventTurnTails.set(sessionKey, tail);
+
+  // Direct hook waits and scheduled wakes share this owner queue. Without it,
+  // one attempt can claim another attempt's event and acknowledge the wrong handoff.
+  void tail.then(() => {
+    if (systemEventTurnTails.get(sessionKey) === tail) {
+      systemEventTurnTails.delete(sessionKey);
+    }
+  });
+  await waitForSystemEventTurn(admitted, params.abortSignal);
+  return await queued;
 }
 
 /** Runs one non-heartbeat agent turn for the pending events of an explicit session. */
 export async function runSystemEventTurn(
   params: RunSystemEventTurnParams,
 ): Promise<SystemEventTurnResult> {
-  return await runSystemEventTurnAttempt(params);
+  // The queue belongs to the live gateway, not the hook/cron run that enqueued it.
+  // Re-enter current lifecycle ownership so delayed retries cannot retain a retired parent run.
+  const lifecycleGeneration = getAgentEventLifecycleGeneration();
+  return await withAgentRunLifecycleGeneration(lifecycleGeneration, () =>
+    runSystemEventTurnInLifecycle(params),
+  );
 }
 
 function finishPendingSystemEventTurn(sessionKey: string): void {
@@ -370,14 +520,24 @@ function scheduleSystemEventTurn(
     const reason = pending.reason;
     let failed = false;
     let attemptError: unknown;
-    void runSystemEventTurnAttempt({ sessionKey, reason }, pending.retryEvents)
+    void runSystemEventTurn({ sessionKey, reason, requestedEvents: pending.retryEvents })
       .then(() => {
         pending.failedAttempts = 0;
         pending.retryEvents = undefined;
       })
       .catch((error: unknown) => {
-        failed = true;
         attemptError = error;
+        if (error instanceof SystemEventTurnAttemptError && error.disposition === "committed") {
+          pending.failedAttempts = 0;
+          pending.retryEvents = undefined;
+          log.warn("system event turn failed after transcript persistence; retry suppressed", {
+            reason: pending.reason,
+            sessionKey,
+            error: String(error),
+          });
+          return;
+        }
+        failed = true;
         pending.failedAttempts += 1;
         if (error instanceof SystemEventTurnAttemptError) {
           pending.retryEvents ??= error.events;

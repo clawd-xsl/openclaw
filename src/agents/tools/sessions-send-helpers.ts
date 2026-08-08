@@ -10,7 +10,13 @@ import {
 import { resolveSessionConversationRef } from "../../channels/plugins/session-conversation.js";
 import { normalizeChannelId as normalizeChatChannelId } from "../../channels/registry.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { ANNOUNCE_SKIP_TOKEN, REPLY_SKIP_TOKEN } from "./sessions-send-tokens.js";
+import { parseInlineDirectives } from "../../utils/directive-tags.js";
+import {
+  ANNOUNCE_SKIP_TOKEN,
+  isNonDeliverableSessionsReply,
+  isReplySkip,
+  REPLY_SKIP_TOKEN,
+} from "./sessions-send-tokens.js";
 export {
   isAnnounceSkip,
   isNonDeliverableSessionsReply,
@@ -26,6 +32,39 @@ export type AnnounceTarget = {
   accountId?: string;
   threadId?: string; // Forum topic/thread ID
 };
+
+export function resolveSessionsSendReplyText(params: {
+  replyText?: string;
+  finalAssistantVisibleText?: string;
+  finalAssistantRawText?: string;
+}): string | undefined {
+  const normalize = (text?: string): string | undefined => {
+    const trimmed = text?.trim();
+    if (!trimmed) {
+      return undefined;
+    }
+    const parsed = parseInlineDirectives(trimmed, {
+      stripAudioTag: true,
+      stripReplyTags: true,
+    });
+    return (parsed.hasReplyTag || parsed.hasAudioTag ? parsed.text : trimmed).trim() || undefined;
+  };
+  const raw = normalize(params.finalAssistantRawText);
+  // A visible reply can come from the private internal-ui sink and still need A2A delivery.
+  // NO_REPLY only suppresses the model final; REPLY_SKIP is the explicit no-forward contract.
+  if (isReplySkip(raw)) {
+    return raw;
+  }
+  const visible = normalize(params.finalAssistantVisibleText);
+  const reply = normalize(params.replyText);
+  if (visible && !isNonDeliverableSessionsReply(visible)) {
+    return visible;
+  }
+  if (reply && !isNonDeliverableSessionsReply(reply)) {
+    return reply;
+  }
+  return undefined;
+}
 
 /** Resolves a session key into the channel target used for source-reply announcements. */
 export function resolveAnnounceTargetFromKey(sessionKey: string): AnnounceTarget | null {

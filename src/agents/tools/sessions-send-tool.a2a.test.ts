@@ -1,10 +1,10 @@
-// sessions_send A2A tests cover announce delivery, same-session replies, delayed
-// reply baselines, and channel target/account routing.
+// sessions_send A2A tests cover announce delivery, run-owned replies, control
+// tokens, and channel target/account routing.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CallGatewayOptions } from "../../gateway/call.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
 import { createSessionConversationTestRegistry } from "../../test-utils/session-conversation-registry.js";
-import { readLatestAssistantReplySnapshot, waitForAgentRun } from "../run-wait.js";
+import { waitForAgentRun } from "../run-wait.js";
 import { runAgentStep } from "./agent-step.js";
 import type { SessionListRow } from "./sessions-helpers.js";
 import { runSessionsSendA2AFlow, testing } from "./sessions-send-tool.a2a.js";
@@ -17,10 +17,6 @@ vi.mock("../../gateway/call.js", () => ({
 
 vi.mock("../run-wait.js", () => ({
   waitForAgentRun: vi.fn().mockResolvedValue({ status: "ok" }),
-  readLatestAssistantReplySnapshot: vi.fn().mockResolvedValue({
-    text: "Test announce reply",
-    fingerprint: "test-announce-reply",
-  }),
 }));
 
 vi.mock("./agent-step.js", () => ({
@@ -58,10 +54,6 @@ describe("runSessionsSendA2AFlow announce delivery", () => {
     vi.clearAllMocks();
     vi.mocked(runAgentStep).mockResolvedValue("Test announce reply");
     vi.mocked(waitForAgentRun).mockResolvedValue({ status: "ok" });
-    vi.mocked(readLatestAssistantReplySnapshot).mockResolvedValue({
-      text: "Test announce reply",
-      fingerprint: "test-announce-reply",
-    });
     testing.setDepsForTest({
       callGateway,
     });
@@ -134,9 +126,9 @@ describe("runSessionsSendA2AFlow announce delivery", () => {
   });
 
   it("bypasses the announce decider for delayed same-session channel replies", async () => {
-    vi.mocked(readLatestAssistantReplySnapshot).mockResolvedValueOnce({
-      text: "Delayed channel reply",
-      fingerprint: "delayed-channel-reply",
+    vi.mocked(waitForAgentRun).mockResolvedValueOnce({
+      status: "ok",
+      finalAssistantVisibleText: "Delayed channel reply",
     });
 
     await runSessionsSendA2AFlow({
@@ -147,20 +139,13 @@ describe("runSessionsSendA2AFlow announce delivery", () => {
       maxPingPongTurns: 2,
       requesterSessionKey: "agent:main:discord:channel:target-room",
       requesterChannel: "discord",
-      baseline: {
-        text: "Previous channel reply",
-        fingerprint: "previous-channel-reply",
-      },
       waitRunId: "run-delayed-channel",
     });
 
     expect(firstMockArg(vi.mocked(waitForAgentRun), "agent run wait").runId).toBe(
       "run-delayed-channel",
     );
-    expect(
-      firstMockArg(vi.mocked(readLatestAssistantReplySnapshot), "assistant reply snapshot")
-        .sessionKey,
-    ).toBe("agent:main:discord:channel:target-room");
+    expect(firstMockArg(vi.mocked(waitForAgentRun), "agent run wait").includeReply).toBe(true);
     expect(runAgentStep).not.toHaveBeenCalled();
     const sendCall = requireGatewayCall("send");
     const sendParams = sendCall.params as Record<string, unknown>;
@@ -169,10 +154,44 @@ describe("runSessionsSendA2AFlow announce delivery", () => {
     expect(sendParams.message).toBe("Delayed channel reply");
   });
 
-  it("does not direct-deliver a delayed same-session reply that matches the baseline", async () => {
-    vi.mocked(readLatestAssistantReplySnapshot).mockResolvedValueOnce({
-      text: "Previous channel reply",
-      fingerprint: "previous-channel-reply",
+  it.each([
+    "REPLY_SKIP",
+    "[[reply_to_current]] REPLY_SKIP",
+    "[[audio_as_voice]] REPLY_SKIP",
+    '{"action":"REPLY_SKIP"}',
+  ])(
+    "does not direct-deliver a message-tool mirror when the run ended with %s",
+    async (finalAssistantRawText) => {
+      vi.mocked(waitForAgentRun).mockResolvedValueOnce({
+        status: "ok",
+        finalAssistantVisibleText: "Already sent through the message tool",
+        finalAssistantRawText,
+      });
+
+      await runSessionsSendA2AFlow({
+        targetSessionKey: "agent:main:discord:channel:target-room",
+        displayKey: "agent:main:discord:channel:target-room",
+        message: "Test message",
+        announceTimeoutMs: 10_000,
+        maxPingPongTurns: 2,
+        requesterSessionKey: "agent:main:discord:channel:target-room",
+        requesterChannel: "discord",
+        waitRunId: "run-delayed-channel",
+      });
+
+      expect(firstMockArg(vi.mocked(waitForAgentRun), "agent run wait").runId).toBe(
+        "run-delayed-channel",
+      );
+      expect(runAgentStep).not.toHaveBeenCalled();
+      expect(gatewayCalls.find((call) => call.method === "send")).toBeUndefined();
+    },
+  );
+
+  it("direct-delivers a captured visible reply when the raw result is NO_REPLY", async () => {
+    vi.mocked(waitForAgentRun).mockResolvedValueOnce({
+      status: "ok",
+      finalAssistantVisibleText: "Delivered through the message tool",
+      finalAssistantRawText: "NO_REPLY",
     });
 
     await runSessionsSendA2AFlow({
@@ -183,10 +202,29 @@ describe("runSessionsSendA2AFlow announce delivery", () => {
       maxPingPongTurns: 2,
       requesterSessionKey: "agent:main:discord:channel:target-room",
       requesterChannel: "discord",
-      baseline: {
-        text: "Previous channel reply",
-        fingerprint: "previous-channel-reply",
-      },
+      waitRunId: "run-delayed-channel",
+    });
+
+    expect(runAgentStep).not.toHaveBeenCalled();
+    const sendCall = requireGatewayCall("send");
+    expect((sendCall.params as Record<string, unknown>).message).toBe(
+      "Delivered through the message tool",
+    );
+  });
+
+  it("does not guess a delayed same-session reply when the run has no terminal text", async () => {
+    vi.mocked(waitForAgentRun).mockResolvedValueOnce({
+      status: "ok",
+    });
+
+    await runSessionsSendA2AFlow({
+      targetSessionKey: "agent:main:discord:channel:target-room",
+      displayKey: "agent:main:discord:channel:target-room",
+      message: "Test message",
+      announceTimeoutMs: 10_000,
+      maxPingPongTurns: 2,
+      requesterSessionKey: "agent:main:discord:channel:target-room",
+      requesterChannel: "discord",
       waitRunId: "run-delayed-channel",
     });
 
@@ -197,12 +235,35 @@ describe("runSessionsSendA2AFlow announce delivery", () => {
     expect(gatewayCalls.find((call) => call.method === "send")).toBeUndefined();
   });
 
-  it("does not direct-deliver a delayed same-session reply without a baseline", async () => {
-    // Without a baseline fingerprint, a delayed assistant reply may be stale;
-    // avoid direct delivery unless freshness is provable.
-    vi.mocked(readLatestAssistantReplySnapshot).mockResolvedValueOnce({
-      text: "Maybe stale channel reply",
-      fingerprint: "maybe-stale-channel-reply",
+  it.each(["NO_REPLY", "[[reply_to_current]] NO_REPLY", "[[audio_as_voice]] NO_REPLY"])(
+    "does not deliver a delayed silent terminal result %s as channel text",
+    async (finalAssistantRawText) => {
+      vi.mocked(waitForAgentRun).mockResolvedValueOnce({
+        status: "ok",
+        finalAssistantVisibleText: finalAssistantRawText,
+        finalAssistantRawText,
+      });
+
+      await runSessionsSendA2AFlow({
+        targetSessionKey: "agent:main:discord:channel:target-room",
+        displayKey: "agent:main:discord:channel:target-room",
+        message: "Test message",
+        announceTimeoutMs: 10_000,
+        maxPingPongTurns: 2,
+        requesterSessionKey: "agent:main:discord:channel:target-room",
+        requesterChannel: "discord",
+        waitRunId: "run-delayed-silent",
+      });
+
+      expect(runAgentStep).not.toHaveBeenCalled();
+      expect(gatewayCalls.find((call) => call.method === "send")).toBeUndefined();
+    },
+  );
+
+  it("does not promote raw-only terminal metadata into channel delivery", async () => {
+    vi.mocked(waitForAgentRun).mockResolvedValueOnce({
+      status: "ok",
+      finalAssistantRawText: "raw protocol metadata",
     });
 
     await runSessionsSendA2AFlow({
@@ -213,12 +274,9 @@ describe("runSessionsSendA2AFlow announce delivery", () => {
       maxPingPongTurns: 2,
       requesterSessionKey: "agent:main:discord:channel:target-room",
       requesterChannel: "discord",
-      waitRunId: "run-delayed-channel",
+      waitRunId: "run-delayed-raw-only",
     });
 
-    expect(firstMockArg(vi.mocked(waitForAgentRun), "agent run wait").runId).toBe(
-      "run-delayed-channel",
-    );
     expect(runAgentStep).not.toHaveBeenCalled();
     expect(gatewayCalls.find((call) => call.method === "send")).toBeUndefined();
   });
@@ -240,6 +298,7 @@ describe("runSessionsSendA2AFlow announce delivery", () => {
     expect(runAgentStep).toHaveBeenCalledTimes(1);
     const stepInput = firstMockArg(vi.mocked(runAgentStep), "agent step");
     expect(stepInput.message).toBe("Agent-to-agent announce step.");
+    expect(stepInput.extraSystemPrompt).toContain("Agent-to-agent announce step:");
     expect(gatewayCalls.find((call) => call.method === "send")).toBeUndefined();
   });
 
@@ -309,10 +368,11 @@ describe("runSessionsSendA2AFlow announce delivery", () => {
     },
   );
 
-  it("does not inject a delayed reply that matches the baseline", async () => {
-    vi.mocked(readLatestAssistantReplySnapshot).mockResolvedValueOnce({
-      text: "same reply",
-      fingerprint: "same-reply",
+  it("does not inject a delayed run-owned control reply", async () => {
+    vi.mocked(waitForAgentRun).mockResolvedValueOnce({
+      status: "ok",
+      finalAssistantRawText: "REPLY_SKIP",
+      finalAssistantVisibleText: "message-tool mirror",
     });
 
     await runSessionsSendA2AFlow({
@@ -323,18 +383,10 @@ describe("runSessionsSendA2AFlow announce delivery", () => {
       maxPingPongTurns: 2,
       requesterSessionKey: "agent:main:discord:group:req",
       requesterChannel: "discord",
-      baseline: {
-        text: "same reply",
-        fingerprint: "same-reply",
-      },
       waitRunId: "run-delayed",
     });
 
     expect(firstMockArg(vi.mocked(waitForAgentRun), "agent run wait").runId).toBe("run-delayed");
-    expect(
-      firstMockArg(vi.mocked(readLatestAssistantReplySnapshot), "assistant reply snapshot")
-        .sessionKey,
-    ).toBe("agent:main:discord:group:dev");
     expect(runAgentStep).not.toHaveBeenCalled();
     expect(gatewayCalls.find((call) => call.method === "send")).toBeUndefined();
   });
@@ -357,6 +409,7 @@ describe("runSessionsSendA2AFlow announce delivery", () => {
     expect(firstMockArg(vi.mocked(runAgentStep), "agent step")).toMatchObject({
       sessionKey: targetSessionKey,
       message: "Agent-to-agent announce step.",
+      extraSystemPrompt: expect.stringContaining("Agent-to-agent announce step:"),
     });
   });
 
@@ -376,6 +429,7 @@ describe("runSessionsSendA2AFlow announce delivery", () => {
 
       const stepInput = firstMockArg(vi.mocked(runAgentStep), "agent step");
       expect(stepInput.message).toBe("Agent-to-agent announce step.");
+      expect(stepInput.extraSystemPrompt).toContain("Agent-to-agent announce step:");
       expect(stepInput.transcriptMessage).toBe("");
       expect(gatewayCalls.find((call) => call.method === "send")).toBeUndefined();
     },

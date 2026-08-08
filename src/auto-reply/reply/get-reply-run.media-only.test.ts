@@ -2594,6 +2594,96 @@ describe("runPreparedReply media-only handling", () => {
     expect(call?.followupRun.run.extraSystemPromptStatic).toBe("group:discord:channel:#ops");
   });
 
+  it("keeps the main Signal CLI prompt identity stable across a normal hook activation", async () => {
+    vi.mocked(buildDirectChatContext).mockImplementation(
+      ({ sessionCtx, sourceReplyDeliveryMode }) =>
+        [
+          "direct",
+          sessionCtx.Provider,
+          sessionCtx.Surface,
+          sessionCtx.ChatType,
+          sourceReplyDeliveryMode ?? "automatic",
+        ].join(":"),
+    );
+    const sessionEntry: SessionEntry = {
+      sessionId: "session-signal-direct",
+      updatedAt: 1,
+      systemSent: true,
+      chatType: "direct",
+      channel: "signal",
+      lastChannel: "signal",
+      lastTo: "+15551234567",
+      origin: {
+        provider: "signal",
+        surface: "signal",
+        chatType: "direct",
+        to: "+15551234567",
+      },
+    };
+
+    await runPreparedReply(
+      baseParams({
+        opts: {
+          sourceReplyDeliveryMode: "automatic",
+          sessionPromptSourceReplyDeliveryMode: "automatic",
+        },
+        isNewSession: false,
+        systemSent: true,
+        sessionEntry,
+        ctx: {
+          Body: "normal Signal message",
+          RawBody: "normal Signal message",
+          CommandBody: "normal Signal message",
+          Provider: "signal",
+          Surface: "signal",
+          ChatType: "direct",
+          MessageSid: "signal-message",
+        },
+        sessionCtx: {
+          Body: "normal Signal message",
+          BodyStripped: "normal Signal message",
+          Provider: "signal",
+          Surface: "signal",
+          ChatType: "direct",
+          MessageSid: "signal-message",
+        },
+      }),
+    );
+    await runPreparedReply(
+      baseParams({
+        opts: {
+          suppressSystemEventDrain: true,
+          sourceReplyDeliveryMode: "automatic",
+          sessionPromptSourceReplyDeliveryMode: "automatic",
+        },
+        isNewSession: false,
+        systemSent: true,
+        sessionEntry,
+        ctx: {
+          Body: "Gmail hook handoff",
+          RawBody: "Gmail hook handoff",
+          CommandBody: "Gmail hook handoff",
+          Provider: "system-event",
+          SessionKey: "agent:main:main",
+        },
+        sessionCtx: {
+          Body: "Gmail hook handoff",
+          BodyStripped: "Gmail hook handoff",
+          Provider: "system-event",
+        },
+      }),
+    );
+
+    const directRun = requireRunReplyAgentCall(0).followupRun.run;
+    const hookRun = requireRunReplyAgentCall(1).followupRun.run;
+    expect(directRun.cliSessionBindingFacts).toEqual({
+      extraSystemPromptStatic: "direct:signal:signal:direct:automatic",
+      sourceReplyDeliveryMode: "automatic",
+    });
+    expect(hookRun.cliSessionBindingFacts).toEqual(directRun.cliSessionBindingFacts);
+    expect(hookRun.extraSystemPromptStatic).toBe(directRun.extraSystemPromptStatic);
+  });
+
   it.each([
     {
       name: "automatic config",

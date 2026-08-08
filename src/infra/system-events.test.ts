@@ -9,6 +9,7 @@ import {
   consumeSystemEventEntries,
   drainSystemEventEntries,
   enqueueSystemEvent,
+  enqueueSystemEventEntryWithStatus,
   hasSystemEvents,
   isSystemEventContextChanged,
   peekSystemEventEntries,
@@ -193,6 +194,29 @@ describe("system events (session routing)", () => {
 
     expect(peekSystemEvents(key)).toEqual(
       Array.from({ length: 20 }, (_, index) => `event ${index + 3}`),
+    );
+  });
+
+  it("never evicts accepted turn-owned events when the queue is full", () => {
+    const key = "agent:main:test-turn-owned-capacity";
+    for (let index = 1; index <= 20; index += 1) {
+      expect(
+        enqueueSystemEventEntryWithStatus(`handoff ${index}`, {
+          sessionKey: key,
+          consumer: "system-event-turn",
+        }).status,
+      ).toBe("enqueued");
+    }
+
+    expect(
+      enqueueSystemEventEntryWithStatus("handoff 21", {
+        sessionKey: key,
+        consumer: "system-event-turn",
+      }),
+    ).toEqual({ status: "skipped", reason: "full" });
+    expect(enqueueSystemEvent("generic wake", { sessionKey: key })).toBe(false);
+    expect(peekSystemEvents(key)).toEqual(
+      Array.from({ length: 20 }, (_, index) => `handoff ${index + 1}`),
     );
   });
 

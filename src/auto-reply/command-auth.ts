@@ -12,6 +12,7 @@ import type { ChannelPlugin } from "../channels/plugins/types.plugin.js";
 import type { ChannelId } from "../channels/plugins/types.public.js";
 import { normalizeAnyChannelId } from "../channels/registry.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { isSystemEventProvider } from "../infra/system-event-provider.js";
 import {
   INTERNAL_MESSAGE_CHANNEL,
   isInternalMessageChannel,
@@ -648,16 +649,20 @@ export function resolveCommandAuthorization(params: {
     contextOwnerAllowFrom: ctx.OwnerAllowFrom,
   });
 
-  const senderCandidates = resolveSenderCandidates({
-    plugin,
-    providerId,
-    cfg,
-    accountId: ctx.AccountId,
-    senderId: ctx.SenderId,
-    senderE164: ctx.SenderE164,
-    from,
-    chatType: ctx.ChatType,
-  });
+  const hasExplicitInternalSource =
+    isSystemEventProvider(ctx.Provider) && ctx.InputProvenance !== undefined;
+  const senderCandidates = hasExplicitInternalSource
+    ? []
+    : resolveSenderCandidates({
+        plugin,
+        providerId,
+        cfg,
+        accountId: ctx.AccountId,
+        senderId: ctx.SenderId,
+        senderE164: ctx.SenderE164,
+        from,
+        chatType: ctx.ChatType,
+      });
   const matchedSender = ownerState.ownerList.length
     ? senderCandidates.find((candidate) => ownerState.ownerList.includes(candidate))
     : undefined;
@@ -671,31 +676,40 @@ export function resolveCommandAuthorization(params: {
   const enforceOwner = Boolean(plugin?.commands?.enforceOwnerForCommands);
   const senderIsOwnerByIdentity = Boolean(matchedSender);
   const senderIsOwnerByScope =
-    isInternalMessageChannel(ctx.Provider) &&
+    (isInternalMessageChannel(ctx.Provider) || isSystemEventProvider(ctx.Provider)) &&
     Array.isArray(ctx.GatewayClientScopes) &&
     ctx.GatewayClientScopes.includes("operator.admin");
+  // Provenance-bearing system events are host-built. Their CommandAuthorized bit
+  // carries source authority without promoting the turn to operator.admin/elevated.
+  const senderIsOwnerByInternalSource = hasExplicitInternalSource && commandAuthorized;
   const ownerAllowlistConfigured = ownerState.ownerAllowAll || ownerState.explicitOwners.length > 0;
-  const senderIsOwner = senderIsOwnerByIdentity || senderIsOwnerByScope || ownerState.ownerAllowAll;
+  const senderIsOwner = hasExplicitInternalSource
+    ? senderIsOwnerByInternalSource
+    : senderIsOwnerByIdentity || senderIsOwnerByScope || ownerState.ownerAllowAll;
   const requireOwner = enforceOwner || ownerAllowlistConfigured;
-  const isOwnerForCommands = !requireOwner
-    ? true
-    : ownerState.ownerAllowAll
+  const isOwnerForCommands = hasExplicitInternalSource
+    ? senderIsOwnerByInternalSource
+    : !requireOwner
       ? true
-      : ownerAllowlistConfigured
-        ? senderIsOwner
-        : senderIsOwnerByScope || Boolean(matchedCommandOwner);
+      : ownerState.ownerAllowAll
+        ? true
+        : ownerAllowlistConfigured
+          ? senderIsOwner
+          : senderIsOwnerByScope || Boolean(matchedCommandOwner);
   const nativeCommandAuthorized =
     commandAuthorized && isNativeCommandTurn(resolveCommandTurnContext(ctx)) && !requireOwner;
-  const isAuthorizedSender = resolveCommandSenderAuthorization({
-    commandAuthorized,
-    enforceOwnerForCommands: enforceOwner,
-    nativeCommandAuthorized,
-    isOwnerForCommands,
-    senderCandidates,
-    commandsAllowFromList,
-    providerResolutionError,
-    commandsAllowFromConfigured,
-  });
+  const isAuthorizedSender = hasExplicitInternalSource
+    ? senderIsOwnerByInternalSource
+    : resolveCommandSenderAuthorization({
+        commandAuthorized,
+        enforceOwnerForCommands: enforceOwner,
+        nativeCommandAuthorized,
+        isOwnerForCommands,
+        senderCandidates,
+        commandsAllowFromList,
+        providerResolutionError,
+        commandsAllowFromConfigured,
+      });
 
   return {
     providerId,

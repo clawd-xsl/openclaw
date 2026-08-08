@@ -9,11 +9,7 @@ import { formatErrorMessage } from "../../infra/errors.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { GatewayMessageChannel } from "../../utils/message-channel.js";
 import { resolveNestedAgentLaneForSession } from "../lanes.js";
-import {
-  type AssistantReplySnapshot,
-  readLatestAssistantReplySnapshot,
-  waitForAgentRun,
-} from "../run-wait.js";
+import { waitForAgentRun } from "../run-wait.js";
 import { runAgentStep } from "./agent-step.js";
 import { resolveAnnounceTarget } from "./sessions-announce-target.js";
 import {
@@ -23,6 +19,7 @@ import {
   isAnnounceSkip,
   isNonDeliverableSessionsReply,
   isReplySkip,
+  resolveSessionsSendReplyText,
 } from "./sessions-send-helpers.js";
 
 const log = createSubsystemLogger("agents/sessions-send");
@@ -80,7 +77,6 @@ export async function runSessionsSendA2AFlow(params: {
   maxPingPongTurns: number;
   requesterSessionKey?: string;
   requesterChannel?: GatewayMessageChannel;
-  baseline?: AssistantReplySnapshot;
   roundOneReply?: string;
   waitRunId?: string;
 }) {
@@ -92,19 +88,11 @@ export async function runSessionsSendA2AFlow(params: {
       const wait = await waitForAgentRun({
         runId: params.waitRunId,
         timeoutMs: Math.min(params.announceTimeoutMs, 60_000),
+        includeReply: true,
         callGateway: sessionsSendA2ADeps.callGateway,
       });
       if (wait.status === "ok") {
-        const latestSnapshot = await readLatestAssistantReplySnapshot({
-          sessionKey: params.targetSessionKey,
-          callGateway: sessionsSendA2ADeps.callGateway,
-        });
-        const baselineFingerprint = params.baseline?.fingerprint;
-        primaryReply =
-          latestSnapshot.text &&
-          (!baselineFingerprint || latestSnapshot.fingerprint !== baselineFingerprint)
-            ? latestSnapshot.text
-            : undefined;
+        primaryReply = resolveSessionsSendReplyText(wait);
         latestReply = primaryReply;
       }
     }
@@ -131,9 +119,6 @@ export async function runSessionsSendA2AFlow(params: {
       params.requesterSessionKey === params.targetSessionKey &&
       params.requesterChannel === announceTarget.channel
     ) {
-      if (params.waitRunId && !params.roundOneReply && !params.baseline) {
-        return;
-      }
       await deliverAnnounceReply({
         announceTarget,
         message: latestReply,

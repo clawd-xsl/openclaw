@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   applyInlineDirectiveOverrides: vi.fn(),
   listAgentEntries: vi.fn(),
   resolveFastModeState: vi.fn(),
+  resolveElevatedPermissions: vi.fn(),
   resolveReplyExecOverrides: vi.fn(),
 }));
 
@@ -290,11 +291,7 @@ vi.mock("./model-selection.js", () => ({
 
 vi.mock("./reply-elevated.js", () => ({
   formatElevatedUnavailableMessage: vi.fn(() => "elevated unavailable"),
-  resolveElevatedPermissions: vi.fn(() => ({
-    enabled: true,
-    allowed: true,
-    failures: [],
-  })),
+  resolveElevatedPermissions: (...args: unknown[]) => mocks.resolveElevatedPermissions(...args),
 }));
 
 describe("resolveReplyDirectives", () => {
@@ -303,6 +300,7 @@ describe("resolveReplyDirectives", () => {
     mocks.applyInlineDirectiveOverrides.mockReset();
     mocks.listAgentEntries.mockReset();
     mocks.resolveFastModeState.mockReset();
+    mocks.resolveElevatedPermissions.mockReset();
     mocks.resolveReplyExecOverrides.mockReset();
 
     mocks.listAgentEntries.mockReturnValue([]);
@@ -330,6 +328,64 @@ describe("resolveReplyDirectives", () => {
       fastAutoOnSeconds: 60,
     }));
     mocks.resolveReplyExecOverrides.mockReturnValue(undefined);
+    mocks.resolveElevatedPermissions.mockReturnValue({
+      enabled: true,
+      allowed: true,
+      failures: [],
+    });
+  });
+
+  it("does not use a routed system event's delivery channel for elevated authorization", async () => {
+    await resolveReplyDirectives({
+      ctx: buildTestCtx({
+        Body: "hook event",
+        CommandBody: "hook event",
+        Provider: "system-event",
+        Surface: undefined,
+        OriginatingChannel: "signal",
+        SenderId: "signal-owner",
+      }),
+      cfg: {},
+      agentId: "main",
+      agentDir: "/tmp/main-agent",
+      workspaceDir: "/tmp",
+      agentCfg: {},
+      sessionCtx: {
+        Body: "hook event",
+        BodyStripped: "hook event",
+        BodyForAgent: "hook event",
+        CommandBody: "hook event",
+        Provider: "system-event",
+        OriginatingChannel: "signal",
+        SenderId: "signal-owner",
+      } as TemplateContext,
+      sessionEntry: makeSessionEntry(),
+      sessionStore: {},
+      sessionKey: "agent:main:main",
+      storePath: "/tmp/sessions.json",
+      sessionScope: "global",
+      groupResolution: undefined,
+      isGroup: false,
+      triggerBodyNormalized: "hook event",
+      resetTriggered: false,
+      commandAuthorized: true,
+      defaultProvider: "openai",
+      defaultModel: "gpt-4o-mini",
+      aliasIndex: { byAlias: new Map(), byKey: new Map() },
+      provider: "openai",
+      model: "gpt-4o-mini",
+      hasResolvedHeartbeatModelOverride: false,
+      typing: makeTypingController(),
+    });
+
+    expect(mockCallInput(mocks.resolveElevatedPermissions)).toMatchObject({
+      provider: "system-event",
+      ctx: expect.objectContaining({
+        Provider: "system-event",
+        OriginatingChannel: "signal",
+        SenderId: "signal-owner",
+      }),
+    });
   });
 
   it("passes one-turn model override state into model selection", async () => {

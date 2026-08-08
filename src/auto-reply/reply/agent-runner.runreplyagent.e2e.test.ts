@@ -868,6 +868,104 @@ describe("runReplyAgent typing (heartbeat)", () => {
     }
   });
 
+  it("suppresses bare and directive-wrapped sessions_send control-token streaming", async () => {
+    const onPartialReply = vi.fn();
+    const onBlockReply = vi.fn();
+    state.runEmbeddedAgentMock.mockImplementationOnce(async (params: AgentRunParams) => {
+      for (const text of [
+        "R",
+        "RE",
+        "REPL",
+        "REPLY",
+        "REPLY_",
+        "REPLY_SKIP",
+        "[[reply_to_current]] REPLY_",
+        "[[reply_to_current]] REPLY_SKIP",
+        "[[audio_as_voice]] REPLY_",
+        "[[audio_as_voice]] REPLY_SKIP",
+      ]) {
+        await params.onPartialReply?.({ text });
+      }
+      await params.onBlockReply?.({ text: "REPLY_SKIP" });
+      await params.onBlockReply?.({ text: "[[reply_to_current]] REPLY_SKIP" });
+      await params.onBlockReply?.({ text: "[[audio_as_voice]] REPLY_SKIP" });
+      return { payloads: [{ text: "[[reply_to_current]] REPLY_SKIP" }], meta: {} };
+    });
+
+    const { run, typing } = createMinimalRun({
+      opts: { onPartialReply, onBlockReply },
+      blockStreamingEnabled: true,
+      typingMode: "message",
+      runOverrides: {
+        inputProvenance: {
+          kind: "inter_session",
+          sourceSessionKey: "agent:main:hook:gmail:test",
+          sourceTool: "sessions_send",
+        },
+      },
+    });
+
+    await expect(run()).resolves.toBeUndefined();
+    expect(onPartialReply).not.toHaveBeenCalled();
+    expect(onBlockReply).not.toHaveBeenCalled();
+    expect(typing.startTypingOnText).not.toHaveBeenCalled();
+  });
+
+  it("does not treat lowercase REPLY_SKIP prefixes as control-token streaming", async () => {
+    const onPartialReply = vi.fn();
+    const onBlockReply = vi.fn();
+    state.runEmbeddedAgentMock.mockImplementationOnce(async (params: AgentRunParams) => {
+      await params.onPartialReply?.({ text: "re" });
+      await params.onPartialReply?.({ text: "reply" });
+      await params.onBlockReply?.({ text: "reply" });
+      return { payloads: [{ text: "reply" }], meta: {} };
+    });
+
+    const { run, typing } = createMinimalRun({
+      opts: { onPartialReply, onBlockReply },
+      blockStreamingEnabled: true,
+      typingMode: "message",
+      runOverrides: {
+        inputProvenance: {
+          kind: "inter_session",
+          sourceSessionKey: "agent:main:hook:gmail:test",
+          sourceTool: "sessions_send",
+        },
+      },
+    });
+
+    await run();
+    expect(onPartialReply.mock.calls.map((call) => call[0].text)).toEqual(["re", "reply"]);
+    expect(onBlockReply.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ text: "reply" }));
+    expect(typing.startTypingOnText).toHaveBeenCalled();
+  });
+
+  it("releases an uppercase sessions_send prefix after cumulative text diverges", async () => {
+    const onPartialReply = vi.fn();
+    state.runEmbeddedAgentMock.mockImplementationOnce(async (params: AgentRunParams) => {
+      await params.onPartialReply?.({ text: "R" });
+      await params.onPartialReply?.({ text: "REPLY" });
+      await params.onPartialReply?.({ text: "RESPONSE ready" });
+      return { payloads: [{ text: "RESPONSE ready" }], meta: {} };
+    });
+
+    const { run, typing } = createMinimalRun({
+      opts: { onPartialReply },
+      typingMode: "message",
+      runOverrides: {
+        inputProvenance: {
+          kind: "inter_session",
+          sourceSessionKey: "agent:main:hook:gmail:test",
+          sourceTool: "sessions_send",
+        },
+      },
+    });
+
+    await run();
+    expect(onPartialReply.mock.calls.map((call) => call[0].text)).toEqual(["RESPONSE ready"]);
+    expect(typing.startTypingOnText).toHaveBeenCalledOnce();
+  });
+
   it("keeps final text blocks after partial preview streaming", async () => {
     const onPartialReply = vi.fn();
     state.runEmbeddedAgentMock.mockImplementationOnce(async (params: AgentRunParams) => {

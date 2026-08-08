@@ -4,6 +4,8 @@ import { normalizeStringEntries } from "@openclaw/normalization-core/string-norm
 import { resolveAgentConfig } from "../../agents/agent-scope.js";
 import { getChannelPlugin, normalizeChannelId } from "../../channels/plugins/index.js";
 import type { AgentElevatedAllowFromConfig, OpenClawConfig } from "../../config/config.js";
+import { isSystemEventProvider } from "../../infra/system-event-provider.js";
+import { isInternalMessageChannel } from "../../utils/message-channel.js";
 import { shouldUseFromAsSenderFallback } from "../sender-identity.js";
 import type { MsgContext } from "../templating.js";
 import {
@@ -203,6 +205,12 @@ export function resolveElevatedPermissions(params: {
   }
   if (!enabled) {
     return { enabled, allowed: false, failures };
+  }
+  const internalOwnerScope =
+    (isInternalMessageChannel(params.provider) || isSystemEventProvider(params.provider)) &&
+    params.ctx.GatewayClientScopes?.includes("operator.admin") === true;
+  if (internalOwnerScope) {
+    return { enabled, allowed: true, failures };
   }
   if (!params.provider) {
     failures.push({ gate: "provider", key: "ctx.Provider" });

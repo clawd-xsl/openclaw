@@ -124,8 +124,19 @@ describe("shouldPreserveUserFacingSessionStateForInputProvenance", () => {
     expect(
       shouldPreserveUserFacingSessionStateForInputProvenance({
         kind: "inter_session",
+        sourceSessionKey: "agent:main:discord:direct:user",
         sourceTool: "sessions_send",
       }),
     ).toBe(false);
+  });
+
+  it("preserves user-facing session state for hook worker handoffs", () => {
+    expect(
+      shouldPreserveUserFacingSessionStateForInputProvenance({
+        kind: "inter_session",
+        sourceSessionKey: "agent:main:hook:gmail:message-1",
+        sourceTool: "sessions_send",
+      }),
+    ).toBe(true);
   });
 });

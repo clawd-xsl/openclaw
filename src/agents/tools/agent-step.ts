@@ -9,7 +9,8 @@ import { annotateInterSessionPromptText } from "../../sessions/input-provenance.
 import { INTERNAL_MESSAGE_CHANNEL } from "../../utils/message-channel.js";
 import { retireSessionMcpRuntimeForSessionKey } from "../agent-bundle-mcp-tools.js";
 import { resolveNestedAgentLaneForSession } from "../lanes.js";
-import { waitForAgentRunAndReadUpdatedAssistantReply } from "../run-wait.js";
+import { waitForAgentRunReply } from "../run-wait.js";
+import { resolveSessionsSendReplyText } from "./sessions-send-helpers.js";
 
 type GatewayCaller = typeof callGateway;
 type AgentCommandRunner = typeof import("../../commands/agent.js").agentCommandFromIngress;
@@ -28,20 +29,28 @@ let agentStepDeps: {
 } = defaultAgentStepDeps;
 
 function extractAgentCommandReply(result: unknown): string | undefined {
+  const meta = (result as { meta?: Record<string, unknown> } | undefined)?.meta;
   const payloads = (result as { payloads?: unknown } | undefined)?.payloads;
-  if (!Array.isArray(payloads)) {
-    return undefined;
-  }
-  const texts = payloads
-    .map((payload) =>
-      payload &&
-      typeof payload === "object" &&
-      typeof (payload as { text?: unknown }).text === "string"
-        ? (payload as { text: string }).text
-        : "",
-    )
-    .filter((text) => text.trim().length > 0);
-  return texts.length > 0 ? texts.join("\n\n") : undefined;
+  const texts = Array.isArray(payloads)
+    ? payloads
+        .map((payload) =>
+          payload &&
+          typeof payload === "object" &&
+          typeof (payload as { text?: unknown }).text === "string"
+            ? (payload as { text: string }).text
+            : "",
+        )
+        .filter((text) => text.trim().length > 0)
+    : [];
+  return resolveSessionsSendReplyText({
+    replyText: texts.length > 0 ? texts.join("\n\n") : undefined,
+    finalAssistantVisibleText:
+      typeof meta?.finalAssistantVisibleText === "string"
+        ? meta.finalAssistantVisibleText
+        : undefined,
+    finalAssistantRawText:
+      typeof meta?.finalAssistantRawText === "string" ? meta.finalAssistantRawText : undefined,
+  });
 }
 
 /** Sends one annotated message to a target session and returns the resulting assistant text. */
@@ -108,9 +117,8 @@ export async function runAgentStep(params: {
   const stepRunId = typeof response?.runId === "string" && response.runId ? response.runId : "";
   const resolvedRunId = stepRunId || stepIdem;
   // Gateway agent calls can return before the assistant reply is persisted.
-  const result = await waitForAgentRunAndReadUpdatedAssistantReply({
+  const result = await waitForAgentRunReply({
     runId: resolvedRunId,
-    sessionKey: params.sessionKey,
     timeoutMs: Math.min(params.timeoutMs, 60_000),
   });
   if (result.status === "ok" || result.status === "error") {
@@ -122,7 +130,7 @@ export async function runAgentStep(params: {
   if (result.status !== "ok") {
     return undefined;
   }
-  return result.replyText;
+  return resolveSessionsSendReplyText(result);
 }
 
 /** Test-only dependency overrides for gateway and in-process command execution. */

@@ -401,10 +401,12 @@ export async function resolveReplyDirectives(params: {
   sessionCtx.Body = cleanedBody;
   sessionCtx.BodyStripped = cleanedBody;
 
-  const messageProviderKey = normalizeOptionalString(sessionCtx.Provider)
-    ? normalizeLowercaseStringOrEmpty(sessionCtx.Provider)
-    : normalizeOptionalString(ctx.Provider)
-      ? normalizeLowercaseStringOrEmpty(ctx.Provider)
+  // Elevated authorization follows the actual inbound principal, not the reply route.
+  // A system event may deliver through Signal without becoming the Signal owner.
+  const messageProviderKey = normalizeOptionalString(ctx.Provider)
+    ? normalizeLowercaseStringOrEmpty(ctx.Provider)
+    : normalizeOptionalString(sessionCtx.Provider)
+      ? normalizeLowercaseStringOrEmpty(sessionCtx.Provider)
       : "";
   const elevated = resolveElevatedPermissions({
     cfg,

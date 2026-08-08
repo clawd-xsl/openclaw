@@ -1,6 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  captureAgentRunLifecycleGeneration,
+  getAgentEventLifecycleGeneration,
+  withAgentRunLifecycleGeneration,
+} from "./agent-events.js";
+import {
   enqueueSystemEvent,
+  enqueueSystemEventEntry,
+  enqueueSystemEventEntryWithStatus,
   peekSystemEventEntries,
   resetSystemEventsForTest,
 } from "./system-events.js";
@@ -16,6 +23,14 @@ vi.mock("./system-event-turn.runtime.js", () => runtimeMocks);
 
 const { requestSystemEventTurn, runSystemEventTurn } = await import("./system-event-turn.js");
 
+type SystemEventTurnModule = typeof import("./system-event-turn.js");
+
+const systemEventTurnModuleUrl = new URL("./system-event-turn.ts", import.meta.url).href;
+
+async function importSystemEventTurnModule(cacheBust: string): Promise<SystemEventTurnModule> {
+  return (await import(`${systemEventTurnModuleUrl}?t=${cacheBust}`)) as SystemEventTurnModule;
+}
+
 type MockDispatchParams = {
   ctx: {
     Body?: string;
@@ -26,6 +41,10 @@ type MockDispatchParams = {
     From?: string;
     SenderId?: string;
     To?: string;
+  };
+  replyOptions?: {
+    onAgentRunStart?: (runId: string) => void;
+    onUserMessagePersisted?: () => void;
   };
 };
 
@@ -66,6 +85,12 @@ describe("system event turn", () => {
         accountId: "default",
       },
       senderId: "signal-owner",
+      inputProvenance: {
+        kind: "inter_session",
+        sourceSessionKey: "agent:main:hook:gmail:test",
+        sourceTool: "sessions_send",
+      },
+      sourceAuthority: { kind: "owner" },
     });
 
     const result = await runSystemEventTurn({ sessionKey, reason: "cron:test" });
@@ -85,11 +110,15 @@ describe("system event turn", () => {
           OriginatingChannel: "signal",
           OriginatingTo: "signal-target",
           AccountId: "default",
-          From: "signal-owner",
-          SenderId: "signal-owner",
+          InputProvenance: {
+            kind: "inter_session",
+            sourceSessionKey: "agent:main:hook:gmail:test",
+            sourceTool: "sessions_send",
+          },
+          CommandAuthorized: true,
           ChatType: "direct",
           Body: expect.stringContaining("Event: ["),
-          TranscriptBody: "[OpenClaw system event]",
+          TranscriptBody: "Send the reminder",
           ExplicitDeliverRoute: true,
           SuppressMessageReceivedHooks: true,
         }),
@@ -104,6 +133,385 @@ describe("system event turn", () => {
       | MockDispatchParams
       | undefined;
     expect(dispatch?.ctx).not.toHaveProperty("Surface");
+    expect(dispatch?.ctx).not.toHaveProperty("GatewayClientScopes");
+    expect(dispatch?.ctx).not.toHaveProperty("From");
+    expect(dispatch?.ctx).not.toHaveProperty("SenderId");
+    expect(dispatch?.ctx.Body).toContain("[Inter-session message]");
+    expect(dispatch?.ctx.TranscriptBody).not.toContain("[Inter-session message]");
+  });
+
+  it("keeps the generic transcript marker for system events without provenance", async () => {
+    const sessionKey = "agent:main:main";
+    enqueueTurnEvent("Generic wake", { sessionKey });
+
+    await runSystemEventTurn({ sessionKey, reason: "generic:wake" });
+
+    const dispatch = runtimeMocks.dispatchInboundMessageWithDispatcher.mock.calls[0]?.[0] as
+      | MockDispatchParams
+      | undefined;
+    expect(dispatch?.ctx.TranscriptBody).toBe("[OpenClaw system event]");
+  });
+
+  it("does not infer authority for a provenance-bearing event from its delivery route", async () => {
+    const sessionKey = "agent:main:main";
+    enqueueTurnEvent("Untrusted handoff", {
+      sessionKey,
+      deliveryContext: { channel: "signal", to: "signal-target" },
+      senderId: "signal-owner",
+      inputProvenance: {
+        kind: "inter_session",
+        sourceSessionKey: "agent:main:hook:gmail:untrusted",
+        sourceTool: "sessions_send",
+      },
+    });
+
+    await runSystemEventTurn({ sessionKey, reason: "sessions_send:hook" });
+
+    const dispatch = runtimeMocks.dispatchInboundMessageWithDispatcher.mock.calls[0]?.[0] as
+      | MockDispatchParams
+      | undefined;
+    expect(dispatch?.ctx).toEqual(
+      expect.objectContaining({
+        Provider: "system-event",
+        OriginatingChannel: "signal",
+        OriginatingTo: "signal-target",
+        CommandAuthorized: false,
+      }),
+    );
+    expect(dispatch?.ctx).not.toHaveProperty("GatewayClientScopes");
+    expect(dispatch?.ctx).not.toHaveProperty("From");
+    expect(dispatch?.ctx).not.toHaveProperty("SenderId");
+  });
+
+  it("does not batch sessions_send handoffs with unrelated system events", async () => {
+    const sessionKey = "agent:main:main";
+    const deliveryContext = { channel: "signal", to: "owner-uuid" };
+    enqueueTurnEvent("Gmail handoff", {
+      sessionKey,
+      deliveryContext,
+      inputProvenance: {
+        kind: "inter_session",
+        sourceSessionKey: "agent:main:hook:gmail:test",
+        sourceTool: "sessions_send",
+      },
+    });
+    enqueueTurnEvent("Unrelated wake", { sessionKey, deliveryContext });
+
+    await runSystemEventTurn({ sessionKey, reason: "hook:wake" });
+
+    const firstDispatch = runtimeMocks.dispatchInboundMessageWithDispatcher.mock.calls[0]?.[0] as
+      | MockDispatchParams
+      | undefined;
+    expect(firstDispatch?.ctx.Body).toContain("Gmail handoff");
+    expect(firstDispatch?.ctx.Body).not.toContain("Unrelated wake");
+    expect(peekSystemEventEntries(sessionKey).map((event) => event.text)).toEqual([
+      "Unrelated wake",
+    ]);
+  });
+
+  it("runs the requested handoff instead of acknowledging an older queued event", async () => {
+    const sessionKey = "agent:main:main";
+    const deliveryContext = { channel: "signal", to: "owner-uuid" };
+    enqueueTurnEvent("Older unrelated wake", { sessionKey, deliveryContext });
+    const handoff = enqueueSystemEventEntry("Requested Gmail handoff", {
+      sessionKey,
+      deliveryContext,
+      consumer: "system-event-turn",
+      inputProvenance: {
+        kind: "inter_session",
+        sourceSessionKey: "agent:main:hook:gmail:requested",
+        sourceTool: "sessions_send",
+      },
+    });
+    expect(handoff).not.toBeNull();
+
+    await runSystemEventTurn({
+      sessionKey,
+      reason: "sessions_send:hook",
+      requestedEvents: handoff ? [handoff] : [],
+    });
+
+    const dispatch = runtimeMocks.dispatchInboundMessageWithDispatcher.mock.calls[0]?.[0] as
+      | MockDispatchParams
+      | undefined;
+    expect(dispatch?.ctx.Body).toContain("Requested Gmail handoff");
+    expect(dispatch?.ctx.Body).not.toContain("Older unrelated wake");
+    expect(peekSystemEventEntries(sessionKey).map((event) => event.text)).toEqual([
+      "Older unrelated wake",
+    ]);
+  });
+
+  it("serializes direct requested turns with other attempts for the same session", async () => {
+    const sessionKey = "agent:main:main";
+    const first = enqueueSystemEventEntry("First handoff", {
+      sessionKey,
+      consumer: "system-event-turn",
+      inputProvenance: {
+        kind: "inter_session",
+        sourceSessionKey: "agent:main:hook:gmail:first",
+        sourceTool: "sessions_send",
+      },
+    });
+    const second = enqueueSystemEventEntry("Second handoff", {
+      sessionKey,
+      consumer: "system-event-turn",
+      inputProvenance: {
+        kind: "inter_session",
+        sourceSessionKey: "agent:main:hook:gmail:second",
+        sourceTool: "sessions_send",
+      },
+    });
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+
+    let releaseFirst: () => void = () => undefined;
+    const firstBlocked = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    runtimeMocks.dispatchInboundMessageWithDispatcher
+      .mockImplementationOnce(async () => {
+        await firstBlocked;
+        return successfulDispatchResult();
+      })
+      .mockResolvedValueOnce(successfulDispatchResult());
+
+    const firstRun = runSystemEventTurn({
+      sessionKey,
+      requestedEvents: first ? [first] : [],
+    });
+    await vi.waitFor(() => {
+      expect(runtimeMocks.dispatchInboundMessageWithDispatcher).toHaveBeenCalledTimes(1);
+    });
+    expect(peekSystemEventEntries(sessionKey).map((event) => event.text)).not.toContain(
+      "First handoff",
+    );
+    const secondRun = runSystemEventTurn({
+      sessionKey,
+      requestedEvents: second ? [second] : [],
+    });
+    await Promise.resolve();
+    expect(runtimeMocks.dispatchInboundMessageWithDispatcher).toHaveBeenCalledTimes(1);
+
+    releaseFirst();
+    await Promise.all([firstRun, secondRun]);
+
+    expect(runtimeMocks.dispatchInboundMessageWithDispatcher).toHaveBeenCalledTimes(2);
+    const secondDispatch = runtimeMocks.dispatchInboundMessageWithDispatcher.mock.calls[1]?.[0] as
+      | MockDispatchParams
+      | undefined;
+    expect(secondDispatch?.ctx.Body).toContain("Second handoff");
+    expect(peekSystemEventEntries(sessionKey)).toEqual([]);
+  });
+
+  it("shares atomic claims across duplicate turn module instances", async () => {
+    const sessionKey = "agent:main:main";
+    const firstModule = await importSystemEventTurnModule(`claim-first-${Date.now()}`);
+    const secondModule = await importSystemEventTurnModule(`claim-second-${Date.now()}`);
+    enqueueTurnEvent("Single retained handoff", { sessionKey });
+    let releaseFirst: () => void = () => undefined;
+    const firstBlocked = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    runtimeMocks.dispatchInboundMessageWithDispatcher.mockImplementationOnce(async () => {
+      await firstBlocked;
+      return successfulDispatchResult();
+    });
+
+    const firstRun = firstModule.runSystemEventTurn({ sessionKey });
+    await vi.waitFor(() => {
+      expect(runtimeMocks.dispatchInboundMessageWithDispatcher).toHaveBeenCalledTimes(1);
+    });
+    const secondRun = secondModule.runSystemEventTurn({ sessionKey });
+    await Promise.resolve();
+    expect(runtimeMocks.dispatchInboundMessageWithDispatcher).toHaveBeenCalledTimes(1);
+
+    releaseFirst();
+    await firstRun;
+    await expect(secondRun).resolves.toEqual({
+      status: "skipped",
+      reason: "no-events",
+    });
+    expect(runtimeMocks.dispatchInboundMessageWithDispatcher).toHaveBeenCalledTimes(1);
+    expect(peekSystemEventEntries(sessionKey)).toEqual([]);
+  });
+
+  it("serializes distinct events across duplicate turn module instances", async () => {
+    const sessionKey = "agent:main:main";
+    const firstModule = await importSystemEventTurnModule(`tail-first-${Date.now()}`);
+    const secondModule = await importSystemEventTurnModule(`tail-second-${Date.now()}`);
+    const first = enqueueSystemEventEntry("First retained handoff", {
+      sessionKey,
+      consumer: "system-event-turn",
+      inputProvenance: {
+        kind: "inter_session",
+        sourceSessionKey: "agent:main:hook:gmail:first-module",
+        sourceTool: "sessions_send",
+      },
+    });
+    const second = enqueueSystemEventEntry("Second retained handoff", {
+      sessionKey,
+      consumer: "system-event-turn",
+      inputProvenance: {
+        kind: "inter_session",
+        sourceSessionKey: "agent:main:hook:gmail:second-module",
+        sourceTool: "sessions_send",
+      },
+    });
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+
+    let releaseFirst: () => void = () => undefined;
+    const firstBlocked = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    runtimeMocks.dispatchInboundMessageWithDispatcher
+      .mockImplementationOnce(async () => {
+        await firstBlocked;
+        return successfulDispatchResult();
+      })
+      .mockResolvedValueOnce(successfulDispatchResult());
+
+    const firstRun = firstModule.runSystemEventTurn({
+      sessionKey,
+      requestedEvents: first ? [first] : [],
+    });
+    await vi.waitFor(() => {
+      expect(runtimeMocks.dispatchInboundMessageWithDispatcher).toHaveBeenCalledTimes(1);
+    });
+    const secondRun = secondModule.runSystemEventTurn({
+      sessionKey,
+      requestedEvents: second ? [second] : [],
+    });
+    await Promise.resolve();
+    expect(runtimeMocks.dispatchInboundMessageWithDispatcher).toHaveBeenCalledTimes(1);
+
+    releaseFirst();
+    await Promise.all([firstRun, secondRun]);
+    expect(runtimeMocks.dispatchInboundMessageWithDispatcher).toHaveBeenCalledTimes(2);
+    expect(peekSystemEventEntries(sessionKey)).toEqual([]);
+  });
+
+  it("admits queued turns under the current gateway lifecycle", async () => {
+    const sessionKey = "agent:main:main";
+    enqueueTurnEvent("Lifecycle-owned handoff", { sessionKey });
+    let observedLifecycleGeneration: string | undefined;
+    runtimeMocks.dispatchInboundMessageWithDispatcher.mockImplementationOnce(async () => {
+      observedLifecycleGeneration = captureAgentRunLifecycleGeneration("system-event-test-run");
+      return successfulDispatchResult();
+    });
+
+    await withAgentRunLifecycleGeneration("retired-hook-generation", () =>
+      runSystemEventTurn({ sessionKey, reason: "hook:lifecycle" }),
+    );
+
+    expect(observedLifecycleGeneration).toBe(getAgentEventLifecycleGeneration());
+    expect(observedLifecycleGeneration).not.toBe("retired-hook-generation");
+  });
+
+  it("keeps an in-flight claim reserved against queue capacity", async () => {
+    const sessionKey = "agent:main:main";
+    enqueueTurnEvent("Blocking handoff", { sessionKey });
+    let releaseTurn: () => void = () => undefined;
+    const blocked = new Promise<void>((resolve) => {
+      releaseTurn = resolve;
+    });
+    runtimeMocks.dispatchInboundMessageWithDispatcher.mockImplementationOnce(async () => {
+      await blocked;
+      return successfulDispatchResult();
+    });
+
+    const run = runSystemEventTurn({ sessionKey });
+    await vi.waitFor(() => {
+      expect(runtimeMocks.dispatchInboundMessageWithDispatcher).toHaveBeenCalledTimes(1);
+    });
+    for (let index = 0; index < 19; index += 1) {
+      expect(
+        enqueueSystemEventEntryWithStatus(`Queued handoff ${index}`, {
+          sessionKey,
+          consumer: "system-event-turn",
+        }).status,
+      ).toBe("enqueued");
+    }
+    expect(
+      enqueueSystemEventEntryWithStatus("Queue overflow", {
+        sessionKey,
+        consumer: "system-event-turn",
+      }),
+    ).toEqual({ status: "skipped", reason: "full" });
+
+    releaseTurn();
+    await run;
+    expect(
+      enqueueSystemEventEntryWithStatus("Admitted after completion", {
+        sessionKey,
+        consumer: "system-event-turn",
+      }).status,
+    ).toBe("enqueued");
+  });
+
+  it("honors abort while preserving queue order and the unclaimed requested event", async () => {
+    const sessionKey = "agent:main:main";
+    const first = enqueueSystemEventEntry("Blocking handoff", {
+      sessionKey,
+      consumer: "system-event-turn",
+    });
+    const timedOut = enqueueSystemEventEntry("Timed out handoff", {
+      sessionKey,
+      consumer: "system-event-turn",
+      inputProvenance: {
+        kind: "inter_session",
+        sourceSessionKey: "agent:main:hook:gmail:timeout",
+        sourceTool: "sessions_send",
+      },
+    });
+    expect(first).not.toBeNull();
+    expect(timedOut).not.toBeNull();
+
+    let releaseFirst: () => void = () => undefined;
+    const firstBlocked = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    runtimeMocks.dispatchInboundMessageWithDispatcher
+      .mockImplementationOnce(async () => {
+        await firstBlocked;
+        return successfulDispatchResult();
+      })
+      .mockResolvedValueOnce(successfulDispatchResult());
+
+    const firstRun = runSystemEventTurn({
+      sessionKey,
+      requestedEvents: first ? [first] : [],
+    });
+    await vi.waitFor(() => {
+      expect(runtimeMocks.dispatchInboundMessageWithDispatcher).toHaveBeenCalledTimes(1);
+    });
+    const abortController = new AbortController();
+    const timedOutRun = runSystemEventTurn({
+      sessionKey,
+      abortSignal: abortController.signal,
+      requestedEvents: timedOut ? [timedOut] : [],
+    });
+    abortController.abort(new Error("queue wait timed out"));
+
+    await expect(timedOutRun).rejects.toThrow("queue wait timed out");
+    expect(runtimeMocks.dispatchInboundMessageWithDispatcher).toHaveBeenCalledTimes(1);
+    expect(peekSystemEventEntries(sessionKey).map((event) => event.text)).toContain(
+      "Timed out handoff",
+    );
+
+    releaseFirst();
+    await firstRun;
+    await runSystemEventTurn({
+      sessionKey,
+      requestedEvents: timedOut ? [timedOut] : [],
+    });
+
+    expect(runtimeMocks.dispatchInboundMessageWithDispatcher).toHaveBeenCalledTimes(2);
+    const retryDispatch = runtimeMocks.dispatchInboundMessageWithDispatcher.mock.calls[1]?.[0] as
+      | MockDispatchParams
+      | undefined;
+    expect(retryDispatch?.ctx.Body).toContain("Timed out handoff");
+    expect(peekSystemEventEntries(sessionKey)).toEqual([]);
   });
 
   it("preserves the owner sender when a hook event omits the account id", async () => {
@@ -359,8 +767,43 @@ describe("system event turn", () => {
     ]);
   });
 
+  it("restores a claimed event when the run starts but fails before transcript persistence", async () => {
+    const sessionKey = "agent:main:main";
+    enqueueTurnEvent("Unpersisted handoff", { sessionKey });
+    runtimeMocks.dispatchInboundMessageWithDispatcher.mockImplementationOnce(async (params) => {
+      (params as MockDispatchParams).replyOptions?.onAgentRunStart?.("run-started");
+      throw new Error("startup failure");
+    });
+
+    await expect(runSystemEventTurn({ sessionKey, reason: "hook:startup" })).rejects.toThrow(
+      "startup failure",
+    );
+    expect(peekSystemEventEntries(sessionKey)).toEqual([
+      expect.objectContaining({ text: "Unpersisted handoff" }),
+    ]);
+  });
+
+  it("does not replay a claimed event after its user turn is persisted", async () => {
+    const sessionKey = "agent:main:main";
+    enqueueTurnEvent("Adopted handoff", { sessionKey });
+    runtimeMocks.dispatchInboundMessageWithDispatcher.mockImplementationOnce(async (params) => {
+      (params as MockDispatchParams).replyOptions?.onUserMessagePersisted?.();
+      throw new Error("post-adoption failure");
+    });
+
+    await expect(runSystemEventTurn({ sessionKey, reason: "hook:adopted" })).rejects.toThrow(
+      "post-adoption failure",
+    );
+    expect(peekSystemEventEntries(sessionKey)).toEqual([]);
+    await expect(runSystemEventTurn({ sessionKey, reason: "hook:retry" })).resolves.toEqual({
+      status: "skipped",
+      reason: "no-events",
+    });
+    expect(runtimeMocks.dispatchInboundMessageWithDispatcher).toHaveBeenCalledTimes(1);
+  });
+
   it.each([{ failedCounts: { tool: 0, block: 0, final: 1 } }])(
-    "restores consumed events when delivery reports failure",
+    "commits the turn without replay when delivery reports failure",
     async (failure) => {
       const sessionKey = "agent:main:main";
       enqueueTurnEvent("Retry failed delivery", {
@@ -372,16 +815,16 @@ describe("system event turn", () => {
         ...failure,
       });
 
-      await expect(runSystemEventTurn({ sessionKey, reason: "hook:test" })).rejects.toThrow(
-        "system event reply delivery failed",
-      );
-
-      expect(peekSystemEventEntries(sessionKey)).toEqual([
-        expect.objectContaining({
-          text: "Retry failed delivery",
-          consumer: "system-event-turn",
-        }),
-      ]);
+      await expect(runSystemEventTurn({ sessionKey, reason: "hook:test" })).resolves.toMatchObject({
+        status: "ran",
+        failedCounts: failure.failedCounts,
+      });
+      expect(peekSystemEventEntries(sessionKey)).toEqual([]);
+      await expect(runSystemEventTurn({ sessionKey, reason: "hook:retry" })).resolves.toEqual({
+        status: "skipped",
+        reason: "no-events",
+      });
+      expect(runtimeMocks.dispatchInboundMessageWithDispatcher).toHaveBeenCalledTimes(1);
     },
   );
 
@@ -476,6 +919,27 @@ describe("system event turn", () => {
       },
       { timeout: 3_000 },
     );
+  });
+
+  it("does not retry an asynchronous wake after transcript persistence", async () => {
+    const sessionKey = "agent:main:main";
+    enqueueTurnEvent("Committed asynchronous handoff", {
+      sessionKey,
+      deliveryContext: { channel: "signal", to: "recipient" },
+    });
+    runtimeMocks.dispatchInboundMessageWithDispatcher.mockImplementationOnce(async (params) => {
+      (params as MockDispatchParams).replyOptions?.onUserMessagePersisted?.();
+      throw new Error("failure after persistence");
+    });
+
+    requestSystemEventTurn({ sessionKey, reason: "hook:committed", coalesceMs: 0 });
+
+    await vi.waitFor(() => {
+      expect(runtimeMocks.dispatchInboundMessageWithDispatcher).toHaveBeenCalledTimes(1);
+      expect(peekSystemEventEntries(sessionKey)).toEqual([]);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    expect(runtimeMocks.dispatchInboundMessageWithDispatcher).toHaveBeenCalledTimes(1);
   });
 
   it("drops an exhausted batch while processing a coalesced event on the same route", async () => {

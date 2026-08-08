@@ -40,7 +40,10 @@ import {
 import { measureDiagnosticsTimelineSpan } from "../../infra/diagnostics-timeline.js";
 import { enqueueSystemEvent } from "../../infra/system-events.js";
 import { CommandLaneClearedError, GatewayDrainingError } from "../../process/command-queue.js";
-import { shouldPreserveUserFacingSessionStateForInputProvenance } from "../../sessions/input-provenance.js";
+import {
+  resolveInputProvenanceSilentReplyTokens,
+  shouldPreserveUserFacingSessionStateForInputProvenance,
+} from "../../sessions/input-provenance.js";
 import { resolveSendPolicy } from "../../sessions/send-policy.js";
 import {
   normalizeDeliveryContext,
@@ -2134,6 +2137,9 @@ export async function runReplyAgent(params: {
       }),
       originatingThreadId: replyRouteThreadId,
       accountId: sessionCtx.AccountId,
+      additionalSilentReplyTokens: resolveInputProvenanceSilentReplyTokens(
+        followupRun.run.inputProvenance,
+      ),
       normalizeMediaPaths: replyMediaContext.normalizePayload,
     });
     const { replyPayloads } = payloadResult;

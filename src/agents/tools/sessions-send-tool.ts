@@ -15,20 +15,31 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { callGateway } from "../../gateway/call.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import {
+  requestSystemEventTurn,
+  runSystemEventTurn,
+  SystemEventTurnAttemptError,
+  type SystemEventTurnResult,
+} from "../../infra/system-event-turn.js";
+import { enqueueSystemEventEntryWithStatus } from "../../infra/system-events.js";
+import {
   isSubagentSessionKey,
   normalizeAgentId,
   resolveAgentIdFromSessionKey,
   toAgentStoreSessionKey,
 } from "../../routing/session-key.js";
 import { annotateInterSessionPromptText } from "../../sessions/input-provenance.js";
-import { isCronRunSessionKey, parseAgentSessionKey } from "../../sessions/session-key-utils.js";
+import {
+  isCronRunSessionKey,
+  isHookSessionKey,
+  parseAgentSessionKey,
+} from "../../sessions/session-key-utils.js";
 import { SESSION_LABEL_MAX_LENGTH } from "../../sessions/session-label.js";
 import { stripFormattedReasoningMessage } from "../../shared/text/formatted-reasoning-message.js";
 import {
   type GatewayMessageChannel,
   INTERNAL_MESSAGE_CHANNEL,
 } from "../../utils/message-channel.js";
-import { listAgentIds } from "../agent-scope.js";
+import { listAgentIds, resolveDefaultAgentId } from "../agent-scope.js";
 import {
   type EmbeddedAgentQueueMessageOptions,
   type EmbeddedAgentQueueMessageOutcome,
@@ -37,11 +48,7 @@ import {
   resolveActiveEmbeddedRunSessionId,
 } from "../embedded-agent-runner/runs.js";
 import { resolveNestedAgentLaneForSession } from "../lanes.js";
-import {
-  type AgentWaitResult,
-  readLatestAssistantReplySnapshot,
-  waitForAgentRunAndReadUpdatedAssistantReply,
-} from "../run-wait.js";
+import { type AgentWaitResult, waitForAgentRunReply } from "../run-wait.js";
 import { loadSessionEntryByKey } from "../subagent-announce-delivery.js";
 import {
   describeSessionsSendTool,
@@ -57,7 +64,11 @@ import {
   resolveSessionToolContext,
   resolveVisibleSessionReference,
 } from "./sessions-helpers.js";
-import { buildAgentToAgentMessageContext, resolvePingPongTurns } from "./sessions-send-helpers.js";
+import {
+  buildAgentToAgentMessageContext,
+  resolvePingPongTurns,
+  resolveSessionsSendReplyText,
+} from "./sessions-send-helpers.js";
 import { runSessionsSendA2AFlow } from "./sessions-send-tool.a2a.js";
 
 const SessionsSendToolSchema = Type.Object({
@@ -69,7 +80,6 @@ const SessionsSendToolSchema = Type.Object({
 });
 
 type GatewayCaller = typeof callGateway;
-const SESSIONS_SEND_REPLY_HISTORY_LIMIT = 50;
 const SESSIONS_SEND_MESSAGE_ALIASES = ["SendMessage", "content", "text"] as const;
 
 function normalizeSessionsSendArguments(args: unknown): Record<string, unknown> {
@@ -199,6 +209,21 @@ function isPendingErrorAgentWaitTimeout(result: AgentWaitResult): boolean {
   return (
     result.pendingError === true && typeof result.error === "string" && result.error.trim() !== ""
   );
+}
+
+type SystemEventFailedCounts = NonNullable<
+  Extract<SystemEventTurnResult, { status: "ran" }>["failedCounts"]
+>;
+
+function resolveSystemEventDeliveryFailure(
+  result: SystemEventTurnResult,
+): SystemEventFailedCounts | undefined {
+  if (result.status !== "ran" || !result.failedCounts) {
+    return undefined;
+  }
+  return Object.values(result.failedCounts).some((count) => (count ?? 0) > 0)
+    ? result.failedCounts
+    : undefined;
 }
 
 function isRunScopedAgentSessionKey(sessionKey: string): boolean {
@@ -584,44 +609,145 @@ export function createSessionsSendTool(opts?: {
 
       const requesterSessionKey = opts?.agentSessionKey;
       const requesterChannel = opts?.agentChannel;
-      const sameSessionA2A = requesterSessionKey === resolvedKey;
       const isIsolatedCronRequester = isCronRunSessionKey(requesterSessionKey);
-      const fallbackA2ASessionKey =
-        timeoutSeconds === 0 && isIsolatedCronRequester
-          ? resolveCronRunScopedFallbackSessionKey(displayKey)
-          : undefined;
+      const isHookRequester = isHookSessionKey(requesterSessionKey);
+      const requesterAgentId = isHookRequester
+        ? (parseAgentSessionKey(requesterSessionKey)?.agentId ?? resolveDefaultAgentId(cfg))
+        : undefined;
+      const isRequesterMainSession =
+        (alias === "global" && resolvedKey === alias) ||
+        (isConfiguredAgentMainSessionKey({ cfg, sessionKey: resolvedKey, mainKey }) &&
+          requesterAgentId === resolveAgentIdFromSessionKey(resolvedKey));
 
-      // Capture the pre-run assistant snapshot before starting the nested run.
-      // Fast in-process test doubles and short-circuit agent paths can finish
-      // before we reach the post-run read, which would otherwise make the new
-      // reply look like the baseline and hide it from the caller.
-      // Fire-and-forget same-session sends still need this baseline because the
-      // A2A follow-up may deliver directly to the source channel. Isolated cron
-      // requesters also need it to avoid attributing a stale target reply.
-      const baselineReply =
-        timeoutSeconds !== 0
-          ? await readLatestAssistantReplySnapshot({
-              sessionKey: resolvedKey,
-              limit: SESSIONS_SEND_REPLY_HISTORY_LIMIT,
-              callGateway: gatewayCall,
-            })
-          : sameSessionA2A || isIsolatedCronRequester
-            ? await readLatestAssistantReplySnapshot({
-                sessionKey: resolvedKey,
-                limit: SESSIONS_SEND_REPLY_HISTORY_LIMIT,
-                callGateway: gatewayCall,
-              }).catch(() => undefined)
-            : undefined;
-      // Active-run delivery can fall back to the durable cron parent. Snapshot
-      // that target before dispatch so a fast reply cannot become its baseline.
-      const fallbackBaselineReply =
-        fallbackA2ASessionKey && fallbackA2ASessionKey !== resolvedKey
-          ? await readLatestAssistantReplySnapshot({
-              sessionKey: fallbackA2ASessionKey,
-              limit: SESSIONS_SEND_REPLY_HISTORY_LIMIT,
-              callGateway: gatewayCall,
-            }).catch(() => undefined)
-          : undefined;
+      if (isHookRequester && opts?.senderIsOwner === true && isRequesterMainSession) {
+        const inputProvenance = {
+          kind: "inter_session" as const,
+          sourceSessionKey: requesterSessionKey,
+          sourceChannel: requesterChannel,
+          sourceTool: "sessions_send",
+        };
+        // Hook workers hand off once into the target's normal inbound dispatcher.
+        // Starting a nested A2A run here bypasses its stable channel prompt and replays replies.
+        const enqueueResult = enqueueSystemEventEntryWithStatus(message, {
+          sessionKey: resolvedKey,
+          consumer: "system-event-turn",
+          inputProvenance,
+          // This branch is reachable only from a host-admitted owner run.
+          // Carry that fact explicitly; the target delivery route is not an auth principal.
+          sourceAuthority: { kind: "owner" },
+        });
+        if (enqueueResult.status === "skipped" && enqueueResult.reason === "full") {
+          return jsonResult({
+            runId: idempotencyKey,
+            status: "error",
+            error: "The target session's system-event queue is full; retry this handoff.",
+            sessionKey: displayKey,
+          });
+        }
+        const queuedEvent = enqueueResult.status === "enqueued" ? enqueueResult.event : null;
+        const reason = "sessions_send:hook";
+        if (timeoutSeconds === 0) {
+          requestSystemEventTurn({ sessionKey: resolvedKey, reason });
+          return jsonResult({
+            handoffId: idempotencyKey,
+            status: "accepted",
+            sessionKey: displayKey,
+            delivery: {
+              status: queuedEvent ? "pending" : "coalesced",
+              mode: "system-event",
+            },
+          });
+        }
+        if (!queuedEvent) {
+          requestSystemEventTurn({ sessionKey: resolvedKey, reason });
+          return jsonResult({
+            handoffId: idempotencyKey,
+            status: "accepted",
+            sessionKey: displayKey,
+            delivery: { status: "coalesced", mode: "system-event" },
+          });
+        }
+        let waitTimer: NodeJS.Timeout | undefined;
+        const timedOut = Symbol("hook-handoff-wait-timeout");
+        const deliveryPromise = runSystemEventTurn({
+          sessionKey: resolvedKey,
+          reason,
+          requestedEvents: [queuedEvent],
+        }).then(
+          (delivery) => ({ kind: "delivered" as const, delivery }),
+          (error: unknown) => ({ kind: "failed" as const, error }),
+        );
+        const waitTimeout = new Promise<typeof timedOut>((resolve) => {
+          waitTimer = setTimeout(() => resolve(timedOut), timeoutMs);
+          waitTimer.unref?.();
+        });
+        const outcome = await Promise.race([deliveryPromise, waitTimeout]);
+        if (waitTimer) {
+          clearTimeout(waitTimer);
+        }
+
+        if (outcome === timedOut) {
+          // The caller timeout bounds only its wait. The turn already owns the claimed event;
+          // retry only if that turn later fails and restores the event to the queue.
+          void deliveryPromise.then((lateOutcome) => {
+            if (
+              lateOutcome.kind === "failed" &&
+              lateOutcome.error instanceof SystemEventTurnAttemptError &&
+              lateOutcome.error.disposition === "restored"
+            ) {
+              requestSystemEventTurn({ sessionKey: resolvedKey, reason });
+            }
+          });
+          return jsonResult({
+            handoffId: idempotencyKey,
+            status: "accepted",
+            sessionKey: displayKey,
+            delivery: { status: "pending", mode: "system-event" },
+          });
+        }
+        if (outcome.kind === "delivered") {
+          const failedCounts = resolveSystemEventDeliveryFailure(outcome.delivery);
+          if (failedCounts) {
+            return jsonResult({
+              handoffId: idempotencyKey,
+              status: "error",
+              error: "The target session completed, but one or more channel replies failed.",
+              sessionKey: displayKey,
+              delivery: {
+                status: "failed",
+                mode: "system-event",
+                failedCounts,
+              },
+            });
+          }
+          return jsonResult({
+            handoffId: idempotencyKey,
+            status: "ok",
+            sessionKey: displayKey,
+            delivery: { status: outcome.delivery.status, mode: "system-event" },
+          });
+        }
+        if (
+          outcome.error instanceof SystemEventTurnAttemptError &&
+          outcome.error.disposition === "restored"
+        ) {
+          requestSystemEventTurn({ sessionKey: resolvedKey, reason });
+          return jsonResult({
+            handoffId: idempotencyKey,
+            status: "accepted",
+            sessionKey: displayKey,
+            delivery: { status: "pending", mode: "system-event" },
+            warning: formatErrorMessage(outcome.error),
+          });
+        }
+        return jsonResult({
+          handoffId: idempotencyKey,
+          status: "error",
+          error: formatErrorMessage(outcome.error),
+          sessionKey: displayKey,
+          delivery: { status: "failed", mode: "system-event" },
+        });
+      }
 
       const agentMessageContext = buildAgentToAgentMessageContext({
         requesterSessionKey: opts?.agentSessionKey,
@@ -699,8 +825,6 @@ export function createSessionsSendTool(opts?: {
         if (skipA2AFlow) {
           return;
         }
-        const flowBaseline =
-          flowTargetSessionKey === fallbackA2ASessionKey ? fallbackBaselineReply : baselineReply;
         void runSessionsSendA2AFlow({
           targetSessionKey: flowTargetSessionKey,
           displayKey: flowDisplayKey,
@@ -711,7 +835,6 @@ export function createSessionsSendTool(opts?: {
           maxPingPongTurns: isIsolatedCronRequester ? 0 : maxPingPongTurns,
           requesterSessionKey,
           requesterChannel,
-          baseline: flowBaseline,
           roundOneReply,
           waitRunId,
         });
@@ -754,12 +877,9 @@ export function createSessionsSendTool(opts?: {
         return start.result;
       }
       runId = start.runId;
-      const result = await waitForAgentRunAndReadUpdatedAssistantReply({
+      const result = await waitForAgentRunReply({
         runId,
-        sessionKey: resolvedKey,
         timeoutMs,
-        limit: SESSIONS_SEND_REPLY_HISTORY_LIMIT,
-        baseline: baselineReply,
         callGateway: gatewayCall,
       });
 
@@ -801,7 +921,7 @@ export function createSessionsSendTool(opts?: {
           sessionKey: displayKey,
         });
       }
-      const reply = result.replyText;
+      const reply = resolveSessionsSendReplyText(result);
       startA2AFlow(reply ?? undefined);
 
       return jsonResult({
