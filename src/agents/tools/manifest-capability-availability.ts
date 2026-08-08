@@ -16,6 +16,7 @@ import {
 import { resolvePluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.js";
 import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.types.js";
 import { getActivePluginRegistryWorkspaceDirFromState } from "../../plugins/runtime-state.js";
+import { getActiveSecretsRuntimeEnv } from "../../secrets/runtime-state.js";
 import { listProfilesForProvider } from "../auth-profiles/profile-list.js";
 import type { AuthProfileStore } from "../auth-profiles/types.js";
 
@@ -115,6 +116,7 @@ function hasConfiguredCapabilityProviderSignal(params: {
   providerId: string;
   config?: OpenClawConfig;
   authStore?: AuthProfileStore;
+  env: NodeJS.ProcessEnv;
 }): boolean {
   const metadataKey = metadataKeyForCapabilityContract(params.key);
   const metadata = metadataKey ? params.plugin[metadataKey]?.[params.providerId] : undefined;
@@ -122,7 +124,7 @@ function hasConfiguredCapabilityProviderSignal(params: {
     metadata?.configSignals?.some((signal) =>
       manifestConfigSignalPasses({
         config: params.config,
-        env: process.env,
+        env: params.env,
         signal,
       }),
     )
@@ -148,7 +150,7 @@ function hasConfiguredCapabilityProviderSignal(params: {
     }
     if (
       hasNonEmptyManifestEnvCandidate(
-        process.env,
+        params.env,
         manifestPluginSetupProviderEnvVars(params.plugin, signal.provider),
       )
     ) {
@@ -177,9 +179,10 @@ export function loadCapabilityMetadataSnapshot(params: {
   env?: NodeJS.ProcessEnv;
 }): Pick<PluginMetadataSnapshot, "index" | "plugins"> {
   const workspaceDir = params.workspaceDir ?? getActivePluginRegistryWorkspaceDirFromState();
+  const env = params.env ?? getActiveSecretsRuntimeEnv();
   return resolvePluginMetadataSnapshot({
     config: params.config ?? {},
-    env: params.env ?? process.env,
+    env,
     ...(workspaceDir ? { workspaceDir } : {}),
   });
 }
@@ -190,7 +193,9 @@ export function hasSnapshotCapabilityAvailability(params: {
   key: CapabilityContractKey;
   config?: OpenClawConfig;
   authStore?: AuthProfileStore;
+  env?: NodeJS.ProcessEnv;
 }): boolean {
+  const env = params.env ?? getActiveSecretsRuntimeEnv();
   return hasAvailableCapabilityPlugin(params, (plugin) =>
     (plugin.contracts?.[params.key] ?? []).some((providerId) =>
       hasConfiguredCapabilityProviderSignal({
@@ -199,6 +204,7 @@ export function hasSnapshotCapabilityAvailability(params: {
         providerId,
         config: params.config,
         authStore: params.authStore,
+        env,
       }),
     ),
   );
@@ -209,10 +215,12 @@ export function hasSnapshotProviderEnvAvailability(params: {
   snapshot: CapabilityMetadataSnapshot;
   providerId: string;
   config?: OpenClawConfig;
+  env?: NodeJS.ProcessEnv;
 }): boolean {
+  const env = params.env ?? getActiveSecretsRuntimeEnv();
   return hasAvailableCapabilityPlugin(params, (plugin) =>
     hasNonEmptyManifestEnvCandidate(
-      process.env,
+      env,
       manifestPluginSetupProviderEnvVars(plugin, params.providerId),
     ),
   );
@@ -225,7 +233,9 @@ export function hasSnapshotCapabilityProviderAvailability(params: {
   providerId: string;
   config?: OpenClawConfig;
   authStore?: AuthProfileStore;
+  env?: NodeJS.ProcessEnv;
 }): boolean {
+  const env = params.env ?? getActiveSecretsRuntimeEnv();
   return hasAvailableCapabilityPlugin(params, (plugin) => {
     if (!plugin.contracts?.[params.key]?.includes(params.providerId)) {
       return false;
@@ -236,6 +246,7 @@ export function hasSnapshotCapabilityProviderAvailability(params: {
       providerId: params.providerId,
       config: params.config,
       authStore: params.authStore,
+      env,
     });
   });
 }

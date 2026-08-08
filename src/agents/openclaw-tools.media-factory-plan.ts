@@ -11,6 +11,7 @@ import {
 import type { AgentModelConfig } from "../config/types.agents-shared.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
+import { getActiveSecretsRuntimeEnv } from "../secrets/runtime-state.js";
 import { listProfilesForProvider } from "./auth-profiles/profile-list.js";
 import type { AuthProfileStore } from "./auth-profiles/types.js";
 import { isToolAllowedByPolicyName } from "./tool-policy-match.js";
@@ -123,8 +124,10 @@ export function resolveImageToolFactoryAvailable(params: {
   if (params.modelHasVision || hasExplicitImageModelConfig(params.config)) {
     return true;
   }
+  const env = getActiveSecretsRuntimeEnv();
   const snapshot = loadCapabilityMetadataSnapshot({
     config: params.config,
+    env,
     ...(params.workspaceDir ? { workspaceDir: params.workspaceDir } : {}),
   });
   return (
@@ -133,11 +136,13 @@ export function resolveImageToolFactoryAvailable(params: {
       authStore: params.authStore,
       key: "mediaUnderstandingProviders",
       config: params.config,
+      env,
     }) ||
     hasConfiguredVisionModelAuthSignal({
       config: params.config,
       snapshot,
       authStore: params.authStore,
+      env,
     })
   );
 }
@@ -146,6 +151,7 @@ function hasConfiguredVisionModelAuthSignal(params: {
   config?: OpenClawConfig;
   snapshot: Pick<PluginMetadataSnapshot, "index" | "plugins">;
   authStore?: AuthProfileStore;
+  env: NodeJS.ProcessEnv;
 }): boolean {
   const providers = params.config?.models?.providers;
   if (!providers || typeof providers !== "object") {
@@ -167,6 +173,7 @@ function hasConfiguredVisionModelAuthSignal(params: {
         snapshot: params.snapshot,
         providerId,
         config: params.config,
+        env: params.env,
       })
     ) {
       return true;
@@ -223,8 +230,13 @@ export function resolveOptionalMediaToolFactoryPlan(params: {
       pdf: false,
     };
   }
+  // Per-turn skill overrides temporarily mutate process.env. Capability planning
+  // must use the Gateway-owned startup snapshot so concurrent runs cannot add or
+  // remove prompt tools from another session's persistent CLI binding.
+  const env = getActiveSecretsRuntimeEnv();
   const snapshot = loadCapabilityMetadataSnapshot({
     config: params.config,
+    env,
     ...(params.workspaceDir ? { workspaceDir: params.workspaceDir } : {}),
   });
   return {
@@ -236,6 +248,7 @@ export function resolveOptionalMediaToolFactoryPlan(params: {
           authStore: params.authStore,
           key: "imageGenerationProviders",
           config: params.config,
+          env,
         })),
     videoGenerate:
       allowVideoGenerate &&
@@ -245,6 +258,7 @@ export function resolveOptionalMediaToolFactoryPlan(params: {
           authStore: params.authStore,
           key: "videoGenerationProviders",
           config: params.config,
+          env,
         })),
     musicGenerate:
       allowMusicGenerate &&
@@ -254,6 +268,7 @@ export function resolveOptionalMediaToolFactoryPlan(params: {
           authStore: params.authStore,
           key: "musicGenerationProviders",
           config: params.config,
+          env,
         })),
     pdf:
       allowPdf &&
@@ -263,11 +278,13 @@ export function resolveOptionalMediaToolFactoryPlan(params: {
           authStore: params.authStore,
           key: "mediaUnderstandingProviders",
           config: params.config,
+          env,
         }) ||
         hasConfiguredVisionModelAuthSignal({
           config: params.config,
           snapshot,
           authStore: params.authStore,
+          env,
         })),
   };
 }

@@ -13,7 +13,7 @@ import type { InstalledPluginIndexRecord } from "../plugins/installed-plugin-ind
 import type { PluginManifestRecord } from "../plugins/manifest-registry.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
 import { resetPluginRuntimeStateForTest } from "../plugins/runtime.js";
-import { clearSecretsRuntimeSnapshot } from "../secrets/runtime.js";
+import { activateSecretsRuntimeSnapshot, clearSecretsRuntimeSnapshot } from "../secrets/runtime.js";
 import type { AuthProfileStore } from "./auth-profiles/types.js";
 import { resolveOptionalMediaToolFactoryPlan } from "./openclaw-tools.media-factory-plan.js";
 import { DEFAULT_PLUGIN_TOOLS_ALLOWLIST_ENTRY } from "./tool-policy.js";
@@ -521,6 +521,39 @@ describe("optional media tool factory planning", () => {
       musicGenerate: true,
       pdf: true,
     });
+  });
+
+  it("ignores transient skill env while planning persistent CLI prompt tools", () => {
+    const config: OpenClawConfig = {};
+    installSnapshot(config, [
+      createPlugin({
+        id: "video-owner",
+        contracts: { videoGenerationProviders: ["video-owner"] },
+        setupProviders: [{ id: "video-owner", envVars: ["VIDEO_OWNER_API_KEY"] }],
+      }),
+    ]);
+    vi.stubEnv("VIDEO_OWNER_API_KEY", "");
+    activateSecretsRuntimeSnapshot({
+      sourceConfig: config,
+      config,
+      authStores: [],
+      warnings: [],
+      webTools: {
+        search: { providerSource: "none", diagnostics: [] },
+        fetch: { providerSource: "none", diagnostics: [] },
+        diagnostics: [],
+      },
+    });
+
+    // Active skills may inject this globally while another session prepares.
+    vi.stubEnv("VIDEO_OWNER_API_KEY", "transient-skill-key");
+
+    expect(
+      resolveOptionalMediaToolFactoryPlan({
+        config,
+        authStore: createAuthStore(),
+      }).videoGenerate,
+    ).toBe(false);
   });
 
   it("keeps manifest provider auth env aliases on the music factory path", () => {
