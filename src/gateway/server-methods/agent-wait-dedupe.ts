@@ -24,6 +24,8 @@ export type AgentWaitTerminalSnapshot = {
   pendingError?: boolean;
   timeoutPhase?: AgentRunTerminalOutcome["timeoutPhase"];
   providerStarted?: boolean;
+  finalAssistantVisibleText?: string;
+  finalAssistantRawText?: string;
 };
 
 const AGENT_WAITERS_BY_RUN_ID = new Map<string, Set<() => void>>();
@@ -62,6 +64,8 @@ function buildDedupeTerminalSnapshot(params: {
   yielded: boolean;
   timeoutPhase: unknown;
   providerStarted: unknown;
+  finalAssistantVisibleText?: string;
+  finalAssistantRawText?: string;
 }): AgentWaitTerminalSnapshot {
   const terminalOutcome = buildAgentRunTerminalOutcome({
     status: params.status,
@@ -90,6 +94,12 @@ function buildDedupeTerminalSnapshot(params: {
     ...(terminalOutcome.timeoutPhase ? { timeoutPhase: terminalOutcome.timeoutPhase } : {}),
     ...(terminalOutcome.providerStarted !== undefined
       ? { providerStarted: terminalOutcome.providerStarted }
+      : {}),
+    ...(params.finalAssistantVisibleText
+      ? { finalAssistantVisibleText: params.finalAssistantVisibleText }
+      : {}),
+    ...(params.finalAssistantRawText
+      ? { finalAssistantRawText: params.finalAssistantRawText }
       : {}),
   };
 }
@@ -164,6 +174,8 @@ function readTerminalSnapshotFromDedupeEntry(entry: DedupeEntry): AgentWaitTermi
   const yielded = payload?.yielded === true || resultMeta?.yielded === true;
   const timeoutPhase = payload?.timeoutPhase ?? resultMeta?.timeoutPhase;
   const providerStarted = payload?.providerStarted ?? resultMeta?.providerStarted;
+  const finalAssistantVisibleText = asString(resultMeta?.finalAssistantVisibleText);
+  const finalAssistantRawText = asString(resultMeta?.finalAssistantRawText);
   const errorMessage =
     typeof payload?.error === "string"
       ? payload.error
@@ -190,6 +202,8 @@ function readTerminalSnapshotFromDedupeEntry(entry: DedupeEntry): AgentWaitTermi
     yielded,
     timeoutPhase,
     providerStarted,
+    finalAssistantVisibleText,
+    finalAssistantRawText,
   });
 }
 
@@ -202,13 +216,48 @@ function terminalOutcomeFromWaitSnapshot(
   return buildAgentRunTerminalOutcome(snapshot);
 }
 
+function mergeDedupeTerminalSnapshots(params: {
+  agentEntry: DedupeEntry;
+  agentSnapshot: AgentWaitTerminalSnapshot;
+  chatEntry: DedupeEntry;
+  chatSnapshot: AgentWaitTerminalSnapshot;
+  preserveAgentReply?: boolean;
+}): AgentWaitTerminalSnapshot {
+  const agentFirst = params.agentEntry.ts <= params.chatEntry.ts;
+  const current = agentFirst ? params.agentSnapshot : params.chatSnapshot;
+  const incoming = agentFirst ? params.chatSnapshot : params.agentSnapshot;
+  const currentOutcome = terminalOutcomeFromWaitSnapshot(current);
+  const incomingOutcome = terminalOutcomeFromWaitSnapshot(incoming);
+  const selected =
+    currentOutcome && incomingOutcome
+      ? mergeAgentRunTerminalOutcome(currentOutcome, incomingOutcome) === currentOutcome
+        ? current
+        : incoming
+      : params.chatEntry.ts > params.agentEntry.ts
+        ? params.chatSnapshot
+        : params.agentSnapshot;
+  if (!params.preserveAgentReply) {
+    return selected;
+  }
+  return {
+    ...selected,
+    ...(params.agentSnapshot.finalAssistantVisibleText
+      ? { finalAssistantVisibleText: params.agentSnapshot.finalAssistantVisibleText }
+      : {}),
+    ...(params.agentSnapshot.finalAssistantRawText
+      ? { finalAssistantRawText: params.agentSnapshot.finalAssistantRawText }
+      : {}),
+  };
+}
+
 export function readTerminalSnapshotFromGatewayDedupe(params: {
   dedupe: Map<string, DedupeEntry>;
   runId: string;
   ignoreAgentTerminalSnapshot?: boolean;
+  requireAgentTerminalSnapshot?: boolean;
 }): AgentWaitTerminalSnapshot | null {
-  // Agent and chat handlers both cache terminal state. Project them into one
-  // wait result while preserving stronger terminal outcomes such as hard timeout.
+  // An active chat run can reuse an id previously owned by an agent RPC. Its
+  // chat snapshot is authoritative; stale agent metadata must not satisfy it.
   if (params.ignoreAgentTerminalSnapshot) {
     const chatEntry = params.dedupe.get(`chat:${params.runId}`);
     if (!chatEntry) {
@@ -216,7 +265,26 @@ export function readTerminalSnapshotFromGatewayDedupe(params: {
     }
     return readTerminalSnapshotFromDedupeEntry(chatEntry);
   }
-
+  if (params.requireAgentTerminalSnapshot) {
+    const agentEntry = params.dedupe.get(`agent:${params.runId}`);
+    const agentSnapshot = agentEntry ? readTerminalSnapshotFromDedupeEntry(agentEntry) : null;
+    if (!agentEntry || !agentSnapshot) {
+      return null;
+    }
+    const chatEntry = params.dedupe.get(`chat:${params.runId}`);
+    const chatSnapshot = chatEntry ? readTerminalSnapshotFromDedupeEntry(chatEntry) : null;
+    return chatEntry && chatSnapshot
+      ? mergeDedupeTerminalSnapshots({
+          agentEntry,
+          agentSnapshot,
+          chatEntry,
+          chatSnapshot,
+          preserveAgentReply: true,
+        })
+      : agentSnapshot;
+  }
+  // Agent and chat handlers both cache terminal state. Project them into one
+  // wait result while preserving stronger terminal outcomes such as hard timeout.
   const chatEntry = params.dedupe.get(`chat:${params.runId}`);
   const chatSnapshot = chatEntry ? readTerminalSnapshotFromDedupeEntry(chatEntry) : null;
 
@@ -234,9 +302,7 @@ export function readTerminalSnapshotFromGatewayDedupe(params: {
   }
 
   if (agentSnapshot && chatSnapshot && agentEntry && chatEntry) {
-    // Reused idempotency keys can leave both records present. Prefer the
-    // freshest terminal snapshot so callers observe the latest run outcome.
-    return chatEntry.ts > agentEntry.ts ? chatSnapshot : agentSnapshot;
+    return mergeDedupeTerminalSnapshots({ agentEntry, agentSnapshot, chatEntry, chatSnapshot });
   }
 
   return agentSnapshot ?? chatSnapshot;
@@ -248,6 +314,7 @@ export async function waitForTerminalGatewayDedupe(params: {
   timeoutMs: number;
   signal?: AbortSignal;
   ignoreAgentTerminalSnapshot?: boolean;
+  requireAgentTerminalSnapshot?: boolean;
 }): Promise<AgentWaitTerminalSnapshot | null> {
   const initial = readTerminalSnapshotFromGatewayDedupe(params);
   if (initial) {

@@ -21,7 +21,7 @@ import {
   readLatestAssistantReplySnapshot,
   waitForAgentRun,
   waitForAgentRunsToDrain,
-  waitForAgentRunAndReadUpdatedAssistantReply,
+  waitForAgentRunReply,
 } from "./run-wait.js";
 
 type AgentWaitGatewayRequest = {
@@ -29,6 +29,7 @@ type AgentWaitGatewayRequest = {
   params?: {
     runId?: string;
     timeoutMs?: unknown;
+    includeReply?: boolean;
   };
   timeoutMs?: unknown;
 };
@@ -376,9 +377,35 @@ describe("waitForAgentRun", () => {
       stopReason: "aborted",
     });
   });
+
+  it("requests and preserves run-owned terminal reply text", async () => {
+    callGatewayMock.mockResolvedValue({
+      status: "ok",
+      finalAssistantVisibleText: "sent mirror",
+      finalAssistantRawText: "REPLY_SKIP",
+    });
+
+    const result = await waitForAgentRun({
+      runId: "run-reply",
+      timeoutMs: 500,
+      includeReply: true,
+    });
+
+    expect(result).toMatchObject({
+      status: "ok",
+      finalAssistantVisibleText: "sent mirror",
+      finalAssistantRawText: "REPLY_SKIP",
+    });
+    expect(callGatewayMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "agent.wait",
+        params: { runId: "run-reply", timeoutMs: 500, includeReply: true },
+      }),
+    );
+  });
 });
 
-describe("waitForAgentRunAndReadUpdatedAssistantReply", () => {
+describe("waitForAgentRunReply", () => {
   beforeEach(() => {
     callGatewayMock.mockClear();
     testing.setDepsForTest({
@@ -386,64 +413,108 @@ describe("waitForAgentRunAndReadUpdatedAssistantReply", () => {
     });
   });
 
-  it("returns undefined when the latest assistant fingerprint matches the baseline", async () => {
-    const assistantMessage = {
-      role: "assistant",
-      content: [{ type: "text", text: "same reply" }],
-      timestamp: 42,
-    };
-    callGatewayMock
-      .mockResolvedValueOnce({
-        status: "ok",
-      })
-      .mockResolvedValueOnce({
-        messages: [assistantMessage],
-      });
-
-    const result = await waitForAgentRunAndReadUpdatedAssistantReply({
-      runId: "run-1",
-      sessionKey: "agent:main:child",
-      timeoutMs: 1_000,
-      baseline: {
-        text: "same reply",
-        fingerprint: JSON.stringify(assistantMessage),
-      },
-    });
-
-    expect(result).toEqual({
+  it("uses run-owned terminal text without reading session history", async () => {
+    callGatewayMock.mockResolvedValueOnce({
       status: "ok",
-      replyText: undefined,
+      finalAssistantVisibleText: "fresh run reply",
+      finalAssistantRawText: "fresh run reply",
     });
+
+    const result = await waitForAgentRunReply({
+      runId: "run-terminal",
+      timeoutMs: 1_000,
+    });
+
+    expect(result).toMatchObject({
+      status: "ok",
+      replyText: "fresh run reply",
+      finalAssistantRawText: "fresh run reply",
+    });
+    expect(callGatewayMock).toHaveBeenCalledTimes(1);
+    expect(callGatewayMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "agent.wait",
+        params: { runId: "run-terminal", timeoutMs: 1_000, includeReply: true },
+      }),
+    );
   });
 
-  it("returns the new assistant text when the fingerprint changes", async () => {
-    callGatewayMock
-      .mockResolvedValueOnce({
+  it.each([
+    ["[[reply_to_current]] fresh run reply", "fresh run reply"],
+    ["[[audio_as_voice]] fresh run reply", "fresh run reply"],
+    ["[[reply_to_current]] [[audio_as_voice]] fresh run reply", "fresh run reply"],
+    ["[[reply_to_current]]", undefined],
+  ])(
+    "normalizes terminal directive text %s before returning replyText",
+    async (visible, replyText) => {
+      callGatewayMock.mockResolvedValueOnce({
         status: "ok",
-      })
-      .mockResolvedValueOnce({
-        messages: [
-          {
-            role: "assistant",
-            content: [{ type: "text", text: "fresh reply" }],
-            timestamp: 99,
-          },
-        ],
+        finalAssistantVisibleText: visible,
+        finalAssistantRawText: visible,
       });
 
-    const result = await waitForAgentRunAndReadUpdatedAssistantReply({
-      runId: "run-2",
-      sessionKey: "agent:main:child",
+      const result = await waitForAgentRunReply({
+        runId: "run-terminal-directives",
+        timeoutMs: 1_000,
+      });
+
+      expect(result).toMatchObject({
+        status: "ok",
+        replyText,
+        finalAssistantVisibleText: visible,
+      });
+    },
+  );
+
+  it("does not guess from session history when a run has no terminal reply", async () => {
+    callGatewayMock.mockResolvedValueOnce({ status: "ok" });
+
+    const result = await waitForAgentRunReply({
+      runId: "run-empty",
       timeoutMs: 1_000,
-      baseline: {
-        text: "older reply",
-        fingerprint: "old-fingerprint",
-      },
     });
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({ status: "ok", replyText: undefined });
+    expect(callGatewayMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["NO_REPLY", "[[reply_to_current]] NO_REPLY", "[[audio_as_voice]] NO_REPLY"])(
+    "keeps raw silent terminal metadata without exposing %s as reply text",
+    async (finalAssistantRawText) => {
+      callGatewayMock.mockResolvedValueOnce({
+        status: "ok",
+        finalAssistantVisibleText: finalAssistantRawText,
+        finalAssistantRawText,
+      });
+
+      const result = await waitForAgentRunReply({
+        runId: "run-silent",
+        timeoutMs: 1_000,
+      });
+
+      expect(result).toMatchObject({
+        status: "ok",
+        replyText: undefined,
+        finalAssistantRawText,
+      });
+    },
+  );
+
+  it("does not promote raw-only terminal metadata to visible reply text", async () => {
+    callGatewayMock.mockResolvedValueOnce({
       status: "ok",
-      replyText: "fresh reply",
+      finalAssistantRawText: "NO_REPLY",
+    });
+
+    const result = await waitForAgentRunReply({
+      runId: "run-raw-only",
+      timeoutMs: 1_000,
+    });
+
+    expect(result).toMatchObject({
+      status: "ok",
+      replyText: undefined,
+      finalAssistantRawText: "NO_REPLY",
     });
   });
 });

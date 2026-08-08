@@ -29,58 +29,10 @@ vi.mock("../gateway/call.js", () => ({
 }));
 
 vi.mock("./run-wait.js", () => {
-  const readLatestAssistantReplySnapshot = async (params: {
-    sessionKey: string;
-    limit?: number;
-    callGateway?: (request: CallGatewayOptions) => Promise<{ messages?: unknown[] }>;
-  }) => {
-    // The real helper snapshots assistant fingerprints so a steer command only
-    // reports new replies, not the baseline text that existed before steering.
-    const history = await params.callGateway?.({
-      method: "chat.history",
-      params: { sessionKey: params.sessionKey, limit: params.limit ?? 50 },
-    });
-    const messages = Array.isArray(history?.messages) ? history.messages : [];
-    for (let i = messages.length - 1; i >= 0; i -= 1) {
-      const message = messages[i];
-      if (!message || typeof message !== "object") {
-        continue;
-      }
-      if ((message as { role?: unknown }).role !== "assistant") {
-        continue;
-      }
-      const content = (message as { content?: unknown }).content;
-      let text = "";
-      if (Array.isArray(content)) {
-        const textBlocks: string[] = [];
-        for (const block of content) {
-          if (
-            block &&
-            typeof block === "object" &&
-            typeof (block as { text?: unknown }).text === "string"
-          ) {
-            textBlocks.push((block as { text: string }).text);
-          }
-        }
-        text = textBlocks.join("\n");
-      } else if (typeof content === "string") {
-        text = content;
-      }
-      if (text.trim()) {
-        return { text, fingerprint: JSON.stringify(message) };
-      }
-    }
-    return {};
-  };
-
   return {
-    readLatestAssistantReplySnapshot,
-    waitForAgentRunAndReadUpdatedAssistantReply: async (params: {
+    waitForAgentRunReply: async (params: {
       runId: string;
-      sessionKey: string;
       timeoutMs: number;
-      limit?: number;
-      baseline?: { fingerprint?: string };
       callGateway?: (request: CallGatewayOptions) => Promise<Record<string, unknown>>;
     }) => {
       const wait = await params.callGateway?.({
@@ -88,6 +40,7 @@ vi.mock("./run-wait.js", () => {
         params: {
           runId: params.runId,
           timeoutMs: Math.max(1, Math.floor(params.timeoutMs)),
+          includeReply: true,
         },
         timeoutMs: Math.max(1, Math.floor(params.timeoutMs)) + 2000,
       });
@@ -95,20 +48,15 @@ vi.mock("./run-wait.js", () => {
       if (status === "timeout" || status === "pending" || status === "error") {
         return { status, error: typeof wait?.error === "string" ? wait.error : undefined };
       }
-      const latestReply = await readLatestAssistantReplySnapshot({
-        sessionKey: params.sessionKey,
-        limit: params.limit,
-        callGateway: params.callGateway as
-          | ((request: CallGatewayOptions) => Promise<{ messages?: unknown[] }>)
-          | undefined,
-      });
+      const visible =
+        typeof wait?.finalAssistantVisibleText === "string"
+          ? wait.finalAssistantVisibleText
+          : undefined;
+      const raw =
+        typeof wait?.finalAssistantRawText === "string" ? wait.finalAssistantRawText : undefined;
       return {
         status: "ok",
-        replyText:
-          latestReply.text &&
-          (!params.baseline?.fingerprint || latestReply.fingerprint !== params.baseline.fingerprint)
-            ? latestReply.text
-            : undefined,
+        replyText: visible ?? raw,
       };
     },
   };
@@ -567,7 +515,7 @@ describe("sendControlledSubagentMessage", () => {
       message: "continue",
     });
 
-    expect(historyCalls).toBe(2);
+    expect(historyCalls).toBe(0);
     expect(result).toEqual({
       status: "ok",
       runId: "run-followup-stale-reply",

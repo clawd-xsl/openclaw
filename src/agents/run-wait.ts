@@ -11,9 +11,11 @@ import {
   resolveDateTimestampMs,
   resolveExpiresAtMsFromDurationMs,
 } from "@openclaw/normalization-core/number-coercion";
+import { isSilentReplyPayloadText, SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
 import { callGateway } from "../gateway/call.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { normalizeBlockedLivenessWaitStatus } from "../shared/agent-liveness.js";
+import { parseInlineDirectives } from "../utils/directive-tags.js";
 import {
   buildAgentRunTerminalOutcomeFromWaitResult,
   type AgentRunTerminalOutcome,
@@ -67,6 +69,8 @@ export type AgentWaitResult = {
   pendingError?: boolean;
   timeoutPhase?: AgentRunTimeoutPhase;
   providerStarted?: boolean;
+  finalAssistantVisibleText?: string;
+  finalAssistantRawText?: string;
 };
 
 /** Summary returned after waiting for a dynamic set of pending runs to drain. */
@@ -87,6 +91,8 @@ type RawAgentWaitResponse = {
   pendingError?: unknown;
   timeoutPhase?: unknown;
   providerStarted?: unknown;
+  finalAssistantVisibleText?: unknown;
+  finalAssistantRawText?: unknown;
 };
 
 function normalizeAgentWaitResult(
@@ -107,6 +113,12 @@ function normalizeAgentWaitResult(
     pendingError: wait?.pendingError === true ? true : undefined,
     timeoutPhase: normalizeAgentRunTimeoutPhase(wait?.timeoutPhase),
     providerStarted: normalizeProviderStarted(wait?.providerStarted),
+    finalAssistantVisibleText:
+      typeof wait?.finalAssistantVisibleText === "string"
+        ? wait.finalAssistantVisibleText
+        : undefined,
+    finalAssistantRawText:
+      typeof wait?.finalAssistantRawText === "string" ? wait.finalAssistantRawText : undefined,
   };
 }
 
@@ -220,6 +232,7 @@ export async function readLatestAssistantReply(params: {
 export async function waitForAgentRun(params: {
   runId: string;
   timeoutMs: number;
+  includeReply?: boolean;
   callGateway?: GatewayCaller;
 }): Promise<AgentWaitResult> {
   const timeoutMs = resolveRunWaitTimeoutMs(params.timeoutMs);
@@ -229,6 +242,7 @@ export async function waitForAgentRun(params: {
       params: {
         runId: params.runId,
         timeoutMs,
+        ...(params.includeReply ? { includeReply: true } : {}),
       },
       timeoutMs: addTimerTimeoutGraceMs(timeoutMs, 2_000),
     });
@@ -251,38 +265,34 @@ export async function waitForAgentRun(params: {
   }
 }
 
-/** Wait for a run and return a reply only when it differs from the supplied baseline. */
-export async function waitForAgentRunAndReadUpdatedAssistantReply(params: {
+/** Wait for a run and return only reply metadata owned by that exact run. */
+export async function waitForAgentRunReply(params: {
   runId: string;
-  sessionKey: string;
   timeoutMs: number;
-  limit?: number;
-  baseline?: AssistantReplySnapshot;
   callGateway?: GatewayCaller;
 }): Promise<AgentWaitResult & { replyText?: string }> {
   const wait = await waitForAgentRun({
     runId: params.runId,
     timeoutMs: params.timeoutMs,
+    includeReply: true,
     callGateway: params.callGateway,
   });
   if (wait.status !== "ok") {
     return wait;
   }
 
-  const latestReply = await readLatestAssistantReplySnapshot({
-    sessionKey: params.sessionKey,
-    limit: params.limit,
-    callGateway: params.callGateway,
-  });
-  const baselineFingerprint = params.baseline?.fingerprint;
-  const replyText =
-    latestReply.text && (!baselineFingerprint || latestReply.fingerprint !== baselineFingerprint)
-      ? latestReply.text
-      : undefined;
-  return {
-    status: "ok",
-    replyText,
-  };
+  const runReplyText = wait.finalAssistantVisibleText;
+  const normalizedRunReplyText = parseInlineDirectives(runReplyText, {
+    stripAudioTag: true,
+    stripReplyTags: true,
+  }).text.trim();
+  if (
+    normalizedRunReplyText &&
+    !isSilentReplyPayloadText(normalizedRunReplyText, SILENT_REPLY_TOKEN)
+  ) {
+    return { ...wait, replyText: normalizedRunReplyText };
+  }
+  return { ...wait, replyText: undefined };
 }
 
 /** Wait until the current and newly spawned pending run IDs are drained or timed out. */

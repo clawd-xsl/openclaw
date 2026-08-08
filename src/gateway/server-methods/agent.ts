@@ -3065,6 +3065,7 @@ export const agentHandlers: GatewayRequestHandlers = {
     }
     const p = params;
     const runId = (p.runId ?? "").trim();
+    const includeReply = p.includeReply === true;
     const timeoutMs =
       typeof p.timeoutMs === "number" && Number.isFinite(p.timeoutMs)
         ? Math.max(0, Math.floor(p.timeoutMs))
@@ -3079,6 +3080,7 @@ export const agentHandlers: GatewayRequestHandlers = {
       dedupe: context.dedupe,
       runId,
       ignoreAgentTerminalSnapshot: hasActiveChatRun,
+      requireAgentTerminalSnapshot: includeReply,
     });
     if (cachedGatewaySnapshot) {
       respond(true, {
@@ -3093,11 +3095,16 @@ export const agentHandlers: GatewayRequestHandlers = {
         pendingError: cachedGatewaySnapshot.pendingError,
         timeoutPhase: cachedGatewaySnapshot.timeoutPhase,
         providerStarted: cachedGatewaySnapshot.providerStarted,
+        ...(includeReply
+          ? {
+              finalAssistantVisibleText: cachedGatewaySnapshot.finalAssistantVisibleText,
+              finalAssistantRawText: cachedGatewaySnapshot.finalAssistantRawText,
+            }
+          : {}),
       });
       return;
     }
 
-    const lifecycleAbortController = new AbortController();
     const dedupeAbortController = new AbortController();
     const dedupePromise = waitForTerminalGatewayDedupe({
       dedupe: context.dedupe,
@@ -3105,9 +3112,12 @@ export const agentHandlers: GatewayRequestHandlers = {
       timeoutMs,
       signal: dedupeAbortController.signal,
       ignoreAgentTerminalSnapshot: hasActiveChatRun,
+      requireAgentTerminalSnapshot: includeReply,
     });
 
-    if (hasActiveChatRun) {
+    if (hasActiveChatRun || includeReply) {
+      // Reply-aware waits require the exact run-owned terminal result. Lifecycle
+      // events intentionally carry no assistant text and may precede publication.
       const snapshot = await dedupePromise;
       dedupeAbortController.abort();
       if (!snapshot) {
@@ -3130,10 +3140,17 @@ export const agentHandlers: GatewayRequestHandlers = {
         pendingError: snapshot.pendingError,
         timeoutPhase: snapshot.timeoutPhase,
         providerStarted: snapshot.providerStarted,
+        ...(includeReply
+          ? {
+              finalAssistantVisibleText: snapshot.finalAssistantVisibleText,
+              finalAssistantRawText: snapshot.finalAssistantRawText,
+            }
+          : {}),
       });
       return;
     }
 
+    const lifecycleAbortController = new AbortController();
     const lifecyclePromise = waitForAgentJob({
       runId,
       timeoutMs,
@@ -3181,6 +3198,12 @@ export const agentHandlers: GatewayRequestHandlers = {
       pendingError: snapshot.pendingError,
       timeoutPhase: snapshot.timeoutPhase,
       providerStarted: snapshot.providerStarted,
+      ...(includeReply
+        ? {
+            finalAssistantVisibleText: snapshot.finalAssistantVisibleText,
+            finalAssistantRawText: snapshot.finalAssistantRawText,
+          }
+        : {}),
     });
   },
 };

@@ -860,6 +860,7 @@ export function runAgentAttempt(params: {
 
 export function buildAcpResult(params: {
   payloadText: string;
+  rawPayloadText?: string;
   startedAt: number;
   stopReason?: string;
   abortSignal?: AbortSignal;
@@ -868,6 +869,9 @@ export function buildAcpResult(params: {
     text: params.payloadText,
   });
   const payloads = normalizedFinalPayload ? [normalizedFinalPayload] : [];
+  const finalAssistantVisibleText = normalizedFinalPayload?.text?.trim() || undefined;
+  const finalAssistantRawText =
+    params.rawPayloadText?.trim() || params.payloadText.trim() || undefined;
   const abortFields = resolveAgentRunAbortLifecycleFields(params.abortSignal);
   return {
     payloads,
@@ -875,6 +879,8 @@ export function buildAcpResult(params: {
       durationMs: Date.now() - params.startedAt,
       aborted: abortFields.aborted ?? false,
       stopReason: abortFields.stopReason ?? params.stopReason,
+      ...(finalAssistantVisibleText ? { finalAssistantVisibleText } : {}),
+      ...(finalAssistantRawText ? { finalAssistantRawText } : {}),
     },
   };
 }

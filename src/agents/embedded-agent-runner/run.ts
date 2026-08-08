@@ -7,7 +7,7 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import { sanitizeForLog } from "../../../packages/terminal-core/src/ansi.js";
 import { FAST_MODE_AUTO_PROGRESS_KIND, type ReplyPayload } from "../../auto-reply/reply-payload.js";
 import type { ThinkLevel } from "../../auto-reply/thinking.js";
-import { SILENT_REPLY_TOKEN } from "../../auto-reply/tokens.js";
+import { isSilentReplyPayloadText, SILENT_REPLY_TOKEN } from "../../auto-reply/tokens.js";
 import { getRuntimeConfigSnapshot } from "../../config/config.js";
 import { resolveStorePath } from "../../config/sessions.js";
 import { updateSessionEntry } from "../../config/sessions/session-accessor.js";
@@ -39,6 +39,7 @@ import { enqueueCommandInLane, getCommandLaneSnapshot } from "../../process/comm
 import type { CommandQueueEnqueueOptions } from "../../process/command-queue.types.js";
 import { createAgentHarnessTaskRuntimeScope } from "../../tasks/agent-harness-task-runtime-scope.js";
 import { resolveUserPath } from "../../utils.js";
+import { parseInlineDirectives } from "../../utils/directive-tags.js";
 import { isMarkdownCapableMessageChannel } from "../../utils/message-channel.js";
 import {
   retireSessionMcpRuntime,
@@ -3650,8 +3651,27 @@ async function runEmbeddedAgentInternal(
             compactionCount: autoCompactionCount > 0 ? autoCompactionCount : undefined,
             compactionTokensAfter: lastCompactionTokensAfter,
           };
-          const finalAssistantVisibleText = resolveFinalAssistantVisibleText(sessionLastAssistant);
-          const finalAssistantRawText = resolveFinalAssistantRawText(sessionLastAssistant);
+          const modelFinalAssistantVisibleText =
+            resolveFinalAssistantVisibleText(currentAttemptAssistant);
+          const finalAssistantRawText = resolveFinalAssistantRawText(currentAttemptAssistant);
+          const sourceReplyVisibleText = attempt.messagingToolSourceReplyPayloads
+            ?.map((payload) => payload.text?.trim() ?? "")
+            .filter(Boolean)
+            .join("\n\n");
+          const modelFinalAssistantControlText = parseInlineDirectives(
+            modelFinalAssistantVisibleText,
+            { stripAudioTag: true, stripReplyTags: true },
+          ).text;
+          // Private internal-ui sends own a tool-only or otherwise silent terminal result.
+          // Automatic runs keep a later model final instead of replacing it with tool progress.
+          const sourceReplyOwnsVisibleResult =
+            params.sourceReplyDeliveryMode === "message_tool_only" ||
+            !modelFinalAssistantVisibleText ||
+            isSilentReplyPayloadText(modelFinalAssistantControlText, SILENT_REPLY_TOKEN);
+          const finalAssistantVisibleText =
+            sourceReplyOwnsVisibleResult && sourceReplyVisibleText
+              ? sourceReplyVisibleText
+              : modelFinalAssistantVisibleText;
 
           const payloads = buildEmbeddedRunPayloads({
             assistantTexts: attempt.assistantTexts,
@@ -3701,7 +3721,7 @@ async function runEmbeddedAgentInternal(
           const recoveredFinalAssistantTextAfterPromptTimeout =
             timedOutDuringPrompt &&
             ["completed", "end_turn", "stop"].includes(finalAssistantStopReason)
-              ? (finalAssistantVisibleText ?? finalAssistantRawText)?.trim()
+              ? (modelFinalAssistantVisibleText ?? finalAssistantRawText)?.trim()
               : undefined;
           const payloadAlreadyContainsRecoveredFinalAssistant =
             recoveredFinalAssistantTextAfterPromptTimeout
@@ -3964,13 +3984,13 @@ async function runEmbeddedAgentInternal(
             continue;
           }
           compactionContinuationRetryInstruction = null;
-          if (reasoningOnlyRetriesExhausted && !finalAssistantVisibleText) {
+          if (reasoningOnlyRetriesExhausted && !modelFinalAssistantVisibleText) {
             log.warn(
               `reasoning-only retries exhausted: runId=${params.runId} sessionId=${params.sessionId} ` +
                 `provider=${activeErrorContext.provider}/${activeErrorContext.model} attempts=${reasoningOnlyRetryAttempts}/${maxReasoningOnlyRetryAttempts} — surfacing incomplete-turn error`,
             );
           }
-          if (reasoningOnlyRetriesExhausted && !finalAssistantVisibleText) {
+          if (reasoningOnlyRetriesExhausted && !modelFinalAssistantVisibleText) {
             const incompletePayloadText = terminalToolPresentation
               ? terminalToolPresentation.concat(
                   "\n\n",

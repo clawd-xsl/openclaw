@@ -1150,6 +1150,7 @@ async function agentCommandInternal(
       const result = applyAgentRunAbortMetadata(
         attemptExecutionRuntime.buildAcpResult({
           payloadText: finalText,
+          rawPayloadText: finalTextRaw,
           startedAt,
           stopReason,
           abortSignal: opts.abortSignal,

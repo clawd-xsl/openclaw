@@ -17,10 +17,7 @@ import { isSubagentSessionKey, parseAgentSessionKey } from "../routing/session-k
 import { createLazyImportLoader } from "../shared/lazy-promise.js";
 import { INTERNAL_MESSAGE_CHANNEL } from "../utils/message-channel.js";
 import { AGENT_LANE_SUBAGENT } from "./lanes.js";
-import {
-  readLatestAssistantReplySnapshot,
-  waitForAgentRunAndReadUpdatedAssistantReply,
-} from "./run-wait.js";
+import { waitForAgentRunReply } from "./run-wait.js";
 import { resolveStoredSubagentCapabilities } from "./subagent-capabilities.js";
 import { buildLatestSubagentRunIndex, resolveSessionEntryForKey } from "./subagent-list.js";
 import { subagentRuns } from "./subagent-registry-memory.js";
@@ -45,7 +42,6 @@ export const DEFAULT_RECENT_MINUTES = 30;
 export const MAX_RECENT_MINUTES = 24 * 60;
 const STEER_RATE_LIMIT_MS = 2_000;
 const STEER_ABORT_SETTLE_TIMEOUT_MS = 5_000;
-const SUBAGENT_REPLY_HISTORY_LIMIT = 50;
 
 const steerRateLimit = new Map<string, number>();
 
@@ -713,12 +709,6 @@ export async function sendControlledSubagentMessage(params: {
   const idempotencyKey = crypto.randomUUID();
   let runId: string = idempotencyKey;
   try {
-    const baselineReply = await readLatestAssistantReplySnapshot({
-      sessionKey: targetSessionKey,
-      limit: SUBAGENT_REPLY_HISTORY_LIMIT,
-      callGateway: subagentControlDeps.callGateway,
-    });
-
     const response = await subagentControlDeps.callGateway<{ runId: string }>({
       method: "agent",
       // Follow-up runs must keep the run record's stored authority.
@@ -742,12 +732,9 @@ export async function sendControlledSubagentMessage(params: {
       runId = responseRunId;
     }
 
-    const result = await waitForAgentRunAndReadUpdatedAssistantReply({
+    const result = await waitForAgentRunReply({
       runId,
-      sessionKey: targetSessionKey,
       timeoutMs: 30_000,
-      limit: SUBAGENT_REPLY_HISTORY_LIMIT,
-      baseline: baselineReply,
       callGateway: subagentControlDeps.callGateway,
     });
     if (result.status === "timeout") {

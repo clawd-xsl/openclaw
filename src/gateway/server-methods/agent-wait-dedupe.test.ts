@@ -175,6 +175,88 @@ describe("agent wait dedupe helper", () => {
     expect(testing.getWaiterCount(runId)).toBe(0);
   });
 
+  it("keeps reply-aware waits pending until the terminal agent result is written", async () => {
+    const dedupe = new Map();
+    const runId = "run-reply-after-lifecycle";
+    const waiter = waitForTerminalSnapshot(dedupe, runId, {
+      requireAgentTerminalSnapshot: true,
+    });
+
+    setChatEntry({
+      dedupe,
+      runId,
+      payload: okPayload(runId, { startedAt: 100, endedAt: 200 }),
+    });
+    await Promise.resolve();
+    expect(testing.getWaiterCount(runId)).toBe(1);
+
+    setAgentEntry({
+      dedupe,
+      runId,
+      payload: agentMetaPayload(runId, {
+        finalAssistantVisibleText: "exact run reply",
+        finalAssistantRawText: "exact run reply",
+      }),
+    });
+
+    await expect(waiter).resolves.toEqual(
+      okSnapshot({
+        startedAt: 100,
+        endedAt: 200,
+        finalAssistantVisibleText: "exact run reply",
+        finalAssistantRawText: "exact run reply",
+      }),
+    );
+  });
+
+  it("preserves a chat hard timeout after the exact agent reply is published", () => {
+    const dedupe = new Map();
+    const runId = "run-reply-after-hard-timeout";
+    setChatEntry({
+      dedupe,
+      runId,
+      ts: 100,
+      payload: {
+        runId,
+        status: "timeout",
+        startedAt: 100,
+        endedAt: 200,
+        error: "model timed out",
+        timeoutPhase: "provider",
+        providerStarted: true,
+      },
+    });
+    setAgentEntry({
+      dedupe,
+      runId,
+      ts: 250,
+      payload: agentMetaPayload(
+        runId,
+        {
+          finalAssistantVisibleText: "late exact reply",
+          finalAssistantRawText: "late exact reply",
+        },
+        { startedAt: 100, endedAt: 250 },
+      ),
+    });
+
+    expectTerminalSnapshot(
+      dedupe,
+      runId,
+      {
+        status: "timeout",
+        startedAt: 100,
+        endedAt: 200,
+        error: "model timed out",
+        timeoutPhase: "provider",
+        providerStarted: true,
+        finalAssistantVisibleText: "late exact reply",
+        finalAssistantRawText: "late exact reply",
+      },
+      { requireAgentTerminalSnapshot: true },
+    );
+  });
+
   it("preserves structured yield metadata from terminal agent results", () => {
     const dedupe = new Map();
     const runId = "run-yielded";
@@ -198,6 +280,31 @@ describe("agent wait dedupe helper", () => {
         stopReason: "end_turn",
         livenessState: "paused",
         yielded: true,
+      }),
+    );
+  });
+
+  it("preserves raw and visible terminal replies from the run result", () => {
+    const dedupe = new Map();
+    const runId = "run-reply";
+
+    setAgentEntry({
+      dedupe,
+      runId,
+      payload: agentMetaPayload(runId, {
+        finalAssistantVisibleText: "sent through message tool",
+        finalAssistantRawText: "REPLY_SKIP",
+      }),
+    });
+
+    expectTerminalSnapshot(
+      dedupe,
+      runId,
+      okSnapshot({
+        startedAt: 100,
+        endedAt: 200,
+        finalAssistantVisibleText: "sent through message tool",
+        finalAssistantRawText: "REPLY_SKIP",
       }),
     );
   });
@@ -392,13 +499,20 @@ describe("agent wait dedupe helper", () => {
     setAgentEntry({
       dedupe,
       runId,
-      payload: okPayload(runId),
+      payload: agentMetaPayload(runId, {
+        finalAssistantVisibleText: "stale agent reply",
+        finalAssistantRawText: "stale agent reply",
+      }),
     });
 
-    expectNoTerminalSnapshot(dedupe, runId, { ignoreAgentTerminalSnapshot: true });
+    expectNoTerminalSnapshot(dedupe, runId, {
+      ignoreAgentTerminalSnapshot: true,
+      requireAgentTerminalSnapshot: true,
+    });
 
     const wait = waitForTerminalSnapshot(dedupe, runId, {
       ignoreAgentTerminalSnapshot: true,
+      requireAgentTerminalSnapshot: true,
     });
     await Promise.resolve();
     expect(testing.getWaiterCount(runId)).toBe(1);

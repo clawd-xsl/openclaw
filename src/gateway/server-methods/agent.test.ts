@@ -63,6 +63,7 @@ const mocks = vi.hoisted(() => ({
   getChannelPlugin: vi.fn(),
   sendDurableMessageBatch: vi.fn(),
   resolveSendPolicy: vi.fn((_args?: { entry?: { sendPolicy?: string } }) => "allow"),
+  waitForAgentJob: vi.fn(),
   resolveSessionLifecycleTimestamps: vi.fn(
     ({ entry }: { entry?: { sessionStartedAt?: number; lastInteractionAt?: number } }) => ({
       sessionStartedAt: entry?.sessionStartedAt,
@@ -202,6 +203,10 @@ vi.mock("../../infra/voicewake-routing.js", () => ({
 vi.mock("../../sessions/send-policy.js", () => ({
   resolveSendPolicy: (...args: unknown[]) =>
     (mocks.resolveSendPolicy as (...args: unknown[]) => unknown)(...args),
+}));
+
+vi.mock("./agent-job.js", () => ({
+  waitForAgentJob: mocks.waitForAgentJob,
 }));
 
 vi.mock("../../channels/plugins/index.js", async () => {
@@ -619,6 +624,7 @@ describe("gateway agent handler", () => {
     mocks.getChannelPlugin.mockReset();
     mocks.sendDurableMessageBatch.mockReset();
     mocks.resolveSendPolicy.mockReset().mockReturnValue("allow");
+    mocks.waitForAgentJob.mockReset();
     mocks.resolveSessionLifecycleTimestamps
       .mockReset()
       .mockImplementation(
@@ -654,6 +660,68 @@ describe("gateway agent handler", () => {
         mode: "enforce",
         maxEntries: 42,
       },
+    });
+  });
+
+  it("waits for the run-owned result when includeReply is requested", async () => {
+    vi.useFakeTimers();
+    mocks.waitForAgentJob.mockResolvedValue({
+      runId: "run-reply-after-lifecycle",
+      status: "ok",
+      ts: 100,
+    });
+    const context = makeContext();
+    const respond = vi.fn();
+    const runId = "run-reply-after-lifecycle";
+    setGatewayDedupeEntry({
+      dedupe: context.dedupe,
+      key: `chat:${runId}`,
+      entry: {
+        ts: Date.now(),
+        ok: true,
+        payload: { runId, status: "ok", startedAt: 100, endedAt: 200 },
+      },
+    });
+
+    const waitPromise = agentHandlers["agent.wait"]({
+      params: { runId, timeoutMs: 5_000, includeReply: true },
+      respond: respond as never,
+      context,
+      req: { type: "req", id: "wait-reply", method: "agent.wait" },
+      client: null,
+      isWebchatConnect: () => false,
+    });
+
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(respond).not.toHaveBeenCalled();
+    expect(mocks.waitForAgentJob).not.toHaveBeenCalled();
+
+    setGatewayDedupeEntry({
+      dedupe: context.dedupe,
+      key: `agent:${runId}`,
+      entry: {
+        ts: Date.now(),
+        ok: true,
+        payload: {
+          runId,
+          status: "ok",
+          result: {
+            meta: {
+              finalAssistantVisibleText: "published result",
+              finalAssistantRawText: "published result",
+            },
+          },
+        },
+      },
+    });
+
+    await waitPromise;
+    expect(mockCallArg(respond)).toBe(true);
+    expectRecordFields(mockCallArg(respond, 0, 1), {
+      runId,
+      status: "ok",
+      finalAssistantVisibleText: "published result",
+      finalAssistantRawText: "published result",
     });
   });
 
